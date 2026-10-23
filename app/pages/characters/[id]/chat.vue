@@ -129,8 +129,11 @@ async function renameConversation(item: ConversationSummary) {
   try {
     const result = await ElMessageBox.prompt("输入新的会话标题（最多 255 个字符）。", "重命名会话", {
       inputValue: item.title,
-      inputMaxLength: 255,
-      inputValidator: (value) => Boolean(value.trim()) || "标题不能为空。",
+      inputValidator: (value) => {
+        if (!value.trim()) return "标题不能为空。";
+        if (value.trim().length > 255) return "标题不能超过 255 个字符。";
+        return true;
+      },
       confirmButtonText: "保存标题",
       cancelButtonText: "取消",
     });
