@@ -19,7 +19,7 @@ on:
       - "README.md"
       - ".github/workflows/phase-0-validation.yml"
   push:
-    branches: [main]
+    branches: [main, docs/project-blueprint]
     paths:
       - "app/**"
       - "server/**"
