@@ -16,7 +16,7 @@ export default defineEventHandler(async (event) => {
   }
 
   const config = existing.modelConfig && typeof existing.modelConfig === "object" && !Array.isArray(existing.modelConfig)
-    ? existing.modelConfig as Record<string, unknown>
+    ? existing.modelConfig as Prisma.InputJsonObject
     : {};
   const data: Prisma.CharacterUpdateInput = {};
 
@@ -42,7 +42,7 @@ export default defineEventHandler(async (event) => {
       ...config,
       ...(body.alias !== undefined ? { alias: readTrimmedString(body.alias, "角色标签", 100) } : {}),
       ...(body.description !== undefined ? { description: readTrimmedString(body.description, "角色简介", 2000) } : {}),
-    } as Prisma.InputJsonObject;
+    };
   }
 
   const updated = await prisma.character.update({
