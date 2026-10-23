@@ -151,7 +151,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/CharacterInput'
+              $ref: '#/components/schemas/CharacterPatch'
       responses:
         '200':
           description: 更新成功
@@ -458,7 +458,7 @@ paths:
               properties:
                 content: { type: string, minLength: 1 }
                 category: { type: string }
-                status: { type: string, enum: [active, superseded, archived] }
+                status: { type: string, enum: [active, superseded, archived, invalidated] }
       responses:
         '200':
           description: 已更新
@@ -858,7 +858,7 @@ components:
       properties:
         id: { type: string, format: uuid }
         characterId: { type: string, format: uuid }
-        scopeType: { type: string, enum: [CHARACTER_GLOBAL, USER_PRIVATE, EXTERNAL_IDENTITY] }
+        scopeType: { type: string, enum: [character_global, user_private, external_identity] }
         scopeKey: { type: string }
         userId: { type: string, format: uuid, nullable: true }
         externalIdentityId: { type: string, format: uuid, nullable: true }
@@ -882,7 +882,7 @@ components:
           properties:
             id: { type: string, format: uuid }
             characterId: { type: string, format: uuid }
-            status: { type: string, enum: [ACTIVE, ARCHIVED] }
+            status: { type: string, enum: [active, archived] }
             lastMessageAt: { type: string, format: date-time, nullable: true }
             createdAt: { type: string, format: date-time }
             updatedAt: { type: string, format: date-time }
@@ -891,7 +891,7 @@ components:
       required: [role, content, occurredAt]
       properties:
         externalMessageId: { type: string, nullable: true }
-        role: { type: string, enum: [SYSTEM, USER, ASSISTANT, TOOL] }
+        role: { type: string, enum: [system, user, assistant, tool] }
         eventType: { type: string, default: message }
         content: { type: string }
         occurredAt: { type: string, format: date-time }
@@ -925,6 +925,17 @@ components:
     CharacterInput:
       type: object
       required: [name, basePrompt]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 100 }
+        avatar: { type: string, nullable: true }
+        basePrompt: { type: string, maxLength: 50000 }
+        modelConfig:
+          type: object
+          additionalProperties: true
+        status: { type: string, enum: [active, paused, archived] }
+    CharacterPatch:
+      type: object
+      description: 更新角色时的部分字段；所有字段均为可选。
       properties:
         name: { type: string, minLength: 1, maxLength: 100 }
         avatar: { type: string, nullable: true }
@@ -977,7 +988,7 @@ components:
             commitmentsAndGoals: { type: array, items: { type: object, additionalProperties: true } }
             unresolvedTopics: { type: array, items: { type: object, additionalProperties: true } }
             changesSincePrevious: { type: array, items: { type: object, additionalProperties: true } }
-        status: { type: string, enum: [current, superseded, failed] }
+        status: { type: string, enum: [current, superseded] }
         modelMetadata: { type: object, additionalProperties: true }
         createdAt: { type: string, format: date-time }
     MemorySettings:
