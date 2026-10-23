@@ -37,10 +37,10 @@ Phase 0 结束前由开发者与 AI 一起审查本清单。标记为“待本�
 - [ ] 本地数据备份存放在仓库外的安全位置。
 
 ## 验证状态
-- 代码与文档静态审查：进行中。
-- Prisma CLI 验证：GitHub Actions 已在依赖安装环境中通过（以最新 run 为准）；仍建议开发者本地执行。
-- OpenAPI lint：已加入 GitHub Actions，等待本次契约版本的检查结果。
-- Windows 备份/恢复实测：需要在目标环境执行。
+- 代码与文档静态审查：已完成初步审查；仍需开发者确认业务规则。
+- Prisma CLI 验证：GitHub Actions 通过（包含 Prisma Schema 语法/关系校验）；仍建议开发者本地执行。
+- OpenAPI lint：GitHub Actions 通过（Redocly minimal 规则集）；后续接口变更会继续运行检查。
+- Windows 备份/恢复实测：需要在目标环境执行；当前脚本尚未经真实数据恢复演练。
 
 推荐命令（安装项目依赖后）：
 ```powershell
