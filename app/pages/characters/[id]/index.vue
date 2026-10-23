@@ -37,7 +37,7 @@ const filteredEntries = computed(() => {
 watch([editOpen, character], ([open]) => {
   if (open) {
     draftName.value = character.value.name;
-    draftPersonality.value = character.value.personality;
+    draftPersonality.value = character.value.personality || '';
   }
 });
 function saveProfile() {
