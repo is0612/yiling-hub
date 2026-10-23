@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type FormEvent } from "react";
 import { Check, Database, HardDrive, KeyRound, RefreshCw, Save, ShieldCheck, SlidersHorizontal } from "lucide-react";
 import { DemoLabel, PageHeader, SectionTitle } from "@/components/ui";
 
@@ -12,7 +12,7 @@ export default function SystemSettingsPage() {
 
   function notify(message: string) { setToast(message); window.setTimeout(() => setToast(""), 4000); }
 
-  function save(event: React.FormEvent<HTMLFormElement>) {
+  function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     notify("系统默认值已保存到页面演示状态；当前没有真实系统配置 API。");
   }
