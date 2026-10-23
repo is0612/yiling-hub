@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useMemo, useState, type FormEvent } from "react";
 import { ArrowUpRight, Bot, Check, ChevronDown, CirclePlus, MoreHorizontal, Plus, Search, Sparkles, UsersRound, X } from "lucide-react";
 import { characters as initialCharacters, type Character } from "@/lib/mock-data";
 import { Badge, DemoLabel, PageHeader, StatCard } from "@/components/ui";
@@ -29,7 +29,7 @@ export default function CharactersPage() {
     return matchesQuery && matchesStatus;
   }), [items, query, statusFilter]);
 
-  function createCharacter(event: React.FormEvent<HTMLFormElement>) {
+  function createCharacter(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const trimmed = name.trim();
     if (!trimmed) return;
