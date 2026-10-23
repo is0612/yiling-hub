@@ -1,5 +1,5 @@
 import { createError, readBody } from "h3";
-import type { Prisma } from "../../src/generated/prisma/client";
+import type { Prisma } from "../../../src/generated/prisma/client";
 import { characterInclude, toCharacterDto } from "../../utils/character-dto";
 import { readTrimmedString, requireLocalDevOwner, requireUuid } from "../../utils/local-api";
 import { getPrisma } from "../../utils/prisma";
