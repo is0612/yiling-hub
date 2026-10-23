@@ -11,6 +11,7 @@ import {
 
 const LEASE_MS = 5 * 60 * 1000;
 const MAX_SOURCE_MESSAGES = 250;
+const SOURCE_MESSAGE_WINDOW = MAX_SOURCE_MESSAGES / 2;
 const MAX_SOURCE_MEMORIES = 250;
 const MAX_AI_MESSAGES = 120;
 const MAX_AI_MEMORIES = 80;
@@ -204,13 +205,19 @@ export async function processNextMemoryJob(
       ],
     };
 
-    const [messageCount, eventCount, sourceMessages, memoryActivityCount, activeItems, scope, previousSnapshot] = await Promise.all([
+    const [messageCount, eventCount, sourceMessagesFirst, sourceMessagesLast, memoryActivityCount, activeItems, scope, previousSnapshot] = await Promise.all([
       prisma.message.count({ where: messageWhere }),
       prisma.message.count({ where: { ...messageWhere, eventType: { not: "message" } } }),
       prisma.message.findMany({
         where: messageWhere,
         orderBy: [{ occurredAt: "asc" }, { id: "asc" }],
-        take: MAX_SOURCE_MESSAGES,
+        take: SOURCE_MESSAGE_WINDOW,
+        select: { id: true, role: true, eventType: true, content: true, occurredAt: true },
+      }),
+      prisma.message.findMany({
+        where: messageWhere,
+        orderBy: [{ occurredAt: "desc" }, { id: "desc" }],
+        take: SOURCE_MESSAGE_WINDOW,
         select: { id: true, role: true, eventType: true, content: true, occurredAt: true },
       }),
       prisma.memoryItem.count({ where: memoryActivityWhere }),
@@ -221,7 +228,7 @@ export async function processNextMemoryJob(
           createdAt: { lte: job.periodEnd },
           updatedAt: { lte: job.periodEnd },
         },
-        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+        orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
         take: MAX_SOURCE_MEMORIES,
         select: {
           id: true, category: true, content: true, confidence: true,
@@ -264,8 +271,14 @@ export async function processNextMemoryJob(
       return { processed: true, jobId: job.id, status: "SKIPPED", message: "周期内无已保存活动，已跳过快照生成。" };
     }
 
+    // Keep the oldest and newest source messages in long periods, instead of silently
+    // analyzing only the first 250 and missing the period's later conversations.
+    const sourceMessages = [...new Map(
+      [...sourceMessagesFirst, ...sourceMessagesLast].map((message) => [message.id, message]),
+    ).values()].sort((a, b) => a.occurredAt.getTime() - b.occurredAt.getTime() || a.id.localeCompare(b.id));
     const aiMessages = selectAiMessages(sourceMessages);
-    const aiMemoryContext = activeItems.slice(-MAX_AI_MEMORIES).map((item) => ({
+    // activeItems is newest-first, so the model sees the latest memory state.
+    const aiMemoryContext = activeItems.slice(0, MAX_AI_MEMORIES).map((item) => ({
       id: item.id,
       category: item.category,
       content: item.content.slice(0, 800),
@@ -534,6 +547,7 @@ export async function processNextMemoryJob(
             },
             select: { id: true },
           });
+          existingItemSignatures.add(change.category + ":" + normalizeMemoryText(change.content));
           await tx.auditLog.create({
             data: {
               actorType: "WORKER",
