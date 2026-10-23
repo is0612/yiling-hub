@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useState, type FormEvent } from "react";
 import { useParams } from "next/navigation";
 import { ArrowLeft, CalendarClock, Check, Clock3, Info, RotateCcw, Save, Settings2, ShieldCheck, Sparkles } from "lucide-react";
 import { characters } from "@/lib/mock-data";
@@ -26,7 +26,7 @@ export default function MemorySettingsPage() {
     window.setTimeout(() => setToast(""), 4000);
   }
 
-  function saveSettings(event: React.FormEvent<HTMLFormElement>) {
+  function saveSettings(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     notify(`已保存演示设置：每 ${intervalNumber} 天归档；真实数据库接入后才会持久保存。`);
   }
