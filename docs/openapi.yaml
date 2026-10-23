@@ -908,21 +908,26 @@ paths:
           $ref: '#/components/responses/Unauthorized'
     post:
       tags: [Snapshots]
-      summary: 请求生成手动快照
+      summary: 生成手动快照或排入自动 AI 快照重新提炼
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [scopeId, periodStart, periodEnd]
               properties:
-                scopeId: { type: string, format: uuid }
-                periodStart: { type: string, format: date-time }
-                periodEnd: { type: string, format: date-time }
+                snapshotId:
+                  type: string
+                  format: uuid
+                  description: 可选已有快照 ID。提供后，普通模式会基于该快照创建手动版本；mode=ai 时针对自动快照排入 AI 重新提炼任务。
+                mode:
+                  type: string
+                  enum: [ai]
+                  description: 仅设置为 ai 时调用模型并排入 REGENERATE_SNAPSHOT 任务；模型未配置时返回 503。
+              additionalProperties: false
       responses:
-        '202':
-          description: 快照任务已排队，自动计划不应被重置
+        '200':
+          description: 手动快照已保存或手动版本已创建
           content:
             application/json:
               schema:
@@ -933,12 +938,36 @@ paths:
                       data:
                         type: object
                         properties:
-                          taskId: { type: string, format: uuid }
-                          status: { type: string, enum: [queued] }
+                          id: { type: string, format: uuid }
+                          version: { type: integer }
+                          jobId: { type: string, format: uuid }
+                          status: { type: string, enum: [QUEUED, RUNNING, RETRY_WAIT] }
+                          queued: { type: boolean }
+                          duplicate: { type: boolean }
+        '202':
+          description: AI 重新提炼任务已排队
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, jobId, status, snapshotId, queued, duplicate]
+                properties:
+                  id: { type: string, format: uuid }
+                  jobId: { type: string, format: uuid }
+                  status: { type: string, enum: [QUEUED, RUNNING, RETRY_WAIT] }
+                  snapshotId: { type: string, format: uuid }
+                  queued: { type: boolean }
+                  duplicate: { type: boolean }
         '400':
           $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: 该接口仅限本地开发环境
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 该快照不能以当前模式重新生成
+        '503':
+          description: 模型未配置
   /snapshots/{snapshotId}:
     parameters:
       - name: snapshotId
@@ -1108,7 +1137,7 @@ paths:
       tags: [Tasks]
       operationId: enqueueDueMemoryJobs
       summary: 扫描到期周期并排入持久化任务队列（本地开发）
-      description: 处理到期的周期边界并使用幂等键排队；此操作不执行快照生成，实际 Worker 尚未接入。
+      description: 处理到期的周期边界并使用幂等键将任务写入持久化队列。真实模型调用由独立 Worker 完成。
       security: []
       responses:
         '200':
@@ -1133,7 +1162,7 @@ paths:
       tags: [Tasks]
       operationId: runOneMemoryWorkerJob
       summary: 由本地开发界面执行一条周期快照任务（本地开发）
-      description: 手动触发单次 Worker 处理。当前仅消费 GENERATE_SNAPSHOT 任务；服务端配置 LLM_BASE_URL、LLM_API_KEY 与 LLM_MODEL 后，会调用 OpenAI-compatible Chat Completions 生成周期总结和有原始消息证据的长期记忆变化。未配置模型时任务留在队列；手动快照仍不调用模型。此接口仅限本地开发环境。
+      description: 手动触发一次 Worker 处理。当前消费 GENERATE_SNAPSHOT 与 REGENERATE_SNAPSHOT 任务；配置 LLM_BASE_URL、LLM_API_KEY 与 LLM_MODEL 后调用 OpenAI-compatible Chat Completions。AI 重新提炼会在同一逻辑快照下创建新版本；提议的长期记忆变化只供审核，不会重放应用到当前记忆。未配置模型时任务留在队列。此接口仅限本地开发环境。
       security: []
       responses:
         '200':
@@ -1178,23 +1207,63 @@ paths:
   /tasks/{taskId}/retry:
     post:
       tags: [Tasks]
-      summary: 重新排队失败任务
+      operationId: requeueSnapshotTask
+      summary: 手动重新排队快照任务（本地开发）
+      description: 仅支持 GENERATE_SNAPSHOT / REGENERATE_SNAPSHOT 类型，且任务当前状态为 FAILED、RETRY_WAIT 或 CANCELLED。会将尝试计数重置为 0，并写入审计日志。
+      security: []
       parameters:
         - name: taskId
           in: path
           required: true
           schema: { type: string, format: uuid }
       responses:
-        '202':
-          description: 重试任务已排队
+        '200':
+          description: 任务已重新排队
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ApiResponse'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
+                type: object
+                required: [id, status, runAt]
+                properties:
+                  id: { type: string, format: uuid }
+                  status: { type: string, enum: [QUEUED] }
+                  runAt: { type: string, format: date-time }
+        '403':
+          description: 该接口仅限本地开发环境
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          description: 任务类型或当前状态不允许重新排队
+  /tasks/{taskId}/cancel:
+    post:
+      tags: [Tasks]
+      operationId: cancelQueuedSnapshotTask
+      summary: 取消等待中的任务（本地开发）
+      description: 仅支持 QUEUED 或 RETRY_WAIT 状态。RUNNING 任务不能被强制取消，以避免与正在进行的 Worker 写事务产生竞态；取消动作写入审计日志。
+      security: []
+      parameters:
+        - name: taskId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: 任务已取消
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, status, completedAt]
+                properties:
+                  id: { type: string, format: uuid }
+                  status: { type: string, enum: [CANCELLED] }
+                  completedAt: { type: string, format: date-time }
+        '403':
+          description: 该接口仅限本地开发环境
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 任务状态不允许取消
   /channels:
     get:
       tags: [Channels]
