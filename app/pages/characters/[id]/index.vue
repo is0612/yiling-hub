@@ -4,13 +4,12 @@ import { ElMessage } from "element-plus";
 import { initialCharacters, initialSnapshots, initialTimeline, type Character, type TimelineType } from "~/utils/mock-data";
 
 const route = useRoute();
-const id = computed(() => String(route.params.id || "big-fish"));
-const characters = useState<Character[]>("characters", () => initialCharacters.map((item) => ({ ...item, channels: [...item.channels] })));
-const character = computed(() => characters.value.find((item) => item.id === id.value) || {
-  ...initialCharacters[0], id: id.value, name: "新建角色", alias: "演示角色",
-  description: "这是在角色列表中临时创建的演示档案。刷新后会恢复示例数据。", avatar: "新",
-  status: "已暂停" as const, channels: [], intervalDays: 8, nextSnapshot: "尚未启用",
-  memoryCount: 0, latestSnapshot: "暂无快照",
+const id = computed(() => String(route.params.id || ""));
+const currentCharacter = ref<Character | null>(null);
+const character = computed(() => currentCharacter.value || {
+  ...initialCharacters[0], id: id.value, name: "角色加载中", alias: "数据库档案",
+  description: "正在读取角色数据。", status: "已暂停" as const,
+  channels: [], intervalDays: 8, nextSnapshot: "尚未计划", memoryCount: 0, latestSnapshot: "暂无快照",
 });
 const activeFilter = ref("全部记录");
 const channelFilter = ref("全部渠道");
@@ -34,21 +33,43 @@ const filteredEntries = computed(() => {
     return typeMatches && channelMatches && textMatches;
   });
 });
+
+async function loadCharacter() {
+  try {
+    currentCharacter.value = await $fetch<Character>(`/api/characters/${encodeURIComponent(id.value)}`);
+  } catch {
+    currentCharacter.value = null;
+    ElMessage.error("加载角色失败，请确认角色仍存在且本地数据库已初始化。");
+  }
+}
+
 watch([editOpen, character], ([open]) => {
   if (open) {
     draftName.value = character.value.name;
-    draftPersonality.value = character.value.personality || '';
+    draftPersonality.value = character.value.personality || "";
   }
 });
-function saveProfile() {
-  const target = characters.value.find((item) => item.id === id.value);
-  if (target) {
-    target.name = draftName.value.trim() || target.name;
-    target.personality = draftPersonality.value.trim() || target.personality;
+
+async function saveProfile() {
+  try {
+    const updated = await $fetch<Character>(`/api/characters/${encodeURIComponent(id.value)}`, {
+      method: "PATCH",
+      body: {
+        name: draftName.value.trim() || character.value.name,
+        personality: draftPersonality.value.trim() || character.value.personality,
+      },
+    });
+    currentCharacter.value = updated;
+    editOpen.value = false;
+    ElMessage.success("角色信息已保存到本地数据库。");
+  } catch (error) {
+    const message = error && typeof error === "object" && "statusMessage" in error
+      ? String(error.statusMessage)
+      : "保存失败，请检查数据库连接。";
+    ElMessage.error(message);
   }
-  editOpen.value = false;
-  ElMessage.success("已保存到当前演示状态；接入数据库后才会永久保存。");
 }
+
 function toneFor(tagTone: string) {
   return ({ green: "pill-green", purple: "pill-purple", blue: "pill-blue", amber: "pill-amber", gray: "pill-gray" } as Record<string, string>)[tagTone] || "pill-gray";
 }
@@ -56,20 +77,23 @@ function markerFor(type: TimelineType) {
   return type === "message" ? "对" : type === "memory" ? "忆" : type === "snapshot" ? "档" : "事";
 }
 function manualSnapshot() {
-  ElMessage.info("演示任务已排入预览队列；当前没有真实 Worker 执行。");
+  ElMessage.info("快照生成尚未接入真实 Worker；当前不会执行归档任务。");
 }
+
+onMounted(() => void loadCharacter());
+watch(id, () => void loadCharacter());
 </script>
 
 <template>
   <div class="page-wrap">
-    <PageHeader eyebrow="工作空间 / 角色管理 / 记忆驾驶舱" title="记忆驾驶舱" description="查看角色最近经历、长期记忆变化与周期快照。需要回忆什么，就从这里找到线索。">
-      <template #actions><DemoTag /><el-button @click="editOpen = true"><el-icon><Setting /></el-icon>编辑角色</el-button><el-button type="primary" @click="manualSnapshot"><el-icon><MagicStick /></el-icon>手动归档</el-button></template>
+    <PageHeader eyebrow="工作空间 / 角色管理 / 记忆驾驶舱" title="记忆驾驶舱" description="查看角色档案与记忆活动。角色名称和基础人设已接入数据库；记忆活动将在后续阶段接入真实来源。">
+      <template #actions><el-button @click="editOpen = true"><el-icon><Setting /></el-icon>编辑角色</el-button><el-button type="primary" @click="manualSnapshot"><el-icon><MagicStick /></el-icon>手动归档</el-button></template>
     </PageHeader>
 
     <div class="info-callout" style="margin-bottom:20px">
       <div class="avatar" style="width:34px;height:34px;border-radius:10px">{{ character.avatar }}</div>
       <div style="flex:1"><strong style="color:#5f5b99">正在查看角色：{{ character.name }}</strong><div>快照周期 {{ character.intervalDays }} 天 · 记忆条目 {{ character.memoryCount }} 条</div></div>
-      <span class="pill pill-green"><i class="env-dot" />页面数据为演示数据</span>
+      <span class="pill pill-green"><i class="env-dot" />近期事件仍为示例数据</span>
     </div>
 
     <div class="cockpit-grid">
@@ -84,7 +108,7 @@ function manualSnapshot() {
         <div class="metric-row"><span>归档周期</span><span class="metric-value">{{ character.intervalDays }} 天</span></div>
         <div class="metric-row"><span>最近快照</span><span class="metric-value">{{ character.latestSnapshot }}</span></div>
         <div class="metric-row"><span>绑定渠道</span><span class="metric-value">{{ character.channels.length || 0 }} 个</span></div>
-        <div class="section-content"><SectionTitle title="快捷操作" description="当前只演示页面交互" /></div>
+        <div class="section-content"><SectionTitle title="快捷操作" description="角色档案已接入数据库；记忆事件仍为演示数据" /></div>
         <div class="quick-actions">
           <el-button style="width:100%" plain @click="navigateTo('/characters/' + character.id + '/settings/memory')"><el-icon><Calendar /></el-icon>记忆周期设置</el-button>
           <el-button style="width:100%" plain @click="navigateTo('/characters/' + character.id + '/snapshots')"><el-icon><Files /></el-icon>查看全部快照</el-button>
@@ -133,7 +157,7 @@ function manualSnapshot() {
       <el-form label-position="top">
         <el-form-item label="角色名称"><el-input v-model="draftName" maxlength="40" /></el-form-item>
         <el-form-item label="基础人设"><el-input v-model="draftPersonality" type="textarea" :rows="5" /></el-form-item>
-        <div class="info-callout"><el-icon><Cpu /></el-icon><span>人设修改只保存到当前页面状态。实际持久化与审计记录将在后续 API 阶段接入。</span></div>
+        <div class="info-callout"><el-icon><Cpu /></el-icon><span>角色名称与基础人设会写入本地数据库；记忆时间线和审计记录尚未接入真实数据。</span></div>
       </el-form>
       <template #footer><el-button @click="editOpen = false">取消</el-button><el-button type="primary" @click="saveProfile">保存修改</el-button></template>
     </el-dialog>
