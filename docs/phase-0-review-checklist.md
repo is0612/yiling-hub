@@ -38,8 +38,8 @@ Phase 0 结束前由开发者与 AI 一起审查本清单。标记为“待本�
 
 ## 验证状态
 - 代码与文档静态审查：进行中。
-- Prisma CLI 验证：需要本地安装依赖后执行。
-- OpenAPI lint：需要在项目验证工具配置后执行。
+- Prisma CLI 验证：GitHub Actions 已在依赖安装环境中通过（以最新 run 为准）；仍建议开发者本地执行。
+- OpenAPI lint：已加入 GitHub Actions，等待本次契约版本的检查结果。
 - Windows 备份/恢复实测：需要在目标环境执行。
 
 推荐命令（安装项目依赖后）：
