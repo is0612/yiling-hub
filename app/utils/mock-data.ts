@@ -29,6 +29,25 @@ export type TimelineEntry = {
   source: string;
 };
 
+export type SnapshotAnalysis = {
+  importantEvents: Array<{ title: string; detail: string; evidenceMessageIds: string[] }>;
+  factAndPreferenceChanges: Array<{ description: string; changeType: string; evidenceMessageIds: string[] }>;
+  relationshipChanges: Array<{ description: string; evidenceMessageIds: string[] }>;
+  goalsAndCommitments: Array<{ description: string; status: string; evidenceMessageIds: string[] }>;
+  unresolvedTopics: Array<{ description: string; evidenceMessageIds: string[] }>;
+  differencesFromPrevious: string[];
+  memoryChangesApplied: Array<{
+    action: string;
+    result: string;
+    category?: string;
+    content?: string;
+    memoryItemId?: string;
+    supersededMemoryId?: string;
+    confidence?: number;
+    evidenceMessageIds?: string[];
+  }>;
+};
+
 export type Snapshot = {
   id: string;
   number: number;
@@ -40,6 +59,10 @@ export type Snapshot = {
   messages: number;
   status: "当前版本" | "已被替代";
   statusTone: "green" | "gray";
+  kind?: "AUTOMATIC" | "MANUAL";
+  generatedBy?: string;
+  model?: { name?: string; provider?: string; promptTemplateVersion?: string };
+  analysis?: SnapshotAnalysis;
 };
 
 export type DemoTask = {
