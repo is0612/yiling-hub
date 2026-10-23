@@ -74,14 +74,26 @@ export default defineEventHandler(async (event) => {
     },
   });
 
-  const summary = activeItems.length > 0
-    ? "人工归档了 " + activeItems.length + " 条已保存的长期记忆。当前尚未接入模型总结与原始消息导入。"
-    : "人工归档时没有已保存的长期记忆条目。当前尚未接入模型总结与原始消息导入。";
+  const sourceMessages = await prisma.message.findMany({
+    where: {
+      conversation: { is: { characterId, memoryScopeId } },
+      occurredAt: { gte: periodStart, lte: periodEnd },
+    },
+    orderBy: [{ occurredAt: "asc" }, { id: "asc" }],
+    take: 250,
+    select: { id: true, eventType: true },
+  });
+  const summaryParts: string[] = [];
+  if (activeItems.length) summaryParts.push(`关联 ${activeItems.length} 条长期记忆`);
+  if (sourceMessages.length) summaryParts.push(`关联 ${sourceMessages.length} 条周期内消息/事件`);
+  const summary = summaryParts.length
+    ? `人工快照：${summaryParts.join("，")}。尚未调用大模型生成自然语言总结。`
+    : "人工快照：周期内没有已保存的消息或长期记忆。尚未调用大模型生成自然语言总结。";
   const structuredContent = {
     generatedBy: "manual",
     capturedAt: now.toISOString(),
-    messageCount: 0,
-    eventCount: 0,
+    messageCount: sourceMessages.length,
+    eventCount: sourceMessages.filter((message) => message.eventType !== "message").length,
     memoryItems: activeItems.map((item) => ({
       id: item.id,
       category: item.category,
@@ -119,11 +131,18 @@ export default defineEventHandler(async (event) => {
         status: "CURRENT",
         generatedAt: now,
         sources: {
-          create: activeItems.map((item) => ({
-            sourceType: "MEMORY_ITEM",
-            sourceRef: item.id,
-            memoryItemId: item.id,
-          })),
+          create: [
+            ...activeItems.map((item) => ({
+              sourceType: "MEMORY_ITEM" as const,
+              sourceRef: item.id,
+              memoryItemId: item.id,
+            })),
+            ...sourceMessages.map((message) => ({
+              sourceType: "MESSAGE" as const,
+              sourceRef: message.id,
+              messageId: message.id,
+            })),
+          ],
         },
       },
       select: { id: true, version: true },

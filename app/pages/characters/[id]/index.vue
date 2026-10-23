@@ -3,16 +3,36 @@ import { ArrowRight, Cpu, Calendar, Files, Search, Setting, MagicStick } from "@
 import { ElMessage } from "element-plus";
 import { initialCharacters, type Character, type Snapshot, type TimelineEntry, type TimelineType } from "~/utils/mock-data";
 
+type MemoryCategory = "FACT" | "PREFERENCE" | "RELATIONSHIP" | "COMMITMENT" | "GOAL" | "EVENT" | "SUMMARY" | "OTHER";
+const memoryCategoryOptions: Array<{ label: string; value: MemoryCategory }> = [
+  { label: "事实记忆", value: "FACT" },
+  { label: "偏好记忆", value: "PREFERENCE" },
+  { label: "关系记忆", value: "RELATIONSHIP" },
+  { label: "承诺与约定", value: "COMMITMENT" },
+  { label: "目标记忆", value: "GOAL" },
+  { label: "事件记忆", value: "EVENT" },
+  { label: "记忆摘要", value: "SUMMARY" },
+  { label: "其他", value: "OTHER" },
+];
+
 const route = useRoute();
 const id = computed(() => String(route.params.id || ""));
 const currentCharacter = ref<Character | null>(null);
 const snapshots = ref<Snapshot[]>([]);
 const snapshotCreating = ref(false);
+const memoryDialogOpen = ref(false);
+const memorySaving = ref(false);
+const draftMemoryCategory = ref<MemoryCategory>("FACT");
+const draftMemoryContent = ref("");
+const conversationDialogOpen = ref(false);
+const conversationSaving = ref(false);
+const draftConversationTitle = ref("");
+const draftTranscript = ref("");
 const timelineEntries = ref<TimelineEntry[]>([]);
 const timelineLoading = ref(false);
 const recordedMessageCount = computed(() => timelineEntries.value.filter((entry) => entry.type === "message").length);
 const recordedEventCount = computed(() => timelineEntries.value.filter((entry) => entry.type === "event").length);
-const commitmentCount = computed(() => timelineEntries.value.filter((entry) => entry.type === "memory" && entry.tag === "承诺与约定").length);
+const commitmentCount = computed(() => timelineEntries.value.filter((entry) => entry.type === "memory" && entry.title === "承诺与约定" && entry.tag === "长期记忆").length);
 const channelOptions = computed(() => [...new Set(timelineEntries.value.map((entry) => entry.channel).filter((channel) => channel !== "全部渠道"))].sort());
 const character = computed(() => currentCharacter.value || {
   ...initialCharacters[0], id: id.value, name: "角色加载中", alias: "数据库档案",
@@ -102,6 +122,92 @@ async function saveProfile() {
   }
 }
 
+async function saveMemory() {
+  if (memorySaving.value) return;
+  if (!draftMemoryContent.value.trim()) {
+    ElMessage.warning("请先填写记忆内容。");
+    return;
+  }
+
+  memorySaving.value = true;
+  try {
+    await $fetch(`/api/characters/${encodeURIComponent(id.value)}/memories`, {
+      method: "POST",
+      body: {
+        category: draftMemoryCategory.value,
+        content: draftMemoryContent.value.trim(),
+      },
+    });
+    memoryDialogOpen.value = false;
+    draftMemoryContent.value = "";
+    draftMemoryCategory.value = "FACT";
+    await loadCharacter();
+    ElMessage.success("长期记忆已保存到数据库，并加入时间线。");
+  } catch (error) {
+    const message = error && typeof error === "object" && "statusMessage" in error
+      ? String(error.statusMessage)
+      : error instanceof Error ? error.message : "保存记忆失败，请检查数据库连接。";
+    ElMessage.error(message);
+  } finally {
+    memorySaving.value = false;
+  }
+}
+
+async function saveConversation() {
+  if (conversationSaving.value) return;
+
+  const lines = draftTranscript.value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  if (!lines.length) {
+    ElMessage.warning("请至少输入一条对话消息。");
+    return;
+  }
+  if (lines.length > 200) {
+    ElMessage.warning("一次最多录入 200 条消息。");
+    return;
+  }
+
+  let messages: Array<{ role: "USER" | "ASSISTANT"; content: string }>;
+  try {
+    messages = lines.map((line, index) => {
+      const match = line.match(/^(用户|我|user|角色|助手|assistant|character)\s*[:：]\s*(.*)$/i);
+      if (!match) {
+        throw new Error(`第 ${index + 1} 行格式不正确，请使用“用户：内容”或“角色：内容”。`);
+      }
+      const content = match[2]?.trim() ?? "";
+      if (!content) throw new Error(`第 ${index + 1} 行消息内容不能为空。`);
+      const speaker = (match[1] ?? "").toLowerCase();
+      const role = ["用户", "我", "user"].includes(speaker) ? "USER" : "ASSISTANT";
+      return { role, content };
+    });
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "对话格式不正确。");
+    return;
+  }
+
+  conversationSaving.value = true;
+  try {
+    const result = await $fetch<{ messageCount: number; timestampsEstimated: boolean }>(
+      `/api/characters/${encodeURIComponent(id.value)}/conversations/import`,
+      {
+        method: "POST",
+        body: { title: draftConversationTitle.value.trim(), messages },
+      },
+    );
+    conversationDialogOpen.value = false;
+    draftConversationTitle.value = "";
+    draftTranscript.value = "";
+    await loadCharacter();
+    ElMessage.success(`已保存 ${result.messageCount} 条对话消息并刷新时间线。${result.timestampsEstimated ? "消息时间按录入顺序估算。" : ""}`);
+  } catch (error) {
+    const message = error && typeof error === "object" && "statusMessage" in error
+      ? String(error.statusMessage)
+      : error instanceof Error ? error.message : "录入对话失败，请检查数据库连接。";
+    ElMessage.error(message);
+  } finally {
+    conversationSaving.value = false;
+  }
+}
+
 function toneFor(tagTone: string) {
   return ({ green: "pill-green", purple: "pill-purple", blue: "pill-blue", amber: "pill-amber", gray: "pill-gray" } as Record<string, string>)[tagTone] || "pill-gray";
 }
@@ -114,7 +220,7 @@ async function manualSnapshot() {
   try {
     await $fetch(`/api/characters/${encodeURIComponent(id.value)}/snapshots`, { method: "POST" });
     await Promise.all([loadSnapshots(), loadTimeline()]);
-    ElMessage.success("快照已保存到数据库。当前仅归档已保存的长期记忆条目，尚未调用大模型。");
+    ElMessage.success("快照已保存。已关联周期内的消息/事件与长期记忆来源；尚未调用大模型生成总结。");
   } catch (error) {
     const message = error && typeof error === "object" && "statusMessage" in error
       ? String(error.statusMessage)
@@ -132,7 +238,7 @@ watch(id, () => void loadCharacter());
 <template>
   <div class="page-wrap">
     <PageHeader eyebrow="工作空间 / 角色管理 / 记忆驾驶舱" title="记忆驾驶舱" description="查看角色档案与已保存的记忆活动。时间线读取数据库中的对话消息、长期记忆与快照；聊天渠道导入和模型生成仍在后续阶段接入。">
-      <template #actions><el-button @click="editOpen = true"><el-icon><Setting /></el-icon>编辑角色</el-button><el-button type="primary" :loading="snapshotCreating" @click="manualSnapshot"><el-icon><MagicStick /></el-icon>手动归档</el-button></template>
+      <template #actions><el-button @click="editOpen = true"><el-icon><Setting /></el-icon>编辑角色</el-button><el-button @click="memoryDialogOpen = true">新增长期记忆</el-button><el-button @click="conversationDialogOpen = true">录入对话</el-button><el-button type="primary" :loading="snapshotCreating" @click="manualSnapshot"><el-icon><MagicStick /></el-icon>手动归档</el-button></template>
     </PageHeader>
 
     <div class="info-callout" style="margin-bottom:20px">
@@ -201,6 +307,40 @@ watch(id, () => void loadCharacter());
         <div v-if="!snapshots.length" class="empty-state">还没有保存的快照。</div>
       </aside>
     </div>
+
+    <el-dialog v-model="memoryDialogOpen" title="新增长期记忆" width="min(560px, 94vw)">
+      <el-form label-position="top">
+        <el-form-item label="记忆分类">
+          <el-select v-model="draftMemoryCategory" style="width:100%">
+            <el-option v-for="option in memoryCategoryOptions" :key="option.value" :label="option.label" :value="option.value" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="记忆内容">
+          <el-input v-model="draftMemoryContent" type="textarea" :rows="5" maxlength="12000" show-word-limit placeholder="例如：用户更喜欢简洁、直接的解释。" />
+        </el-form-item>
+        <div class="info-callout"><span>保存后会写入 PostgreSQL，并立即出现在角色记忆时间线中。当前为手动记录，不会调用大模型提炼。</span></div>
+      </el-form>
+      <template #footer>
+        <el-button @click="memoryDialogOpen = false">取消</el-button>
+        <el-button type="primary" :loading="memorySaving" @click="saveMemory">保存记忆</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="conversationDialogOpen" title="录入对话记录" width="min(640px, 94vw)">
+      <el-form label-position="top">
+        <el-form-item label="会话标题（可选）">
+          <el-input v-model="draftConversationTitle" maxlength="255" placeholder="例如：第一次讨论角色设定" />
+        </el-form-item>
+        <el-form-item label="对话内容">
+          <el-input v-model="draftTranscript" type="textarea" :rows="10" maxlength="24000" show-word-limit placeholder="用户：你好&#10;角色：你好呀！&#10;用户：下一句" />
+        </el-form-item>
+        <div class="info-callout"><span>每行一条消息，按发生顺序填写。支持“用户：”“我：”“user:”“角色：”“助手：”“assistant:”。纯文本录入没有原始时间戳，系统会按行顺序设置导入时间。</span></div>
+      </el-form>
+      <template #footer>
+        <el-button @click="conversationDialogOpen = false">取消</el-button>
+        <el-button type="primary" :loading="conversationSaving" @click="saveConversation">保存对话</el-button>
+      </template>
+    </el-dialog>
 
     <el-dialog v-model="editOpen" title="编辑角色" width="min(560px, 94vw)">
       <el-form label-position="top">
