@@ -1,5 +1,8 @@
-# dependencies and build output
+# dependencies and generated output
 node_modules/
+.nuxt/
+.output/
+.data/
 .next/
 out/
 dist/
