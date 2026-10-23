@@ -274,6 +274,7 @@ export async function analyzeMemoryPeriod(input: MemoryAiInput): Promise<{
     body: JSON.stringify({
       model,
       temperature: 0.1,
+      max_tokens: 6000,
       response_format: { type: "json_object" },
       messages: [
         { role: "system", content: systemPrompt() },
@@ -288,8 +289,8 @@ export async function analyzeMemoryPeriod(input: MemoryAiInput): Promise<{
     throw new Error("LLM_RESPONSE_TOO_LARGE: 模型响应超过大小限制。");
   }
   if (!response.ok) {
-    const safeDetail = responseText.replace(/\s+/g, " ").slice(0, 600);
-    throw new Error("LLM_HTTP_ERROR: 模型服务返回 HTTP " + response.status + "：" + safeDetail);
+    // Provider error bodies may echo request fragments. Keep raw response text out of task logs.
+    throw new Error("LLM_HTTP_ERROR: 模型服务返回 HTTP " + response.status + "。请检查服务端模型配置和供应商控制台。");
   }
 
   let payload: Record<string, unknown>;
