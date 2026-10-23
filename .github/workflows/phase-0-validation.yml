@@ -1,14 +1,13 @@
-name: Phase 0 schema validation
+name: 项目校验
 
 on:
   pull_request:
     paths:
+      - "app/**"
+      - "nuxt.config.ts"
+      - "eslint.config.mjs"
       - "prisma/**"
       - "prisma.config.ts"
-      - "src/**"
-      - "eslint.config.mjs"
-      - "next.config.ts"
-      - "postcss.config.mjs"
       - "tsconfig.json"
       - "docs/openapi.yaml"
       - "package.json"
@@ -16,45 +15,48 @@ on:
   push:
     branches: [main]
     paths:
+      - "app/**"
+      - "nuxt.config.ts"
+      - "eslint.config.mjs"
       - "prisma/**"
       - "prisma.config.ts"
-      - "src/**"
-      - "eslint.config.mjs"
-      - "next.config.ts"
-      - "postcss.config.mjs"
       - "tsconfig.json"
       - "docs/openapi.yaml"
       - "package.json"
       - ".github/workflows/phase-0-validation.yml"
 
 jobs:
-  validate-prisma:
+  validate:
     runs-on: ubuntu-latest
     env:
       DATABASE_URL: postgresql://yiling_hub:phase0_validation_only@127.0.0.1:5432/yiling_hub?schema=public
     steps:
-      - name: Check out repository
+      - name: 检出代码
         uses: actions/checkout@v4
 
-      - name: Set up Node.js
+      - name: 设置 Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
 
-      - name: Install project dependencies
+      - name: 安装依赖
         run: npm install
 
-      - name: Validate Prisma schema
+      - name: 校验 Prisma Schema
         run: npm run db:validate
 
-      - name: Check TypeScript
+      - name: 准备 Nuxt 类型与组件信息
+        run: npx nuxt prepare
+
+      - name: TypeScript 类型检查
         run: npm run typecheck
 
-      - name: Run ESLint
+      - name: ESLint 检查
         run: npm run lint
 
-      - name: Build Next.js application
+      - name: Nuxt 生产构建
         run: npm run build
 
-      - name: Lint OpenAPI contract
+      - name: 检查 OpenAPI 契约
         run: npx --yes @redocly/cli@latest lint --extends=minimal docs/openapi.yaml
