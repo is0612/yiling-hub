@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { ArrowRight, Cpu, Calendar, Files, Search, Setting, MagicStick } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
-import { initialCharacters, initialSnapshots, initialTimeline, type Character, type TimelineType } from "~/utils/mock-data";
+import { initialCharacters, initialTimeline, type Character, type Snapshot, type TimelineType } from "~/utils/mock-data";
 
 const route = useRoute();
 const id = computed(() => String(route.params.id || ""));
 const currentCharacter = ref<Character | null>(null);
+const snapshots = ref<Snapshot[]>([]);
+const snapshotCreating = ref(false);
 const character = computed(() => currentCharacter.value || {
   ...initialCharacters[0], id: id.value, name: "角色加载中", alias: "数据库档案",
   description: "正在读取角色数据。", status: "已暂停" as const,
@@ -34,11 +36,22 @@ const filteredEntries = computed(() => {
   });
 });
 
+async function loadSnapshots() {
+  try {
+    snapshots.value = await $fetch<Snapshot[]>(`/api/characters/${encodeURIComponent(id.value)}/snapshots`);
+  } catch {
+    snapshots.value = [];
+    ElMessage.error("快照数据加载失败，请确认本地数据库已迁移。");
+  }
+}
+
 async function loadCharacter() {
   try {
     currentCharacter.value = await $fetch<Character>(`/api/characters/${encodeURIComponent(id.value)}`);
+    await loadSnapshots();
   } catch {
     currentCharacter.value = null;
+    snapshots.value = [];
     ElMessage.error("加载角色失败，请确认角色仍存在且本地数据库已初始化。");
   }
 }
@@ -76,8 +89,21 @@ function toneFor(tagTone: string) {
 function markerFor(type: TimelineType) {
   return type === "message" ? "对" : type === "memory" ? "忆" : type === "snapshot" ? "档" : "事";
 }
-function manualSnapshot() {
-  ElMessage.info("快照生成尚未接入真实 Worker；当前不会执行归档任务。");
+async function manualSnapshot() {
+  if (snapshotCreating.value) return;
+  snapshotCreating.value = true;
+  try {
+    await $fetch(`/api/characters/${encodeURIComponent(id.value)}/snapshots`, { method: "POST" });
+    await loadSnapshots();
+    ElMessage.success("快照已保存到数据库。当前仅归档已保存的长期记忆条目，尚未调用大模型。");
+  } catch (error) {
+    const message = error && typeof error === "object" && "statusMessage" in error
+      ? String(error.statusMessage)
+      : "快照保存失败，请检查数据库连接。";
+    ElMessage.error(message);
+  } finally {
+    snapshotCreating.value = false;
+  }
 }
 
 onMounted(() => void loadCharacter());
@@ -87,7 +113,7 @@ watch(id, () => void loadCharacter());
 <template>
   <div class="page-wrap">
     <PageHeader eyebrow="工作空间 / 角色管理 / 记忆驾驶舱" title="记忆驾驶舱" description="查看角色档案与记忆活动。角色名称和基础人设已接入数据库；记忆活动将在后续阶段接入真实来源。">
-      <template #actions><el-button @click="editOpen = true"><el-icon><Setting /></el-icon>编辑角色</el-button><el-button type="primary" @click="manualSnapshot"><el-icon><MagicStick /></el-icon>手动归档</el-button></template>
+      <template #actions><el-button @click="editOpen = true"><el-icon><Setting /></el-icon>编辑角色</el-button><el-button type="primary" :loading="snapshotCreating" @click="manualSnapshot"><el-icon><MagicStick /></el-icon>手动归档</el-button></template>
     </PageHeader>
 
     <div class="info-callout" style="margin-bottom:20px">
@@ -145,11 +171,12 @@ watch(id, () => void loadCharacter());
         <div class="metric-row"><span>重要事件</span><span class="metric-value">5 项</span></div>
         <div class="metric-row"><span>待跟进承诺</span><span class="metric-value">2 项</span></div>
         <div class="section-content"><SectionTitle title="最近快照" description="保留版本以便回溯" /></div>
-        <div v-for="snapshot in initialSnapshots.slice(0,2)" :key="snapshot.id" class="recent-snapshot">
+        <div v-for="snapshot in snapshots.slice(0,2)" :key="snapshot.id" class="recent-snapshot">
           <div class="recent-snapshot-top"><span>第 {{ snapshot.number }} 份快照</span><span class="muted-note">v{{ snapshot.version }}</span></div>
           <p>{{ snapshot.summary }}</p>
           <el-button link type="primary" @click="navigateTo('/characters/' + character.id + '/snapshots')">打开归档 <el-icon class="el-icon--right"><ArrowRight /></el-icon></el-button>
         </div>
+        <div v-if="!snapshots.length" class="empty-state">还没有保存的快照。</div>
       </aside>
     </div>
 

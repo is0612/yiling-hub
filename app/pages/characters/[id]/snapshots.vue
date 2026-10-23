@@ -1,15 +1,17 @@
 <script setup lang="ts">
 import { ArrowLeft, Calendar, Files, Refresh, Search, MagicStick } from "@element-plus/icons-vue";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { initialCharacters, initialSnapshots, type Character, type Snapshot } from "~/utils/mock-data";
+import { initialCharacters, type Character, type Snapshot } from "~/utils/mock-data";
 
 const route = useRoute();
 const id = computed(() => String(route.params.id || ""));
 const character = ref<Character>({ ...initialCharacters[0]!, id: "", name: "角色加载中" });
-const items = useState<Snapshot[]>("snapshots", () => initialSnapshots.map((item) => ({ ...item })));
+const items = ref<Snapshot[]>([]);
 const query = ref("");
 const statusFilter = ref("全部版本状态");
-const detail = ref<Snapshot | null>(items.value[0] || null);
+const detail = ref<Snapshot | null>(null);
+const creating = ref(false);
+const regeneratingId = ref<string | null>(null);
 
 const filtered = computed(() => items.value.filter((item) => {
   const queryMatches = !query.value || `${item.summary} ${item.range} 第 ${item.number} 份`.toLowerCase().includes(query.value.toLowerCase());
@@ -22,24 +24,82 @@ async function loadCharacter() {
     character.value = await $fetch<Character>(`/api/characters/${encodeURIComponent(id.value)}`);
   } catch {
     character.value = { ...initialCharacters[0]!, id: id.value, name: "无法读取角色" };
-    ElMessage.error("角色档案读取失败。快照内容当前仍是演示数据。");
+    ElMessage.error("角色档案读取失败。");
   }
 }
 
-function resetFilters() { query.value = ""; statusFilter.value = "全部版本状态"; }
-function statusTone(status: Snapshot["status"]) { return status === "当前版本" ? "pill-green" : "pill-gray"; }
+async function loadSnapshots(selectedId?: string) {
+  try {
+    const result = await $fetch<Snapshot[]>(`/api/characters/${encodeURIComponent(id.value)}/snapshots`);
+    items.value = result;
+    detail.value = (selectedId ? result.find((item) => item.id === selectedId) : undefined) || result[0] || null;
+  } catch {
+    items.value = [];
+    detail.value = null;
+    ElMessage.error("快照数据加载失败，请确认本地数据库已迁移。");
+  }
+}
+
+function resetFilters() {
+  query.value = "";
+  statusFilter.value = "全部版本状态";
+}
+function statusTone(status: Snapshot["status"]) {
+  return status === "当前版本" ? "pill-green" : "pill-gray";
+}
+function errorMessage(error: unknown) {
+  return error && typeof error === "object" && "statusMessage" in error
+    ? String(error.statusMessage)
+    : "操作失败，请检查数据库连接。";
+}
+
+async function createSnapshot() {
+  try {
+    await ElMessageBox.confirm(
+      "将当前已保存的长期记忆条目保存为一个快照版本。当前尚未接入原始消息导入或大模型总结，是否继续？",
+      "生成快照",
+      { confirmButtonText: "保存快照", cancelButtonText: "取消", type: "info" },
+    );
+  } catch {
+    return;
+  }
+
+  creating.value = true;
+  try {
+    const result = await $fetch<{ id: string }>(`/api/characters/${encodeURIComponent(id.value)}/snapshots`, { method: "POST" });
+    await loadSnapshots(result.id);
+    ElMessage.success("快照已保存到 PostgreSQL。当前版本保存的是已有长期记忆条目，尚未调用大模型。");
+  } catch (error) {
+    ElMessage.error(errorMessage(error));
+  } finally {
+    creating.value = false;
+  }
+}
+
 async function regenerate(snapshot: Snapshot) {
   try {
-    await ElMessageBox.confirm(`为第 ${snapshot.number} 份快照创建一个新版本？旧版本会保留。`, "重新生成快照", { confirmButtonText: "创建新版本", cancelButtonText: "取消", type: "info" });
-  } catch { return; }
-  const newVersion: Snapshot = {
-    ...snapshot, id: `${snapshot.id}-v${snapshot.version + 1}-${Date.now()}`,
-    version: snapshot.version + 1, date: "刚刚（演示）", status: "当前版本", statusTone: "green",
-    summary: "这是重新生成的演示版本。真实实现将保留旧版本，并记录本次生成所使用的模型与来源。",
-  };
-  items.value = [newVersion, ...items.value.map((item) => item.id === snapshot.id ? { ...item, status: "已被替代" as const, statusTone: "gray" as const } : item)];
-  detail.value = newVersion;
-  ElMessage.success(`第 ${snapshot.number} 份快照已创建演示版本 v${newVersion.version}；旧版本保留。`);
+    await ElMessageBox.confirm(
+      "为第 " + snapshot.number + " 份快照创建新版本？旧版本会保留，并标记为已被替代。",
+      "重新生成快照",
+      { confirmButtonText: "创建新版本", cancelButtonText: "取消", type: "info" },
+    );
+  } catch {
+    return;
+  }
+
+  regeneratingId.value = snapshot.id;
+  try {
+    const result = await $fetch<{ id: string }>(`/api/characters/${encodeURIComponent(id.value)}/snapshots`, {
+      method: "POST",
+      body: { snapshotId: snapshot.id },
+    });
+    await loadSnapshots(result.id);
+    ElMessage.success("新版本已写入数据库，旧版本仍保留。当前尚未接入大模型重新总结。");
+  } catch (error) {
+    ElMessage.error(errorMessage(error));
+  } finally {
+    regeneratingId.value = null;
+  }
 }
 
 onMounted(() => void loadCharacter());
@@ -48,14 +108,14 @@ watch(id, () => void loadCharacter());
 
 <template>
   <div class="page-wrap">
-    <PageHeader :eyebrow="`角色管理 / ${character.name} / 周期快照`" title="周期快照档案" description="角色档案从数据库读取；当前快照时间线与版本重生成仍为演示数据。">
-      <template #actions><DemoTag /><el-button @click="navigateTo('/characters/' + character.id)"><el-icon><ArrowLeft /></el-icon>返回驾驶舱</el-button><el-button type="primary" @click="ElMessage.info('已排入演示快照任务；真实生成器尚未接入。')"><el-icon><MagicStick /></el-icon>生成快照</el-button></template>
+    <PageHeader :eyebrow="`角色管理 / ${character.name} / 周期快照`" title="周期快照档案" description="快照版本已写入 PostgreSQL。当前手动归档会保存已持久化的长期记忆条目；原始消息导入和大模型总结仍在后续阶段接入。">
+      <template #actions><el-button @click="navigateTo('/characters/' + character.id)"><el-icon><ArrowLeft /></el-icon>返回驾驶舱</el-button><el-button type="primary" :loading="creating" @click="createSnapshot"><el-icon><MagicStick /></el-icon>生成快照</el-button></template>
     </PageHeader>
 
     <div class="stat-grid" style="grid-template-columns:repeat(3,minmax(0,1fr))">
-      <StatCard label="历史快照" :value="String(items.length).padStart(2, '0')" note="快照数据仍为演示内容" symbol="▤" tone="purple" />
-      <StatCard label="覆盖消息" :value="String(items.reduce((sum, item) => sum + item.messages, 0))" note="演示来源记录统计" symbol="☰" tone="blue" />
-      <StatCard label="最近生成" :value="items[0]?.date.includes('刚刚') ? '刚刚' : '10/21'" note="仅当前演示状态" symbol="◷" tone="green" />
+      <StatCard label="历史快照" :value="String(items.length).padStart(2, '0')" note="历史版本保存在数据库" symbol="▤" tone="purple" />
+      <StatCard label="覆盖消息" :value="String(items.reduce((sum, item) => sum + item.messages, 0))" note="接入消息后统计" symbol="☰" tone="blue" />
+      <StatCard label="最近生成" :value="items[0]?.date.slice(0, 10) || '暂无'" note="按保存时间更新" symbol="◷" tone="green" />
     </div>
 
     <section class="surface panel" style="margin-top:20px">
@@ -89,12 +149,12 @@ watch(id, () => void loadCharacter());
           <div class="metric-row"><span>来源消息</span><span class="metric-value">{{ detail.messages }} 条</span></div>
           <div class="metric-row"><span>提炼事件</span><span class="metric-value">{{ detail.events }} 项</span></div>
           <div class="info-callout" style="margin-top:19px"><el-icon><Files /></el-icon><span>重新生成会新增版本，旧版保留供审查与来源追溯。</span></div>
-          <el-button style="width:100%;margin-top:14px" type="primary" plain @click="regenerate(detail)"><el-icon><Refresh /></el-icon>重新生成此版本</el-button>
+          <el-button style="width:100%;margin-top:14px" type="primary" plain :loading="regeneratingId === detail.id" @click="regenerate(detail)"><el-icon><Refresh /></el-icon>重新生成此版本</el-button>
         </template>
         <div v-else class="empty-state">从左侧选择一份快照查看详情。</div>
       </aside>
     </div>
-    <p class="footer-note">重新生成和状态切换仅修改演示状态；真实模型调用和版本持久化尚未接入。</p>
+    <p class="footer-note">快照记录与版本状态已持久化；当前版本仅保存已有长期记忆条目。原始消息导入、事件提炼和真实模型总结尚未接入。</p>
   </div>
 </template>
 
