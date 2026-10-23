@@ -214,6 +214,16 @@ paths:
           in: query
           required: false
           schema: { type: string, format: uuid }
+        - name: status
+          in: query
+          required: false
+          description: 只查询正常会话或归档会话，默认 ACTIVE。
+          schema: { type: string, enum: [ACTIVE, ARCHIVED], default: ACTIVE }
+        - name: q
+          in: query
+          required: false
+          description: 按会话标题或消息内容搜索，最多 120 个字符。
+          schema: { type: string, maxLength: 120 }
       responses:
         '200':
           description: 会话列表、选中会话的历史消息与模型配置状态
@@ -297,6 +307,46 @@ paths:
           description: 模型调用失败或返回格式无效
         '503':
           description: 模型尚未配置
+  /characters/{characterId}/chat/{conversationId}:
+    parameters:
+      - $ref: '#/components/parameters/CharacterId'
+      - name: conversationId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      security: []
+      tags: [Characters]
+      operationId: setCharacterChatConversationStatus
+      summary: 归档或恢复角色会话
+      description: 本地开发功能。归档只改变会话状态，不删除对话消息或模型来源记录，并写入审计日志。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, enum: [ACTIVE, ARCHIVED] }
+      responses:
+        '200':
+          description: 会话状态已更新
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, status, updatedAt]
+                properties:
+                  id: { type: string, format: uuid }
+                  status: { type: string, enum: [ACTIVE, ARCHIVED] }
+                  updatedAt: { type: string, format: date-time }
+        '400':
+          description: status 参数无效
+        '403':
+          description: 仅限本机开发模式访问
+        '404':
+          $ref: '#/components/responses/NotFound'
   /characters/{characterId}/timeline:
     parameters:
       - $ref: '#/components/parameters/CharacterId'

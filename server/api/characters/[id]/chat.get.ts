@@ -45,6 +45,21 @@ export default defineEventHandler(async (event) => {
   const conversationId = typeof requestedConversationId === "string" && requestedConversationId
     ? requireUuid(requestedConversationId, "会话")
     : null;
+
+  const requestedStatus = query.status;
+  if (requestedStatus !== undefined && requestedStatus !== "ACTIVE" && requestedStatus !== "ARCHIVED") {
+    throw createError({ statusCode: 400, statusMessage: "status 只支持 ACTIVE 或 ARCHIVED。" });
+  }
+  const conversationStatus: "ACTIVE" | "ARCHIVED" = requestedStatus === "ARCHIVED" ? "ARCHIVED" : "ACTIVE";
+  const rawSearchTerm = query.q;
+  if (rawSearchTerm !== undefined && typeof rawSearchTerm !== "string") {
+    throw createError({ statusCode: 400, statusMessage: "q 参数无效。" });
+  }
+  const searchTerm = typeof rawSearchTerm === "string" ? rawSearchTerm.trim() : "";
+  if (searchTerm.length > 120) {
+    throw createError({ statusCode: 400, statusMessage: "会话搜索词不能超过 120 个字符。" });
+  }
+
   const prisma = getPrisma();
 
   const character = await prisma.character.findFirst({
@@ -55,15 +70,26 @@ export default defineEventHandler(async (event) => {
   const memoryScopeId = character.memoryScopes[0]?.id;
   if (!memoryScopeId) throw createError({ statusCode: 409, statusMessage: "该角色尚未建立全局记忆范围，请重新保存角色档案。" });
 
+  const conversationWhere = {
+    characterId,
+    memoryScopeId,
+    status: conversationStatus,
+    ...(searchTerm ? {
+      OR: [
+        { title: { contains: searchTerm, mode: "insensitive" as const } },
+        { messages: { some: { content: { contains: searchTerm, mode: "insensitive" as const } } } },
+      ],
+    } : {}),
+  };
   const conversations = await prisma.conversation.findMany({
-    where: { characterId, memoryScopeId, status: "ACTIVE" },
+    where: conversationWhere,
     orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
-    take: 20,
+    take: 50,
     select: { id: true, title: true, lastMessageAt: true, updatedAt: true, _count: { select: { messages: true } } },
   });
   const selectedConversation = conversationId
     ? await prisma.conversation.findFirst({
-        where: { id: conversationId, characterId, memoryScopeId, status: "ACTIVE" },
+        where: { id: conversationId, characterId, memoryScopeId, status: conversationStatus },
         select: { id: true, title: true, lastMessageAt: true, updatedAt: true, _count: { select: { messages: true } } },
       })
     : conversations[0] ?? null;

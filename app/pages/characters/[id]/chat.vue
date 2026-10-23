@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ChatDotRound, Clock, Plus, Promotion, Refresh, Reading, User } from "@element-plus/icons-vue";
-import { ElMessage } from "element-plus";
+import { ChatDotRound, Clock, Download, Plus, Promotion, Refresh, Reading, Search, User } from "@element-plus/icons-vue";
+import { ElMessage, ElMessageBox } from "element-plus";
 
 type ChatCharacter = { id: string; name: string };
 type ChatMemorySource = { id: string; category: string; content: string };
@@ -40,6 +40,9 @@ const id = computed(() => String(route.params.id || ""));
 const character = ref<ChatCharacter | null>(null);
 const modelConfigured = ref(false);
 const conversations = ref<ConversationSummary[]>([]);
+const conversationView = ref<"ACTIVE" | "ARCHIVED">("ACTIVE");
+const conversationSearchDraft = ref("");
+const conversationSearch = ref("");
 const conversationId = ref<string | null>(null);
 const messages = ref<ChatMessage[]>([]);
 const draft = ref("");
@@ -71,8 +74,10 @@ async function loadCharacter() {
 }
 
 async function loadHistory(requestedId?: string | null) {
-  const queryString = requestedId ? "?conversationId=" + encodeURIComponent(requestedId) : "";
-  const data = await $fetch<ChatHistoryResponse>("/api/characters/" + encodeURIComponent(id.value) + "/chat" + queryString);
+  const params = new URLSearchParams({ status: conversationView.value });
+  if (requestedId) params.set("conversationId", requestedId);
+  if (conversationSearch.value) params.set("q", conversationSearch.value);
+  const data = await $fetch<ChatHistoryResponse>("/api/characters/" + encodeURIComponent(id.value) + "/chat?" + params.toString());
   modelConfigured.value = data.modelConfigured;
   conversations.value = data.conversations;
   conversationId.value = data.selectedConversationId;
@@ -82,6 +87,9 @@ async function loadHistory(requestedId?: string | null) {
 
 async function reload() {
   loading.value = true;
+  conversationView.value = route.query.view === "archived" ? "ARCHIVED" : "ACTIVE";
+  conversationSearch.value = typeof route.query.q === "string" ? route.query.q.trim().slice(0, 120) : "";
+  conversationSearchDraft.value = conversationSearch.value;
   try {
     await Promise.all([
       loadCharacter(),
@@ -113,12 +121,111 @@ async function openConversation(item: ConversationSummary) {
 
 async function startNewConversation() {
   if (sending.value) return;
+  conversationView.value = "ACTIVE";
+  conversationSearch.value = "";
+  conversationSearchDraft.value = "";
   conversationId.value = null;
   messages.value = [];
   draft.value = "";
   const nextQuery = { ...route.query };
   delete nextQuery.conversationId;
+  delete nextQuery.q;
+  delete nextQuery.view;
   await navigateTo({ path: route.path, query: nextQuery });
+}
+
+async function changeConversationView(status: "ACTIVE" | "ARCHIVED") {
+  if (sending.value) return;
+  const nextQuery = { ...route.query };
+  delete nextQuery.conversationId;
+  if (status === "ARCHIVED") nextQuery.view = "archived";
+  else delete nextQuery.view;
+  await navigateTo({ path: route.path, query: nextQuery }, { replace: true });
+  await reload();
+}
+
+async function searchConversations() {
+  if (sending.value) return;
+  const term = conversationSearchDraft.value.trim().slice(0, 120);
+  const nextQuery = { ...route.query };
+  delete nextQuery.conversationId;
+  if (term) nextQuery.q = term;
+  else delete nextQuery.q;
+  await navigateTo({ path: route.path, query: nextQuery }, { replace: true });
+  await reload();
+}
+
+async function toggleConversationStatus(item: ConversationSummary) {
+  if (sending.value) return;
+  const nextStatus = conversationView.value === "ACTIVE" ? "ARCHIVED" : "ACTIVE";
+  if (nextStatus === "ARCHIVED") {
+    try {
+      await ElMessageBox.confirm(
+        "归档不会删除对话内容；之后可以从归档列表恢复。",
+        "归档会话",
+        { confirmButtonText: "确认归档", cancelButtonText: "取消", type: "warning" },
+      );
+    } catch {
+      return;
+    }
+  }
+
+  try {
+    await $fetch("/api/characters/" + encodeURIComponent(id.value) + "/chat/" + encodeURIComponent(item.id), {
+      method: "PATCH",
+      body: { status: nextStatus },
+    });
+    ElMessage.success(nextStatus === "ARCHIVED" ? "会话已归档，消息和来源记录均已保留。" : "会话已恢复。");
+    const nextQuery = { ...route.query };
+    delete nextQuery.conversationId;
+    await navigateTo({ path: route.path, query: nextQuery }, { replace: true });
+    await reload();
+  } catch (error) {
+    ElMessage.error(getErrorMessage(error, "更新会话状态失败。"));
+  }
+}
+
+function exportConversation() {
+  if (!messages.value.length) return;
+  const title = activeConversation.value?.title || "新对话";
+  const lines = [
+    "# " + title,
+    "",
+    "- 角色：" + (character.value?.name || "未知角色"),
+    "- 导出时间：" + new Date().toISOString(),
+    "",
+    "---",
+    "",
+  ];
+
+  for (const message of messages.value) {
+    lines.push("## " + (message.role === "USER" ? "用户" : (character.value?.name || "角色")));
+    lines.push("");
+    lines.push("发生时间：" + message.occurredAt);
+    lines.push("");
+    lines.push(message.content);
+    lines.push("");
+    const sources = messageSources(message);
+    if (sources.memories.length || sources.snapshots.length) {
+      lines.push("引用来源：");
+      for (const memory of sources.memories) lines.push("- 长期记忆（" + memory.category + "）：" + memory.content + " [ID: " + memory.id + "]");
+      for (const snapshot of sources.snapshots) {
+        lines.push("- 快照 v" + snapshot.version + "（" + snapshot.periodStart + " — " + snapshot.periodEnd + "）：" + snapshot.summary + " [ID: " + snapshot.id + "]");
+      }
+      lines.push("");
+    }
+  }
+
+  const safeName = title.replace(/[\\/:*?"<>|]/g, "_").slice(0, 60) || "对话记录";
+  const objectUrl = URL.createObjectURL(new Blob([lines.join("\n")], { type: "text/markdown;charset=utf-8" }));
+  const anchor = document.createElement("a");
+  anchor.href = objectUrl;
+  anchor.download = safeName + ".md";
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(objectUrl);
+  ElMessage.success("对话已导出为 Markdown，包含本次回复的可追溯记忆来源。");
 }
 
 function messageSources(message: ChatMessage) {
@@ -130,6 +237,10 @@ function messageSources(message: ChatMessage) {
 async function sendMessage() {
   const content = draft.value.trim();
   if (!content || sending.value) return;
+  if (conversationView.value === "ARCHIVED") {
+    ElMessage.info("归档会话为只读状态，请先恢复会话再继续发送消息。");
+    return;
+  }
   if (!modelConfigured.value) {
     ElMessage.warning("请先在项目根目录 .env 配置 LLM_API_KEY 和 LLM_MODEL，再重启开发服务器。");
     return;
@@ -191,21 +302,46 @@ onMounted(() => void reload());
 
     <div class="chat-layout" v-loading="loading">
       <aside class="surface conversation-sidebar">
-        <div class="sidebar-heading"><span>历史会话</span><el-tag type="info" effect="plain" size="small">{{ conversations.length }}</el-tag></div>
-        <button
-          v-for="item in conversations"
-          :key="item.id"
-          class="conversation-item"
-          :class="{ selected: item.id === conversationId }"
-          type="button"
-          @click="void openConversation(item)"
-        >
-          <span class="conversation-icon"><el-icon><ChatDotRound /></el-icon></span>
-          <span class="conversation-copy">
-            <strong>{{ item.title }}</strong>
-            <small>{{ formatTime(item.lastMessageAt) }} · {{ item.messageCount }} 条消息</small>
-          </span>
-        </button>
+        <div class="sidebar-heading">
+          <span>{{ conversationView === "ACTIVE" ? "历史会话" : "归档会话" }}</span>
+          <el-tag type="info" effect="plain" size="small">{{ conversations.length }}</el-tag>
+        </div>
+        <div class="conversation-filters">
+          <el-select v-model="conversationView" size="small" aria-label="会话状态" @change="changeConversationView">
+            <el-option label="正常会话" value="ACTIVE" />
+            <el-option label="归档会话" value="ARCHIVED" />
+          </el-select>
+          <el-input
+            v-model="conversationSearchDraft"
+            size="small"
+            clearable
+            maxlength="120"
+            placeholder="搜索标题或消息内容"
+            aria-label="搜索历史会话"
+            @keyup.enter="void searchConversations()"
+          >
+            <template #append>
+              <el-button aria-label="搜索会话" @click="void searchConversations()"><el-icon><Search /></el-icon></el-button>
+            </template>
+          </el-input>
+        </div>
+        <div v-for="item in conversations" :key="item.id" class="conversation-entry">
+          <button
+            class="conversation-item"
+            :class="{ selected: item.id === conversationId }"
+            type="button"
+            @click="void openConversation(item)"
+          >
+            <span class="conversation-icon"><el-icon><ChatDotRound /></el-icon></span>
+            <span class="conversation-copy">
+              <strong>{{ item.title }}</strong>
+              <small>{{ formatTime(item.lastMessageAt) }} · {{ item.messageCount }} 条消息</small>
+            </span>
+          </button>
+          <el-button text size="small" :disabled="sending" @click.stop="void toggleConversationStatus(item)">
+            {{ conversationView === "ACTIVE" ? "归档" : "恢复" }}
+          </el-button>
+        </div>
         <el-empty v-if="!conversations.length" description="还没有会话" :image-size="64" />
         <p class="sidebar-note">对话会保存到本地数据库；不同角色使用各自独立的记忆范围。</p>
       </aside>
@@ -216,7 +352,10 @@ onMounted(() => void reload());
             <strong>{{ activeConversation?.title || "新对话" }}</strong>
             <span>角色：{{ character?.name || "读取中" }}</span>
           </div>
-          <el-tag :type="modelConfigured ? 'success' : 'warning'" effect="plain">{{ modelConfigured ? "模型已配置" : "等待配置" }}</el-tag>
+          <div class="conversation-toolbar-actions">
+            <el-button size="small" :disabled="!messages.length" @click="exportConversation"><el-icon><Download /></el-icon>导出 Markdown</el-button>
+            <el-tag :type="modelConfigured ? 'success' : 'warning'" effect="plain">{{ modelConfigured ? "模型已配置" : "等待配置" }}</el-tag>
+          </div>
         </div>
 
         <div ref="messagePanel" class="message-list">
@@ -257,8 +396,17 @@ onMounted(() => void reload());
           <div v-if="sending" class="thinking-row"><span class="thinking-dot" /><span>角色正在结合相关记忆思考……</span></div>
         </div>
 
+        <el-alert
+          v-if="conversationView === 'ARCHIVED'"
+          title="当前是归档会话，只能查看和导出"
+          description="恢复该会话后才能继续发送消息。归档不会删除历史记录。"
+          type="info"
+          :closable="false"
+          show-icon
+        />
         <div class="composer">
           <el-input
+            :disabled="conversationView === 'ARCHIVED' || sending"
             v-model="draft"
             type="textarea"
             :rows="3"
@@ -268,8 +416,8 @@ onMounted(() => void reload());
             @keydown.ctrl.enter.prevent="void sendMessage()"
           />
           <div class="composer-footer">
-            <span><el-icon><Clock /></el-icon> 只使用匹配的长期记忆和历史快照；未匹配内容不会强行塞入上下文。</span>
-            <el-button type="primary" :loading="sending" :disabled="!draft.trim() || !modelConfigured" @click="void sendMessage()">
+            <span><el-icon><Clock /></el-icon> {{ conversationView === "ARCHIVED" ? "归档会话为只读；恢复后可以继续聊天。" : "只使用匹配的长期记忆和历史快照；未匹配内容不会强行塞入上下文。" }}</span>
+            <el-button type="primary" :loading="sending" :disabled="!draft.trim() || !modelConfigured || conversationView === 'ARCHIVED'" @click="void sendMessage()">
               <el-icon><Promotion /></el-icon>发送消息
             </el-button>
           </div>
@@ -284,7 +432,10 @@ onMounted(() => void reload());
 .chat-layout{display:grid;grid-template-columns:minmax(230px,290px) minmax(0,1fr);gap:16px;min-height:620px}
 .conversation-sidebar{padding:16px;align-self:stretch;min-width:0}
 .sidebar-heading{display:flex;align-items:center;justify-content:space-between;margin-bottom:13px;color:#46516b;font-size:12px;font-weight:800}
-.conversation-item{display:flex;align-items:flex-start;gap:10px;width:100%;padding:11px 9px;border:1px solid transparent;border-radius:11px;background:transparent;text-align:left;cursor:pointer;color:#53617b}
+.conversation-filters{display:flex;flex-direction:column;gap:8px;margin-bottom:10px}
+.conversation-entry{display:flex;align-items:center;gap:3px;min-width:0}
+.conversation-item{display:flex;align-items:flex-start;gap:10px;flex:1;min-width:0;width:100%;padding:11px 7px;border:1px solid transparent;border-radius:11px;background:transparent;text-align:left;cursor:pointer;color:#53617b}
+.conversation-toolbar-actions{display:flex;align-items:center;gap:8px;flex:0 0 auto}
 .conversation-item:hover{background:#fafaff}
 .conversation-item.selected{border-color:#e5e1ff;background:#f5f3ff}
 .conversation-icon{display:flex;align-items:center;justify-content:center;width:30px;height:30px;border-radius:9px;background:#f0eeff;color:#7466e6;flex:0 0 auto}
@@ -322,5 +473,5 @@ onMounted(() => void reload());
 .composer-footer{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:10px}
 .composer-footer span{display:flex;align-items:center;gap:5px;color:#9ca4b5;font-size:10px;line-height:1.7}
 @media(max-width:1000px){.chat-layout{grid-template-columns:220px minmax(0,1fr)}.message-list{max-height:none;min-height:380px}}
-@media(max-width:720px){.chat-layout{grid-template-columns:1fr}.conversation-sidebar{order:2}.message-list{max-height:none;padding:16px}.composer-footer{align-items:flex-start;flex-direction:column}.page-wrap{padding:20px 15px 32px}}
+@media(max-width:720px){.chat-layout{grid-template-columns:1fr}.conversation-sidebar{order:2}.message-list{max-height:none;padding:16px}.composer-footer{align-items:flex-start;flex-direction:column}.conversation-toolbar{align-items:flex-start;flex-direction:column}.conversation-toolbar-actions{width:100%;justify-content:space-between}.page-wrap{padding:20px 15px 32px}}
 </style>
