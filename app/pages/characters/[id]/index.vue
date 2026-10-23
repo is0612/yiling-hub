@@ -1,13 +1,19 @@
 <script setup lang="ts">
 import { ArrowRight, Cpu, Calendar, Files, Search, Setting, MagicStick } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
-import { initialCharacters, initialTimeline, type Character, type Snapshot, type TimelineType } from "~/utils/mock-data";
+import { initialCharacters, type Character, type Snapshot, type TimelineEntry, type TimelineType } from "~/utils/mock-data";
 
 const route = useRoute();
 const id = computed(() => String(route.params.id || ""));
 const currentCharacter = ref<Character | null>(null);
 const snapshots = ref<Snapshot[]>([]);
 const snapshotCreating = ref(false);
+const timelineEntries = ref<TimelineEntry[]>([]);
+const timelineLoading = ref(false);
+const recordedMessageCount = computed(() => timelineEntries.value.filter((entry) => entry.type === "message").length);
+const recordedEventCount = computed(() => timelineEntries.value.filter((entry) => entry.type === "event").length);
+const commitmentCount = computed(() => timelineEntries.value.filter((entry) => entry.type === "memory" && entry.tag === "承诺与约定").length);
+const channelOptions = computed(() => [...new Set(timelineEntries.value.map((entry) => entry.channel).filter((channel) => channel !== "全部渠道"))].sort());
 const character = computed(() => currentCharacter.value || {
   ...initialCharacters[0], id: id.value, name: "角色加载中", alias: "数据库档案",
   description: "正在读取角色数据。", status: "已暂停" as const,
@@ -28,13 +34,25 @@ const filterOptions = [
 ];
 const filteredEntries = computed(() => {
   const type = filterOptions.find((option) => option.label === activeFilter.value)?.type;
-  return initialTimeline.filter((entry) => {
+  return timelineEntries.value.filter((entry) => {
     const typeMatches = !type || entry.type === type;
     const channelMatches = channelFilter.value === "全部渠道" || entry.channel === channelFilter.value || entry.channel === "全部渠道";
     const textMatches = !query.value || `${entry.title} ${entry.summary} ${entry.source}`.toLowerCase().includes(query.value.toLowerCase());
     return typeMatches && channelMatches && textMatches;
   });
 });
+
+async function loadTimeline() {
+  timelineLoading.value = true;
+  try {
+    timelineEntries.value = await $fetch<TimelineEntry[]>(`/api/characters/${encodeURIComponent(id.value)}/timeline`);
+  } catch {
+    timelineEntries.value = [];
+    ElMessage.error("记忆时间线读取失败，请检查本地开发服务器日志。");
+  } finally {
+    timelineLoading.value = false;
+  }
+}
 
 async function loadSnapshots() {
   try {
@@ -48,10 +66,11 @@ async function loadSnapshots() {
 async function loadCharacter() {
   try {
     currentCharacter.value = await $fetch<Character>(`/api/characters/${encodeURIComponent(id.value)}`);
-    await loadSnapshots();
+    await Promise.all([loadSnapshots(), loadTimeline()]);
   } catch {
     currentCharacter.value = null;
     snapshots.value = [];
+    timelineEntries.value = [];
     ElMessage.error("加载角色失败，请确认角色仍存在且本地数据库已初始化。");
   }
 }
@@ -94,7 +113,7 @@ async function manualSnapshot() {
   snapshotCreating.value = true;
   try {
     await $fetch(`/api/characters/${encodeURIComponent(id.value)}/snapshots`, { method: "POST" });
-    await loadSnapshots();
+    await Promise.all([loadSnapshots(), loadTimeline()]);
     ElMessage.success("快照已保存到数据库。当前仅归档已保存的长期记忆条目，尚未调用大模型。");
   } catch (error) {
     const message = error && typeof error === "object" && "statusMessage" in error
@@ -119,7 +138,7 @@ watch(id, () => void loadCharacter());
     <div class="info-callout" style="margin-bottom:20px">
       <div class="avatar" style="width:34px;height:34px;border-radius:10px">{{ character.avatar }}</div>
       <div style="flex:1"><strong style="color:#5f5b99">正在查看角色：{{ character.name }}</strong><div>快照周期 {{ character.intervalDays }} 天 · 记忆条目 {{ character.memoryCount }} 条</div></div>
-      <span class="pill pill-green"><i class="env-dot" />近期事件仍为示例数据</span>
+      <span class="pill pill-gray"><i class="env-dot" />仅展示已保存的数据库记录</span>
     </div>
 
     <div class="cockpit-grid">
@@ -134,7 +153,7 @@ watch(id, () => void loadCharacter());
         <div class="metric-row"><span>归档周期</span><span class="metric-value">{{ character.intervalDays }} 天</span></div>
         <div class="metric-row"><span>最近快照</span><span class="metric-value">{{ character.latestSnapshot }}</span></div>
         <div class="metric-row"><span>绑定渠道</span><span class="metric-value">{{ character.channels.length || 0 }} 个</span></div>
-        <div class="section-content"><SectionTitle title="快捷操作" description="角色档案已接入数据库；记忆事件仍为演示数据" /></div>
+        <div class="section-content"><SectionTitle title="快捷操作" description="角色档案、快照与时间线已读取数据库中存在的记录" /></div>
         <div class="quick-actions">
           <el-button style="width:100%" plain @click="navigateTo('/characters/' + character.id + '/settings/memory')"><el-icon><Calendar /></el-icon>记忆周期设置</el-button>
           <el-button style="width:100%" plain @click="navigateTo('/characters/' + character.id + '/snapshots')"><el-icon><Files /></el-icon>查看全部快照</el-button>
@@ -142,15 +161,16 @@ watch(id, () => void loadCharacter());
       </aside>
 
       <section class="surface panel timeline-panel">
-        <SectionTitle title="角色记忆时间线" description="对话、事件与记忆变化的统一视图" />
+        <SectionTitle title="角色记忆时间线" description="显示数据库中已保存的对话、长期记忆、事件与快照记录" />
         <div class="timeline-filters">
           <el-input v-model="query" clearable placeholder="搜索时间线内容……" style="min-width:170px;flex:1"><template #prefix><el-icon><Search /></el-icon></template></el-input>
-          <el-select v-model="channelFilter" style="width:136px"><el-option label="全部渠道" value="全部渠道" /><el-option label="QQ" value="QQ" /><el-option label="B站" value="B站" /></el-select>
+          <el-select v-model="channelFilter" style="width:136px"><el-option label="全部渠道" value="全部渠道" /><el-option v-for="channel in channelOptions" :key="channel" :label="channel" :value="channel" /></el-select>
         </div>
         <el-tabs v-model="activeFilter" class="memory-tabs">
           <el-tab-pane v-for="option in filterOptions" :key="option.label" :label="option.label" :name="option.label" />
         </el-tabs>
         <div class="timeline">
+          <div v-if="timelineLoading" class="empty-state">正在加载已保存的时间线记录……</div>
           <article v-for="entry in filteredEntries" :key="entry.id" class="timeline-item">
             <div class="timeline-marker" :class="toneFor(entry.tagTone)">{{ markerFor(entry.type) }}</div>
             <div class="timeline-content">
@@ -159,17 +179,17 @@ watch(id, () => void loadCharacter());
               <div class="timeline-meta"><span class="pill" :class="toneFor(entry.tagTone)">{{ entry.tag }}</span><span>{{ entry.channel }}</span><span>{{ entry.source }}</span></div>
             </div>
           </article>
-          <div v-if="!filteredEntries.length" class="empty-state">没有匹配的时间线记录，试试修改筛选条件。</div>
+          <div v-else-if="!filteredEntries.length" class="empty-state">{{ timelineEntries.length ? "没有匹配的时间线记录，试试修改筛选条件。" : "暂无已保存的时间线记录。接入聊天消息或保存长期记忆后，这里会显示对应记录；生成的快照也会显示在这里。" }}</div>
         </div>
       </section>
 
       <aside class="surface panel snapshot-side">
         <SectionTitle title="记忆状态" description="当前角色的阶段归档概况" />
-        <div class="memory-score"><div class="memory-score-ring"><span>87%</span></div><div><strong>记忆周期进度</strong><p>下一次归档预计 {{ character.nextSnapshot }}</p></div></div>
+        <div class="memory-score"><div class="memory-score-ring"><span>—</span></div><div><strong>自动归档状态</strong><p>自动周期调度将在后续阶段接入</p></div></div>
         <el-divider />
-        <div class="metric-row"><span>当前周期消息</span><span class="metric-value">46 条</span></div>
-        <div class="metric-row"><span>重要事件</span><span class="metric-value">5 项</span></div>
-        <div class="metric-row"><span>待跟进承诺</span><span class="metric-value">2 项</span></div>
+        <div class="metric-row"><span>已记录对话消息</span><span class="metric-value">{{ recordedMessageCount }} 条</span></div>
+        <div class="metric-row"><span>已记录平台事件</span><span class="metric-value">{{ recordedEventCount }} 项</span></div>
+        <div class="metric-row"><span>承诺与约定</span><span class="metric-value">{{ commitmentCount }} 项</span></div>
         <div class="section-content"><SectionTitle title="最近快照" description="保留版本以便回溯" /></div>
         <div v-for="snapshot in snapshots.slice(0,2)" :key="snapshot.id" class="recent-snapshot">
           <div class="recent-snapshot-top"><span>第 {{ snapshot.number }} 份快照</span><span class="muted-note">v{{ snapshot.version }}</span></div>
@@ -184,7 +204,7 @@ watch(id, () => void loadCharacter());
       <el-form label-position="top">
         <el-form-item label="角色名称"><el-input v-model="draftName" maxlength="40" /></el-form-item>
         <el-form-item label="基础人设"><el-input v-model="draftPersonality" type="textarea" :rows="5" /></el-form-item>
-        <div class="info-callout"><el-icon><Cpu /></el-icon><span>角色名称与基础人设会写入本地数据库；记忆时间线和审计记录尚未接入真实数据。</span></div>
+        <div class="info-callout"><el-icon><Cpu /></el-icon><span>角色资料会写入本地数据库。聊天渠道导入和真实模型生成仍未接入，时间线只展示已经保存的记录。</span></div>
       </el-form>
       <template #footer><el-button @click="editOpen = false">取消</el-button><el-button type="primary" @click="saveProfile">保存修改</el-button></template>
     </el-dialog>
