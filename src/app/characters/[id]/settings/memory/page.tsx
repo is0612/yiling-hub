@@ -10,7 +10,21 @@ import { Badge, DemoLabel, PageHeader } from "@/components/ui";
 export default function MemorySettingsPage() {
   const params = useParams<{ id: string }>();
   const id = params?.id || "big-fish";
-  const character = characters.find((item) => item.id === id) || characters[0];
+  const foundCharacter = characters.find((item) => item.id === id);
+  const character = foundCharacter || (id.startsWith("demo-") ? {
+    ...characters[0],
+    id,
+    name: "新建角色",
+    alias: "演示角色",
+    description: "这是在角色列表中临时创建的演示档案。刷新后会恢复示例数据。",
+    avatar: "新",
+    status: "已暂停" as const,
+    channels: [],
+    intervalDays: 8,
+    nextSnapshot: "尚未启用",
+    memoryCount: 0,
+    latestSnapshot: "暂无快照",
+  } : characters[0]);
   const [interval, setInterval] = useState(String(character.intervalDays));
   const [timezone, setTimezone] = useState("Asia/Shanghai");
   const [anchor, setAnchor] = useState("2026-10-21T09:00");
