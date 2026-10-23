@@ -9,6 +9,7 @@ type MemorySettings = {
   anchorAt: string;
   rawMessageRetentionDays: number;
   autoSnapshotEnabled: boolean;
+  changePolicy: "NEXT_CYCLE" | "IMMEDIATE_RECALC";
   nextSnapshotAt: string | null;
   updatedAt: string;
 };
@@ -67,6 +68,7 @@ async function loadSettings() {
     anchor.value = formatAnchor(settings.anchorAt, settings.timezone);
     retention.value = settings.rawMessageRetentionDays;
     autoSnapshot.value = settings.autoSnapshotEnabled;
+    effectivePolicy.value = settings.changePolicy === "IMMEDIATE_RECALC" ? "立即重算" : "下一个周期生效";
   } catch (error) {
     const message = error && typeof error === "object" && "statusMessage" in error
       ? String(error.statusMessage)
@@ -89,10 +91,12 @@ async function saveSettings() {
         anchorAt,
         rawMessageRetentionDays: retention.value,
         autoSnapshotEnabled: autoSnapshot.value,
+        changePolicy: effectivePolicy.value === "立即重算" ? "IMMEDIATE_RECALC" : "NEXT_CYCLE",
       },
     });
     interval.value = saved.snapshotIntervalDays;
     anchor.value = formatAnchor(saved.anchorAt, saved.timezone);
+    effectivePolicy.value = saved.changePolicy === "IMMEDIATE_RECALC" ? "立即重算" : "下一个周期生效";
     ElMessage.success("记忆周期设置已保存到本地数据库。");
   } catch (error) {
     const message = error && typeof error === "object" && "statusMessage" in error
