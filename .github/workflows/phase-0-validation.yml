@@ -5,6 +5,7 @@ on:
     paths:
       - "prisma/**"
       - "prisma.config.ts"
+      - "docs/openapi.yaml"
       - "package.json"
       - ".github/workflows/phase-0-validation.yml"
   push:
@@ -34,3 +35,6 @@ jobs:
 
       - name: Validate Prisma schema
         run: npm run db:validate
+
+      - name: Lint OpenAPI contract
+        run: npx --yes @redocly/cli@latest lint --extends=minimal docs/openapi.yaml
