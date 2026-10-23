@@ -91,8 +91,9 @@
 
 ## 7. 技术选型
 
-- 前端与 API：Next.js App Router + TypeScript
-- UI：Tailwind CSS + shadcn/ui
+- 前端与服务端入口：Vue 3 + Nuxt 4 + TypeScript
+- UI：Element Plus（通过官方 Nuxt 模块集成）
+- 开发服务器与生产构建：Vite（Nuxt 默认使用）
 - 数据库：PostgreSQL
 - ORM/迁移：Prisma ORM 7；数据库连接配置在 `prisma.config.ts`，PostgreSQL 使用 `@prisma/adapter-pg` 与 `pg`
 - 本地依赖：Docker Compose
