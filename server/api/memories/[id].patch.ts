@@ -1,6 +1,6 @@
 import { createError, getRouterParam, readBody } from "h3";
-import { requireLocalDevOwner, requireUuid, readTrimmedString } from "../../../utils/local-api";
-import { getPrisma } from "../../../utils/prisma";
+import { requireLocalDevOwner, requireUuid, readTrimmedString } from "../../utils/local-api";
+import { getPrisma } from "../../utils/prisma";
 
 const memoryCategories = [
   "FACT",
