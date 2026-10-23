@@ -268,4 +268,19 @@ assert(tracedAiMemory.sourceSnapshotId === aiSnapshot.id && tracedAiMemory.sourc
 const latestList = await request("/api/characters");
 assert(latestList.some((character) => character.id === created.id && character.name === edited.name), "Character changes did not appear in the list.");
 
-console.log("Local API smoke test passed: character CRUD, memory settings, transcript import, scheduler backfill, local-mock AI extraction, source-ID validation, persisted snapshot/memory provenance, snapshot versions, and recycle-bin lifecycle.");
+const chatReply = await request("/api/characters/" + created.id + "/chat", {
+  method: "POST",
+  body: { message: "请回忆一下历史周期用户消息 " + unique },
+});
+assert(typeof chatReply.conversationId === "string", "AI chat should persist a conversation.");
+assert(chatReply.assistantMessage?.content?.includes("CI 模拟模型回复"), "Chat API should return the local mock model response.");
+assert(Array.isArray(chatReply.assistantMessage?.sources?.memories), "Chat reply should expose validated memory source references.");
+assert(chatReply.assistantMessage.sources.memories.length <= chatReply.retrieval.memoriesAvailable, "The chat should not cite more memory items than were retrieved.");
+assert(chatReply.assistantMessage.sources.snapshots.length <= chatReply.retrieval.snapshotsAvailable, "The chat should not cite more snapshots than were retrieved.");
+const chatHistory = await request("/api/characters/" + created.id + "/chat?conversationId=" + chatReply.conversationId);
+assert(chatHistory.selectedConversationId === chatReply.conversationId, "GET chat should reopen the selected conversation.");
+assert(chatHistory.messages.length === 2, "A new chat should persist one user message and one assistant reply.");
+assert(chatHistory.messages[0].role === "USER" && chatHistory.messages[1].role === "ASSISTANT", "Persisted chat messages should keep their speaker roles.");
+assert(chatHistory.messages[1].content === chatReply.assistantMessage.content, "Reopened chat should preserve the assistant reply.");
+
+console.log("Local API smoke test passed: character CRUD, memory settings, transcript import, scheduler backfill, local-mock AI extraction, source-ID validation, persisted snapshot/memory provenance, snapshot versions, recycle-bin lifecycle, and context-aware AI chat.");
