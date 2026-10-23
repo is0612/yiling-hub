@@ -5,6 +5,11 @@ on:
     paths:
       - "prisma/**"
       - "prisma.config.ts"
+      - "src/**"
+      - "eslint.config.mjs"
+      - "next.config.ts"
+      - "postcss.config.mjs"
+      - "tsconfig.json"
       - "docs/openapi.yaml"
       - "package.json"
       - ".github/workflows/phase-0-validation.yml"
@@ -36,6 +41,15 @@ jobs:
 
       - name: Validate Prisma schema
         run: npm run db:validate
+
+      - name: Check TypeScript
+        run: npm run typecheck
+
+      - name: Run ESLint
+        run: npm run lint
+
+      - name: Build Next.js application
+        run: npm run build
 
       - name: Lint OpenAPI contract
         run: npx --yes @redocly/cli@latest lint --extends=minimal docs/openapi.yaml
