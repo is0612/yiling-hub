@@ -18,6 +18,10 @@ function retry(task: DemoTask) {
   task.time = "刚刚加入演示队列";
   ElMessage.info("已更改为演示等待状态；当前没有真实 Worker 执行任务。");
 }
+function retryFromTable(row: unknown) {
+  if (!row || typeof row !== "object" || !("id" in row)) return;
+  retry(row as DemoTask);
+}
 function tone(status: string) {
   const values: Record<string, "success" | "warning" | "danger" | "info"> = {
     成功: "success", 等待执行: "warning", 失败待重试: "danger", 跳过: "info", 运行中: "info",
@@ -57,7 +61,7 @@ function tone(status: string) {
         <el-table-column label="重试次数" width="100" align="center"><template #default="{ row }">{{ row.tries }}</template></el-table-column>
         <el-table-column prop="time" label="最近活动" min-width="150" />
         <el-table-column label="操作" width="100" fixed="right">
-          <template #default="{ row }"><el-button v-if="row.status === '失败待重试'" text type="primary" @click="retry(row)">重试</el-button><el-button v-else text @click="ElMessage.info('任务详情接口尚未实现。')">详情</el-button></template>
+          <template #default="{ row }"><el-button v-if="row.status === '失败待重试'" text type="primary" @click="retryFromTable(row)">重试</el-button><el-button v-else text @click="ElMessage.info('任务详情接口尚未实现。')">详情</el-button></template>
         </el-table-column>
         <template #empty><div class="empty-state">没有符合条件的任务。</div></template>
       </el-table>
