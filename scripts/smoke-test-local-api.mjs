@@ -35,6 +35,7 @@ async function waitForServer() {
       const response = await fetch(new URL("/api/characters", baseUrl));
       if (response.status === 200) return;
       lastError = `API returned HTTP ${response.status}: ${await response.text()}`;
+      if (response.status === 403) throw new Error(lastError);
     } catch (error) {
       lastError = error instanceof Error ? error.message : String(error);
     }
