@@ -2,7 +2,7 @@
 
 一个用于管理多角色 AI、周期性记忆快照和长期记忆的项目。
 
-> 当前状态：项目规划与开发准备阶段。此仓库目前先建立产品和工程规范；不要把文档中的计划误认为功能已经实现。
+> 当前状态：项目基础规范、数据库模型和管理后台 Mock 原型已建立。页面交互仍为演示状态，不代表真实 API、数据库持久化、认证或后台任务已经实现。
 
 ## 从哪里开始
 
@@ -28,8 +28,9 @@
 
 ## 当前约定
 
-- 前端与 API：Next.js App Router + TypeScript
-- UI：Tailwind CSS + shadcn/ui
+- 前端与服务端入口：Vue 3 + Nuxt 4 + TypeScript
+- UI：Element Plus（通过官方 Nuxt 模块集成）
+- 开发服务器与生产构建：Vite（Nuxt 默认使用，无需另建独立 Vite 应用）
 - 数据库：PostgreSQL
 - ORM：Prisma
 - 本地容器：Docker Compose
