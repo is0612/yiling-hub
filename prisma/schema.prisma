@@ -92,6 +92,11 @@ enum SnapshotSourceType {
   EXTERNAL_REFERENCE
 }
 
+enum MemorySettingsChangePolicy {
+  NEXT_CYCLE
+  IMMEDIATE_RECALC
+}
+
 enum MemoryJobType {
   GENERATE_SNAPSHOT
   REGENERATE_SNAPSHOT
@@ -355,6 +360,7 @@ model CharacterMemorySetting {
   anchorAt               DateTime  @default(now()) @db.Timestamptz(6)
   nextSnapshotAt         DateTime? @db.Timestamptz(6)
   autoSnapshotEnabled    Boolean   @default(true)
+  changePolicy           MemorySettingsChangePolicy @default(NEXT_CYCLE)
   rawMessageRetentionDays Int?
   createdAt              DateTime  @default(now()) @db.Timestamptz(6)
   updatedAt              DateTime  @updatedAt @db.Timestamptz(6)
