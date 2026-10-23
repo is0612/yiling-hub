@@ -16,7 +16,7 @@ export function requireLocalDevOwner(event: Parameters<typeof getHeader>[0]): st
   const hostHeader = (getHeader(event, "host") ?? "").toLowerCase();
   const hostname = hostHeader.startsWith("[")
     ? hostHeader.slice(1, hostHeader.indexOf("]"))
-    : hostHeader.split(":")[0];
+    : (hostHeader.split(":")[0] ?? "");
 
   if (
     process.env.NODE_ENV !== "development" ||
