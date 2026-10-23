@@ -569,6 +569,32 @@ paths:
                   deletedAt: { type: string, nullable: true, format: date-time }
                   createdAt: { type: string, format: date-time }
                   updatedAt: { type: string, format: date-time }
+                  sourceMessageId: { type: string, format: uuid, nullable: true }
+                  sourceSnapshotId: { type: string, format: uuid, nullable: true }
+                  sourceMessage:
+                    type: object
+                    nullable: true
+                    properties:
+                      id: { type: string, format: uuid }
+                      role: { type: string, enum: [SYSTEM, USER, ASSISTANT, TOOL] }
+                      eventType: { type: string }
+                      content: { type: string }
+                      occurredAt: { type: string, format: date-time }
+                      conversation:
+                        type: object
+                        properties:
+                          id: { type: string, format: uuid }
+                          title: { type: string, nullable: true }
+                  sourceSnapshot:
+                    type: object
+                    nullable: true
+                    properties:
+                      id: { type: string, format: uuid }
+                      summary: { type: string }
+                      periodStart: { type: string, format: date-time }
+                      periodEnd: { type: string, format: date-time }
+                      version: { type: integer, minimum: 1 }
+                      status: { type: string, enum: [CURRENT, SUPERSEDED] }
         '403':
           description: 该接口仅限本地开发环境
         '404':
