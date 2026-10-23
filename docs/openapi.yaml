@@ -1,0 +1,736 @@
+openapi: 3.0.3
+info:
+  title: Yiling Hub API
+  version: 0.1.0
+  description: |
+    多角色 AI 养成中枢的初始接口契约。
+    当前定义用于前后端协作和 Mock；只有实际实现并测试后，接口才算可用。
+servers:
+  - url: /api
+    description: 当前部署的同源 API
+tags:
+  - name: Auth
+  - name: Characters
+  - name: Memories
+  - name: Snapshots
+  - name: MemorySettings
+  - name: Tasks
+  - name: Channels
+security:
+  - sessionCookie: []
+paths:
+  /auth/session:
+    get:
+      tags: [Auth]
+      summary: 获取当前管理员会话状态
+      security: []
+      responses:
+        '200':
+          description: 会话状态
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionResponse'
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: 管理员登录
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string }
+                password: { type: string, format: password }
+      responses:
+        '200':
+          description: 登录成功，服务端设置会话 Cookie
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: 退出登录
+      responses:
+        '204':
+          description: 已退出并清除会话
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /characters:
+    get:
+      tags: [Characters]
+      summary: 获取角色列表
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: q
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: 角色分页列表
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          items:
+                            type: array
+                            items: { $ref: '#/components/schemas/Character' }
+                          page: { type: integer }
+                          pageSize: { type: integer }
+                          total: { type: integer }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Characters]
+      summary: 创建角色
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CharacterInput'
+      responses:
+        '201':
+          description: 创建成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Character' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /characters/{characterId}:
+    parameters:
+      - $ref: '#/components/parameters/CharacterId'
+    get:
+      tags: [Characters]
+      summary: 获取角色详情
+      responses:
+        '200':
+          description: 角色详情
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Character' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Characters]
+      summary: 更新角色
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CharacterInput'
+      responses:
+        '200':
+          description: 更新成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Character' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Characters]
+      summary: 删除角色（实现时必须使用明确的删除/归档策略）
+      responses:
+        '204':
+          description: 删除或归档完成
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /characters/{characterId}/memories:
+    parameters:
+      - $ref: '#/components/parameters/CharacterId'
+    get:
+      tags: [Memories]
+      summary: 获取长期记忆列表
+      parameters:
+        - name: q
+          in: query
+          schema: { type: string }
+        - name: category
+          in: query
+          schema: { type: string }
+        - name: scopeId
+          in: query
+          schema: { type: string, format: uuid }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: 记忆列表
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          items:
+                            type: array
+                            items: { $ref: '#/components/schemas/MemoryItem' }
+                          page: { type: integer }
+                          pageSize: { type: integer }
+                          total: { type: integer }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Memories]
+      summary: 手动创建长期记忆
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content, category]
+              properties:
+                content: { type: string, minLength: 1 }
+                category: { type: string }
+                scopeId: { type: string, format: uuid }
+      responses:
+        '201':
+          description: 已创建
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/MemoryItem' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /memories/{memoryId}:
+    parameters:
+      - name: memoryId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      tags: [Memories]
+      summary: 更新长期记忆
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                content: { type: string, minLength: 1 }
+                category: { type: string }
+                status: { type: string, enum: [active, superseded, archived] }
+      responses:
+        '200':
+          description: 已更新
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/MemoryItem' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Memories]
+      summary: 删除长期记忆（需检查来源与删除策略）
+      responses:
+        '204':
+          description: 已删除
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /characters/{characterId}/snapshots:
+    parameters:
+      - $ref: '#/components/parameters/CharacterId'
+    get:
+      tags: [Snapshots]
+      summary: 获取快照列表
+      parameters:
+        - name: scopeId
+          in: query
+          schema: { type: string, format: uuid }
+        - name: status
+          in: query
+          schema: { type: string }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: 快照分页列表
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          items:
+                            type: array
+                            items: { $ref: '#/components/schemas/MemorySnapshot' }
+                          page: { type: integer }
+                          pageSize: { type: integer }
+                          total: { type: integer }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Snapshots]
+      summary: 请求生成手动快照
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [scopeId, periodStart, periodEnd]
+              properties:
+                scopeId: { type: string, format: uuid }
+                periodStart: { type: string, format: date-time }
+                periodEnd: { type: string, format: date-time }
+      responses:
+        '202':
+          description: 快照任务已排队，自动计划不应被重置
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          taskId: { type: string, format: uuid }
+                          status: { type: string, enum: [queued] }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /snapshots/{snapshotId}:
+    parameters:
+      - name: snapshotId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [Snapshots]
+      summary: 获取快照版本详情
+      responses:
+        '200':
+          description: 快照详情
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/MemorySnapshot' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /snapshots/{snapshotId}/regenerate:
+    post:
+      tags: [Snapshots]
+      summary: 为相同逻辑快照请求生成新版本
+      parameters:
+        - name: snapshotId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '202':
+          description: 新版本生成任务已排队；历史版本保留
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /snapshots/{snapshotId}/versions:
+    get:
+      tags: [Snapshots]
+      summary: 获取逻辑快照的所有版本
+      parameters:
+        - name: snapshotId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: 版本列表
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/MemorySnapshot' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /characters/{characterId}/memory-settings:
+    parameters:
+      - $ref: '#/components/parameters/CharacterId'
+    get:
+      tags: [MemorySettings]
+      summary: 获取角色记忆设置
+      responses:
+        '200':
+          description: 设置详情
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/MemorySettings' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    put:
+      tags: [MemorySettings]
+      summary: 更新角色记忆周期和相关设置
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MemorySettings'
+      responses:
+        '200':
+          description: 设置已更新；周期默认于当前周期结束后生效
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/MemorySettings' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /tasks:
+    get:
+      tags: [Tasks]
+      summary: 查询后台任务
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string }
+        - name: characterId
+          in: query
+          schema: { type: string, format: uuid }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: 任务分页列表
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          items:
+                            type: array
+                            items: { $ref: '#/components/schemas/MemoryJob' }
+                          page: { type: integer }
+                          pageSize: { type: integer }
+                          total: { type: integer }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /tasks/{taskId}:
+    parameters:
+      - name: taskId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [Tasks]
+      summary: 获取任务详情
+      responses:
+        '200':
+          description: 任务详情
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/MemoryJob' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /tasks/{taskId}/retry:
+    post:
+      tags: [Tasks]
+      summary: 重新排队失败任务
+      parameters:
+        - name: taskId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '202':
+          description: 重试任务已排队
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /channels:
+    get:
+      tags: [Channels]
+      summary: 获取已配置的平台连接
+      responses:
+        '200':
+          description: 渠道列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /characters/{characterId}/channels:
+    parameters:
+      - $ref: '#/components/parameters/CharacterId'
+    get:
+      tags: [Channels]
+      summary: 获取角色绑定的渠道
+      responses:
+        '200':
+          description: 绑定列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: __Host-yiling_session
+  parameters:
+    CharacterId:
+      name: characterId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    Page:
+      name: page
+      in: query
+      schema: { type: integer, minimum: 1, default: 1 }
+    PageSize:
+      name: pageSize
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+  responses:
+    Unauthorized:
+      description: 未登录或会话无效
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    BadRequest:
+      description: 请求参数或请求体无效
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    NotFound:
+      description: 资源不存在或当前会话无权访问
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+  schemas:
+    ApiResponse:
+      type: object
+      required: [data, error]
+      properties:
+        data: {}
+        error:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/ApiError'
+    ErrorResponse:
+      type: object
+      required: [data, error]
+      properties:
+        data:
+          nullable: true
+        error:
+          $ref: '#/components/schemas/ApiError'
+    ApiError:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string }
+        message: { type: string }
+        details:
+          type: object
+          additionalProperties: true
+    SessionResponse:
+      allOf:
+        - $ref: '#/components/schemas/ApiResponse'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                authenticated: { type: boolean }
+                username: { type: string, nullable: true }
+    CharacterInput:
+      type: object
+      required: [name, basePrompt]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 100 }
+        avatar: { type: string, nullable: true }
+        basePrompt: { type: string, maxLength: 50000 }
+        modelConfig:
+          type: object
+          additionalProperties: true
+        status: { type: string, enum: [active, paused, archived] }
+    Character:
+      allOf:
+        - $ref: '#/components/schemas/CharacterInput'
+        - type: object
+          required: [id, createdAt, updatedAt]
+          properties:
+            id: { type: string, format: uuid }
+            createdAt: { type: string, format: date-time }
+            updatedAt: { type: string, format: date-time }
+    MemoryItem:
+      type: object
+      required: [id, category, content, status, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        scopeId: { type: string, format: uuid }
+        category: { type: string }
+        content: { type: string }
+        confidence: { type: number, minimum: 0, maximum: 1, nullable: true }
+        status: { type: string, enum: [active, superseded, archived] }
+        sourceMessageId: { type: string, format: uuid, nullable: true }
+        validFrom: { type: string, format: date-time, nullable: true }
+        validTo: { type: string, format: date-time, nullable: true }
+        createdAt: { type: string, format: date-time }
+    MemorySnapshot:
+      type: object
+      required: [id, version, periodStart, periodEnd, summary, status, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        snapshotKey: { type: string }
+        scopeId: { type: string, format: uuid }
+        kind: { type: string, enum: [automatic, manual] }
+        version: { type: integer, minimum: 1 }
+        periodStart: { type: string, format: date-time }
+        periodEnd: { type: string, format: date-time }
+        summary: { type: string }
+        structuredContent:
+          type: object
+          properties:
+            importantEvents: { type: array, items: { type: object, additionalProperties: true } }
+            factsAndPreferences: { type: array, items: { type: object, additionalProperties: true } }
+            relationships: { type: array, items: { type: object, additionalProperties: true } }
+            commitmentsAndGoals: { type: array, items: { type: object, additionalProperties: true } }
+            unresolvedTopics: { type: array, items: { type: object, additionalProperties: true } }
+            changesSincePrevious: { type: array, items: { type: object, additionalProperties: true } }
+        status: { type: string, enum: [current, superseded, failed] }
+        modelMetadata: { type: object, additionalProperties: true }
+        createdAt: { type: string, format: date-time }
+    MemorySettings:
+      type: object
+      required: [snapshotIntervalDays, timezone, autoSnapshotEnabled]
+      properties:
+        snapshotIntervalDays: { type: integer, minimum: 1, maximum: 365, default: 8 }
+        timezone: { type: string, example: Asia/Shanghai }
+        anchorAt: { type: string, format: date-time, nullable: true }
+        nextSnapshotAt: { type: string, format: date-time, nullable: true, readOnly: true }
+        rawMessageRetentionDays: { type: integer, minimum: 1, nullable: true }
+        autoSnapshotEnabled: { type: boolean, default: true }
+    MemoryJob:
+      type: object
+      required: [id, type, status, attemptCount, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        type: { type: string }
+        characterId: { type: string, format: uuid }
+        scopeId: { type: string, format: uuid }
+        periodStart: { type: string, format: date-time, nullable: true }
+        periodEnd: { type: string, format: date-time, nullable: true }
+        status: { type: string, enum: [queued, running, succeeded, failed, skipped, retry_wait] }
+        attemptCount: { type: integer, minimum: 0 }
+        lastError: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
