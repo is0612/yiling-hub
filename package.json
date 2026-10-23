@@ -3,46 +3,39 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "engines": {
-    "node": ">=20.19.0"
-  },
+  "engines": { "node": ">=20.19.0" },
   "scripts": {
+    "postinstall": "nuxt prepare",
     "db:format": "prisma format",
     "db:validate": "prisma validate",
     "db:generate": "prisma generate",
     "db:migrate:dev": "prisma migrate dev",
     "db:migrate:deploy": "prisma migrate deploy",
     "db:studio": "prisma studio",
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
-    "lint": "eslint .",
-    "typecheck": "tsc --noEmit"
+    "dev": "nuxt dev",
+    "build": "nuxt build",
+    "start": "node .output/server/index.mjs",
+    "preview": "nuxt preview",
+    "lint": "eslint app nuxt.config.ts prisma.config.ts",
+    "typecheck": "nuxt typecheck"
   },
   "dependencies": {
+    "@element-plus/icons-vue": "^2.3.1",
+    "@prisma/adapter-pg": "^7.0.0",
     "@prisma/client": "^7.0.0",
     "dotenv": "^17.0.0",
-    "@prisma/adapter-pg": "^7.0.0",
-    "pg": "^8.16.3",
-    "next": "^16.0.0",
-    "react": "^19.2.0",
-    "react-dom": "^19.2.0",
-    "lucide-react": "^0.468.0",
-    "class-variance-authority": "^0.7.1",
-    "clsx": "^2.1.1",
-    "tailwind-merge": "^3.3.1"
+    "element-plus": "^2.11.0",
+    "nuxt": "^4.0.0",
+    "pg": "^8.16.3"
   },
   "devDependencies": {
-    "prisma": "^7.0.0",
-    "@tailwindcss/postcss": "^4.1.0",
-    "tailwindcss": "^4.1.0",
-    "postcss": "^8.5.0",
-    "typescript": "^5.9.0",
+    "@element-plus/nuxt": "^1.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
     "@types/node": "^22.0.0",
-    "@types/react": "^19.2.0",
-    "@types/react-dom": "^19.2.0",
     "eslint": "^9.0.0",
-    "eslint-config-next": "^16.0.0",
-    "@eslint/eslintrc": "^3.3.1"
+    "eslint-plugin-vue": "^10.0.0",
+    "prisma": "^7.0.0",
+    "typescript": "^5.9.0",
+    "vue-tsc": "^3.0.0"
   }
 }
