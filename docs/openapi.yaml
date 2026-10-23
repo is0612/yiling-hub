@@ -179,6 +179,199 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+  /characters/{characterId}/memory-scopes:
+    parameters:
+      - $ref: '#/components/parameters/CharacterId'
+    get:
+      tags: [Memories]
+      summary: 获取角色的记忆范围（全局、已验证用户、外部身份隔离范围）
+      responses:
+        '200':
+          description: 记忆范围列表
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/MemoryScope' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /characters/{characterId}/timeline:
+    parameters:
+      - $ref: '#/components/parameters/CharacterId'
+    get:
+      tags: [Memories]
+      summary: 获取记忆驾驶舱的统一时间线
+      description: 返回经过当前访问范围过滤的消息、长期记忆与快照条目；具体内容仍可通过各自详情接口查看。
+      parameters:
+        - name: scopeId
+          in: query
+          schema: { type: string, format: uuid }
+        - name: from
+          in: query
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          schema: { type: string, format: date-time }
+        - name: type
+          in: query
+          schema: { type: string, enum: [message, memory, snapshot] }
+        - name: channel
+          in: query
+          schema: { type: string }
+        - name: q
+          in: query
+          schema: { type: string }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: 时间线分页列表
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          items:
+                            type: array
+                            items: { $ref: '#/components/schemas/TimelineEntry' }
+                          page: { type: integer }
+                          pageSize: { type: integer }
+                          total: { type: integer }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /characters/{characterId}/conversations:
+    parameters:
+      - $ref: '#/components/parameters/CharacterId'
+    get:
+      tags: [Memories]
+      summary: 获取角色的会话列表
+      parameters:
+        - name: scopeId
+          in: query
+          schema: { type: string, format: uuid }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: 会话分页列表
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          items:
+                            type: array
+                            items: { $ref: '#/components/schemas/Conversation' }
+                          page: { type: integer }
+                          pageSize: { type: integer }
+                          total: { type: integer }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Memories]
+      summary: 创建角色会话
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConversationInput'
+      responses:
+        '201':
+          description: 会话已创建
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Conversation' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /conversations/{conversationId}/messages:
+    parameters:
+      - name: conversationId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [Memories]
+      summary: 获取会话原始消息
+      parameters:
+        - name: before
+          in: query
+          description: 可选的时间游标，按发生时间倒序分页时使用。
+          schema: { type: string, format: date-time }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: 消息分页列表
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          items:
+                            type: array
+                            items: { $ref: '#/components/schemas/Message' }
+                          page: { type: integer }
+                          pageSize: { type: integer }
+                          total: { type: integer }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [Memories]
+      summary: 写入标准化的原始消息或事件
+      description: 外部渠道适配器后续可调用同一内部服务；生产实现必须进行来源鉴权与重复消息去重。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MessageInput'
+      responses:
+        '201':
+          description: 消息已保存
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Message' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /characters/{characterId}/memories:
     parameters:
       - $ref: '#/components/parameters/CharacterId'
@@ -659,6 +852,76 @@ components:
               properties:
                 authenticated: { type: boolean }
                 username: { type: string, nullable: true }
+    MemoryScope:
+      type: object
+      required: [id, characterId, scopeType, scopeKey, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        characterId: { type: string, format: uuid }
+        scopeType: { type: string, enum: [CHARACTER_GLOBAL, USER_PRIVATE, EXTERNAL_IDENTITY] }
+        scopeKey: { type: string }
+        userId: { type: string, format: uuid, nullable: true }
+        externalIdentityId: { type: string, format: uuid, nullable: true }
+        createdAt: { type: string, format: date-time }
+    ConversationInput:
+      type: object
+      required: [memoryScopeId]
+      properties:
+        memoryScopeId: { type: string, format: uuid }
+        channelBindingId: { type: string, format: uuid, nullable: true }
+        externalConversationId: { type: string, nullable: true }
+        title: { type: string, nullable: true }
+        metadata:
+          type: object
+          additionalProperties: true
+    Conversation:
+      allOf:
+        - $ref: '#/components/schemas/ConversationInput'
+        - type: object
+          required: [id, characterId, status, createdAt, updatedAt]
+          properties:
+            id: { type: string, format: uuid }
+            characterId: { type: string, format: uuid }
+            status: { type: string, enum: [ACTIVE, ARCHIVED] }
+            lastMessageAt: { type: string, format: date-time, nullable: true }
+            createdAt: { type: string, format: date-time }
+            updatedAt: { type: string, format: date-time }
+    MessageInput:
+      type: object
+      required: [role, content, occurredAt]
+      properties:
+        externalMessageId: { type: string, nullable: true }
+        role: { type: string, enum: [SYSTEM, USER, ASSISTANT, TOOL] }
+        eventType: { type: string, default: message }
+        content: { type: string }
+        occurredAt: { type: string, format: date-time }
+        metadata:
+          type: object
+          additionalProperties: true
+    Message:
+      allOf:
+        - $ref: '#/components/schemas/MessageInput'
+        - type: object
+          required: [id, conversationId, ingestedAt]
+          properties:
+            id: { type: string, format: uuid }
+            conversationId: { type: string, format: uuid }
+            ingestedAt: { type: string, format: date-time }
+    TimelineEntry:
+      type: object
+      required: [id, type, occurredAt, title]
+      properties:
+        id: { type: string }
+        type: { type: string, enum: [message, memory, snapshot] }
+        occurredAt: { type: string, format: date-time }
+        title: { type: string }
+        summary: { type: string, nullable: true }
+        channel: { type: string, nullable: true }
+        sourceRef: { type: string, nullable: true }
+        snapshotVersion: { type: integer, nullable: true }
+        details:
+          type: object
+          additionalProperties: true
     CharacterInput:
       type: object
       required: [name, basePrompt]
