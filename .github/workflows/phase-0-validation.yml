@@ -86,6 +86,27 @@ jobs:
       - name: ESLint 检查
         run: npm run lint
 
+      - name: 初始化 CI 本地开发用户
+        env:
+          DEV_OWNER_ID: 00000000-0000-4000-8000-000000000001
+          DEV_OWNER_USERNAME: ci-local
+          DEV_OWNER_PASSWORD: CI_smoke_test_password_123
+        run: npm run db:seed:dev
+
+      - name: 验证角色与记忆设置 API 的数据库持久化
+        env:
+          NODE_ENV: development
+          YILING_LOCAL_API_ENABLED: "true"
+          DEV_OWNER_ID: 00000000-0000-4000-8000-000000000001
+          DEV_OWNER_USERNAME: ci-local
+          DEV_OWNER_PASSWORD: CI_smoke_test_password_123
+          SMOKE_BASE_URL: http://127.0.0.1:3000
+        run: |
+          npm run dev -- --host 127.0.0.1 --port 3000 > /tmp/yiling-nuxt.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          node scripts/smoke-test-local-api.mjs
+
       - name: Nuxt 生产构建
         run: npm run build
 
