@@ -28,4 +28,6 @@
 
 ## 当前仓库状态
 
-本仓库包含项目规范、Prisma 数据模型、OpenAPI 契约和基于 Nuxt 的前端 Mock 原型。除非代码已实际实现并经过验证，不要把规划文档描述的能力称为“已经完成”。
+开发分支已经包含 PostgreSQL 持久化的角色/记忆设置、对话录入、周期调度与独立 Worker。Worker 可通过服务端 OpenAI-compatible Chat Completions API 对周期消息生成结构化总结、验证来源消息 ID，并以事务方式保存快照、带 `sourceMessageId`/`sourceSnapshotId` 的长期记忆变更和审计日志。模型参数位于服务端 `.env`：`LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL`、可选的 `LLM_TIMEOUT_MS`。
+
+AI 自动处理仍有明确边界：当前 worker 只消费 `GENERATE_SNAPSHOT`；自动快照重新提炼入口、真实聊天渠道 Adapter、正式管理员登录和公网部署安全仍未完成。模型未配置时任务应留在队列，不得使用规则摘要冒充 AI 输出。来源证据必须通过本周期原始消息 ID 白名单校验；不要把未验证的模型推断自动写入长期记忆。完成代码修改后仍必须运行适用的类型检查、测试、lint 与构建；没有执行的检查不能声称通过。
