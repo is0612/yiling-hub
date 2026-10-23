@@ -1,9 +1,18 @@
 <script setup lang="ts">
-import { ArrowRight, Cpu, Calendar, Files, Search, Setting, MagicStick } from "@element-plus/icons-vue";
+import { ArrowRight, Cpu, Calendar, Files, Search, Setting, MagicStick, Delete } from "@element-plus/icons-vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { initialCharacters, type Character, type Snapshot, type TimelineEntry, type TimelineType } from "~/utils/mock-data";
 
 type MemoryCategory = "FACT" | "PREFERENCE" | "RELATIONSHIP" | "COMMITMENT" | "GOAL" | "EVENT" | "SUMMARY" | "OTHER";
+type RecycleBinEntry = {
+  id: string;
+  category: MemoryCategory;
+  content: string;
+  statusBeforeTrash: "ACTIVE" | "SUPERSEDED" | "ARCHIVED" | "INVALIDATED" | null;
+  deletedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
 const memoryCategoryOptions: Array<{ label: string; value: MemoryCategory }> = [
   { label: "事实记忆", value: "FACT" },
   { label: "偏好记忆", value: "PREFERENCE" },
@@ -36,6 +45,10 @@ const draftConversationTitle = ref("");
 const draftTranscript = ref("");
 const timelineEntries = ref<TimelineEntry[]>([]);
 const timelineLoading = ref(false);
+const recycleBinOpen = ref(false);
+const recycleBinLoading = ref(false);
+const recycleBinEntries = ref<RecycleBinEntry[]>([]);
+const recycleBinBusyIds = ref<string[]>([]);
 const recordedMessageCount = computed(() => timelineEntries.value.filter((entry) => entry.type === "message").length);
 const recordedEventCount = computed(() => timelineEntries.value.filter((entry) => entry.type === "event").length);
 const commitmentCount = computed(() => timelineEntries.value.filter((entry) => entry.type === "memory" && entry.title === "承诺与约定" && entry.tag === "长期记忆").length);
@@ -242,6 +255,107 @@ async function setMemoryStatus(entry: TimelineEntry, status: "active" | "archive
   }
 }
 
+function memoryStatusText(status: string | null | undefined) {
+  const labels: Record<string, string> = {
+    ACTIVE: "有效", SUPERSEDED: "已被替代", ARCHIVED: "已归档", INVALIDATED: "已失效", TRASHED: "回收站",
+  };
+  return labels[status || "ACTIVE"] || "有效";
+}
+
+function formatRecycleDate(value: string | null) {
+  if (!value) return "时间未知";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? "时间未知"
+    : new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium", timeStyle: "short" }).format(date);
+}
+
+async function loadRecycleBin() {
+  recycleBinLoading.value = true;
+  try {
+    recycleBinEntries.value = await $fetch<RecycleBinEntry[]>(
+      `/api/characters/${encodeURIComponent(id.value)}/memories/trash`,
+    );
+  } catch {
+    recycleBinEntries.value = [];
+    ElMessage.error("回收站加载失败，请检查本地开发服务器日志。");
+  } finally {
+    recycleBinLoading.value = false;
+  }
+}
+
+async function openRecycleBin() {
+  recycleBinOpen.value = true;
+  await loadRecycleBin();
+}
+
+async function moveMemoryToTrash(entry: TimelineEntry) {
+  const memoryId = entry.id.startsWith("memory:") ? entry.id.slice("memory:".length) : "";
+  if (!memoryId) return;
+  try {
+    await ElMessageBox.confirm(
+      "这条记忆将从主时间线和当前长期记忆集合中移出，但不会被立即永久删除。你可以在回收站中恢复。已有快照会保留生成时的历史副本。",
+      "移入记忆回收站",
+      { confirmButtonText: "移入回收站", cancelButtonText: "取消", type: "warning" },
+    );
+  } catch { return; }
+  try {
+    await $fetch(`/api/memories/${encodeURIComponent(memoryId)}/trash`, { method: "POST" });
+    await loadCharacter();
+    if (recycleBinOpen.value) await loadRecycleBin();
+    ElMessage.success("记忆已移入回收站，可随时恢复。");
+  } catch (error) {
+    const message = error && typeof error === "object" && "statusMessage" in error
+      ? String(error.statusMessage)
+      : error instanceof Error ? error.message : "移入回收站失败。";
+    ElMessage.error(message);
+  }
+}
+
+async function restoreTrashedMemory(memory: RecycleBinEntry) {
+  if (recycleBinBusyIds.value.includes(memory.id)) return;
+  recycleBinBusyIds.value.push(memory.id);
+  try {
+    await $fetch(`/api/memories/${encodeURIComponent(memory.id)}/restore`, { method: "POST" });
+    await Promise.all([loadRecycleBin(), loadCharacter()]);
+    ElMessage.success(`记忆已恢复为“${memoryStatusText(memory.statusBeforeTrash)}”状态。`);
+  } catch (error) {
+    const message = error && typeof error === "object" && "statusMessage" in error
+      ? String(error.statusMessage)
+      : error instanceof Error ? error.message : "恢复记忆失败。";
+    ElMessage.error(message);
+  } finally {
+    recycleBinBusyIds.value = recycleBinBusyIds.value.filter((id) => id !== memory.id);
+  }
+}
+
+async function permanentlyDeleteMemory(memory: RecycleBinEntry) {
+  if (recycleBinBusyIds.value.includes(memory.id)) return;
+  try {
+    await ElMessageBox.confirm(
+      "这会永久删除当前长期记忆条目，且无法从回收站恢复。为保护历史追溯，已有快照中的生成时副本和来源记录仍会保留；因此历史快照里仍可能出现这段内容。",
+      "永久删除记忆条目",
+      { confirmButtonText: "永久删除条目", cancelButtonText: "取消", type: "error" },
+    );
+  } catch { return; }
+  recycleBinBusyIds.value.push(memory.id);
+  try {
+    const result = await $fetch<{ preservedSnapshotReferences: number }>(
+      `/api/memories/${encodeURIComponent(memory.id)}`,
+      { method: "DELETE" },
+    );
+    await Promise.all([loadRecycleBin(), loadCharacter()]);
+    ElMessage.success(`当前记忆条目已永久删除；保留了 ${result.preservedSnapshotReferences} 条历史来源记录，既有快照未被改写。`);
+  } catch (error) {
+    const message = error && typeof error === "object" && "statusMessage" in error
+      ? String(error.statusMessage)
+      : error instanceof Error ? error.message : "永久删除失败。";
+    ElMessage.error(message);
+  } finally {
+    recycleBinBusyIds.value = recycleBinBusyIds.value.filter((id) => id !== memory.id);
+  }
+}
+
 async function saveConversation() {
   if (conversationSaving.value) return;
 
@@ -352,6 +466,7 @@ watch(id, () => void loadCharacter());
         <div class="quick-actions">
           <el-button style="width:100%" plain @click="navigateTo('/characters/' + character.id + '/settings/memory')"><el-icon><Calendar /></el-icon>记忆周期设置</el-button>
           <el-button style="width:100%" plain @click="navigateTo('/characters/' + character.id + '/snapshots')"><el-icon><Files /></el-icon>查看全部快照</el-button>
+          <el-button style="width:100%" plain @click="openRecycleBin"><el-icon><Delete /></el-icon>记忆回收站</el-button>
         </div>
       </aside>
 
@@ -380,6 +495,7 @@ watch(id, () => void loadCharacter());
                     <el-button link type="danger" size="small" @click="setMemoryStatus(entry, 'invalidated')">标记失效</el-button>
                   </template>
                   <el-button v-else link type="success" size="small" @click="setMemoryStatus(entry, 'active')">恢复有效</el-button>
+                  <el-button link type="danger" size="small" @click="moveMemoryToTrash(entry)">移入回收站</el-button>
                 </div>
               </div>
             </article>
@@ -456,6 +572,29 @@ watch(id, () => void loadCharacter());
         <el-button @click="conversationDialogOpen = false">取消</el-button>
         <el-button type="primary" :loading="conversationSaving" @click="saveConversation">保存对话</el-button>
       </template>
+    </el-dialog>
+
+    <el-dialog v-model="recycleBinOpen" title="记忆回收站" width="min(760px, 94vw)" :close-on-click-modal="false">
+      <p style="margin:0 0 14px;color:#7d889f;font-size:12px;line-height:1.8">已移出当前记忆集合的条目。恢复会回到移入回收站前的状态；永久删除仅移除当前长期记忆条目，历史快照仍保留生成时的副本。</p>
+      <div v-if="recycleBinLoading" class="empty-state">正在读取回收站……</div>
+      <div v-else-if="!recycleBinEntries.length" class="empty-state">回收站是空的。移入回收站的长期记忆会显示在这里。</div>
+      <div v-else style="display:flex;flex-direction:column;gap:12px;max-height:55vh;overflow:auto">
+        <article v-for="memory in recycleBinEntries" :key="memory.id" style="padding:14px;border:1px solid #eceef5;border-radius:12px">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
+            <div>
+              <strong style="color:#47526d;font-size:12px">{{ memoryCategoryOptions.find((option) => option.value === memory.category)?.label || "长期记忆" }}</strong>
+              <div style="margin-top:5px;color:#969fb2;font-size:11px">移入前状态：{{ memoryStatusText(memory.statusBeforeTrash) }} · {{ formatRecycleDate(memory.deletedAt) }}</div>
+            </div>
+            <span class="pill pill-gray">回收站</span>
+          </div>
+          <p style="margin:10px 0;color:#65718b;font-size:12px;line-height:1.8;white-space:pre-wrap">{{ memory.content }}</p>
+          <div style="display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap">
+            <el-button size="small" :loading="recycleBinBusyIds.includes(memory.id)" @click="restoreTrashedMemory(memory)">恢复</el-button>
+            <el-button size="small" type="danger" plain :loading="recycleBinBusyIds.includes(memory.id)" @click="permanentlyDeleteMemory(memory)">永久删除条目</el-button>
+          </div>
+        </article>
+      </div>
+      <template #footer><el-button @click="recycleBinOpen = false">关闭</el-button></template>
     </el-dialog>
 
     <el-dialog v-model="editOpen" title="编辑角色" width="min(560px, 94vw)">

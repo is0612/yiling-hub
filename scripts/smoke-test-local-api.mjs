@@ -187,7 +187,34 @@ assert(Array.isArray(timelineAfterSnapshots) && timelineAfterSnapshots.length ==
 assert(timelineAfterSnapshots.some((entry) => entry.id === `snapshot:${createdSnapshot.id}` && entry.type === "snapshot" && entry.tag === "已被替代"), "The timeline should show superseded snapshot versions.");
 assert(timelineAfterSnapshots.some((entry) => entry.id === `snapshot:${regeneratedSnapshot.id}` && entry.type === "snapshot" && entry.tag === "当前版本"), "The timeline should show the current snapshot version.");
 
+const trashedMemory = await request(`/api/memories/${createdMemory.id}/trash`, { method: "POST" });
+assert(trashedMemory.status === "TRASHED" && trashedMemory.statusBeforeTrash === "ACTIVE", "Moving a memory to trash should retain its prior status.");
+assert(typeof trashedMemory.deletedAt === "string", "Trashed memory should record its deletion time.");
+const trashList = await request(`/api/characters/${created.id}/memories/trash`);
+assert(trashList.some((memory) => memory.id === createdMemory.id && memory.content === `CI 已修改记忆 ${unique}`), "Recycle-bin API should return the soft-deleted memory.");
+const timelineWithoutTrashedMemory = await request(`/api/characters/${created.id}/timeline`);
+assert(!timelineWithoutTrashedMemory.some((entry) => entry.id === `memory:${createdMemory.id}`), "Trashed memories must not appear in the active timeline.");
+assert(timelineWithoutTrashedMemory.length === 5, "Moving a memory to trash should preserve messages and both snapshot versions.");
+
+const restoredFromTrash = await request(`/api/memories/${createdMemory.id}/restore`, { method: "POST" });
+assert(restoredFromTrash.status === "ACTIVE" && restoredFromTrash.statusBeforeTrash === null && restoredFromTrash.deletedAt === null, "Restoring a memory should return it to its prior status and clear trash metadata.");
+assert((await request(`/api/characters/${created.id}/memories/trash`)).every((memory) => memory.id !== createdMemory.id), "Restored memory should disappear from the recycle bin.");
+assert((await request(`/api/characters/${created.id}/timeline`)).some((entry) => entry.id === `memory:${createdMemory.id}`), "Restored memory should return to the timeline.");
+
+await request(`/api/memories/${createdMemory.id}/trash`, { method: "POST" });
+const permanentDelete = await request(`/api/memories/${createdMemory.id}`, { method: "DELETE" });
+assert(permanentDelete.permanentlyDeleted === true, "Permanent deletion should remove the current memory item.");
+assert(permanentDelete.snapshotsPreserved === true && permanentDelete.preservedSnapshotReferences >= 2, "Permanent deletion must preserve historical snapshot source records.");
+const finalTrashList = await request(`/api/characters/${created.id}/memories/trash`);
+assert(finalTrashList.every((memory) => memory.id !== createdMemory.id), "Permanently deleted memory should no longer exist in the recycle bin.");
+const timelineAfterPermanentDelete = await request(`/api/characters/${created.id}/timeline`);
+assert(!timelineAfterPermanentDelete.some((entry) => entry.id === `memory:${createdMemory.id}`), "Permanently deleted memory should not appear in the timeline.");
+const snapshotsAfterPermanentDelete = await request(`/api/characters/${created.id}/snapshots`);
+assert(snapshotsAfterPermanentDelete.length === 2, "Permanent deletion must not rewrite or remove existing snapshot versions.");
+const missingMemoryResponse = await fetch(new URL(`/api/memories/${createdMemory.id}`, baseUrl));
+assert(missingMemoryResponse.status === 404, "Permanently deleted memory should no longer be addressable.");
+
 const latestList = await request("/api/characters");
 assert(latestList.some((character) => character.id === created.id && character.name === edited.name), "Character changes did not appear in the list.");
 
-console.log("Local API smoke test passed: character CRUD, memory settings, manual memory creation, transcript import, database-backed timeline, and snapshot source/version persistence.");
+console.log("Local API smoke test passed: character CRUD, memory settings, manual memory creation, transcript import, database-backed timeline, snapshot source/version persistence, recycle-bin restore, and permanent deletion with historical snapshot preservation.");
