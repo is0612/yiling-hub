@@ -265,6 +265,54 @@ assert(tracedAiMemory.sourceMessage?.role === "USER" && tracedAiMemory.sourceMes
 assert(tracedAiMemory.sourceSnapshotId === aiSnapshot.id && tracedAiMemory.sourceSnapshot?.id === aiSnapshot.id, "The AI memory should link back to the snapshot that produced it.");
 
 
+const queuedAiRegeneration = await request(`/api/characters/${created.id}/snapshots`, {
+  method: "POST",
+  body: { snapshotId: aiSnapshot.id, mode: "ai" },
+});
+assert(queuedAiRegeneration.queued === true && queuedAiRegeneration.status === "QUEUED", "AI regeneration should create a persisted queued worker task.");
+const duplicateAiRegeneration = await request(`/api/characters/${created.id}/snapshots`, {
+  method: "POST",
+  body: { snapshotId: aiSnapshot.id, mode: "ai" },
+});
+assert(duplicateAiRegeneration.jobId === queuedAiRegeneration.jobId && duplicateAiRegeneration.duplicate === true, "Repeated regeneration clicks should reuse the queued task.");
+
+let aiRegenerationResult = null;
+for (let attempt = 0; attempt < 5; attempt += 1) {
+  const result = await request("/api/tasks/worker/run", { method: "POST" });
+  if (result.jobId === queuedAiRegeneration.jobId) {
+    aiRegenerationResult = result;
+    break;
+  }
+  if (!result.processed) break;
+}
+assert(aiRegenerationResult?.status === "SUCCEEDED" && typeof aiRegenerationResult.snapshotId === "string", "Worker should process the AI regeneration job.");
+const snapshotsAfterAiRegeneration = await request(`/api/characters/${created.id}/snapshots`);
+const regeneratedAiSnapshot = snapshotsAfterAiRegeneration.find((snapshot) => snapshot.id === aiRegenerationResult.snapshotId);
+assert(regeneratedAiSnapshot?.kind === "AUTOMATIC" && regeneratedAiSnapshot.version === 2 && regeneratedAiSnapshot.status === "当前版本", "AI regeneration should create version 2 as the current automatic snapshot.");
+assert(snapshotsAfterAiRegeneration.some((snapshot) => snapshot.id === aiSnapshot.id && snapshot.status === "已被替代"), "AI regeneration must preserve and supersede the original version.");
+assert(regeneratedAiSnapshot.analysis?.memoryChangesApplied.some((change) => change.result === "NOT_APPLIED_REGENERATION"), "Regeneration should disclose proposed memory changes without silently applying them to current long-term memory.");
+
+const queuedCancelableRegeneration = await request(`/api/characters/${created.id}/snapshots`, {
+  method: "POST",
+  body: { snapshotId: regeneratedAiSnapshot.id, mode: "ai" },
+});
+const canceledTask = await request(`/api/tasks/${queuedCancelableRegeneration.jobId}/cancel`, { method: "POST" });
+assert(canceledTask.status === "CANCELLED", "Waiting tasks should be manually cancellable.");
+const retriedTask = await request(`/api/tasks/${queuedCancelableRegeneration.jobId}/retry`, { method: "POST" });
+assert(retriedTask.status === "QUEUED", "Cancelled snapshot tasks should be manually re-queued with attempts reset.");
+let retriedRegenerationResult = null;
+for (let attempt = 0; attempt < 5; attempt += 1) {
+  const result = await request("/api/tasks/worker/run", { method: "POST" });
+  if (result.jobId === queuedCancelableRegeneration.jobId) {
+    retriedRegenerationResult = result;
+    break;
+  }
+  if (!result.processed) break;
+}
+assert(retriedRegenerationResult?.status === "SUCCEEDED", "Worker should process a manually re-queued regeneration task.");
+const finalSnapshotHistory = await request(`/api/characters/${created.id}/snapshots`);
+assert(finalSnapshotHistory.some((snapshot) => snapshot.id === retriedRegenerationResult.snapshotId && snapshot.version === 3 && snapshot.status === "当前版本"), "Retried regeneration should advance the same logical snapshot to version 3.");
+
 const latestList = await request("/api/characters");
 assert(latestList.some((character) => character.id === created.id && character.name === edited.name), "Character changes did not appear in the list.");
 
@@ -315,4 +363,4 @@ assert(restoreResult.status === "ACTIVE", "Restoring an archived conversation sh
 const restoredChat = await request("/api/characters/" + created.id + "/chat?conversationId=" + chatReply.conversationId);
 assert(restoredChat.selectedConversationId === chatReply.conversationId && restoredChat.messages.length === 2, "Restored chat history must preserve its messages.");
 
-console.log("Local API smoke test passed: character CRUD, memory settings, transcript import, scheduler backfill, local-mock AI extraction, source-ID validation, persisted snapshot/memory provenance, snapshot versions, recycle-bin lifecycle, context-aware AI chat, conversation search, archive/restore, and archived write protection.");
+console.log("Local API smoke test passed: character CRUD, memory settings, transcript import, scheduler backfill, local-mock AI extraction, source-ID validation, persisted provenance, manual and AI snapshot versions, safe AI regeneration, task cancel/requeue, recycle-bin lifecycle, context-aware AI chat, conversation search, archive/restore, and archived write protection.");
