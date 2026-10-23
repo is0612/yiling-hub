@@ -194,3 +194,21 @@ button, input, textarea, select { font: inherit; }
   .panel { padding:16px; }
   .filter-grow { min-width:100%; }
 }
+
+/* Element Plus brand palette and shared layout helpers */
+:root {
+  --el-color-primary: #7164e8;
+  --el-color-primary-light-3: #a8a0f7;
+  --el-color-primary-light-5: #c9c4fb;
+  --el-color-primary-light-7: #e0ddff;
+  --el-color-primary-light-8: #eceaff;
+  --el-color-primary-light-9: #f5f4ff;
+  --el-color-primary-dark-2: #5c4ed6;
+}
+.filter-summary { display:flex; justify-content:space-between; gap:12px; margin-top:16px; color:#9ca4b6; font-size:10px; }
+.filter-summary strong { color:#5d6881; }
+.footer-note { margin-top:24px; color:#a3aabb; font-size:10px; text-align:center; }
+.toggle-row { display:flex; align-items:center; justify-content:space-between; gap:15px; padding:8px 0; }
+.toggle-row strong { color:#47526d; font-size:12px; }
+.form-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:20px; }
+@media(max-width:640px) { .filter-summary { flex-direction:column; } }
