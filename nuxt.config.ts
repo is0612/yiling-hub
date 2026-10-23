@@ -1,6 +1,8 @@
 export default defineNuxtConfig({
   compatibilityDate: "2026-10-23",
   devtools: { enabled: false },
+  // The temporary unauthenticated Phase 2 API is strictly for the local machine.
+  devServer: { host: "127.0.0.1" },
   css: ["~/assets/css/main.css"],
   modules: ["@element-plus/nuxt"],
   typescript: {
