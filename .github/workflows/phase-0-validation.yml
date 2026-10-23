@@ -2,6 +2,7 @@ name: 项目校验
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, edited]
     paths:
       - "app/**"
       - "nuxt.config.ts"
