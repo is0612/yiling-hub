@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import Link from "next/link";
 import { ArrowUpRight, CircleHelp } from "lucide-react";
 
 type Tone = "green" | "purple" | "blue" | "amber" | "rose" | "gray";
@@ -134,7 +135,7 @@ export function EmptyState({
 
 export function ViewAllLink({ href, children }: { href: string; children: ReactNode }) {
   return (
-    <a href={href} className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#786be4] transition hover:text-[#5c4ed6]">
+    <Link href={href} className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#786be4] transition hover:text-[#5c4ed6]">
       {children} <ArrowUpRight size={13} />
     </a>
   );
