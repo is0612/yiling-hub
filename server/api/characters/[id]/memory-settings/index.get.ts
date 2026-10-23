@@ -31,7 +31,7 @@ export default defineEventHandler(async (event) => {
   return {
     snapshotIntervalDays: settings.snapshotIntervalDays,
     timezone: settings.timezone,
-    anchorAt: settings.anchorAt.toISOString().slice(0, 19),
+    anchorAt: settings.anchorAt.toISOString(),
     rawMessageRetentionDays: settings.rawMessageRetentionDays ?? 0,
     autoSnapshotEnabled: settings.autoSnapshotEnabled,
     changePolicy: settings.changePolicy,
