@@ -2,7 +2,7 @@
 
 一个用于管理多角色 AI、周期性记忆快照和长期记忆的项目。
 
-> 当前状态：项目基础规范、数据库模型和管理后台 Mock 原型已建立。页面交互仍为演示状态，不代表真实 API、数据库持久化、认证或后台任务已经实现。
+> 当前状态：管理后台原型已建立。Phase 2 将角色档案与记忆周期设置接入 PostgreSQL；快照、时间线、真实任务 Worker、管理员登录和渠道适配器仍按后续阶段实施。
 
 ## 从哪里开始
 
@@ -25,38 +25,60 @@
 4. 前端 Mock、API 与后端遵守同一份数据契约。
 5. 本地使用 PostgreSQL + Docker 开发；数据通过逻辑备份迁移，不依赖复制 Docker 数据卷。
 6. 核心后台任务应由可恢复的 Worker 执行，不依赖 Web 进程内的定时器保证可靠性。
+7. 当前本地 API 是开发过渡层；管理员认证上线前，生产环境会拒绝这些 API。
 
-## 当前约定
+## 当前技术栈
 
 - 前端与服务端入口：Vue 3 + Nuxt 4 + TypeScript
 - UI：Element Plus（通过官方 Nuxt 模块集成）
 - 开发服务器与生产构建：Vite（Nuxt 默认使用，无需另建独立 Vite 应用）
 - 数据库：PostgreSQL
-- ORM：Prisma
+- ORM：Prisma 7（通过 PostgreSQL driver adapter）
 - 本地容器：Docker Compose
 - 后台任务：后续阶段增加独立 Node.js Worker
 
-具体实施以 `docs/` 中的正式规范为准。
+## 本地运行
 
-## 本地运行（前端演示阶段）
+需要 Node.js 22、npm 和 Docker Desktop。
 
-需要安装 Node.js 22、npm 和 Docker Desktop（数据库现在不是启动前端预览的必要条件）。
+### 1. 配置本地环境
 
 ```powershell
 Copy-Item .env.example .env
-# 编辑 .env，将 POSTGRES_PASSWORD 改成自己的本地开发密码
-npm install
-npm run dev
 ```
 
-在浏览器打开 `http://localhost:3000`。当前页面使用 Mock 演示数据，新增/编辑、重试和归档按钮只会更改当前页面状态，不会写入数据库。
+编辑 `.env`，至少修改 `POSTGRES_PASSWORD`、`DATABASE_URL` 中对应的密码，以及 `DEV_OWNER_PASSWORD`（至少 12 位）。三处数据库用户名、密码、端口与数据库名必须匹配。请勿把 `.env` 提交到 Git。
 
-如需启动本地 PostgreSQL：
+### 2. 安装并启动数据库
 
 ```powershell
+npm install
 docker compose up -d db
+docker compose ps
 npm run db:format
 npm run db:validate
 ```
 
-当前提供了 Prisma Schema，但正式迁移文件和真实 API 尚未完成；不要误以为只启动数据库就已接入持久化。换电脑和备份流程见 [本地开发与数据迁移规范](docs/local-development-and-data-migration.md)。
+### 3. 应用数据库迁移并生成 Client
+
+```powershell
+npm run db:migrate:deploy
+npm run db:generate
+npm run db:seed:dev
+```
+
+上述迁移会创建项目定义的数据库表。`db:seed:dev` 只创建/更新 `.env` 指定的本地开发用户，不会植入演示角色。若你是第一次初始化数据库，确认当前开发分支包含 `prisma/migrations` 里的初始迁移文件后再运行。
+
+### 4. 启动后台
+
+```powershell
+npm run dev
+```
+
+在浏览器打开 `http://localhost:3000`。角色列表、角色创建/编辑和记忆周期设置会通过本地开发 API 读写 PostgreSQL；重新加载页面后，这些数据应当仍然存在。记忆驾驶舱里的对话时间线、周期快照和任务监控依旧是演示数据，尚未接入真实存储或 Worker。
+
+## 本地 API 安全说明
+
+本阶段 API 只允许 `NODE_ENV=development`、`YILING_LOCAL_API_ENABLED=true` 且通过 `localhost`/回环地址访问。生产环境固定拒绝请求。管理员登录、会话管理、正式权限校验必须在服务公开部署前完成；不要通过 `--host 0.0.0.0` 把本地开发 API 暴露给局域网或公网。
+
+数据备份和换电脑迁移流程见 [本地开发与数据迁移规范](docs/local-development-and-data-migration.md)。
