@@ -14,7 +14,9 @@ import {
 } from "@element-plus/icons-vue";
 
 const route = useRoute();
-const navigation = [
+type NavigationItem = { label: string; href: string; icon: Component; section?: string; count?: string };
+
+const navigation: NavigationItem[] = [
   { label: "总览", href: "/", icon: DataBoard, section: "工作空间" },
   { label: "角色管理", href: "/characters", icon: User },
   { label: "记忆驾驶舱", href: "/characters/big-fish", icon: Cpu },
