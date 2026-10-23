@@ -76,7 +76,7 @@ async function regenerate(snapshot: Snapshot) {
           <div class="metric-row"><span>生成时间</span><span class="metric-value">{{ detail.date }}</span></div>
           <div class="metric-row"><span>来源消息</span><span class="metric-value">{{ detail.messages }} 条</span></div>
           <div class="metric-row"><span>提炼事件</span><span class="metric-value">{{ detail.events }} 项</span></div>
-          <div class="info-callout" style="margin-top:19px"><el-icon><Version /></el-icon><span>重新生成会新增版本，旧版保留供审查与来源追溯。</span></div>
+          <div class="info-callout" style="margin-top:19px"><el-icon><Files /></el-icon><span>重新生成会新增版本，旧版保留供审查与来源追溯。</span></div>
           <el-button style="width:100%;margin-top:14px" type="primary" plain @click="regenerate(detail)"><el-icon><Refresh /></el-icon>重新生成此版本</el-button>
         </template>
         <div v-else class="empty-state">从左侧选择一份快照查看详情。</div>
