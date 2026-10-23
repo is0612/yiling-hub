@@ -39,7 +39,7 @@
 
 ## 本地运行
 
-需要 Node.js 22、npm 和 Docker Desktop。
+需要 Node.js 22、Yarn Classic 1.22.22 和 Docker Desktop。
 
 ### 1. 配置本地环境
 
@@ -52,19 +52,19 @@ Copy-Item .env.example .env
 ### 2. 安装并启动数据库
 
 ```powershell
-npm install
+yarn install
 docker compose up -d db
 docker compose ps
-npm run db:format
-npm run db:validate
+yarn run db:format
+yarn run db:validate
 ```
 
 ### 3. 应用数据库迁移并生成 Client
 
 ```powershell
-npm run db:migrate:deploy
-npm run db:generate
-npm run db:seed:dev
+yarn run db:migrate:deploy
+yarn run db:generate
+yarn run db:seed:dev
 ```
 
 仓库已包含初始迁移 `prisma/migrations/20261023000000_init/migration.sql`，会创建项目定义的数据库表。该初始迁移面向全新、空的本地开发数据库。如果数据库中已有重要数据或手动创建的表，先停止并备份，不要直接运行迁移。`db:seed:dev` 只创建/更新 `.env` 指定的本地开发用户，不会植入演示角色。
@@ -72,7 +72,7 @@ npm run db:seed:dev
 ### 4. 启动后台
 
 ```powershell
-npm run dev
+yarn run dev
 ```
 
 在浏览器打开 `http://localhost:3000`。角色列表、角色创建/编辑和记忆周期设置会通过本地开发 API 读写 PostgreSQL；重新加载页面后，这些数据应当仍然存在。记忆驾驶舱的时间线现在从 PostgreSQL 读取已保存的对话消息、长期记忆条目和快照版本；数据库里没有的消息不会用示例内容冒充。手动快照只保存已经持久化的长期记忆条目，尚未调用大模型，也没有真实消息/事件来源。聊天渠道导入、事件自动提炼、任务监控持久化和 Worker 尚未接入。
