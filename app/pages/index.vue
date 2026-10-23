@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { DataAnalysis, ArrowDown, ArrowRight, TopRight, Calendar, Clock, Files, MagicStick, User } from "@element-plus/icons-vue";
-import { initialCharacters, initialTasks, initialTimeline } from "~/utils/mock-data";
+import { ElMessage } from "element-plus";
+import { initialTasks, initialTimeline, type Character } from "~/utils/mock-data";
 
-const characters = useState("characters", () => initialCharacters.map((item) => ({ ...item, channels: [...item.channels] })));
+const characters = ref<Character[]>([]);
 const timeline = initialTimeline;
 const tasks = useState("demo-tasks", () => initialTasks.map((item) => ({ ...item })));
 const weeks = [
@@ -10,6 +11,14 @@ const weeks = [
   { day: "周四", value: 76 }, { day: "周五", value: 58 }, { day: "周六", value: 86 }, { day: "周日", value: 68 },
 ];
 const taskTone: Record<string, string> = { 成功: "green", 等待执行: "amber", 失败待重试: "rose", 跳过: "gray", 运行中: "blue" };
+
+onMounted(async () => {
+  try {
+    characters.value = await $fetch<Character[]>("/api/characters");
+  } catch {
+    ElMessage.warning("角色数据暂不可用；请完成本地数据库初始化后刷新页面。");
+  }
+});
 </script>
 
 <template>
@@ -98,7 +107,7 @@ const taskTone: Record<string, string> = { 成功: "green", 等待执行: "amber
         </div>
       </section>
     </div>
-    <p class="footer-note">演示数据仅用于验证页面流程；当前尚未连接真实 API 或数据库。</p>
+    <p class="footer-note">角色档案已接入本地数据库；活动时间线、快照与任务列表仍为演示数据。</p>
   </div>
 </template>
 
