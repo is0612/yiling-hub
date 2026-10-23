@@ -12,6 +12,7 @@ const statusFilter = ref("全部版本状态");
 const detail = ref<Snapshot | null>(null);
 const creating = ref(false);
 const regeneratingId = ref<string | null>(null);
+const aiRegeneratingId = ref<string | null>(null);
 
 const filtered = computed(() => items.value.filter((item) => {
   const queryMatches = !query.value || `${item.summary} ${item.range} 第 ${item.number} 份`.toLowerCase().includes(query.value.toLowerCase());
@@ -84,6 +85,34 @@ async function createSnapshot() {
   }
 }
 
+async function regenerateWithAi(snapshot: Snapshot) {
+  try {
+    await ElMessageBox.confirm(
+      "系统会对这份自动快照覆盖的历史周期重新调用模型，并创建同一快照档案的新版本。旧版本会保留；为避免历史重放改写当前长期记忆，本次提出的长期记忆变化只展示供审核，不会自动应用。",
+      "AI 重新提炼快照",
+      { confirmButtonText: "排入重新提炼任务", cancelButtonText: "取消", type: "warning" },
+    );
+  } catch {
+    return;
+  }
+
+  aiRegeneratingId.value = snapshot.id;
+  try {
+    const result = await $fetch<{ jobId: string; status: string; duplicate: boolean }>(
+      `/api/characters/${encodeURIComponent(id.value)}/snapshots`,
+      { method: "POST", body: { snapshotId: snapshot.id, mode: "ai" } },
+    );
+    ElMessage.success(
+      result.duplicate
+        ? "这份快照已有等待中的 AI 重新提炼任务，无需重复排队。"
+        : "AI 重新提炼任务已排队。请到“后台任务”运行 Worker，并查看新生成的快照版本。",
+    );
+  } catch (error) {
+    ElMessage.error(errorMessage(error));
+  } finally {
+    aiRegeneratingId.value = null;
+  }
+}
 async function regenerate(snapshot: Snapshot) {
   try {
     await ElMessageBox.confirm(
@@ -216,8 +245,9 @@ watch(id, () => {
             </section>
           </div>
           <div v-else class="info-callout" style="margin-top:19px"><el-icon><Files /></el-icon><span>这是一份手动或旧版快照，当前保存的是结构化记录；自动周期快照的 AI 分析会显示在这里。</span></div>
-          <div v-if="detail.kind === 'AUTOMATIC'" class="info-callout" style="margin-top:14px"><span>自动快照已保留模型分析与来源。自动快照的重新提炼入口尚未接入，避免误生成不含 AI 总结的替代版本。</span></div>
-          <el-button v-else style="width:100%;margin-top:14px" type="primary" plain :loading="regeneratingId === detail.id" @click="regenerate(detail)"><el-icon><Refresh /></el-icon>重新生成此版本</el-button>
+          <div v-if="detail.kind === 'AUTOMATIC'" class="info-callout" style="margin-top:14px"><span>AI 重新提炼会对同一历史周期创建新版本，旧版本继续保留。本次提出的长期记忆变化仅供审核，不会自动覆盖当前记忆。</span></div>
+          <el-button v-if="detail.kind === 'AUTOMATIC'" style="width:100%;margin-top:12px" type="primary" plain :loading="aiRegeneratingId === detail.id" :disabled="regeneratingId === detail.id" @click="regenerateWithAi(detail)"><el-icon><Refresh /></el-icon>AI 重新提炼此版本</el-button>
+          <el-button v-else style="width:100%;margin-top:14px" type="primary" plain :loading="regeneratingId === detail.id" :disabled="aiRegeneratingId === detail.id" @click="regenerate(detail)"><el-icon><Refresh /></el-icon>重新生成此版本</el-button>
         </template>
         <div v-else class="empty-state">从左侧选择一份快照查看详情。</div>
       </aside>
