@@ -54,12 +54,21 @@ export function buildDueMemoryPeriods(input: {
 
 export type MemorySchedulerReport = {
   settingsChecked: number;
+  settingsEnabled: number;
+  settingsDisabled: number;
+  settingsWithoutNextSnapshotAt: number;
+  settingsNotDue: number;
+  settingsInitialized: number;
   settingsAdvanced: number;
   jobsQueued: number;
   periodsConsidered: number;
   missingGlobalScope: number;
   settingsStillDue: number;
 };
+
+function addDays(date: Date, days: number): Date {
+  return new Date(date.getTime() + days * DAY_MS);
+}
 
 export async function enqueueDueMemorySnapshots(
   prisma: PrismaClient,
@@ -68,14 +77,14 @@ export async function enqueueDueMemorySnapshots(
   const now = options.now ?? new Date();
   const settings = await prisma.characterMemorySetting.findMany({
     where: {
-      autoSnapshotEnabled: true,
-      nextSnapshotAt: { lte: now },
       ...(options.ownerId ? { character: { is: { ownerId: options.ownerId } } } : {}),
     },
     select: {
       characterId: true,
       snapshotIntervalDays: true,
+      anchorAt: true,
       nextSnapshotAt: true,
+      autoSnapshotEnabled: true,
       character: {
         select: {
           memoryScopes: {
@@ -90,6 +99,11 @@ export async function enqueueDueMemorySnapshots(
 
   const report: MemorySchedulerReport = {
     settingsChecked: settings.length,
+    settingsEnabled: settings.filter((setting) => setting.autoSnapshotEnabled).length,
+    settingsDisabled: settings.filter((setting) => !setting.autoSnapshotEnabled).length,
+    settingsWithoutNextSnapshotAt: settings.filter((setting) => setting.autoSnapshotEnabled && !setting.nextSnapshotAt).length,
+    settingsNotDue: 0,
+    settingsInitialized: 0,
     settingsAdvanced: 0,
     jobsQueued: 0,
     periodsConsidered: 0,
@@ -98,6 +112,8 @@ export async function enqueueDueMemorySnapshots(
   };
 
   for (const setting of settings) {
+    if (!setting.autoSnapshotEnabled) continue;
+
     const memoryScopeId = setting.character.memoryScopes[0]?.id;
     if (!memoryScopeId) {
       report.missingGlobalScope += 1;
@@ -111,23 +127,44 @@ export async function enqueueDueMemorySnapshots(
           select: {
             characterId: true,
             snapshotIntervalDays: true,
+            anchorAt: true,
             nextSnapshotAt: true,
             autoSnapshotEnabled: true,
           },
         });
-        if (!latest?.autoSnapshotEnabled || !latest.nextSnapshotAt || latest.nextSnapshotAt > now) {
-          return { jobsQueued: 0, periodsConsidered: 0, advanced: false, stillDue: false };
+        if (!latest?.autoSnapshotEnabled) {
+          return { jobsQueued: 0, periodsConsidered: 0, advanced: false, initialized: false, notDue: false, stillDue: false };
+        }
+
+        // Repair an enabled setting missing its next boundary from the saved anchor.
+        const firstBoundary = latest.nextSnapshotAt ?? addDays(latest.anchorAt, latest.snapshotIntervalDays);
+        if (firstBoundary.getTime() > now.getTime()) {
+          if (!latest.nextSnapshotAt) {
+            const init = await tx.characterMemorySetting.updateMany({
+              where: {
+                characterId: latest.characterId,
+                autoSnapshotEnabled: true,
+                nextSnapshotAt: null,
+                anchorAt: latest.anchorAt,
+              },
+              data: { nextSnapshotAt: firstBoundary },
+            });
+            if (init.count === 1) {
+              return { jobsQueued: 0, periodsConsidered: 0, advanced: false, initialized: true, notDue: true, stillDue: false };
+            }
+          }
+          return { jobsQueued: 0, periodsConsidered: 0, advanced: false, initialized: false, notDue: true, stillDue: false };
         }
 
         const built = buildDueMemoryPeriods({
           memoryScopeId,
-          nextSnapshotAt: latest.nextSnapshotAt,
+          nextSnapshotAt: firstBoundary,
           intervalDays: latest.snapshotIntervalDays,
           now,
           maxPeriods: options.maxPeriodsPerSetting,
         });
         if (built.periods.length === 0 || !built.nextSnapshotAt) {
-          return { jobsQueued: 0, periodsConsidered: 0, advanced: false, stillDue: false };
+          return { jobsQueued: 0, periodsConsidered: 0, advanced: false, initialized: false, notDue: false, stillDue: false };
         }
 
         const createResult = await tx.memoryJob.createMany({
@@ -143,7 +180,7 @@ export async function enqueueDueMemorySnapshots(
           skipDuplicates: true,
         });
 
-        // Optimistic compare-and-set protects against concurrent scheduler runs.
+        // Compare-and-set protects the period cursor when schedulers run concurrently.
         const updateResult = await tx.characterMemorySetting.updateMany({
           where: {
             characterId: latest.characterId,
@@ -160,6 +197,8 @@ export async function enqueueDueMemorySnapshots(
           jobsQueued: createResult.count,
           periodsConsidered: built.periods.length,
           advanced: true,
+          initialized: latest.nextSnapshotAt === null,
+          notDue: false,
           stillDue: built.stillDue,
         };
       });
@@ -167,6 +206,8 @@ export async function enqueueDueMemorySnapshots(
       report.jobsQueued += result.jobsQueued;
       report.periodsConsidered += result.periodsConsidered;
       if (result.advanced) report.settingsAdvanced += 1;
+      if (result.initialized) report.settingsInitialized += 1;
+      if (result.notDue) report.settingsNotDue += 1;
       if (result.stillDue) report.settingsStillDue += 1;
     } catch (error) {
       if (error instanceof Error && error.message === "MEMORY_SCHEDULER_RACE") continue;
