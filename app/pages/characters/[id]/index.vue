@@ -4,6 +4,29 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import { initialCharacters, type Character, type Snapshot, type TimelineEntry, type TimelineType } from "~/utils/mock-data";
 
 type MemoryCategory = "FACT" | "PREFERENCE" | "RELATIONSHIP" | "COMMITMENT" | "GOAL" | "EVENT" | "SUMMARY" | "OTHER";
+type MemoryDetail = {
+  id: string;
+  category: MemoryCategory;
+  content: string;
+  sourceMessageId: string | null;
+  sourceSnapshotId: string | null;
+  sourceMessage: {
+    id: string;
+    role: string;
+    eventType: string;
+    content: string;
+    occurredAt: string;
+    conversation: { id: string; title: string | null };
+  } | null;
+  sourceSnapshot: {
+    id: string;
+    summary: string;
+    periodStart: string;
+    periodEnd: string;
+    version: number;
+    status: string;
+  } | null;
+};
 type RecycleBinEntry = {
   id: string;
   category: MemoryCategory;
@@ -39,6 +62,8 @@ const memoryEditSaving = ref(false);
 const editingMemoryId = ref("");
 const draftEditMemoryCategory = ref<MemoryCategory>("FACT");
 const draftEditMemoryContent = ref("");
+const editingMemorySource = ref<MemoryDetail["sourceMessage"]>(null);
+const editingMemorySnapshot = ref<MemoryDetail["sourceSnapshot"]>(null);
 const conversationDialogOpen = ref(false);
 const conversationSaving = ref(false);
 const draftConversationTitle = ref("");
@@ -177,14 +202,16 @@ async function openMemoryEditor(entry: TimelineEntry) {
   if (!memoryId) return;
 
   editingMemoryId.value = memoryId;
+  editingMemorySource.value = null;
+  editingMemorySnapshot.value = null;
   memoryEditDialogOpen.value = true;
   memoryEditLoading.value = true;
   try {
-    const memory = await $fetch<{ id: string; category: MemoryCategory; content: string }>(
-      `/api/memories/${encodeURIComponent(memoryId)}`,
-    );
+    const memory = await $fetch<MemoryDetail>(`/api/memories/${encodeURIComponent(memoryId)}`);
     draftEditMemoryCategory.value = memory.category;
     draftEditMemoryContent.value = memory.content;
+    editingMemorySource.value = memory.sourceMessage;
+    editingMemorySnapshot.value = memory.sourceSnapshot;
   } catch (error) {
     memoryEditDialogOpen.value = false;
     const message = error && typeof error === "object" && "statusMessage" in error
@@ -417,6 +444,12 @@ function toneFor(tagTone: string) {
 function markerFor(type: TimelineType) {
   return type === "message" ? "对" : type === "memory" ? "忆" : type === "snapshot" ? "档" : "事";
 }
+function formatSourceTime(value: string) {
+  const date = new Date(value);
+  return Number.isFinite(date.getTime())
+    ? new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium", timeStyle: "short" }).format(date)
+    : value;
+}
 async function manualSnapshot() {
   if (snapshotCreating.value) return;
   snapshotCreating.value = true;
@@ -440,7 +473,7 @@ watch(id, () => void loadCharacter());
 
 <template>
   <div class="page-wrap">
-    <PageHeader eyebrow="工作空间 / 角色管理 / 记忆驾驶舱" title="记忆驾驶舱" description="查看角色档案与已保存的记忆活动。时间线读取数据库中的对话消息、长期记忆与快照；聊天渠道导入和模型生成仍在后续阶段接入。">
+    <PageHeader eyebrow="工作空间 / 角色管理 / 记忆驾驶舱" title="记忆驾驶舱" description="查看角色对话、AI 周期总结与长期记忆。配置服务端模型并启用自动归档后，周期 Worker 会提炼事实与偏好变化，并保留原始消息来源。">
       <template #actions><el-button @click="editOpen = true"><el-icon><Setting /></el-icon>编辑角色</el-button><el-button @click="memoryDialogOpen = true">新增长期记忆</el-button><el-button @click="conversationDialogOpen = true">录入对话</el-button><el-button type="primary" :loading="snapshotCreating" @click="manualSnapshot"><el-icon><MagicStick /></el-icon>手动归档</el-button></template>
     </PageHeader>
 
@@ -506,7 +539,7 @@ watch(id, () => void loadCharacter());
 
       <aside class="surface panel snapshot-side">
         <SectionTitle title="记忆状态" description="当前角色的阶段归档概况" />
-        <div class="memory-score"><div class="memory-score-ring"><span>—</span></div><div><strong>自动归档状态</strong><p>自动周期调度将在后续阶段接入</p></div></div>
+        <div class="memory-score"><div class="memory-score-ring"><span>—</span></div><div><strong>自动归档状态</strong><p>启用自动快照并配置模型后，将自动总结周期对话并维护长期记忆</p></div></div>
         <el-divider />
         <div class="metric-row"><span>已记录对话消息</span><span class="metric-value">{{ recordedMessageCount }} 条</span></div>
         <div class="metric-row"><span>已记录平台事件</span><span class="metric-value">{{ recordedEventCount }} 项</span></div>
@@ -613,7 +646,11 @@ watch(id, () => void loadCharacter());
 .profile-description{margin:16px 0;color:#728098;font-size:11px;line-height:1.8}
 .timeline-filters{display:flex;gap:9px;margin-top:17px}
 .memory-tabs{margin-top:9px}.timeline-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:9px}
-.memory-actions{display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-top:7px}\n.timeline-marker.pill-green{background:#e8f8f1}.timeline-marker.pill-purple{background:#f0eeff}.timeline-marker.pill-blue{background:#eef5ff}.timeline-marker.pill-amber{background:#fff5e4}.timeline-marker.pill-gray{background:#f1f3f8}
+.memory-actions{display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-top:7px}
+.memory-source{margin-top:14px;padding:13px;border:1px solid #dce7f7;border-radius:12px;background:#f8fbff}
+.memory-source-heading{display:flex;align-items:center;justify-content:space-between;gap:10px;color:#47526d;font-size:12px}
+.memory-source-meta{margin-top:7px;color:#7f8ba3;font-size:11px;line-height:1.7}
+.memory-source-content{max-height:190px;overflow:auto;margin:9px 0 0;padding-top:9px;border-top:1px solid #e5edf8;color:#596781;font-size:12px;line-height:1.8;white-space:pre-wrap;overflow-wrap:anywhere}\n.timeline-marker.pill-green{background:#e8f8f1}.timeline-marker.pill-purple{background:#f0eeff}.timeline-marker.pill-blue{background:#eef5ff}.timeline-marker.pill-amber{background:#fff5e4}.timeline-marker.pill-gray{background:#f1f3f8}
 .memory-score{display:flex;align-items:center;gap:13px;margin-top:22px}.memory-score-ring{display:flex;width:65px;height:65px;flex:0 0 auto;align-items:center;justify-content:center;border:6px solid #e4e0ff;border-right-color:#8678ed;border-top-color:#8678ed;border-radius:50%;color:#7062df;font-size:16px;font-weight:850}
 .memory-score strong{color:#47526d;font-size:12px}.memory-score p{margin-top:6px;color:#969fb2;font-size:10px}
 .recent-snapshot{margin-top:12px;padding:12px;border:1px solid #eceef5;border-radius:12px}.recent-snapshot-top{display:flex;justify-content:space-between;color:#58637d;font-size:11px;font-weight:800}.recent-snapshot p{margin:8px 0;color:#7d889f;font-size:10px;line-height:1.8}
