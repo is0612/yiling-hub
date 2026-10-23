@@ -20,7 +20,10 @@
     "preview": "nuxt preview",
     "lint": "eslint app server scripts nuxt.config.ts prisma.config.ts",
     "typecheck": "nuxt typecheck",
-    "db:seed:dev": "tsx scripts/seed-dev-user.ts"
+    "db:seed:dev": "tsx scripts/seed-dev-user.ts",
+    "scheduler:run": "tsx scripts/run-memory-scheduler.ts",
+    "scheduler:watch": "tsx scripts/run-memory-scheduler.ts --watch",
+    "test:scheduler": "tsx scripts/test-memory-scheduler.ts"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",

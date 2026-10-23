@@ -92,6 +92,9 @@ jobs:
       - name: TypeScript 类型检查
         run: yarn run typecheck
 
+      - name: 周期记忆调度单元测试
+        run: yarn run test:scheduler
+
       - name: ESLint 检查
         run: yarn run lint
 

@@ -145,7 +145,7 @@ const savedSettings = await request(`/api/characters/${created.id}/memory-settin
   body: {
     snapshotIntervalDays: 3,
     timezone: "America/Los_Angeles",
-    anchorAt: new Date().toISOString(),
+    anchorAt: new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString(),
     rawMessageRetentionDays: 30,
     autoSnapshotEnabled: true,
     changePolicy: "IMMEDIATE_RECALC",
@@ -160,10 +160,22 @@ const reloadedSettings = await request(`/api/characters/${created.id}/memory-set
 assert(reloadedSettings.snapshotIntervalDays === 3, "Memory interval did not persist after a new read.");
 assert(reloadedSettings.autoSnapshotEnabled === true, "Auto-snapshot switch did not persist.");
 assert(reloadedSettings.changePolicy === "IMMEDIATE_RECALC", "Change policy did not persist after a new read.");
+assert(reloadedSettings.nextSnapshotAt && new Date(reloadedSettings.nextSnapshotAt).getTime() < Date.now(), "An old anchor should preserve the first overdue cycle boundary for scheduler backfill.");
+
+const schedulerRun = await request("/api/tasks/scheduler/run", { method: "POST" });
+assert(schedulerRun.settingsChecked >= 1, "Scheduler should discover the enabled overdue character.");
+assert(schedulerRun.jobsQueued >= 3 && schedulerRun.periodsConsidered >= 3, "Scheduler should enqueue missed 3-day periods after downtime.");
+const taskList = await request("/api/tasks");
+assert(taskList.total >= 3 && taskList.items.filter((task) => task.characterId === created.id && task.type === "GENERATE_SNAPSHOT" && task.status === "QUEUED").length >= 3, "Task API should expose the persisted scheduled jobs.");
+const repeatedSchedulerRun = await request("/api/tasks/scheduler/run", { method: "POST" });
+assert(repeatedSchedulerRun.jobsQueued === 0, "A repeated scheduler scan should not enqueue duplicate work.");
+const scheduledNextSnapshotAt = (await request(`/api/characters/${created.id}/memory-settings`)).nextSnapshotAt;
 
 const createdSnapshot = await request(`/api/characters/${created.id}/snapshots`, { method: "POST" });
 assert(typeof createdSnapshot.id === "string", "POST snapshots must return the persisted snapshot id.");
 assert(createdSnapshot.version === 1, "The first manual snapshot must be version 1.");
+const settingsAfterManualSnapshot = await request(`/api/characters/${created.id}/memory-settings`);
+assert(settingsAfterManualSnapshot.nextSnapshotAt === scheduledNextSnapshotAt, "Manual snapshots must not reset the automatic schedule.");
 
 const snapshotList = await request(`/api/characters/${created.id}/snapshots`);
 assert(Array.isArray(snapshotList) && snapshotList.length === 1, "GET snapshots must return the created snapshot.");

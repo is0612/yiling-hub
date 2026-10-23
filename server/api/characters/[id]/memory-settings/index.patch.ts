@@ -55,13 +55,11 @@ export default defineEventHandler(async (event) => {
     throw createError({ statusCode: 400, statusMessage: "周期启用锚点无效。" });
   }
 
-  const now = new Date();
-  const intervalMs = interval * 24 * 60 * 60 * 1000;
   let nextSnapshotAt: Date | null = null;
   if (body.autoSnapshotEnabled) {
-    const elapsed = now.getTime() - rawAnchor.getTime();
-    const steps = elapsed < 0 ? 0 : Math.floor(elapsed / intervalMs) + 1;
-    nextSnapshotAt = addDays(rawAnchor, Math.max(steps, 1) * interval);
+    // Preserve the first cycle boundary. The scheduler uses it to backfill
+    // missed cycles after downtime instead of silently jumping to the future.
+    nextSnapshotAt = addDays(rawAnchor, interval);
   }
 
   const settings = await prisma.characterMemorySetting.upsert({
