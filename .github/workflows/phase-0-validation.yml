@@ -18,6 +18,11 @@ on:
     paths:
       - "prisma/**"
       - "prisma.config.ts"
+      - "src/**"
+      - "eslint.config.mjs"
+      - "next.config.ts"
+      - "postcss.config.mjs"
+      - "tsconfig.json"
       - "docs/openapi.yaml"
       - "package.json"
       - ".github/workflows/phase-0-validation.yml"
