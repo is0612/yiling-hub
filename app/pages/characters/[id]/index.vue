@@ -131,7 +131,7 @@ watch(id, () => void loadCharacter());
 
 <template>
   <div class="page-wrap">
-    <PageHeader eyebrow="工作空间 / 角色管理 / 记忆驾驶舱" title="记忆驾驶舱" description="查看角色档案与记忆活动。角色名称和基础人设已接入数据库；记忆活动将在后续阶段接入真实来源。">
+    <PageHeader eyebrow="工作空间 / 角色管理 / 记忆驾驶舱" title="记忆驾驶舱" description="查看角色档案与已保存的记忆活动。时间线读取数据库中的对话消息、长期记忆与快照；聊天渠道导入和模型生成仍在后续阶段接入。">
       <template #actions><el-button @click="editOpen = true"><el-icon><Setting /></el-icon>编辑角色</el-button><el-button type="primary" :loading="snapshotCreating" @click="manualSnapshot"><el-icon><MagicStick /></el-icon>手动归档</el-button></template>
     </PageHeader>
 
@@ -171,15 +171,17 @@ watch(id, () => void loadCharacter());
         </el-tabs>
         <div class="timeline">
           <div v-if="timelineLoading" class="empty-state">正在加载已保存的时间线记录……</div>
-          <article v-for="entry in filteredEntries" :key="entry.id" class="timeline-item">
-            <div class="timeline-marker" :class="toneFor(entry.tagTone)">{{ markerFor(entry.type) }}</div>
-            <div class="timeline-content">
-              <div class="timeline-heading"><span class="timeline-title">{{ entry.title }}</span><span class="muted-note">{{ entry.time }}</span></div>
-              <p class="timeline-summary">{{ entry.summary }}</p>
-              <div class="timeline-meta"><span class="pill" :class="toneFor(entry.tagTone)">{{ entry.tag }}</span><span>{{ entry.channel }}</span><span>{{ entry.source }}</span></div>
-            </div>
-          </article>
-          <div v-else-if="!filteredEntries.length" class="empty-state">{{ timelineEntries.length ? "没有匹配的时间线记录，试试修改筛选条件。" : "暂无已保存的时间线记录。接入聊天消息或保存长期记忆后，这里会显示对应记录；生成的快照也会显示在这里。" }}</div>
+          <template v-else>
+            <article v-for="entry in filteredEntries" :key="entry.id" class="timeline-item">
+              <div class="timeline-marker" :class="toneFor(entry.tagTone)">{{ markerFor(entry.type) }}</div>
+              <div class="timeline-content">
+                <div class="timeline-heading"><span class="timeline-title">{{ entry.title }}</span><span class="muted-note">{{ entry.time }}</span></div>
+                <p class="timeline-summary">{{ entry.summary }}</p>
+                <div class="timeline-meta"><span class="pill" :class="toneFor(entry.tagTone)">{{ entry.tag }}</span><span>{{ entry.channel }}</span><span>{{ entry.source }}</span></div>
+              </div>
+            </article>
+            <div v-if="!filteredEntries.length" class="empty-state">{{ timelineEntries.length ? "没有匹配的时间线记录，试试修改筛选条件。" : "暂无已保存的时间线记录。接入聊天消息或保存长期记忆后，这里会显示对应记录；生成的快照也会显示在这里。" }}</div>
+          </template>
         </div>
       </section>
 

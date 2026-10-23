@@ -70,6 +70,9 @@ assert(Array.isArray(created.channels), "Character DTO must include a channels a
 const loaded = await request(`/api/characters/${created.id}`);
 assert(loaded.name === created.name, "GET by id did not return the new character.");
 
+const initialTimeline = await request(`/api/characters/${created.id}/timeline`);
+assert(Array.isArray(initialTimeline) && initialTimeline.length === 0, "A new character should have an empty real timeline.");
+
 const edited = await request(`/api/characters/${created.id}`, {
   method: "PATCH",
   body: {
@@ -126,7 +129,12 @@ assert(snapshotHistory.length === 2, "Regeneration must preserve the old snapsho
 assert(snapshotHistory.some((snapshot) => snapshot.id === createdSnapshot.id && snapshot.status === "已被替代"), "The previous snapshot must be marked as superseded.");
 assert(snapshotHistory.some((snapshot) => snapshot.id === regeneratedSnapshot.id && snapshot.version === 2 && snapshot.status === "当前版本"), "The regenerated version must be current and increment to version 2.");
 
+const timelineAfterSnapshots = await request(`/api/characters/${created.id}/timeline`);
+assert(Array.isArray(timelineAfterSnapshots) && timelineAfterSnapshots.length === 2, "The real timeline should include both persisted snapshot versions.");
+assert(timelineAfterSnapshots.some((entry) => entry.id === `snapshot:${createdSnapshot.id}` && entry.type === "snapshot" && entry.tag === "已被替代"), "The timeline should show superseded snapshot versions.");
+assert(timelineAfterSnapshots.some((entry) => entry.id === `snapshot:${regeneratedSnapshot.id}` && entry.type === "snapshot" && entry.tag === "当前版本"), "The timeline should show the current snapshot version.");
+
 const latestList = await request("/api/characters");
 assert(latestList.some((character) => character.id === created.id && character.name === edited.name), "Character changes did not appear in the list.");
 
-console.log("Local API smoke test passed: character CRUD, memory settings persistence, manual snapshot create/read, and version regeneration.");
+console.log("Local API smoke test passed: character CRUD, memory settings persistence, manual snapshot create/read/versioning, and database-backed timeline retrieval.");
