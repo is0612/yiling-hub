@@ -26,6 +26,15 @@ type ChatHistoryResponse = {
   selectedConversationId: string | null;
   messages: ChatMessage[];
 };
+type ChatExportPage = {
+  conversationId: string;
+  title: string;
+  status: "ACTIVE" | "ARCHIVED";
+  page: number;
+  pageSize: number;
+  total: number;
+  messages: ChatMessage[];
+};
 type ChatSendResponse = {
   conversationId: string;
   title: string;
@@ -48,6 +57,7 @@ const messages = ref<ChatMessage[]>([]);
 const draft = ref("");
 const loading = ref(false);
 const sending = ref(false);
+const exporting = ref(false);
 const messagePanel = ref<HTMLElement | null>(null);
 const activeConversation = computed(() => conversations.value.find((item) => item.id === conversationId.value) ?? null);
 
@@ -132,6 +142,9 @@ async function startNewConversation() {
   delete nextQuery.q;
   delete nextQuery.view;
   await navigateTo({ path: route.path, query: nextQuery });
+  await loadHistory(null);
+  conversationId.value = null;
+  messages.value = [];
 }
 
 async function changeConversationView(status: "ACTIVE" | "ARCHIVED") {
@@ -185,49 +198,74 @@ async function toggleConversationStatus(item: ConversationSummary) {
   }
 }
 
-function exportConversation() {
-  if (!messages.value.length) return;
-  const title = activeConversation.value?.title || "新对话";
-  const lines = [
-    "# " + title,
-    "",
-    "- 角色：" + (character.value?.name || "未知角色"),
-    "- 导出时间：" + new Date().toISOString(),
-    "",
-    "---",
-    "",
-  ];
-
-  for (const message of messages.value) {
-    lines.push("## " + (message.role === "USER" ? "用户" : (character.value?.name || "角色")));
-    lines.push("");
-    lines.push("发生时间：" + message.occurredAt);
-    lines.push("");
-    lines.push(message.content);
-    lines.push("");
-    const sources = messageSources(message);
-    if (sources.memories.length || sources.snapshots.length) {
-      lines.push("引用来源：");
-      for (const memory of sources.memories) lines.push("- 长期记忆（" + memory.category + "）：" + memory.content + " [ID: " + memory.id + "]");
-      for (const snapshot of sources.snapshots) {
-        lines.push("- 快照 v" + snapshot.version + "（" + snapshot.periodStart + " — " + snapshot.periodEnd + "）：" + snapshot.summary + " [ID: " + snapshot.id + "]");
-      }
-      lines.push("");
+async function exportConversation() {
+  const exportConversationId = conversationId.value;
+  if (!exportConversationId || !messages.value.length || exporting.value) return;
+  exporting.value = true;
+  try {
+    const exportMessages: ChatMessage[] = [];
+    let expectedTotal = 0;
+    for (let page = 1; ; page += 1) {
+      const result = await $fetch<ChatExportPage>(
+        "/api/characters/" + encodeURIComponent(id.value) + "/chat/" + encodeURIComponent(exportConversationId) +
+          "?page=" + page + "&pageSize=200",
+      );
+      if (page === 1) expectedTotal = result.total;
+      exportMessages.push(...result.messages);
+      if (exportMessages.length >= expectedTotal || result.messages.length === 0) break;
+      if (page > Math.ceil(expectedTotal / 200) + 1) throw new Error("导出分页没有正常结束，请刷新后重试。");
     }
+    if (!exportMessages.length) {
+      ElMessage.info("当前会话没有可导出的消息。");
+      return;
+    }
+
+    const title = activeConversation.value?.title || "对话记录";
+    const lines = [
+      "# " + title,
+      "",
+      "- 角色：" + (character.value?.name || "未知角色"),
+      "- 导出时间：" + new Date().toISOString(),
+      "- 消息数量：" + exportMessages.length,
+      "",
+      "---",
+      "",
+    ];
+
+    for (const message of exportMessages) {
+      lines.push("## " + (message.role === "USER" ? "用户" : (character.value?.name || "角色")));
+      lines.push("");
+      lines.push("发生时间：" + message.occurredAt);
+      lines.push("");
+      lines.push(message.content);
+      lines.push("");
+      const sources = messageSources(message);
+      if (sources.memories.length || sources.snapshots.length) {
+        lines.push("引用来源：");
+        for (const memory of sources.memories) lines.push("- 长期记忆（" + memory.category + "）：" + memory.content + " [ID: " + memory.id + "]");
+        for (const snapshot of sources.snapshots) {
+          lines.push("- 快照 v" + snapshot.version + "（" + snapshot.periodStart + " — " + snapshot.periodEnd + "）：" + snapshot.summary + " [ID: " + snapshot.id + "]");
+        }
+        lines.push("");
+      }
+    }
+
+    const safeName = title.replace(/[\\/:*?"<>|]/g, "_").slice(0, 60) || "对话记录";
+    const objectUrl = URL.createObjectURL(new Blob([lines.join("\n")], { type: "text/markdown;charset=utf-8" }));
+    const anchor = document.createElement("a");
+    anchor.href = objectUrl;
+    anchor.download = safeName + ".md";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+    ElMessage.success("已导出完整对话，共 " + exportMessages.length + " 条消息，包含可追溯的记忆来源。");
+  } catch (error) {
+    ElMessage.error(getErrorMessage(error, "导出对话失败，请稍后重试。"));
+  } finally {
+    exporting.value = false;
   }
-
-  const safeName = title.replace(/[\\/:*?"<>|]/g, "_").slice(0, 60) || "对话记录";
-  const objectUrl = URL.createObjectURL(new Blob([lines.join("\n")], { type: "text/markdown;charset=utf-8" }));
-  const anchor = document.createElement("a");
-  anchor.href = objectUrl;
-  anchor.download = safeName + ".md";
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  URL.revokeObjectURL(objectUrl);
-  ElMessage.success("对话已导出为 Markdown，包含本次回复的可追溯记忆来源。");
 }
-
 function messageSources(message: ChatMessage) {
   return message.role === "ASSISTANT"
     ? { memories: message.sources?.memories ?? [], snapshots: message.sources?.snapshots ?? [] }
@@ -353,7 +391,7 @@ onMounted(() => void reload());
             <span>角色：{{ character?.name || "读取中" }}</span>
           </div>
           <div class="conversation-toolbar-actions">
-            <el-button size="small" :disabled="!messages.length" @click="exportConversation"><el-icon><Download /></el-icon>导出 Markdown</el-button>
+            <el-button size="small" :loading="exporting" :disabled="!conversationId || !messages.length" @click="void exportConversation()"><el-icon><Download /></el-icon>导出 Markdown</el-button>
             <el-tag :type="modelConfigured ? 'success' : 'warning'" effect="plain">{{ modelConfigured ? "模型已配置" : "等待配置" }}</el-tag>
           </div>
         </div>

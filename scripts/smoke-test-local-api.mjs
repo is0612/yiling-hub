@@ -296,6 +296,11 @@ const archivedChats = await request("/api/characters/" + created.id + "/chat?sta
 assert(archivedChats.conversations.some((conversation) => conversation.id === chatReply.conversationId), "Archived conversations should remain searchable and recoverable.");
 const archivedHistory = await request("/api/characters/" + created.id + "/chat?status=ARCHIVED&conversationId=" + chatReply.conversationId);
 assert(archivedHistory.selectedConversationId === chatReply.conversationId && archivedHistory.messages.length === 2, "Archived conversation history and messages must remain readable.");
+const firstExportPage = await request("/api/characters/" + created.id + "/chat/" + chatReply.conversationId + "?page=1&pageSize=1");
+const secondExportPage = await request("/api/characters/" + created.id + "/chat/" + chatReply.conversationId + "?page=2&pageSize=1");
+assert(firstExportPage.total === 2 && firstExportPage.messages.length === 1 && firstExportPage.page === 1, "Transcript export should paginate the full conversation.");
+assert(secondExportPage.total === 2 && secondExportPage.messages.length === 1 && secondExportPage.page === 2, "Transcript export should return subsequent messages with the total count.");
+assert(firstExportPage.messages[0].role === "USER" && secondExportPage.messages[0].role === "ASSISTANT", "Transcript export pages should preserve chronological speaker order.");
 const archivedSendResponse = await fetch(new URL("/api/characters/" + created.id + "/chat", baseUrl), {
   method: "POST",
   headers: { "content-type": "application/json" },
