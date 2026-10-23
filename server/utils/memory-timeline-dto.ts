@@ -30,7 +30,7 @@ type MemoryRecord = {
   id: string;
   category: "FACT" | "PREFERENCE" | "RELATIONSHIP" | "COMMITMENT" | "GOAL" | "EVENT" | "SUMMARY" | "OTHER";
   content: string;
-  status: "ACTIVE" | "SUPERSEDED" | "ARCHIVED" | "INVALIDATED";
+  status: "ACTIVE" | "SUPERSEDED" | "ARCHIVED" | "INVALIDATED" | "TRASHED";
   createdAt: Date;
   updatedAt: Date;
 };
@@ -89,6 +89,7 @@ const memoryStatusLabels: Record<MemoryRecord["status"], string> = {
   SUPERSEDED: "已被替代",
   ARCHIVED: "已归档",
   INVALIDATED: "已失效",
+  TRASHED: "回收站",
 };
 
 type TimedEntry = { timestamp: number; entry: MemoryTimelineEntryDto };

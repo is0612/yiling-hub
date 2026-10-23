@@ -73,6 +73,7 @@ enum MemoryItemStatus {
   SUPERSEDED
   ARCHIVED
   INVALIDATED
+  TRASHED
 }
 
 enum SnapshotKind {
@@ -290,8 +291,10 @@ model MemoryItem {
   category        MemoryCategory
   content         String                 @db.Text
   confidence      Float?
-  status          MemoryItemStatus       @default(ACTIVE)
-  sourceMessageId String?                @db.Uuid
+  status           MemoryItemStatus       @default(ACTIVE)
+  statusBeforeTrash MemoryItemStatus?
+  deletedAt        DateTime?              @db.Timestamptz(6)
+  sourceMessageId  String?                @db.Uuid
   sourceSnapshotId String?               @db.Uuid
   dedupeKey       String?                @db.VarChar(255)
   validFrom       DateTime?              @db.Timestamptz(6)
@@ -305,6 +308,7 @@ model MemoryItem {
 
   @@unique([memoryScopeId, dedupeKey])
   @@index([memoryScopeId, status, category])
+  @@index([memoryScopeId, status, deletedAt])
   @@index([memoryScopeId, validTo])
   @@map("memory_items")
 }

@@ -51,10 +51,13 @@ export default defineEventHandler(async (event) => {
       id: memoryId,
       memoryScope: { is: { character: { is: { ownerId } } } },
     },
-    select: { id: true },
+    select: { id: true, status: true },
   });
   if (!existing) {
     throw createError({ statusCode: 404, statusMessage: "长期记忆不存在。" });
+  }
+  if (existing.status === "TRASHED") {
+    throw createError({ statusCode: 409, statusMessage: "该记忆已在回收站，请先恢复后再编辑。" });
   }
 
   return prisma.memoryItem.update({

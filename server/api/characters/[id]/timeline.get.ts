@@ -41,7 +41,7 @@ export default defineEventHandler(async (event) => {
       },
     }),
     prisma.memoryItem.findMany({
-      where: { memoryScope: { is: { characterId } } },
+      where: { status: { not: "TRASHED" }, memoryScope: { is: { characterId } } },
       orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
       take: 250,
       select: {
