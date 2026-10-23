@@ -4,9 +4,8 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import { initialCharacters, initialSnapshots, type Character, type Snapshot } from "~/utils/mock-data";
 
 const route = useRoute();
-const id = computed(() => String(route.params.id || "big-fish"));
-const characters = useState<Character[]>("characters", () => initialCharacters.map((item) => ({ ...item, channels: [...item.channels] })));
-const character = computed(() => characters.value.find((item) => item.id === id.value) || { ...initialCharacters[0], id: id.value, name: "新建角色" });
+const id = computed(() => String(route.params.id || ""));
+const character = ref<Character>({ ...initialCharacters[0], id: "", name: "角色加载中" });
 const items = useState<Snapshot[]>("snapshots", () => initialSnapshots.map((item) => ({ ...item })));
 const query = ref("");
 const statusFilter = ref("全部版本状态");
@@ -17,6 +16,16 @@ const filtered = computed(() => items.value.filter((item) => {
   const statusMatches = statusFilter.value === "全部版本状态" || item.status === statusFilter.value;
   return queryMatches && statusMatches;
 }));
+
+async function loadCharacter() {
+  try {
+    character.value = await $fetch<Character>(`/api/characters/${encodeURIComponent(id.value)}`);
+  } catch {
+    character.value = { ...initialCharacters[0], id: id.value, name: "无法读取角色" };
+    ElMessage.error("角色档案读取失败。快照内容当前仍是演示数据。");
+  }
+}
+
 function resetFilters() { query.value = ""; statusFilter.value = "全部版本状态"; }
 function statusTone(status: Snapshot["status"]) { return status === "当前版本" ? "pill-green" : "pill-gray"; }
 async function regenerate(snapshot: Snapshot) {
@@ -32,17 +41,20 @@ async function regenerate(snapshot: Snapshot) {
   detail.value = newVersion;
   ElMessage.success(`第 ${snapshot.number} 份快照已创建演示版本 v${newVersion.version}；旧版本保留。`);
 }
+
+onMounted(() => void loadCharacter());
+watch(id, () => void loadCharacter());
 </script>
 
 <template>
   <div class="page-wrap">
-    <PageHeader :eyebrow="`角色管理 / ${character.name} / 周期快照`" title="周期快照档案" description="每份快照都是一个时间段的记忆归档。重新生成会创建新版本，旧版本不会被覆盖。">
+    <PageHeader :eyebrow="`角色管理 / ${character.name} / 周期快照`" title="周期快照档案" description="角色档案从数据库读取；当前快照时间线与版本重生成仍为演示数据。">
       <template #actions><DemoTag /><el-button @click="navigateTo('/characters/' + character.id)"><el-icon><ArrowLeft /></el-icon>返回驾驶舱</el-button><el-button type="primary" @click="ElMessage.info('已排入演示快照任务；真实生成器尚未接入。')"><el-icon><MagicStick /></el-icon>生成快照</el-button></template>
     </PageHeader>
 
     <div class="stat-grid" style="grid-template-columns:repeat(3,minmax(0,1fr))">
-      <StatCard label="历史快照" :value="String(items.length).padStart(2, '0')" note="包含演示版本" symbol="▤" tone="purple" />
-      <StatCard label="覆盖消息" :value="String(items.reduce((sum, item) => sum + item.messages, 0))" note="来源记录统计" symbol="☰" tone="blue" />
+      <StatCard label="历史快照" :value="String(items.length).padStart(2, '0')" note="快照数据仍为演示内容" symbol="▤" tone="purple" />
+      <StatCard label="覆盖消息" :value="String(items.reduce((sum, item) => sum + item.messages, 0))" note="演示来源记录统计" symbol="☰" tone="blue" />
       <StatCard label="最近生成" :value="items[0]?.date.includes('刚刚') ? '刚刚' : '10/21'" note="仅当前演示状态" symbol="◷" tone="green" />
     </div>
 
