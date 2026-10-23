@@ -102,8 +102,16 @@ async function regenerate(snapshot: Snapshot) {
   }
 }
 
-onMounted(() => void loadCharacter());
-watch(id, () => void loadCharacter());
+onMounted(() => {
+  void loadCharacter();
+  void loadSnapshots();
+});
+watch(id, () => {
+  items.value = [];
+  detail.value = null;
+  void loadCharacter();
+  void loadSnapshots();
+});
 </script>
 
 <template>
