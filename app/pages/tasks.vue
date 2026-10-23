@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Refresh, Search, Warning, MagicStick, Files } from "@element-plus/icons-vue";
+import { Refresh, Search, Warning, MagicStick, Files, Cpu } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
 
 type MemoryTask = {
@@ -20,6 +20,13 @@ type MemoryTask = {
   characterName: string;
 };
 type TaskListResponse = { items: MemoryTask[]; total: number };
+type WorkerResult = {
+  processed: boolean;
+  jobId?: string;
+  status?: "SUCCEEDED" | "SKIPPED" | "RETRY_WAIT" | "FAILED";
+  snapshotId?: string;
+  message: string;
+};
 type SchedulerReport = {
   settingsChecked: number;
   settingsAdvanced: number;
@@ -36,6 +43,7 @@ const query = ref("");
 const statusFilter = ref("ALL");
 const loading = ref(false);
 const schedulerRunning = ref(false);
+const workerRunning = ref(false);
 const loadError = ref("");
 const detailsOpen = ref(false);
 const selectedTask = ref<MemoryTask | null>(null);
@@ -146,6 +154,31 @@ async function runScheduler() {
   }
 }
 
+async function runWorker() {
+  if (workerRunning.value) return;
+  workerRunning.value = true;
+  try {
+    const result = await $fetch<WorkerResult>("/api/tasks/worker/run", { method: "POST" });
+    await loadTasks();
+    if (!result.processed) {
+      ElMessage.info(result.message);
+    } else if (result.status === "SUCCEEDED") {
+      ElMessage.success("已执行一条任务并生成规则版结构化快照（未调用大模型）。");
+    } else if (result.status === "SKIPPED") {
+      ElMessage.info("该周期没有已保存活动，任务已跳过。");
+    } else {
+      ElMessage.warning(result.message);
+    }
+  } catch (error) {
+    const message = error && typeof error === "object" && "statusMessage" in error
+      ? String(error.statusMessage)
+      : error instanceof Error ? error.message : "执行任务失败。";
+    ElMessage.error(message);
+  } finally {
+    workerRunning.value = false;
+  }
+}
+
 function openDetails(task: MemoryTask) {
   selectedTask.value = task;
   detailsOpen.value = true;
@@ -159,6 +192,7 @@ onMounted(() => void loadTasks());
     <PageHeader eyebrow="系统管理 / 任务监控" title="后台任务" description="这里显示数据库中的持久化任务，并可手动扫描已到期的记忆周期。任务入队与快照执行是两个阶段；当前尚未接入实际 Worker。">
       <template #actions>
         <el-button :loading="loading" @click="loadTasks"><el-icon><Refresh /></el-icon>刷新列表</el-button>
+        <el-button :loading="workerRunning" @click="runWorker"><el-icon><Cpu /></el-icon>运行一次 Worker</el-button>
         <el-button type="primary" :loading="schedulerRunning" @click="runScheduler"><el-icon><MagicStick /></el-icon>扫描到期周期</el-button>
       </template>
     </PageHeader>
@@ -204,7 +238,7 @@ onMounted(() => void loadTasks());
 
     <div class="info-callout" style="margin-top:18px">
       <el-icon><Warning /></el-icon>
-      <span>当前已接入真实任务队列和周期扫描。排队中的任务还不会自动生成快照；Worker 执行器、失败重试与任务取消将在后续阶段接入。</span>
+      <span>当前已接入真实任务队列和周期扫描。排队中的任务还不会自动生成快照；当前 Worker 可执行周期快照任务并保存规则版结构化快照；模型总结、更多任务类型和任务取消仍待后续阶段接入。</span>
     </div>
 
     <el-dialog v-model="detailsOpen" title="任务详情" width="min(620px, 94vw)">

@@ -140,12 +140,13 @@ const initialSettings = await request(`/api/characters/${created.id}/memory-sett
 assert(initialSettings.snapshotIntervalDays === 8, "New character should get an 8-day default interval.");
 assert(initialSettings.changePolicy === "NEXT_CYCLE", "New character should use NEXT_CYCLE by default.");
 
+const schedulerAnchorAt = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
 const savedSettings = await request(`/api/characters/${created.id}/memory-settings`, {
   method: "PATCH",
   body: {
     snapshotIntervalDays: 3,
     timezone: "America/Los_Angeles",
-    anchorAt: new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString(),
+    anchorAt: schedulerAnchorAt.toISOString(),
     rawMessageRetentionDays: 30,
     autoSnapshotEnabled: true,
     changePolicy: "IMMEDIATE_RECALC",
@@ -225,6 +226,34 @@ const snapshotsAfterPermanentDelete = await request(`/api/characters/${created.i
 assert(snapshotsAfterPermanentDelete.length === 2, "Permanent deletion must not rewrite or remove existing snapshot versions.");
 const missingMemoryResponse = await fetch(new URL(`/api/memories/${createdMemory.id}`, baseUrl));
 assert(missingMemoryResponse.status === 404, "Permanently deleted memory should no longer be addressable.");
+
+const historicalStart = new Date(schedulerAnchorAt.getTime() + 60 * 60 * 1000);
+const historicalConversation = await request(`/api/characters/${created.id}/conversations/import`, {
+  method: "POST",
+  body: {
+    title: `CI 历史周期对话 ${unique}`,
+    messages: [
+      { role: "USER", content: `历史周期用户消息 ${unique}`, occurredAt: historicalStart.toISOString() },
+      { role: "ASSISTANT", content: `历史周期角色回复 ${unique}`, occurredAt: new Date(historicalStart.getTime() + 60 * 60 * 1000).toISOString() },
+    ],
+  },
+});
+assert(historicalConversation.timestampsEstimated === false, "Explicit historical timestamps should be preserved for the worker test.");
+
+const workerResults = [];
+for (let attempt = 0; attempt < 5; attempt += 1) {
+  const result = await request("/api/tasks/worker/run", { method: "POST" });
+  if (!result.processed) break;
+  workerResults.push(result);
+}
+assert(workerResults.some((result) => result.status === "SUCCEEDED" && typeof result.snapshotId === "string"), "Worker should generate a persisted structured snapshot for a period with messages.");
+assert(workerResults.some((result) => result.status === "SKIPPED"), "Worker should skip empty overdue periods.");
+const workerTaskList = await request("/api/tasks");
+assert(workerTaskList.items.some((task) => task.status === "SUCCEEDED"), "Task API should show worker-completed tasks.");
+assert(workerTaskList.items.some((task) => task.status === "SKIPPED"), "Task API should show skipped empty-period tasks.");
+const snapshotsAfterWorker = await request(`/api/characters/${created.id}/snapshots`);
+assert(snapshotsAfterWorker.length === 3, "Worker should add one automatic snapshot without rewriting the two manual snapshot versions.");
+assert(snapshotsAfterWorker.some((snapshot) => snapshot.summary.includes("自动周期快照（规则版）")), "Generated snapshots must disclose that the worker used deterministic rules rather than an LLM.");
 
 const latestList = await request("/api/characters");
 assert(latestList.some((character) => character.id === created.id && character.name === edited.name), "Character changes did not appear in the list.");
