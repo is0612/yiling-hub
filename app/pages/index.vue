@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Activity, ArrowDownRight, ArrowRight, ArrowUpRight, Brain, Calendar, Clock, Files, Sparkles, User } from "@element-plus/icons-vue";
+import { DataAnalysis, ArrowDown, ArrowRight, TopRight, Cpu, Calendar, Clock, Files, MagicStick, User } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
 import { initialCharacters, initialTasks, initialTimeline } from "~/utils/mock-data";
 
@@ -30,11 +30,11 @@ const taskTone: Record<string, string> = { 成功: "green", 等待执行: "amber
       <section class="surface panel">
         <div class="panel-title-row">
           <SectionTitle title="记忆活动概览" description="近 7 天被记录的消息与事件" />
-          <span class="pill pill-purple"><el-icon><Activity /></el-icon>本周</span>
+          <span class="pill pill-purple"><el-icon><DataAnalysis /></el-icon>本周</span>
         </div>
         <div style="display:flex;align-items:flex-end;gap:11px;margin-top:24px">
           <strong style="font-size:35px;line-height:1;letter-spacing:-.06em;color:#303a55">376</strong>
-          <span style="display:flex;align-items:center;gap:4px;margin-bottom:3px;color:#279877;font-size:10px;font-weight:800"><el-icon><ArrowDownRight /></el-icon>12.8%</span>
+          <span style="display:flex;align-items:center;gap:4px;margin-bottom:3px;color:#279877;font-size:10px;font-weight:800"><el-icon><ArrowDown /></el-icon>12.8%</span>
           <span style="margin-bottom:3px;color:#a0a8b8;font-size:10px">较上周</span>
         </div>
         <div class="week-chart">
@@ -57,7 +57,7 @@ const taskTone: Record<string, string> = { 成功: "green", 等待执行: "amber
               <div class="character-name-row"><span class="character-name" style="font-size:13px">大肥鱼</span><span class="pill pill-green">运行中</span></div>
               <div class="character-alias">当前周期 · 第 13 份快照</div>
             </div>
-            <el-icon style="font-size:18px;color:#948af0"><Sparkles /></el-icon>
+            <el-icon style="font-size:18px;color:#948af0"><MagicStick /></el-icon>
           </div>
           <div class="next-snapshot-stats">
             <div><div class="muted-note">预计归档时间</div><strong>明天 09:00</strong></div>
@@ -77,22 +77,22 @@ const taskTone: Record<string, string> = { 成功: "green", 等待执行: "amber
 
     <div class="panel-grid equal">
       <section class="surface panel">
-        <div class="panel-title-row"><SectionTitle title="角色最近动态" description="各角色近期的记忆活动" /><el-button text type="primary" @click="navigateTo('/characters')">全部角色<el-icon class="el-icon--right"><ArrowUpRight /></el-icon></el-button></div>
+        <div class="panel-title-row"><SectionTitle title="角色最近动态" description="各角色近期的记忆活动" /><el-button text type="primary" @click="navigateTo('/characters')">全部角色<el-icon class="el-icon--right"><TopRight /></el-icon></el-button></div>
         <div class="section-content">
           <NuxtLink v-for="(character, index) in characters" :key="character.id" :to="'/characters/' + character.id" class="activity-row">
             <div class="avatar" :class="'avatar-' + character.avatarTone" style="width:40px;height:40px;font-size:13px">{{ character.avatar }}</div>
             <div class="character-info"><div class="character-name-row"><span class="character-name" style="font-size:12px">{{ character.name }}</span><span class="character-alias">{{ character.alias }}</span></div><div class="character-alias activity-snippet">{{ timeline[index % timeline.length]?.title }}</div></div>
             <div class="activity-count"><strong>{{ character.memoryCount }}</strong><span>记忆条目</span></div>
-            <el-icon class="activity-chevron"><ArrowUpRight /></el-icon>
+            <el-icon class="activity-chevron"><TopRight /></el-icon>
           </NuxtLink>
         </div>
       </section>
 
       <section class="surface panel">
-        <div class="panel-title-row"><SectionTitle title="后台任务" description="近期记忆任务与系统事件" /><el-button text type="primary" @click="navigateTo('/tasks')">查看任务<el-icon class="el-icon--right"><ArrowUpRight /></el-icon></el-button></div>
+        <div class="panel-title-row"><SectionTitle title="后台任务" description="近期记忆任务与系统事件" /><el-button text type="primary" @click="navigateTo('/tasks')">查看任务<el-icon class="el-icon--right"><TopRight /></el-icon></el-button></div>
         <div class="section-content">
           <div v-for="task in tasks.slice(0, 4)" :key="task.id" class="task-row">
-            <div class="task-symbol" :class="task.tone"><el-icon><component :is="task.status === '成功' ? Files : task.status === '失败待重试' ? Activity : Clock" /></el-icon></div>
+            <div class="task-symbol" :class="task.tone"><el-icon><component :is="task.status === '成功' ? Files : task.status === '失败待重试' ? DataAnalysis : Clock" /></el-icon></div>
             <div class="character-info"><div class="character-name" style="font-size:11px">{{ task.name }}</div><div class="character-alias">{{ task.character }} · {{ task.time }}</div></div>
             <span class="pill" :class="'pill-' + taskTone[task.status]">{{ task.status }}</span>
           </div>
