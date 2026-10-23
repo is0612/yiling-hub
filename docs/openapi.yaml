@@ -910,7 +910,7 @@ paths:
       tags: [Snapshots]
       summary: 生成手动快照或排入自动 AI 快照重新提炼
       requestBody:
-        required: true
+        required: false
         content:
           application/json:
             schema:
@@ -931,19 +931,11 @@ paths:
           content:
             application/json:
               schema:
-                allOf:
-                  - $ref: '#/components/schemas/ApiResponse'
-                  - type: object
-                    properties:
-                      data:
-                        type: object
-                        properties:
-                          id: { type: string, format: uuid }
-                          version: { type: integer }
-                          jobId: { type: string, format: uuid }
-                          status: { type: string, enum: [QUEUED, RUNNING, RETRY_WAIT] }
-                          queued: { type: boolean }
-                          duplicate: { type: boolean }
+                type: object
+                required: [id, version]
+                properties:
+                  id: { type: string, format: uuid }
+                  version: { type: integer }
         '202':
           description: AI 重新提炼任务已排队
           content:
