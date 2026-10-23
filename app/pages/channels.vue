@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ChatDotRound, Connection, Link, Plus, Warning } from "@element-plus/icons-vue";
+import { ChatDotRound, Connection, Plus, Warning } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
 import { channels } from "~/utils/mock-data";
 
