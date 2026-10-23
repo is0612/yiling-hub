@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Bell, Check, Database, Key, Monitor, Refresh, ShieldCheck } from "@element-plus/icons-vue";
+import { Bell, Check, Database, Key, Monitor, Refresh, Lock } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
 
 const instanceName = ref("羚枢 · 本地工作空间");
@@ -29,11 +29,11 @@ function saveSettings() {
           <div class="toggle-row"><div><strong>演示通知</strong><p class="form-help">在演示操作完成时显示提示消息。</p></div><el-switch v-model="enableDemoNotifications" /></div>
         </section>
         <section class="surface form-section" style="margin-top:16px">
-          <div class="form-title"><el-icon class="setting-icon"><ShieldCheck /></el-icon>管理员与安全</div>
+          <div class="form-title"><el-icon class="setting-icon"><Lock /></el-icon>管理员与安全</div>
           <div class="security-row"><div class="security-symbol"><el-icon><Key /></el-icon></div><div class="character-info"><strong>管理员登录</strong><p class="form-help">当前未实现安全登录会话和服务端授权校验。</p></div><el-tag type="warning" effect="light">尚未接入</el-tag></div>
           <div class="security-row"><div class="security-symbol"><el-icon><Database /></el-icon></div><div class="character-info"><strong>数据库连接</strong><p class="form-help">PostgreSQL 与 Prisma 已有项目配置，尚未接入本页的实时状态检测。</p></div><el-tag type="info" effect="light">未验证</el-tag></div>
           <div class="security-row"><div class="security-symbol"><el-icon><Bell /></el-icon></div><div class="character-info"><strong>后台任务告警</strong><p class="form-help">真实告警与日志查询尚未接入。</p></div><el-tag type="info" effect="light">规划中</el-tag></div>
-          <div class="info-callout" style="margin-top:17px"><el-icon><ShieldCheck /></el-icon><span>不要将数据库密码、模型 API Key 或渠道 Token 放入前端配置。公开部署前必须完成鉴权和权限校验。</span></div>
+          <div class="info-callout" style="margin-top:17px"><el-icon><Lock /></el-icon><span>不要将数据库密码、模型 API Key 或渠道 Token 放入前端配置。公开部署前必须完成鉴权和权限校验。</span></div>
           <div class="form-actions"><el-button @click="ElMessage.info('演示设置已刷新。')"><el-icon><Refresh /></el-icon>恢复显示</el-button><el-button type="primary" @click="saveSettings"><el-icon><Check /></el-icon>保存设置</el-button></div>
         </section>
       </div>
