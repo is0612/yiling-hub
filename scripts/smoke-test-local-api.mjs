@@ -136,6 +136,15 @@ const edited = await request(`/api/characters/${created.id}`, {
 assert(edited.name.endsWith("（已编辑）"), "PATCH did not update the character name.");
 assert(edited.personality === "角色人设已持久化更新。", "PATCH did not update the character personality.");
 
+const savedChatSettings = await request(`/api/characters/${created.id}`, {
+  method: "PATCH",
+  body: { chatModel: "ci-character-model", chatTemperature: 0.4, chatMaxTokens: 1024 },
+});
+assert(savedChatSettings.chatModel === "ci-character-model", "Character model override did not round-trip.");
+assert(savedChatSettings.chatTemperature === 0.4 && savedChatSettings.chatMaxTokens === 1024, "Character temperature/token settings did not round-trip.");
+const reloadedChatSettings = await request(`/api/characters/${created.id}`);
+assert(reloadedChatSettings.chatModel === "ci-character-model" && reloadedChatSettings.chatMaxTokens === 1024, "Character-specific chat settings did not persist after reloading.");
+
 const initialSettings = await request(`/api/characters/${created.id}/memory-settings`);
 assert(initialSettings.snapshotIntervalDays === 8, "New character should get an 8-day default interval.");
 assert(initialSettings.changePolicy === "NEXT_CYCLE", "New character should use NEXT_CYCLE by default.");
@@ -331,6 +340,15 @@ assert(chatHistory.messages.length === 2, "A new chat should persist one user me
 assert(chatHistory.messages[0].role === "USER" && chatHistory.messages[1].role === "ASSISTANT", "Persisted chat messages should keep their speaker roles.");
 assert(chatHistory.messages[1].content === chatReply.assistantMessage.content, "Reopened chat should preserve the assistant reply.");
 
+const renamedTitle = "CI 重命名会话 " + unique;
+const renamedConversation = await request("/api/characters/" + created.id + "/chat/" + chatReply.conversationId, {
+  method: "PATCH",
+  body: { title: renamedTitle },
+});
+assert(renamedConversation.title === renamedTitle, "Conversation title PATCH should persist a renamed title.");
+const renamedHistory = await request("/api/characters/" + created.id + "/chat?status=ACTIVE&q=" + encodeURIComponent(renamedTitle));
+assert(renamedHistory.conversations.some((item) => item.id === chatReply.conversationId && item.title === renamedTitle), "Renamed title should be visible in history search.");
+
 const searchedChats = await request("/api/characters/" + created.id + "/chat?status=ACTIVE&q=" + encodeURIComponent("历史周期用户消息"));
 assert(searchedChats.conversations.some((conversation) => conversation.id === chatReply.conversationId), "Chat history search should match message text, not only the conversation title.");
 const archiveResult = await request("/api/characters/" + created.id + "/chat/" + chatReply.conversationId, {
@@ -363,4 +381,4 @@ assert(restoreResult.status === "ACTIVE", "Restoring an archived conversation sh
 const restoredChat = await request("/api/characters/" + created.id + "/chat?conversationId=" + chatReply.conversationId);
 assert(restoredChat.selectedConversationId === chatReply.conversationId && restoredChat.messages.length === 2, "Restored chat history must preserve its messages.");
 
-console.log("Local API smoke test passed: character CRUD, memory settings, transcript import, scheduler backfill, local-mock AI extraction, source-ID validation, persisted provenance, manual and AI snapshot versions, safe AI regeneration, task cancel/requeue, recycle-bin lifecycle, context-aware AI chat, conversation search, archive/restore, and archived write protection.");
+console.log("Local API smoke test passed: character CRUD, per-character model settings, memory settings, transcript import, scheduler backfill, local-mock AI extraction, source-ID validation, persisted provenance, manual and AI snapshot versions, safe AI regeneration, task cancel/requeue, recycle-bin lifecycle, context-aware AI chat, conversation search/rename, archive/restore, and archived write protection.");

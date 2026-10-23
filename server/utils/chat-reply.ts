@@ -1,11 +1,12 @@
-import { isMemoryModelConfigured } from "./memory-ai";
-
 export type ConversationContextMessage = { role: "USER" | "ASSISTANT"; content: string; occurredAt: string };
 export type ConversationContextMemory = { id: string; category: string; content: string; confidence: number | null; relevanceScore: number };
 export type ConversationContextSnapshot = { id: string; summary: string; periodStart: string; periodEnd: string; version: number; relevanceScore: number };
 export type ConversationReplyInput = {
   characterName: string;
   characterPrompt: string;
+  model?: string;
+  temperature?: number;
+  maxTokens?: number;
   currentMessage: string;
   recentMessages: ConversationContextMessage[];
   memories: ConversationContextMemory[];
@@ -60,10 +61,16 @@ function systemPrompt(): string {
 
 export async function generateConversationReply(input: ConversationReplyInput): Promise<ConversationReplyResult> {
   const apiKey = process.env.LLM_API_KEY?.trim();
-  const model = process.env.LLM_MODEL?.trim();
-  if (!apiKey || !model || !isMemoryModelConfigured()) {
-    throw new Error("LLM_NOT_CONFIGURED: 请在服务端 .env 配置 LLM_API_KEY 和 LLM_MODEL。");
+  const model = input.model?.trim() || process.env.LLM_MODEL?.trim();
+  if (!apiKey || !model) {
+    throw new Error("LLM_NOT_CONFIGURED: 请在服务端 .env 配置 LLM_API_KEY，并为当前角色设置模型名称或配置 LLM_MODEL。");
   }
+  const temperature = typeof input.temperature === "number" && Number.isFinite(input.temperature) && input.temperature >= 0 && input.temperature <= 2
+    ? input.temperature
+    : 0.7;
+  const maxTokens = typeof input.maxTokens === "number" && Number.isInteger(input.maxTokens) && input.maxTokens >= 256 && input.maxTokens <= 8192
+    ? input.maxTokens
+    : 1800;
 
   const baseUrl = (process.env.LLM_BASE_URL?.trim() || "https://api.openai.com/v1").replace(/\/+$/, "");
   let endpoint: URL;
@@ -85,8 +92,8 @@ export async function generateConversationReply(input: ConversationReplyInput): 
       headers: { authorization: "Bearer " + apiKey, "content-type": "application/json" },
       body: JSON.stringify({
         model,
-        temperature: 0.7,
-        max_tokens: 1800,
+        temperature,
+        max_tokens: maxTokens,
         response_format: { type: "json_object" },
         messages: [
           { role: "system", content: systemPrompt() },

@@ -1,8 +1,14 @@
 <script setup lang="ts">
-import { ChatDotRound, Clock, Download, Plus, Promotion, Refresh, Reading, Search, User } from "@element-plus/icons-vue";
+import { ChatDotRound, Clock, CopyDocument, Download, Plus, Promotion, Refresh, Reading, Search, Setting, User } from "@element-plus/icons-vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 
-type ChatCharacter = { id: string; name: string };
+type ChatCharacter = {
+  id: string;
+  name: string;
+  chatModel: string;
+  chatTemperature: number;
+  chatMaxTokens: number;
+};
 type ChatMemorySource = { id: string; category: string; content: string };
 type ChatSnapshotSource = { id: string; summary: string; periodStart: string; periodEnd: string; version: number };
 type ChatMessage = {
@@ -58,6 +64,11 @@ const draft = ref("");
 const loading = ref(false);
 const sending = ref(false);
 const exporting = ref(false);
+const modelSettingsOpen = ref(false);
+const modelSettingsSaving = ref(false);
+const draftChatModel = ref("");
+const draftChatTemperature = ref(0.7);
+const draftChatMaxTokens = ref(1800);
 const messagePanel = ref<HTMLElement | null>(null);
 const activeConversation = computed(() => conversations.value.find((item) => item.id === conversationId.value) ?? null);
 
@@ -81,6 +92,74 @@ async function scrollToLatest() {
 
 async function loadCharacter() {
   character.value = await $fetch<ChatCharacter>("/api/characters/" + encodeURIComponent(id.value));
+}
+
+function openModelSettings() {
+  draftChatModel.value = character.value?.chatModel ?? "";
+  draftChatTemperature.value = character.value?.chatTemperature ?? 0.7;
+  draftChatMaxTokens.value = character.value?.chatMaxTokens ?? 1800;
+  modelSettingsOpen.value = true;
+}
+
+async function saveModelSettings() {
+  if (modelSettingsSaving.value || !character.value) return;
+  modelSettingsSaving.value = true;
+  try {
+    character.value = await $fetch<ChatCharacter>("/api/characters/" + encodeURIComponent(id.value), {
+      method: "PATCH",
+      body: {
+        chatModel: draftChatModel.value.trim(),
+        chatTemperature: draftChatTemperature.value,
+        chatMaxTokens: draftChatMaxTokens.value,
+      },
+    });
+    await loadHistory(conversationId.value);
+    modelSettingsOpen.value = false;
+    ElMessage.success("本角色模型参数已保存。API Key 与服务地址仍由服务端 .env 管理。");
+  } catch (error) {
+    ElMessage.error(getErrorMessage(error, "保存角色模型参数失败。"));
+  } finally {
+    modelSettingsSaving.value = false;
+  }
+}
+
+async function renameConversation(item: ConversationSummary) {
+  if (sending.value) return;
+  let title: string;
+  try {
+    const result = await ElMessageBox.prompt("输入新的会话标题（最多 255 个字符）。", "重命名会话", {
+      inputValue: item.title,
+      inputMaxLength: 255,
+      inputValidator: (value) => Boolean(value.trim()) || "标题不能为空。",
+      confirmButtonText: "保存标题",
+      cancelButtonText: "取消",
+    });
+    title = result.value.trim();
+  } catch {
+    return;
+  }
+  if (!title || title === item.title) return;
+  try {
+    const updated = await $fetch<{ id: string; title: string; status: "ACTIVE" | "ARCHIVED"; updatedAt: string }>(
+      "/api/characters/" + encodeURIComponent(id.value) + "/chat/" + encodeURIComponent(item.id),
+      { method: "PATCH", body: { title } },
+    );
+    conversations.value = conversations.value.map((entry) => entry.id === updated.id
+      ? { ...entry, title: updated.title, updatedAt: updated.updatedAt }
+      : entry);
+    ElMessage.success("会话标题已更新，并已记录审计日志。");
+  } catch (error) {
+    ElMessage.error(getErrorMessage(error, "重命名会话失败。"));
+  }
+}
+
+async function copyMessage(content: string) {
+  try {
+    await navigator.clipboard.writeText(content);
+    ElMessage.success("回复已复制。");
+  } catch {
+    ElMessage.error("复制失败，请检查浏览器剪贴板权限。");
+  }
 }
 
 async function loadHistory(requestedId?: string | null) {
@@ -324,6 +403,7 @@ onMounted(() => void reload());
     <PageHeader eyebrow="工作空间 / AI 对话" :title="character ? character.name + ' · AI 对话' : 'AI 对话'" description="基于当前角色设定、最近对话和相关长期记忆生成回复。会话与消息会保存到 PostgreSQL。">
       <template #actions>
         <el-button :disabled="loading || sending" @click="void reload()"><el-icon><Refresh /></el-icon>刷新</el-button>
+        <el-button :disabled="loading || sending || !character" @click="openModelSettings"><el-icon><Setting /></el-icon>模型参数</el-button>
         <el-button type="primary" plain :disabled="sending" @click="void startNewConversation()"><el-icon><Plus /></el-icon>新建对话</el-button>
       </template>
     </PageHeader>
@@ -331,7 +411,7 @@ onMounted(() => void reload());
     <el-alert
       v-if="!modelConfigured"
       title="模型尚未配置"
-      description="可以先查看本页界面。要发送消息，请在项目根目录 .env 中填写 LLM_API_KEY、LLM_MODEL（必要时配置 LLM_BASE_URL），然后重启 yarn dev。密钥只放在服务端环境变量中。"
+      description="先在服务端 .env 中配置 LLM_API_KEY（必要时设置 LLM_BASE_URL），然后重启 yarn dev。模型名称可在本页按角色单独选择；API Key 不会保存到浏览器或角色配置中。"
       type="warning"
       :closable="false"
       show-icon
@@ -376,6 +456,7 @@ onMounted(() => void reload());
               <small>{{ formatTime(item.lastMessageAt) }} · {{ item.messageCount }} 条消息</small>
             </span>
           </button>
+          <el-button text size="small" :disabled="sending" @click.stop="void renameConversation(item)">改名</el-button>
           <el-button text size="small" :disabled="sending" @click.stop="void toggleConversationStatus(item)">
             {{ conversationView === "ACTIVE" ? "归档" : "恢复" }}
           </el-button>
@@ -416,6 +497,9 @@ onMounted(() => void reload());
               <div class="message-meta">
                 <strong>{{ message.role === "USER" ? "你" : character?.name || "角色" }}</strong>
                 <time>{{ formatTime(message.occurredAt) }}</time>
+                <el-button v-if="message.role === 'ASSISTANT'" text size="small" @click="void copyMessage(message.content)">
+                  <el-icon><CopyDocument /></el-icon>复制
+                </el-button>
               </div>
               <div class="message-bubble">{{ message.content }}</div>
               <div v-if="message.role === 'ASSISTANT' && (messageSources(message).memories.length || messageSources(message).snapshots.length)" class="sources-panel">
@@ -462,11 +546,32 @@ onMounted(() => void reload());
         </div>
       </section>
     </div>
+
+    <el-dialog v-model="modelSettingsOpen" title="本角色模型参数" width="520px" destroy-on-close>
+      <el-form label-position="top">
+        <el-form-item label="模型名称">
+          <el-input v-model="draftChatModel" maxlength="120" show-word-limit placeholder="留空时使用服务端 LLM_MODEL" />
+          <p class="model-settings-hint">只影响当前角色的对话。API Key 与 API 地址始终从服务端 .env 读取，不会写入数据库。</p>
+        </el-form-item>
+        <el-form-item label="温度（Temperature）">
+          <el-slider v-model="draftChatTemperature" :min="0" :max="2" :step="0.1" show-input />
+        </el-form-item>
+        <el-form-item label="最大输出 Token">
+          <el-input-number v-model="draftChatMaxTokens" :min="256" :max="8192" :step="256" />
+          <p class="model-settings-hint">数值越大，回复可能越长，也会增加单次请求的消耗。</p>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="modelSettingsOpen = false">取消</el-button>
+        <el-button type="primary" :loading="modelSettingsSaving" @click="void saveModelSettings()">保存参数</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <style scoped>
 .chat-alert{margin:-7px 0 18px}
+.model-settings-hint{margin:6px 0 0;color:#9098aa;font-size:11px;line-height:1.7}
 .chat-layout{display:grid;grid-template-columns:minmax(230px,290px) minmax(0,1fr);gap:16px;min-height:620px}
 .conversation-sidebar{padding:16px;align-self:stretch;min-width:0}
 .sidebar-heading{display:flex;align-items:center;justify-content:space-between;margin-bottom:13px;color:#46516b;font-size:12px;font-weight:800}

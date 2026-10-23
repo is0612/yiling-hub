@@ -1,5 +1,5 @@
 import { createError, getQuery, getRouterParam } from "h3";
-import { isMemoryModelConfigured } from "../../../utils/memory-ai";
+import { resolveChatModelSettings } from "../../../utils/chat-model-config";
 import { requireLocalDevOwner, requireUuid } from "../../../utils/local-api";
 import { getPrisma } from "../../../utils/prisma";
 
@@ -64,7 +64,7 @@ export default defineEventHandler(async (event) => {
 
   const character = await prisma.character.findFirst({
     where: { id: characterId, ownerId },
-    select: { id: true, name: true, memoryScopes: { where: { scopeType: "CHARACTER_GLOBAL" }, select: { id: true }, take: 1 } },
+    select: { id: true, name: true, modelConfig: true, memoryScopes: { where: { scopeType: "CHARACTER_GLOBAL" }, select: { id: true }, take: 1 } },
   });
   if (!character) throw createError({ statusCode: 404, statusMessage: "角色不存在。" });
   const memoryScopeId = character.memoryScopes[0]?.id;
@@ -111,9 +111,10 @@ export default defineEventHandler(async (event) => {
     messages = descending.reverse();
   }
 
+  const chatSettings = resolveChatModelSettings(character.modelConfig);
   return {
-    character: { id: character.id, name: character.name },
-    modelConfigured: isMemoryModelConfigured(),
+    character: { id: character.id, name: character.name, chatModel: chatSettings.model, chatTemperature: chatSettings.temperature, chatMaxTokens: chatSettings.maxTokens },
+    modelConfigured: Boolean(process.env.LLM_API_KEY?.trim() && chatSettings.model),
     conversations: conversations.map((conversation) => ({
       id: conversation.id,
       title: conversation.title || "未命名对话",

@@ -1,3 +1,5 @@
+import { resolveChatModelSettings } from "./chat-model-config";
+
 export type CharacterDto = {
   id: string;
   name: string;
@@ -12,6 +14,9 @@ export type CharacterDto = {
   memoryCount: number;
   latestSnapshot: string;
   personality: string;
+  chatModel: string;
+  chatTemperature: number;
+  chatMaxTokens: number;
 };
 
 type CharacterRecord = {
@@ -72,6 +77,7 @@ function formatDate(value: Date, timeZone = "Asia/Shanghai"): string {
 export function toCharacterDto(input: unknown): CharacterDto {
   const character = input as CharacterRecord;
   const config = asConfig(character.modelConfig);
+  const chatSettings = resolveChatModelSettings(config);
   const tones = ["purple", "peach", "mint", "blue"] as const;
   const configuredTone = config.avatarTone;
   const avatarTone = tones.includes(configuredTone as (typeof tones)[number])
@@ -113,5 +119,8 @@ export function toCharacterDto(input: unknown): CharacterDto {
     memoryCount: character.memoryScopes.reduce((total, scope) => total + scope.memoryItems.length, 0),
     latestSnapshot: latestSnapshot ? formatDate(latestSnapshot, setting?.timezone) : "暂无快照",
     personality: character.basePrompt,
+    chatModel: chatSettings.model,
+    chatTemperature: chatSettings.temperature,
+    chatMaxTokens: chatSettings.maxTokens,
   };
 }

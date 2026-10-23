@@ -1,6 +1,7 @@
 import { createError, readBody } from "h3";
 import type { Prisma } from "../../../src/generated/prisma/client";
 import { characterInclude, toCharacterDto } from "../../utils/character-dto";
+import { readChatModelSettingsPatch } from "../../utils/chat-model-config";
 import { readTrimmedString, requireLocalDevOwner, requireUuid } from "../../utils/local-api";
 import { getPrisma } from "../../utils/prisma";
 
@@ -37,12 +38,16 @@ export default defineEventHandler(async (event) => {
     data.status = statusMap[body.status];
   }
 
-  if (body.alias !== undefined || body.description !== undefined) {
-    data.modelConfig = {
-      ...config,
-      ...(body.alias !== undefined ? { alias: readTrimmedString(body.alias, "角色标签", 100) } : {}),
-      ...(body.description !== undefined ? { description: readTrimmedString(body.description, "角色简介", 2000) } : {}),
-    };
+  const modelConfigPatch: Record<string, unknown> = {};
+  if (body.alias !== undefined) modelConfigPatch.alias = readTrimmedString(body.alias, "角色标签", 100);
+  if (body.description !== undefined) modelConfigPatch.description = readTrimmedString(body.description, "角色简介", 2000);
+  try {
+    Object.assign(modelConfigPatch, readChatModelSettingsPatch(body));
+  } catch (error) {
+    throw createError({ statusCode: 400, statusMessage: error instanceof Error ? error.message : "角色模型参数无效。" });
+  }
+  if (Object.keys(modelConfigPatch).length > 0) {
+    data.modelConfig = { ...config, ...modelConfigPatch } as Prisma.InputJsonObject;
   }
 
   const updated = await prisma.character.update({

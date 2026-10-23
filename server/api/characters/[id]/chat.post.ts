@@ -1,6 +1,6 @@
 import { createError, getRouterParam, readBody } from "h3";
 import { generateConversationReply, type ConversationContextMessage } from "../../../utils/chat-reply";
-import { isMemoryModelConfigured } from "../../../utils/memory-ai";
+import { resolveChatModelSettings } from "../../../utils/chat-model-config";
 import { rankMemoryCandidates, rankSnapshotCandidates } from "../../../utils/memory-retrieval";
 import { readTrimmedString, requireLocalDevOwner, requireUuid } from "../../../utils/local-api";
 import { getPrisma } from "../../../utils/prisma";
@@ -25,14 +25,16 @@ export default defineEventHandler(async (event) => {
       id: true,
       name: true,
       basePrompt: true,
+      modelConfig: true,
       memoryScopes: { where: { scopeType: "CHARACTER_GLOBAL" }, select: { id: true }, take: 1 },
     },
   });
   if (!character) throw createError({ statusCode: 404, statusMessage: "角色不存在。" });
   const memoryScopeId = character.memoryScopes[0]?.id;
   if (!memoryScopeId) throw createError({ statusCode: 409, statusMessage: "该角色尚未建立全局记忆范围，请重新保存角色档案。" });
-  if (!isMemoryModelConfigured()) {
-    throw createError({ statusCode: 503, statusMessage: "尚未配置 AI 模型。请先在服务端 .env 填写 LLM_API_KEY 和 LLM_MODEL。" });
+  const chatSettings = resolveChatModelSettings(character.modelConfig);
+  if (!process.env.LLM_API_KEY?.trim() || !chatSettings.model) {
+    throw createError({ statusCode: 503, statusMessage: "尚未配置 AI 模型。请先在服务端 .env 填写 LLM_API_KEY；模型名称可在当前角色的模型参数中设置。" });
   }
 
   const existingConversation = requestedConversationId
@@ -100,6 +102,9 @@ export default defineEventHandler(async (event) => {
     generated = await generateConversationReply({
       characterName: character.name,
       characterPrompt: character.basePrompt.slice(0, 12_000),
+      model: chatSettings.model,
+      temperature: chatSettings.temperature,
+      maxTokens: chatSettings.maxTokens,
       currentMessage: message,
       recentMessages,
       memories,
