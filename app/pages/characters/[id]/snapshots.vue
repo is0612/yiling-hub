@@ -5,7 +5,7 @@ import { initialCharacters, initialSnapshots, type Character, type Snapshot } fr
 
 const route = useRoute();
 const id = computed(() => String(route.params.id || ""));
-const character = ref<Character>({ ...initialCharacters[0], id: "", name: "角色加载中" });
+const character = ref<Character>({ ...initialCharacters[0]!, id: "", name: "角色加载中" });
 const items = useState<Snapshot[]>("snapshots", () => initialSnapshots.map((item) => ({ ...item })));
 const query = ref("");
 const statusFilter = ref("全部版本状态");
@@ -21,7 +21,7 @@ async function loadCharacter() {
   try {
     character.value = await $fetch<Character>(`/api/characters/${encodeURIComponent(id.value)}`);
   } catch {
-    character.value = { ...initialCharacters[0], id: id.value, name: "无法读取角色" };
+    character.value = { ...initialCharacters[0]!, id: id.value, name: "无法读取角色" };
     ElMessage.error("角色档案读取失败。快照内容当前仍是演示数据。");
   }
 }
