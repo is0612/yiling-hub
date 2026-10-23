@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { DataAnalysis, ArrowRight, Cpu, Calendar, ChatDotRound, Clock, Collection, Files, Filter, Refresh, Search, Setting, MagicStick, User } from "@element-plus/icons-vue";
+import { ArrowRight, Cpu, Calendar, Files, Search, Setting, MagicStick } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
 import { initialCharacters, initialSnapshots, initialTimeline, type Character, type TimelineType } from "~/utils/mock-data";
 
