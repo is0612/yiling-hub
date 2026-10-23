@@ -2,9 +2,9 @@
 import { ArrowRight, CirclePlus, MoreFilled, Plus, Search, MagicStick, Close } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
 import type { Character, CharacterStatus } from "~/utils/mock-data";
-import { initialCharacters } from "~/utils/mock-data";
 
-const characters = useState<Character[]>("characters", () => initialCharacters.map((item) => ({ ...item, channels: [...item.channels] })));
+const characters = ref<Character[]>([]);
+const loading = ref(false);
 const query = ref("");
 const statusFilter = ref<CharacterStatus | "全部状态">("全部状态");
 const dialogOpen = ref(false);
@@ -12,40 +12,65 @@ const name = ref("");
 const description = ref("");
 const personality = ref("");
 
+async function loadCharacters() {
+  loading.value = true;
+  try {
+    characters.value = await $fetch<Character[]>("/api/characters");
+  } catch {
+    ElMessage.error("读取角色失败。请先完成本地数据库迁移与开发用户初始化。");
+  } finally {
+    loading.value = false;
+  }
+}
+
 const filtered = computed(() => characters.value.filter((character) => {
   const textMatches = !query.value || `${character.name} ${character.description} ${character.alias}`.toLowerCase().includes(query.value.toLowerCase());
   const statusMatches = statusFilter.value === "全部状态" || character.status === statusFilter.value;
   return textMatches && statusMatches;
 }));
 
-function createCharacter() {
+async function createCharacter() {
   const trimmed = name.value.trim();
   if (!trimmed) {
     ElMessage.warning("请先填写角色名称。");
     return;
   }
-  const item: Character = {
-    id: `demo-${Date.now()}`, name: trimmed, alias: "新建角色",
-    description: description.value.trim() || "还没有填写角色简介。",
-    avatar: trimmed.slice(0, 1), avatarTone: "mint", status: "已暂停",
-    channels: [], intervalDays: 8, nextSnapshot: "尚未启用", memoryCount: 0,
-    latestSnapshot: "暂无快照", personality: personality.value.trim() || "请补充角色的人设与行为规则。",
-  };
-  characters.value.unshift(item);
-  dialogOpen.value = false;
-  name.value = ""; description.value = ""; personality.value = "";
-  ElMessage.success("角色已添加到当前演示列表；刷新后会恢复示例数据。");
+
+  try {
+    const item = await $fetch<Character>("/api/characters", {
+      method: "POST",
+      body: {
+        name: trimmed,
+        description: description.value.trim(),
+        personality: personality.value.trim(),
+      },
+    });
+    characters.value.unshift(item);
+    dialogOpen.value = false;
+    name.value = "";
+    description.value = "";
+    personality.value = "";
+    ElMessage.success("角色已保存到本地数据库。");
+  } catch (error) {
+    const message = error && typeof error === "object" && "statusMessage" in error
+      ? String(error.statusMessage)
+      : "创建失败，请检查数据库连接和本地开发配置。";
+    ElMessage.error(message);
+  }
 }
+
 function resetFilters() { query.value = ""; statusFilter.value = "全部状态"; }
 function statusTone(status: CharacterStatus) {
   return status === "运行中" ? "pill-green" : status === "已暂停" ? "pill-amber" : "pill-gray";
 }
+
+onMounted(() => void loadCharacters());
 </script>
 
 <template>
   <div class="page-wrap">
     <PageHeader eyebrow="工作空间 / 角色管理" title="你的角色档案" description="集中管理不同的人设、模型配置与记忆周期。每个角色都拥有独立的经历和记忆。">
-      <template #actions><DemoTag /><el-button type="primary" @click="dialogOpen = true"><el-icon><Plus /></el-icon>创建角色</el-button></template>
+      <template #actions><el-button type="primary" @click="dialogOpen = true"><el-icon><Plus /></el-icon>创建角色</el-button></template>
     </PageHeader>
 
     <div class="stat-grid" style="grid-template-columns:repeat(3,minmax(0,1fr))">
@@ -69,7 +94,7 @@ function statusTone(status: CharacterStatus) {
         </el-select>
         <el-button @click="resetFilters"><el-icon><Close /></el-icon>重置筛选</el-button>
       </div>
-      <div class="filter-summary"><span>找到 <strong>{{ filtered.length }}</strong> 个角色</span><span>角色数据仅保存在当前演示状态</span></div>
+      <div class="filter-summary"><span>找到 <strong>{{ filtered.length }}</strong> 个角色</span><span>角色已保存到本地数据库</span></div>
     </section>
 
     <div v-if="filtered.length" class="character-grid">
@@ -109,11 +134,11 @@ function statusTone(status: CharacterStatus) {
         <el-form-item label="角色名称" required><el-input v-model="name" placeholder="例如：星海旅人" maxlength="40" show-word-limit /></el-form-item>
         <el-form-item label="角色简介"><el-input v-model="description" type="textarea" :rows="2" placeholder="用一句话描述角色的个性或定位。" /></el-form-item>
         <el-form-item label="基础人设"><el-input v-model="personality" type="textarea" :rows="3" placeholder="角色的性格、说话方式、行为规则……" /></el-form-item>
-        <div class="info-callout"><el-icon><MagicStick /></el-icon><span>当前为演示模式。角色仅保存在本次应用状态里，接入数据库后才会永久保存。</span></div>
+        <div class="info-callout"><el-icon><MagicStick /></el-icon><span>角色将保存到本地 PostgreSQL；请勿在未完成认证前将开发接口公开到网络。</span></div>
         <div class="dialog-actions"><el-button @click="dialogOpen = false">取消</el-button><el-button type="primary" @click="createCharacter"><el-icon><CirclePlus /></el-icon>创建角色</el-button></div>
       </el-form>
     </el-dialog>
-    <p class="footer-note">演示数据仅用于页面流程验证；当前尚未连接真实 API 或数据库。</p>
+    <p class="footer-note">角色列表和档案创建已接入本地数据库；快照、时间线和任务执行仍处于后续开发阶段。</p>
   </div>
 </template>
 
