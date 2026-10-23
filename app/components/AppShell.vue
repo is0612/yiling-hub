@@ -7,7 +7,6 @@ import {
   Calendar,
   ChatDotRound,
   DataBoard,
-  Files,
   Search,
   Setting,
   MagicStick,
