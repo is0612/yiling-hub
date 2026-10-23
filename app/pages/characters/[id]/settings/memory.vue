@@ -16,7 +16,7 @@ type MemorySettings = {
 
 const route = useRoute();
 const id = computed(() => String(route.params.id || ""));
-const character = ref<Character>({ ...initialCharacters[0], id: "", name: "角色加载中" });
+const character = ref<Character>({ ...initialCharacters[0]!, id: "", name: "角色加载中" });
 const interval = ref(8);
 const timezone = ref("Asia/Shanghai");
 const anchor = ref("2026-10-21T09:00:00");
@@ -47,7 +47,14 @@ function zonedInputToIso(value: string, timeZone: string): string {
       hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
     }).formatToParts(new Date(candidate));
     const values = Object.fromEntries(parts.map((part) => [part.type, Number(part.value)]));
-    const displayedAsUtc = Date.UTC(values.year, values.month - 1, values.day, values.hour, values.minute, values.second);
+    const displayedAsUtc = Date.UTC(
+      values.year ?? Number(match[1]),
+      (values.month ?? Number(match[2])) - 1,
+      values.day ?? Number(match[3]),
+      values.hour ?? Number(match[4]),
+      values.minute ?? Number(match[5]),
+      values.second ?? Number(match[6] || 0),
+    );
     const difference = targetUtc - displayedAsUtc;
     candidate += difference;
     if (difference === 0) break;
