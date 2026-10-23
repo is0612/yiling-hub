@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { createError, getRouterParam, readBody } from "h3";
-import { requireLocalDevOwner, requireUuid } from "~/server/utils/local-api";
-import { getPrisma } from "~/server/utils/prisma";
+import { requireLocalDevOwner, requireUuid } from "../../../../utils/local-api";
+import { getPrisma } from "../../../../utils/prisma";
 
 type CreateSnapshotBody = {
   snapshotId?: unknown;
