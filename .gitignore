@@ -1,0 +1,32 @@
+# dependencies and build output
+node_modules/
+.next/
+out/
+dist/
+build/
+coverage/
+
+# local environment and secrets
+.env
+.env.*
+!.env.example
+
+# local database and backup files
+backups/*
+!backups/.gitkeep
+*.dump
+*.sql
+*.backup
+
+# logs and OS/editor files
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/extensions.json
+.idea/
+
+# Prisma local artifacts (keep schema and migrations tracked)
+prisma/*.db
+prisma/*.db-journal
