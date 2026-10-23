@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Activity, ArrowRight, Brain, Calendar, ChatDotRound, Clock, Collection, Files, Filter, Refresh, Search, Setting, Sparkles, User } from "@element-plus/icons-vue";
+import { DataAnalysis, ArrowRight, Cpu, Calendar, ChatDotRound, Clock, Collection, Files, Filter, Refresh, Search, Setting, MagicStick, User } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
 import { initialCharacters, initialSnapshots, initialTimeline, type Character, type TimelineType } from "~/utils/mock-data";
 
@@ -63,7 +63,7 @@ function manualSnapshot() {
 <template>
   <div class="page-wrap">
     <PageHeader eyebrow="工作空间 / 角色管理 / 记忆驾驶舱" title="记忆驾驶舱" description="查看角色最近经历、长期记忆变化与周期快照。需要回忆什么，就从这里找到线索。">
-      <template #actions><DemoTag /><el-button @click="editOpen = true"><el-icon><Setting /></el-icon>编辑角色</el-button><el-button type="primary" @click="manualSnapshot"><el-icon><Sparkles /></el-icon>手动归档</el-button></template>
+      <template #actions><DemoTag /><el-button @click="editOpen = true"><el-icon><Setting /></el-icon>编辑角色</el-button><el-button type="primary" @click="manualSnapshot"><el-icon><MagicStick /></el-icon>手动归档</el-button></template>
     </PageHeader>
 
     <div class="info-callout" style="margin-bottom:20px">
@@ -133,7 +133,7 @@ function manualSnapshot() {
       <el-form label-position="top">
         <el-form-item label="角色名称"><el-input v-model="draftName" maxlength="40" /></el-form-item>
         <el-form-item label="基础人设"><el-input v-model="draftPersonality" type="textarea" :rows="5" /></el-form-item>
-        <div class="info-callout"><el-icon><Brain /></el-icon><span>人设修改只保存到当前页面状态。实际持久化与审计记录将在后续 API 阶段接入。</span></div>
+        <div class="info-callout"><el-icon><Cpu /></el-icon><span>人设修改只保存到当前页面状态。实际持久化与审计记录将在后续 API 阶段接入。</span></div>
       </el-form>
       <template #footer><el-button @click="editOpen = false">取消</el-button><el-button type="primary" @click="saveProfile">保存修改</el-button></template>
     </el-dialog>
