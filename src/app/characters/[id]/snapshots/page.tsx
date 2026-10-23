@@ -10,12 +10,27 @@ import { Badge, DemoLabel, PageHeader, SectionTitle, StatCard } from "@/componen
 export default function SnapshotsPage() {
   const params = useParams<{ id: string }>();
   const id = params?.id || "big-fish";
-  const character = characters.find((item) => item.id === id) || characters[0];
+  const foundCharacter = characters.find((item) => item.id === id);
+  const character = foundCharacter || (id.startsWith("demo-") ? {
+    ...characters[0],
+    id,
+    name: "新建角色",
+    alias: "演示角色",
+    description: "这是在角色列表中临时创建的演示档案。刷新后会恢复示例数据。",
+    avatar: "新",
+    status: "已暂停" as const,
+    channels: [],
+    intervalDays: 8,
+    nextSnapshot: "尚未启用",
+    memoryCount: 0,
+    latestSnapshot: "暂无快照",
+  } : characters[0]);
   const [items, setItems] = useState<Snapshot[]>(snapshots);
   const [query, setQuery] = useState("");
   const [versionFilter, setVersionFilter] = useState("全部版本状态");
   const [detail, setDetail] = useState<Snapshot | null>(null);
   const [toast, setToast] = useState("");
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   const filtered = useMemo(() => items.filter((item) => {
     const queryMatch = !query || `${item.summary} ${item.range} 第 ${item.number} 份`.toLowerCase().includes(query.toLowerCase());
@@ -103,7 +118,7 @@ export default function SnapshotsPage() {
                   <div><div className="text-[10px] font-bold text-[#707b94]">本阶段重要变化</div><p className="mt-1.5 text-[10px] leading-5 text-[#969fb2]">角色记录了用户偏好和互动习惯的变化，并保留需要继续跟进的约定。</p></div>
                   <div><div className="text-[10px] font-bold text-[#707b94]">来源可追溯</div><p className="mt-1.5 text-[10px] leading-5 text-[#969fb2]">正式版本将展示来源消息 ID、事件时间和模型生成信息。</p></div>
                 </div>
-                <div className="mt-5 flex flex-wrap gap-2"><button className="btn flex-1 justify-center" onClick={() => notify("版本列表会在真实快照 API 接入后展示。")}><History size={13} /> 历史版本</button><button className="btn btn-primary flex-1 justify-center" onClick={() => regenerate(detail)}><RefreshCw size={13} /> 重新生成</button></div>
+                <div className="mt-5 flex flex-wrap gap-2"><button className="btn flex-1 justify-center" onClick={() => setHistoryOpen(true)}><History size={13} /> 历史版本</button><button className="btn btn-primary flex-1 justify-center" onClick={() => regenerate(detail)}><RefreshCw size={13} /> 重新生成</button></div>
               </>
             ) : (
               <div className="mt-4 rounded-xl border border-dashed border-[#e4e7f0] px-4 py-10 text-center"><div className="mx-auto flex h-10 w-10 items-center justify-center rounded-xl bg-[#f2f0ff] text-[#7769e4]"><FileClock size={17} /></div><div className="mt-3 text-[11px] font-bold text-[#606b84]">还没有选择快照</div><p className="mt-1.5 text-[10px] leading-5 text-[#9aa3b5]">从左侧选择一个归档，查看覆盖范围和摘要。</p></div>
@@ -115,6 +130,26 @@ export default function SnapshotsPage() {
         </aside>
       </div>
 
+      {historyOpen && detail && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#29324b]/30 p-4 backdrop-blur-[3px]" onMouseDown={(e) => { if (e.target === e.currentTarget) setHistoryOpen(false); }}>
+          <div role="dialog" aria-modal="true" aria-labelledby="snapshot-version-title" className="w-full max-w-[500px] rounded-[20px] bg-white p-5 shadow-2xl sm:p-7">
+            <div className="flex items-start justify-between gap-3">
+              <div><div className="eyebrow">历史留痕</div><h2 id="snapshot-version-title" className="mt-2 text-[20px] font-extrabold text-[#34405b]">第 {detail.number} 份快照的版本</h2><p className="mt-1.5 text-[11px] text-[#929bb0]">每次重新生成都会保留旧版本，方便对比与追溯。</p></div>
+              <button className="icon-btn" onClick={() => setHistoryOpen(false)} aria-label="关闭版本列表"><X size={17} /></button>
+            </div>
+            <div className="mt-5 space-y-3">
+              {items.filter((item) => item.number === detail.number).sort((a, b) => a.version - b.version).map((version) => (
+                <div key={version.id} className="flex items-start gap-3 rounded-xl border border-[#eef0f6] p-3.5">
+                  <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-[11px] ${version.status === "当前版本" ? "bg-[#e8f8f1] text-[#319b79]" : "bg-[#f1f3f8] text-[#8e98ad]"}`}><History size={15} /></div>
+                  <div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><span className="text-[12px] font-bold text-[#59647c]">版本 v{version.version}</span><Badge tone={version.statusTone}>{version.status}</Badge></div><div className="mt-1.5 text-[10px] text-[#a0a8b8]">生成时间：{version.date}</div><p className="mt-2 text-[10px] leading-5 text-[#8b95aa]">{version.summary}</p></div>
+                  <button className="btn btn-sm" onClick={() => { setDetail(version); setHistoryOpen(false); }}>查看</button>
+                </div>
+              ))}
+            </div>
+            <div className="mt-5 flex justify-end"><button className="btn" onClick={() => setHistoryOpen(false)}>关闭</button></div>
+          </div>
+        </div>
+      )}
       {toast && <div role="status" className="fixed bottom-5 right-5 z-50 max-w-[360px] rounded-xl border border-[#e7e4ff] bg-white px-4 py-3 text-[12px] leading-5 text-[#6257be] shadow-xl">{toast}</div>}
     </div>
   );
