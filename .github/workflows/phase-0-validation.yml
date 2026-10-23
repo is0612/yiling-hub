@@ -116,10 +116,25 @@ jobs:
           DEV_OWNER_USERNAME: ci-local
           DEV_OWNER_PASSWORD: CI_smoke_test_password_123
           SMOKE_BASE_URL: http://127.0.0.1:3000
+          LLM_BASE_URL: http://127.0.0.1:4010/v1
+          LLM_API_KEY: ci-only
+          LLM_MODEL: ci-memory-test
+          LLM_MOCK_PORT: "4010"
+          LLM_MOCK_API_KEY: ci-only
         run: |
+          node scripts/mock-llm-server.mjs > /tmp/yiling-llm.log 2>&1 &
+          mock_pid=$!
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:4010/health > /dev/null; then break; fi
+            sleep 1
+          done
+          if ! curl --fail --silent http://127.0.0.1:4010/health > /dev/null; then
+            cat /tmp/yiling-llm.log
+            exit 1
+          fi
           yarn run dev --host 127.0.0.1 --port 3000 > /tmp/yiling-nuxt.log 2>&1 &
           server_pid=$!
-          trap 'status=$?; kill "$server_pid" 2>/dev/null || true; if [ "$status" -ne 0 ]; then cat /tmp/yiling-nuxt.log; fi; exit "$status"' EXIT
+          trap 'status=$?; kill "$server_pid" "$mock_pid" 2>/dev/null || true; if [ "$status" -ne 0 ]; then cat /tmp/yiling-nuxt.log; cat /tmp/yiling-llm.log; fi; exit "$status"' EXIT
           node scripts/smoke-test-local-api.mjs
 
       - name: Nuxt 生产构建
