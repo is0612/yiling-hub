@@ -201,10 +201,10 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
   /characters/{characterId}/chat:
-    security: []
     parameters:
       - $ref: '#/components/parameters/CharacterId'
     get:
+      security: []
       tags: [Characters]
       operationId: getCharacterChatHistory
       summary: 获取角色 AI 会话列表和历史消息
@@ -252,9 +252,9 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
     post:
+      security: []
       tags: [Characters]
-      operationId: sendCharacterChatMessage
-      summary: 向 AI 角色发送消息并保存对话
+      operationId: sendCharacterChatMessage      summary: 向 AI 角色发送消息并保存对话
       description: 本地开发功能。按当前消息检索匹配的角色全局长期记忆和快照；模型返回的来源 ID 会通过候选白名单过滤。需要在服务端配置 LLM_API_KEY 和 LLM_MODEL。
       requestBody:
         required: true
