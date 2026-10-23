@@ -271,7 +271,7 @@ CREATE INDEX "memory_snapshots_memoryScopeId_status_periodEnd_idx" ON "memory_sn
 CREATE UNIQUE INDEX "memory_snapshot_sources_snapshotId_sourceType_sourceRef_key" ON "memory_snapshot_sources"("snapshotId", "sourceType", "sourceRef");
 CREATE INDEX "memory_snapshot_sources_messageId_idx" ON "memory_snapshot_sources"("messageId");
 CREATE INDEX "memory_snapshot_sources_memoryItemId_idx" ON "memory_snapshot_sources"("memoryItemId");
-CREATE INDEX "memory_jobs_idempotencyKey_key" ON "memory_jobs"("idempotencyKey");
+CREATE UNIQUE INDEX "memory_jobs_idempotencyKey_key" ON "memory_jobs"("idempotencyKey");
 CREATE INDEX "memory_jobs_status_runAt_idx" ON "memory_jobs"("status", "runAt");
 CREATE INDEX "memory_jobs_memoryScopeId_periodStart_periodEnd_idx" ON "memory_jobs"("memoryScopeId", "periodStart", "periodEnd");
 CREATE INDEX "audit_logs_createdAt_idx" ON "audit_logs"("createdAt");
