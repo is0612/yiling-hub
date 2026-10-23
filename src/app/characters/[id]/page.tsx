@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useMemo, useState, type FormEvent } from "react";
 import { useParams } from "next/navigation";
 import {
   Activity,
@@ -87,7 +87,7 @@ export default function MemoryCockpitPage() {
     window.setTimeout(() => setToast(""), 3800);
   }
 
-  function saveProfile(event: React.FormEvent<HTMLFormElement>) {
+  function saveProfile(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setEditOpen(false);
     notify("已保存到当前页面的演示状态；接入数据库后才会永久保存。");
