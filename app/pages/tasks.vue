@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { Refresh, Search, Warning, MagicStick, Files, Cpu } from "@element-plus/icons-vue";
-import { ElMessage } from "element-plus";
+import { ElMessage, ElMessageBox } from "element-plus";
 
 type MemoryTask = {
   id: string;
@@ -47,6 +47,7 @@ const workerRunning = ref(false);
 const loadError = ref("");
 const detailsOpen = ref(false);
 const selectedTask = ref<MemoryTask | null>(null);
+const taskActionLoading = ref(false);
 
 const statuses = [
   { label: "全部状态", value: "ALL" },
@@ -163,7 +164,7 @@ async function runWorker() {
     if (!result.processed) {
       ElMessage.info(result.message);
     } else if (result.status === "SUCCEEDED") {
-      ElMessage.success("已执行一条任务并生成规则版结构化快照（未调用大模型）。");
+      ElMessage.success(result.message || "任务执行完成。");
     } else if (result.status === "SKIPPED") {
       ElMessage.info("该周期没有已保存活动，任务已跳过。");
     } else {
@@ -184,12 +185,70 @@ function openDetails(task: MemoryTask) {
   detailsOpen.value = true;
 }
 
+function getErrorMessage(error: unknown, fallback: string) {
+  return error && typeof error === "object" && "statusMessage" in error
+    ? String(error.statusMessage)
+    : error instanceof Error ? error.message : fallback;
+}
+
+async function retrySelectedTask() {
+  const task = selectedTask.value;
+  if (!task || taskActionLoading.value) return;
+  try {
+    await ElMessageBox.confirm(
+      "系统会清除本次任务的错误状态和尝试计数，并立即重新排队。历史审计记录会保留。",
+      "重新入队任务",
+      { confirmButtonText: "重新入队", cancelButtonText: "取消", type: "warning" },
+    );
+  } catch {
+    return;
+  }
+
+  taskActionLoading.value = true;
+  try {
+    await $fetch(`/api/tasks/${encodeURIComponent(task.id)}/retry`, { method: "POST" });
+    await loadTasks();
+    selectedTask.value = tasks.value.find((item) => item.id === task.id) ?? null;
+    ElMessage.success("任务已重新排队。");
+  } catch (error) {
+    ElMessage.error(getErrorMessage(error, "任务重新入队失败。"));
+  } finally {
+    taskActionLoading.value = false;
+  }
+}
+
+async function cancelSelectedTask() {
+  const task = selectedTask.value;
+  if (!task || taskActionLoading.value) return;
+  try {
+    await ElMessageBox.confirm(
+      "这会取消尚未开始执行的任务。运行中的任务不能被强制终止，已完成的历史记录不会删除。",
+      "取消任务",
+      { confirmButtonText: "确认取消", cancelButtonText: "保留任务", type: "warning" },
+    );
+  } catch {
+    return;
+  }
+
+  taskActionLoading.value = true;
+  try {
+    await $fetch(`/api/tasks/${encodeURIComponent(task.id)}/cancel`, { method: "POST" });
+    await loadTasks();
+    selectedTask.value = tasks.value.find((item) => item.id === task.id) ?? null;
+    ElMessage.success("任务已取消，审计记录已保留。");
+  } catch (error) {
+    ElMessage.error(getErrorMessage(error, "取消任务失败。"));
+  } finally {
+    taskActionLoading.value = false;
+  }
+}
+
 onMounted(() => void loadTasks());
 </script>
 
 <template>
   <div class="page-wrap">
-    <PageHeader eyebrow="系统管理 / 任务监控" title="后台任务" description="这里显示数据库中的持久化任务，并可手动扫描已到期的记忆周期。任务入队与快照执行是两个阶段；当前尚未接入实际 Worker。">
+    <PageHeader eyebrow="系统管理 / 任务监控" title="后台任务" description="查看持久化任务、扫描到期周期、手动运行 Worker，并管理失败、待重试和等待执行的任务。">
       <template #actions>
         <el-button :loading="loading" @click="loadTasks"><el-icon><Refresh /></el-icon>刷新列表</el-button>
         <el-button :loading="workerRunning" @click="runWorker"><el-icon><Cpu /></el-icon>运行一次 Worker</el-button>
@@ -238,7 +297,7 @@ onMounted(() => void loadTasks());
 
     <div class="info-callout" style="margin-top:18px">
       <el-icon><Warning /></el-icon>
-      <span>当前已接入真实任务队列和周期扫描。排队中的任务还不会自动生成快照；当前 Worker 可执行周期快照任务并保存规则版结构化快照；模型总结、更多任务类型和任务取消仍待后续阶段接入。</span>
+      <span>任务由独立 Worker 消费。周期生成与 AI 重新提炼会调用服务端配置的模型；手动取消仅适用于等待执行/等待重试的任务，手动重新入队会写入审计日志。</span>
     </div>
 
     <el-dialog v-model="detailsOpen" title="任务详情" width="min(620px, 94vw)">
@@ -254,7 +313,11 @@ onMounted(() => void loadTasks());
         <div v-if="selectedTask.lastError" class="task-error"><strong>最近错误</strong><p>{{ selectedTask.lastError }}</p></div>
         <div v-else class="info-callout" style="margin-top:14px"><el-icon><Files /></el-icon><span>当前为持久化排队记录；还没有 Worker 执行日志。</span></div>
       </template>
-      <template #footer><el-button @click="detailsOpen = false">关闭</el-button></template>
+      <template #footer>
+        <el-button v-if="selectedTask && ['FAILED', 'RETRY_WAIT', 'CANCELLED'].includes(selectedTask.status) && ['GENERATE_SNAPSHOT', 'REGENERATE_SNAPSHOT'].includes(selectedTask.type)" :loading="taskActionLoading" @click="retrySelectedTask"><el-icon><Refresh /></el-icon>重新入队</el-button>
+        <el-button v-if="selectedTask && ['QUEUED', 'RETRY_WAIT'].includes(selectedTask.status)" :loading="taskActionLoading" @click="cancelSelectedTask"><el-icon><Warning /></el-icon>取消任务</el-button>
+        <el-button @click="detailsOpen = false">关闭</el-button>
+      </template>
     </el-dialog>
   </div>
 </template>
