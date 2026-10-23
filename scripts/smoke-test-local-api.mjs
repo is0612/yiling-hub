@@ -253,9 +253,19 @@ assert(workerTaskList.items.some((task) => task.status === "SUCCEEDED"), "Task A
 assert(workerTaskList.items.some((task) => task.status === "SKIPPED"), "Task API should show skipped empty-period tasks.");
 const snapshotsAfterWorker = await request(`/api/characters/${created.id}/snapshots`);
 assert(snapshotsAfterWorker.length === 3, "Worker should add one automatic snapshot without rewriting the two manual snapshot versions.");
-assert(snapshotsAfterWorker.some((snapshot) => snapshot.summary.includes("自动周期快照（规则版）")), "Generated snapshots must disclose that the worker used deterministic rules rather than an LLM.");
+const aiSnapshot = snapshotsAfterWorker.find((snapshot) => snapshot.generatedBy === "llm");
+assert(aiSnapshot && typeof aiSnapshot.id === "string", "Worker should create an AI-generated snapshot through the configured local model endpoint.");
+assert(aiSnapshot.summary.includes("CI 模拟模型已分析"), "The saved snapshot should contain the model-generated period summary.");
+assert(Array.isArray(aiSnapshot.analysis?.importantEvents) && aiSnapshot.analysis.importantEvents.length === 1, "The snapshot should persist structured AI event extraction and its evidence.");
+const appliedAiMemory = aiSnapshot.analysis?.memoryChangesApplied.find((change) => change.result === "CREATED" && typeof change.memoryItemId === "string");
+assert(appliedAiMemory?.memoryItemId, "The AI snapshot should report its persisted long-term memory change.");
+const tracedAiMemory = await request(`/api/memories/${appliedAiMemory.memoryItemId}`);
+assert(tracedAiMemory.sourceMessageId === tracedAiMemory.sourceMessage?.id, "Each AI-created memory should expose its direct original-message reference.");
+assert(tracedAiMemory.sourceMessage?.role === "USER" && tracedAiMemory.sourceMessage.content.startsWith(`历史周期用户消息 ${unique}`), "The memory source should be the actual original dialogue, not an invented source ID.");
+assert(tracedAiMemory.sourceSnapshotId === aiSnapshot.id && tracedAiMemory.sourceSnapshot?.id === aiSnapshot.id, "The AI memory should link back to the snapshot that produced it.");
+
 
 const latestList = await request("/api/characters");
 assert(latestList.some((character) => character.id === created.id && character.name === edited.name), "Character changes did not appear in the list.");
 
-console.log("Local API smoke test passed: character CRUD, memory settings, manual memory creation, transcript import, database-backed timeline, snapshot source/version persistence, recycle-bin restore, and permanent deletion with historical snapshot preservation.");
+console.log("Local API smoke test passed: character CRUD, memory settings, transcript import, scheduler backfill, local-mock AI extraction, source-ID validation, persisted snapshot/memory provenance, snapshot versions, and recycle-bin lifecycle.");
