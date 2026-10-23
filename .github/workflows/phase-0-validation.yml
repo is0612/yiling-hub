@@ -14,6 +14,7 @@ on:
       - "tsconfig.json"
       - "docs/openapi.yaml"
       - "package.json"
+      - "yarn.lock"
       - ".env.example"
       - "README.md"
       - ".github/workflows/phase-0-validation.yml"
@@ -30,6 +31,7 @@ on:
       - "tsconfig.json"
       - "docs/openapi.yaml"
       - "package.json"
+      - "yarn.lock"
       - ".env.example"
       - "README.md"
       - ".github/workflows/phase-0-validation.yml"
@@ -61,37 +63,44 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: yarn
+
+      - name: 固定 Yarn Classic 版本
+        run: |
+          corepack enable
+          corepack prepare yarn@1.22.22 --activate
+          yarn --version
 
       - name: 安装依赖
-        run: npm install
+        run: yarn install --frozen-lockfile
 
       - name: 校验 Prisma Schema
-        run: npm run db:validate
+        run: yarn run db:validate
 
       - name: 生成 Prisma Client
-        run: npm run db:generate
+        run: yarn run db:generate
 
       - name: 应用初始数据库迁移
-        run: npm run db:migrate:deploy
+        run: yarn run db:migrate:deploy
 
       - name: 检查迁移与 Schema 一致
-        run: npx prisma migrate diff --from-config-datasource --to-schema=prisma/schema.prisma --exit-code
+        run: yarn prisma migrate diff --from-config-datasource --to-schema=prisma/schema.prisma --exit-code
 
       - name: 准备 Nuxt 类型与组件信息
-        run: npx nuxt prepare
+        run: yarn nuxt prepare
 
       - name: TypeScript 类型检查
-        run: npm run typecheck
+        run: yarn run typecheck
 
       - name: ESLint 检查
-        run: npm run lint
+        run: yarn run lint
 
       - name: 初始化 CI 本地开发用户
         env:
           DEV_OWNER_ID: 00000000-0000-4000-8000-000000000001
           DEV_OWNER_USERNAME: ci-local
           DEV_OWNER_PASSWORD: CI_smoke_test_password_123
-        run: npm run db:seed:dev
+        run: yarn run db:seed:dev
 
       - name: 验证角色与记忆设置 API 的数据库持久化
         env:
@@ -102,13 +111,13 @@ jobs:
           DEV_OWNER_PASSWORD: CI_smoke_test_password_123
           SMOKE_BASE_URL: http://127.0.0.1:3000
         run: |
-          npm run dev -- --host 127.0.0.1 --port 3000 > /tmp/yiling-nuxt.log 2>&1 &
+          yarn run dev --host 127.0.0.1 --port 3000 > /tmp/yiling-nuxt.log 2>&1 &
           server_pid=$!
           trap 'status=$?; kill "$server_pid" 2>/dev/null || true; if [ "$status" -ne 0 ]; then cat /tmp/yiling-nuxt.log; fi; exit "$status"' EXIT
           node scripts/smoke-test-local-api.mjs
 
       - name: Nuxt 生产构建
-        run: npm run build
+        run: yarn run build
 
       - name: 检查 OpenAPI 契约
         run: npx --yes @redocly/cli@latest lint --extends=minimal docs/openapi.yaml
