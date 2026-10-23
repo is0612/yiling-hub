@@ -105,7 +105,7 @@ export async function processNextMemoryJob(
       runAt: { lte: now },
       ...ownership,
     },
-    orderBy: [{ runAt: "asc" }, { createdAt: "asc" }, { id: "asc" }],
+    orderBy: [{ runAt: "asc" }, { periodEnd: "asc" }, { createdAt: "asc" }, { id: "asc" }],
     take: 10,
     select: { id: true, status: true, attemptCount: true, maxAttempts: true },
   });
@@ -225,8 +225,12 @@ export async function processNextMemoryJob(
         where: {
           memoryScopeId: job.memoryScopeId,
           status: "ACTIVE",
-          createdAt: { lte: job.periodEnd },
-          updatedAt: { lte: job.periodEnd },
+          // AI-created memories use the evidence timestamp as validFrom. Do not
+          // filter by createdAt/updatedAt: backfilled jobs may write those later.
+          OR: [
+            { validFrom: { lte: job.periodEnd } },
+            { validFrom: null, createdAt: { lte: job.periodEnd } },
+          ],
         },
         orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
         take: MAX_SOURCE_MEMORIES,
