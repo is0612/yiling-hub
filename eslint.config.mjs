@@ -1,17 +1,18 @@
-import { defineConfig, globalIgnores } from "eslint/config";
-import nextVitals from "eslint-config-next/core-web-vitals";
-import nextTs from "eslint-config-next/typescript";
+import tsParser from "@typescript-eslint/parser";
+import vue from "eslint-plugin-vue";
 
-const eslintConfig = defineConfig([
-  ...nextVitals,
-  ...nextTs,
-  globalIgnores([
-    ".next/**",
-    "out/**",
-    "build/**",
-    "next-env.d.ts",
-    "src/generated/**",
-  ]),
-]);
-
-export default eslintConfig;
+export default [
+  {
+    ignores: [".nuxt/**", ".output/**", "node_modules/**", "src/**", "dist/**", "coverage/**", "prisma/generated/**"],
+  },
+  ...vue.configs["flat/recommended"],
+  {
+    files: ["**/*.ts"],
+    languageOptions: { parser: tsParser },
+  },
+  {
+    files: ["**/*.vue"],
+    languageOptions: { parserOptions: { parser: tsParser } },
+    rules: { "vue/multi-word-component-names": "off" },
+  },
+];
