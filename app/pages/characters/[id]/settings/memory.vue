@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ArrowLeft, Calendar, InfoFilled, RefreshLeft, Setting, ShieldCheck, Select } from "@element-plus/icons-vue";
+import { ArrowLeft, Calendar, InfoFilled, RefreshLeft, Setting, Lock, Select } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
 import { initialCharacters, type Character } from "~/utils/mock-data";
 
@@ -67,7 +67,7 @@ function resetSettings() {
 
       <aside class="settings-side">
         <section class="surface panel">
-          <div class="side-icon"><el-icon><ShieldCheck /></el-icon></div>
+          <div class="side-icon"><el-icon><Lock /></el-icon></div>
           <h2 class="section-heading">记忆与归档说明</h2>
           <p class="section-description" style="margin-top:9px">这些规则影响角色如何归档阶段经历，不会自动清理历史快照。</p>
           <div class="rule-item"><span class="rule-number">01</span><div><strong>快照是阶段记录</strong><p>每隔 N 天生成一份总结，不代表只保留最近 N 天的消息。</p></div></div>
