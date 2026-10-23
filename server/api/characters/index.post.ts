@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { readBody } from "h3";
 import { characterInclude, toCharacterDto } from "../../utils/character-dto";
 import { readTrimmedString, requireLocalDevOwner } from "../../utils/local-api";
@@ -15,14 +16,22 @@ export default defineEventHandler(async (event) => {
     : "mint";
   const prisma = getPrisma();
 
+  const characterId = randomUUID();
   const created = await prisma.character.create({
     data: {
+      id: characterId,
       ownerId,
       name,
       avatar: name.slice(0, 1),
       basePrompt: personality || "请补充角色的人设与行为规则。",
       status: "PAUSED",
       modelConfig: { alias, description, avatarTone },
+      memoryScopes: {
+        create: {
+          scopeType: "CHARACTER_GLOBAL",
+          scopeKey: `character:${characterId}:global`,
+        },
+      },
       memorySetting: {
         create: {
           snapshotIntervalDays: 8,
