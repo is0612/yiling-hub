@@ -477,6 +477,68 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           description: 该接口仅限本地开发环境
+  /memories/{memoryId}/trash:
+    parameters:
+      - name: memoryId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      tags: [Memories]
+      operationId: moveMemoryToTrash
+      summary: 将长期记忆移入回收站（本地开发）
+      description: 保留移入前的状态与时间戳；已有快照保持不变。
+      security: []
+      responses:
+        '200':
+          description: 已移入回收站
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, status, statusBeforeTrash, deletedAt]
+                properties:
+                  id: { type: string, format: uuid }
+                  status: { type: string, enum: [TRASHED] }
+                  statusBeforeTrash: { type: string, enum: [ACTIVE, SUPERSEDED, ARCHIVED, INVALIDATED] }
+                  deletedAt: { type: string, format: date-time }
+        '403':
+          description: 该接口仅限本地开发环境
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 记忆已在回收站
+  /memories/{memoryId}/restore:
+    parameters:
+      - name: memoryId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      tags: [Memories]
+      operationId: restoreMemoryFromTrash
+      summary: 从回收站恢复长期记忆（本地开发）
+      description: 恢复到移入回收站之前的记忆状态。
+      security: []
+      responses:
+        '200':
+          description: 已恢复
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, status, statusBeforeTrash, deletedAt]
+                properties:
+                  id: { type: string, format: uuid }
+                  status: { type: string, enum: [ACTIVE, SUPERSEDED, ARCHIVED, INVALIDATED] }
+                  statusBeforeTrash: { type: string, nullable: true, enum: [ACTIVE, SUPERSEDED, ARCHIVED, INVALIDATED] }
+                  deletedAt: { type: string, nullable: true, format: date-time }
+        '403':
+          description: 该接口仅限本地开发环境
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 记忆不在回收站
   /memories/{memoryId}:
     parameters:
       - name: memoryId
@@ -501,8 +563,10 @@ paths:
                   id: { type: string, format: uuid }
                   category: { type: string, enum: [FACT, PREFERENCE, RELATIONSHIP, COMMITMENT, GOAL, EVENT, SUMMARY, OTHER] }
                   content: { type: string }
-                  status: { type: string, enum: [ACTIVE, SUPERSEDED, ARCHIVED, INVALIDATED] }
+                  status: { type: string, enum: [ACTIVE, SUPERSEDED, ARCHIVED, INVALIDATED, TRASHED] }
                   confidence: { type: number, nullable: true }
+                  statusBeforeTrash: { type: string, nullable: true, enum: [ACTIVE, SUPERSEDED, ARCHIVED, INVALIDATED] }
+                  deletedAt: { type: string, nullable: true, format: date-time }
                   createdAt: { type: string, format: date-time }
                   updatedAt: { type: string, format: date-time }
         '403':
@@ -540,12 +604,58 @@ paths:
           $ref: '#/components/responses/NotFound'
     delete:
       tags: [Memories]
-      summary: 删除长期记忆（需检查来源与删除策略）
+      operationId: permanentlyDeleteTrashedMemory
+      summary: 永久删除回收站中的当前记忆条目（本地开发）
+      description: 仅可删除已在回收站的条目。不会改写快照；历史快照中的生成时内容副本与来源记录仍保留，因此这不是对所有历史副本的内容擦除。
+      security: []
       responses:
-        '204':
-          description: 已删除
-        '401':
-          $ref: '#/components/responses/Unauthorized'
+        '200':
+          description: 当前长期记忆条目已永久删除，历史快照被保留
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, permanentlyDeleted, snapshotsPreserved, preservedSnapshotReferences]
+                properties:
+                  id: { type: string, format: uuid }
+                  permanentlyDeleted: { type: boolean, enum: [true] }
+                  snapshotsPreserved: { type: boolean, enum: [true] }
+                  preservedSnapshotReferences: { type: integer, minimum: 0 }
+        '403':
+          description: 该接口仅限本地开发环境
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 只能永久删除已经移入回收站的记忆条目
+  /characters/{characterId}/memories/trash:
+    parameters:
+      - $ref: '#/components/parameters/CharacterId'
+    get:
+      tags: [Memories]
+      operationId: listCharacterMemoryTrash
+      summary: 获取角色记忆回收站（本地开发）
+      security: []
+      responses:
+        '200':
+          description: 回收站条目列表
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  required: [id, category, content, status, statusBeforeTrash, deletedAt]
+                  properties:
+                    id: { type: string, format: uuid }
+                    category: { type: string, enum: [FACT, PREFERENCE, RELATIONSHIP, COMMITMENT, GOAL, EVENT, SUMMARY, OTHER] }
+                    content: { type: string }
+                    status: { type: string, enum: [TRASHED] }
+                    statusBeforeTrash: { type: string, nullable: true, enum: [ACTIVE, SUPERSEDED, ARCHIVED, INVALIDATED] }
+                    deletedAt: { type: string, nullable: true, format: date-time }
+                    createdAt: { type: string, format: date-time }
+                    updatedAt: { type: string, format: date-time }
+        '403':
+          description: 该接口仅限本地开发环境
         '404':
           $ref: '#/components/responses/NotFound'
   /characters/{characterId}/snapshots:
@@ -1026,7 +1136,9 @@ components:
         category: { type: string }
         content: { type: string }
         confidence: { type: number, minimum: 0, maximum: 1, nullable: true }
-        status: { type: string, enum: [active, superseded, archived] }
+        status: { type: string, enum: [ACTIVE, SUPERSEDED, ARCHIVED, INVALIDATED, TRASHED] }
+        statusBeforeTrash: { type: string, nullable: true, enum: [ACTIVE, SUPERSEDED, ARCHIVED, INVALIDATED] }
+        deletedAt: { type: string, nullable: true, format: date-time }
         sourceMessageId: { type: string, format: uuid, nullable: true }
         validFrom: { type: string, format: date-time, nullable: true }
         validTo: { type: string, format: date-time, nullable: true }
