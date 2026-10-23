@@ -79,6 +79,6 @@ npm run dev
 
 ## 本地 API 安全说明
 
-本阶段 API 只允许 `NODE_ENV=development`、`YILING_LOCAL_API_ENABLED=true` 且通过 `localhost`/回环地址访问。生产环境固定拒绝请求。管理员登录、会话管理、正式权限校验必须在服务公开部署前完成；不要通过 `--host 0.0.0.0` 把本地开发 API 暴露给局域网或公网。
+本阶段 API 只在 Nuxt 开发构建中可用，且必须显式设置 `YILING_LOCAL_API_ENABLED=true` 并通过 `localhost`/回环 Host 访问；Nuxt 开发服务器默认绑定 `127.0.0.1`。生产构建会拒绝这些请求。管理员登录、会话管理、正式权限校验必须在服务公开部署前完成；不要通过 `--host 0.0.0.0` 覆盖回环绑定，或把本地开发 API 暴露给局域网/公网。
 
 数据备份和换电脑迁移流程见 [本地开发与数据迁移规范](docs/local-development-and-data-migration.md)。
