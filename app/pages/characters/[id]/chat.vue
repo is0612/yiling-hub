@@ -8,6 +8,9 @@ type ChatCharacter = {
   chatModel: string;
   chatTemperature: number;
   chatMaxTokens: number;
+  chatApiBaseUrl: string;
+  chatApiKeyConfigured: boolean;
+  chatApiKeySource: "character" | "environment" | "missing";
 };
 type ChatMemorySource = { id: string; category: string; content: string };
 type ChatSnapshotSource = { id: string; summary: string; periodStart: string; periodEnd: string; version: number };
@@ -69,6 +72,10 @@ const modelSettingsSaving = ref(false);
 const draftChatModel = ref("");
 const draftChatTemperature = ref(0.7);
 const draftChatMaxTokens = ref(1800);
+const draftChatApiBaseUrl = ref("https://api.openai.com/v1");
+const draftChatApiKey = ref("");
+const clearSavedApiKey = ref(false);
+const testingApi = ref(false);
 const messagePanel = ref<HTMLElement | null>(null);
 const activeConversation = computed(() => conversations.value.find((item) => item.id === conversationId.value) ?? null);
 
@@ -98,11 +105,14 @@ function openModelSettings() {
   draftChatModel.value = character.value?.chatModel ?? "";
   draftChatTemperature.value = character.value?.chatTemperature ?? 0.7;
   draftChatMaxTokens.value = character.value?.chatMaxTokens ?? 1800;
+  draftChatApiBaseUrl.value = character.value?.chatApiBaseUrl ?? "https://api.openai.com/v1";
+  draftChatApiKey.value = "";
+  clearSavedApiKey.value = false;
   modelSettingsOpen.value = true;
 }
 
-async function saveModelSettings() {
-  if (modelSettingsSaving.value || !character.value) return;
+async function saveModelSettings(keepOpen = false): Promise<boolean> {
+  if (modelSettingsSaving.value || !character.value) return false;
   modelSettingsSaving.value = true;
   try {
     character.value = await $fetch<ChatCharacter>("/api/characters/" + encodeURIComponent(id.value), {
@@ -111,15 +121,46 @@ async function saveModelSettings() {
         chatModel: draftChatModel.value.trim(),
         chatTemperature: draftChatTemperature.value,
         chatMaxTokens: draftChatMaxTokens.value,
+        chatApiBaseUrl: draftChatApiBaseUrl.value.trim(),
+        chatApiKey: draftChatApiKey.value,
+        clearApiKey: clearSavedApiKey.value && !draftChatApiKey.value.trim(),
       },
     });
+    draftChatApiKey.value = "";
+    clearSavedApiKey.value = false;
     await loadHistory(conversationId.value);
-    modelSettingsOpen.value = false;
-    ElMessage.success("本角色模型参数已保存。API Key 与服务地址仍由服务端 .env 管理。");
+    if (!keepOpen) {
+      modelSettingsOpen.value = false;
+      ElMessage.success("本角色 API 与模型参数已保存。API Key 已由服务端加密保存，不会回传到网页。");
+    }
+    return true;
   } catch (error) {
-    ElMessage.error(getErrorMessage(error, "保存角色模型参数失败。"));
+    ElMessage.error(getErrorMessage(error, "保存 API 与模型参数失败。"));
+    return false;
   } finally {
     modelSettingsSaving.value = false;
+  }
+}
+
+async function testApiConnection() {
+  if (testingApi.value || modelSettingsSaving.value) return;
+  testingApi.value = true;
+  try {
+    const saved = await saveModelSettings(true);
+    if (!saved) return;
+    const result = await $fetch<{ ok: boolean; message: string; model?: string; provider?: string; elapsedMs?: number }>(
+      "/api/characters/" + encodeURIComponent(id.value) + "/chat/test-connection",
+      { method: "POST" },
+    );
+    if (result.ok) {
+      ElMessage.success(result.message + (result.elapsedMs !== undefined ? "（" + result.elapsedMs + " ms）" : ""));
+    } else {
+      ElMessage.error(result.message || "API 连通性测试失败。");
+    }
+  } catch (error) {
+    ElMessage.error(getErrorMessage(error, "API 连通性测试失败，请检查地址、Key 和模型名称。"));
+  } finally {
+    testingApi.value = false;
   }
 }
 
@@ -362,7 +403,7 @@ async function sendMessage() {
     return;
   }
   if (!modelConfigured.value) {
-    ElMessage.warning("请先在项目根目录 .env 配置 LLM_API_KEY 和 LLM_MODEL，再重启开发服务器。");
+    ElMessage.warning("请先点击右上角“模型参数”，填写并保存 API 地址、API Key 和模型名称。");
     return;
   }
 
@@ -414,7 +455,7 @@ onMounted(() => void reload());
     <el-alert
       v-if="!modelConfigured"
       title="模型尚未配置"
-      description="先在服务端 .env 中配置 LLM_API_KEY（必要时设置 LLM_BASE_URL），然后重启 yarn dev。模型名称可在本页按角色单独选择；API Key 不会保存到浏览器或角色配置中。"
+      description="在右上角“模型参数”中填写兼容 OpenAI Chat Completions 的 API 地址、Key 和模型名称。配置保存在当前角色中，Key 由服务端加密保存。"
       type="warning"
       :closable="false"
       show-icon
@@ -550,11 +591,28 @@ onMounted(() => void reload());
       </section>
     </div>
 
-    <el-dialog v-model="modelSettingsOpen" title="本角色模型参数" width="520px" destroy-on-close>
+    <el-dialog v-model="modelSettingsOpen" title="本角色 API 设置" width="560px" destroy-on-close>
       <el-form label-position="top">
-        <el-form-item label="模型名称">
-          <el-input v-model="draftChatModel" maxlength="120" show-word-limit placeholder="留空时使用服务端 LLM_MODEL" />
-          <p class="model-settings-hint">只影响当前角色的对话。API Key 与 API 地址始终从服务端 .env 读取，不会写入数据库。</p>
+        <el-form-item label="API Base URL" required>
+          <el-input v-model="draftChatApiBaseUrl" maxlength="500" placeholder="https://api.deepseek.com/v1" />
+          <p class="model-settings-hint">填写 API 根地址，不要追加 /chat/completions。必须使用 HTTPS；HTTP 仅允许本机地址。</p>
+        </el-form-item>
+        <el-form-item label="API Key">
+          <el-input
+            v-model="draftChatApiKey"
+            type="password"
+            show-password
+            autocomplete="new-password"
+            maxlength="8192"
+            :placeholder="character?.chatApiKeySource === 'character' ? '已加密保存；留空表示保持不变' : character?.chatApiKeySource === 'environment' ? '当前使用服务端默认 Key；填写可覆盖' : '请填写 API Key'"
+          />
+          <p class="model-settings-hint">
+            {{ character?.chatApiKeySource === "character" ? "此角色已保存 API Key。留空可保持现有 Key，不会在网页中显示原文。" : character?.chatApiKeySource === "environment" ? "当前使用服务端默认 Key。输入新 Key 后会为本角色单独保存。" : "Key 只会提交到本机服务端，并使用 AES-256-GCM 加密后保存；不会回传给网页。" }}
+          </p>
+          <el-checkbox v-if="character?.chatApiKeySource === 'character'" v-model="clearSavedApiKey">移除此角色单独保存的 API Key</el-checkbox>
+        </el-form-item>
+        <el-form-item label="模型名称" required>
+          <el-input v-model="draftChatModel" maxlength="120" show-word-limit placeholder="例如 deepseek-chat、gpt-4o-mini" />
         </el-form-item>
         <el-form-item label="温度（Temperature）">
           <el-slider v-model="draftChatTemperature" :min="0" :max="2" :step="0.1" show-input />
@@ -566,7 +624,8 @@ onMounted(() => void reload());
       </el-form>
       <template #footer>
         <el-button @click="modelSettingsOpen = false">取消</el-button>
-        <el-button type="primary" :loading="modelSettingsSaving" @click="void saveModelSettings()">保存参数</el-button>
+        <el-button :loading="testingApi" :disabled="modelSettingsSaving || testingApi" @click="void testApiConnection()">保存并测试 API</el-button>
+        <el-button type="primary" :loading="modelSettingsSaving" :disabled="testingApi" @click="void saveModelSettings()">保存设置</el-button>
       </template>
     </el-dialog>
   </div>

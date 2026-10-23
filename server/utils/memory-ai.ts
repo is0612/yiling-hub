@@ -1,3 +1,4 @@
+import { buildChatCompletionsEndpoint, isChatModelConfigured } from "./chat-model-config";
 import { createHash } from "node:crypto";
 
 export const MEMORY_CATEGORIES = [
@@ -54,6 +55,9 @@ export type MemoryAiAnalysis = {
 };
 
 export type MemoryAiInput = {
+  apiKey?: string;
+  apiBaseUrl?: string;
+  model?: string;
   periodStart: string;
   periodEnd: string;
   timezone: string;
@@ -233,8 +237,8 @@ function systemPrompt(): string {
   ].join("\n");
 }
 
-export function isMemoryModelConfigured(): boolean {
-  return Boolean(process.env.LLM_API_KEY?.trim() && process.env.LLM_MODEL?.trim());
+export function isMemoryModelConfigured(configValue?: unknown): boolean {
+  return isChatModelConfigured(configValue);
 }
 
 export async function analyzeMemoryPeriod(input: MemoryAiInput): Promise<{
@@ -244,19 +248,16 @@ export async function analyzeMemoryPeriod(input: MemoryAiInput): Promise<{
   promptTemplateVersion: string;
   usage?: { promptTokens?: number; completionTokens?: number; totalTokens?: number };
 }> {
-  const apiKey = process.env.LLM_API_KEY?.trim();
-  const model = process.env.LLM_MODEL?.trim();
+  const apiKey = input.apiKey?.trim() || process.env.LLM_API_KEY?.trim();
+  const model = input.model?.trim() || process.env.LLM_MODEL?.trim();
   if (!apiKey || !model) {
     throw new Error("LLM_NOT_CONFIGURED: 请在服务端 .env 配置 LLM_API_KEY 和 LLM_MODEL；任务会保留在队列中等待配置。");
   }
 
-  const baseUrl = (process.env.LLM_BASE_URL?.trim() || "https://api.openai.com/v1").replace(/\/+$/, "");
+  const baseUrl = input.apiBaseUrl?.trim() || process.env.LLM_BASE_URL?.trim() || "https://api.openai.com/v1";
   let endpoint: URL;
   try {
-    endpoint = new URL(baseUrl + "/chat/completions");
-    if (endpoint.protocol !== "https:" && endpoint.hostname !== "localhost" && endpoint.hostname !== "127.0.0.1") {
-      throw new Error("模型 API 必须使用 HTTPS（本机 localhost 除外）。");
-    }
+    endpoint = buildChatCompletionsEndpoint(baseUrl);
   } catch (error) {
     throw new Error("LLM_INVALID_BASE_URL: " + (error instanceof Error ? error.message : String(error)));
   }

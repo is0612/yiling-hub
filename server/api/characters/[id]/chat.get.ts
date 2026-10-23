@@ -113,8 +113,17 @@ export default defineEventHandler(async (event) => {
 
   const chatSettings = resolveChatModelSettings(character.modelConfig);
   return {
-    character: { id: character.id, name: character.name, chatModel: chatSettings.model, chatTemperature: chatSettings.temperature, chatMaxTokens: chatSettings.maxTokens },
-    modelConfigured: Boolean(process.env.LLM_API_KEY?.trim() && chatSettings.model),
+    character: {
+      id: character.id,
+      name: character.name,
+      chatModel: chatSettings.model,
+      chatTemperature: chatSettings.temperature,
+      chatMaxTokens: chatSettings.maxTokens,
+      chatApiBaseUrl: chatSettings.apiBaseUrl,
+      chatApiKeyConfigured: chatSettings.apiKeyConfigured,
+      chatApiKeySource: chatSettings.apiKeySource,
+    },
+    modelConfigured: Boolean(chatSettings.apiKeyConfigured && chatSettings.model),
     conversations: conversations.map((conversation) => ({
       id: conversation.id,
       title: conversation.title || "未命名对话",

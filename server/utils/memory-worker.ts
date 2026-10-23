@@ -1,3 +1,5 @@
+import { resolveChatModelSettings } from "./chat-model-config";
+import { resolveCharacterApiKey } from "./credential-encryption";
 import { randomUUID } from "node:crypto";
 import type { PrismaClient } from "../../src/generated/prisma/client";
 import {
@@ -90,14 +92,6 @@ export async function processNextMemoryJob(
     });
   }
 
-  // Leave jobs queued until a model is configured; do not burn retry attempts for setup errors.
-  if (!isMemoryModelConfigured()) {
-    return {
-      processed: false,
-      message: "尚未配置 AI 模型。请在服务端 .env 设置 LLM_API_KEY 和 LLM_MODEL；现有任务会留在队列中。",
-    };
-  }
-
   const candidates = await prisma.memoryJob.findMany({
     where: {
       type: { in: ["GENERATE_SNAPSHOT", "REGENERATE_SNAPSHOT"] },
@@ -106,12 +100,27 @@ export async function processNextMemoryJob(
       ...ownership,
     },
     orderBy: [{ runAt: "asc" }, { periodEnd: "asc" }, { createdAt: "asc" }, { id: "asc" }],
-    take: 10,
-    select: { id: true, type: true, status: true, attemptCount: true, maxAttempts: true },
+    take: 100,
+    select: {
+      id: true,
+      type: true,
+      status: true,
+      attemptCount: true,
+      maxAttempts: true,
+      memoryScope: { select: { character: { select: { modelConfig: true } } } },
+    },
   });
 
+  const configuredCandidates = candidates.filter((candidate) => isMemoryModelConfigured(candidate.memoryScope.character.modelConfig));
+  if (configuredCandidates.length === 0 && candidates.length > 0) {
+    return {
+      processed: false,
+      message: "待处理快照关联的角色尚未配置模型 API。请打开该角色的 AI 对话 → 模型参数填写 API 地址、Key 和模型名称；任务会保留在队列中。",
+    };
+  }
+
   let claimedJobId = "";
-  for (const candidate of candidates) {
+  for (const candidate of configuredCandidates) {
     if (candidate.attemptCount >= candidate.maxAttempts) {
       await prisma.memoryJob.updateMany({
         where: { id: candidate.id, status: candidate.status },
@@ -254,7 +263,7 @@ export async function processNextMemoryJob(
           id: true,
           scopeType: true,
           characterId: true,
-          character: { select: { name: true, memorySetting: { select: { timezone: true } } } },
+          character: { select: { name: true, modelConfig: true, memorySetting: { select: { timezone: true } } } },
         },
       }),
       prisma.memorySnapshot.findFirst({
@@ -302,7 +311,15 @@ export async function processNextMemoryJob(
     }));
 
     // The model call deliberately happens outside a database transaction.
+    const chatSettings = resolveChatModelSettings(scope.character.modelConfig);
+    const apiKey = await resolveCharacterApiKey(scope.character.modelConfig, chatSettings.apiBaseUrl);
+    if (!apiKey || !chatSettings.model) {
+      throw new Error("角色尚未配置模型 API。请先在角色的 AI 对话 → 模型参数中填写 API Key 与模型名称。");
+    }
     const aiResult = await analyzeMemoryPeriod({
+      apiKey,
+      apiBaseUrl: chatSettings.apiBaseUrl,
+      model: chatSettings.model,
       periodStart: job.periodStart.toISOString(),
       periodEnd: job.periodEnd.toISOString(),
       timezone: scope.character.memorySetting?.timezone ?? "UTC",

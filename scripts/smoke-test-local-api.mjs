@@ -138,12 +138,24 @@ assert(edited.personality === "角色人设已持久化更新。", "PATCH did no
 
 const savedChatSettings = await request(`/api/characters/${created.id}`, {
   method: "PATCH",
-  body: { chatModel: "ci-character-model", chatTemperature: 0.4, chatMaxTokens: 1024 },
+  body: {
+    chatApiBaseUrl: "http://127.0.0.1:4010/v1",
+    chatApiKey: "ci-only",
+    chatModel: "ci-character-model",
+    chatTemperature: 0.4,
+    chatMaxTokens: 1024,
+  },
 });
 assert(savedChatSettings.chatModel === "ci-character-model", "Character model override did not round-trip.");
 assert(savedChatSettings.chatTemperature === 0.4 && savedChatSettings.chatMaxTokens === 1024, "Character temperature/token settings did not round-trip.");
+assert(savedChatSettings.chatApiBaseUrl === "http://127.0.0.1:4010/v1", "Character API Base URL did not round-trip.");
+assert(savedChatSettings.chatApiKeyConfigured === true && savedChatSettings.chatApiKeySource === "character", "The character should report its encrypted API key as configured.");
+assert(!Object.prototype.hasOwnProperty.call(savedChatSettings, "chatApiKey"), "The character DTO must never return an API key.");
 const reloadedChatSettings = await request(`/api/characters/${created.id}`);
 assert(reloadedChatSettings.chatModel === "ci-character-model" && reloadedChatSettings.chatMaxTokens === 1024, "Character-specific chat settings did not persist after reloading.");
+assert(reloadedChatSettings.chatApiKeyConfigured === true && !Object.prototype.hasOwnProperty.call(reloadedChatSettings, "chatApiKey"), "The encrypted API Key must remain configured but never be returned.");
+const apiTest = await request(`/api/characters/${created.id}/chat/test-connection`, { method: "POST" });
+assert(apiTest.ok === true && apiTest.provider === "127.0.0.1", "API connection test should use the saved URL and decrypted API Key.");
 
 const initialSettings = await request(`/api/characters/${created.id}/memory-settings`);
 assert(initialSettings.snapshotIntervalDays === 8, "New character should get an 8-day default interval.");
@@ -381,4 +393,4 @@ assert(restoreResult.status === "ACTIVE", "Restoring an archived conversation sh
 const restoredChat = await request("/api/characters/" + created.id + "/chat?conversationId=" + chatReply.conversationId);
 assert(restoredChat.selectedConversationId === chatReply.conversationId && restoredChat.messages.length === 2, "Restored chat history must preserve its messages.");
 
-console.log("Local API smoke test passed: character CRUD, per-character model settings, memory settings, transcript import, scheduler backfill, local-mock AI extraction, source-ID validation, persisted provenance, manual and AI snapshot versions, safe AI regeneration, task cancel/requeue, recycle-bin lifecycle, context-aware AI chat, conversation search/rename, archive/restore, and archived write protection.");
+console.log("Local API smoke test passed: character CRUD, encrypted per-character API settings and connection test, memory settings, transcript import, scheduler backfill, local-mock AI extraction, source-ID validation, persisted provenance, manual and AI snapshot versions, safe AI regeneration, task cancel/requeue, recycle-bin lifecycle, context-aware AI chat, conversation search/rename, archive/restore, and archived write protection.");

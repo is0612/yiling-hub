@@ -235,10 +235,16 @@ paths:
                 properties:
                   character:
                     type: object
-                    required: [id, name]
+                    required: [id, name, chatModel, chatTemperature, chatMaxTokens, chatApiBaseUrl, chatApiKeyConfigured, chatApiKeySource]
                     properties:
                       id: { type: string, format: uuid }
                       name: { type: string }
+                      chatModel: { type: string }
+                      chatTemperature: { type: number, minimum: 0, maximum: 2 }
+                      chatMaxTokens: { type: integer, minimum: 256, maximum: 8192 }
+                      chatApiBaseUrl: { type: string, format: uri }
+                      chatApiKeyConfigured: { type: boolean }
+                      chatApiKeySource: { type: string, enum: [character, environment, missing] }
                   modelConfigured: { type: boolean }
                   selectedConversationId: { type: string, format: uuid, nullable: true }
                   conversations:
@@ -266,7 +272,7 @@ paths:
       tags: [Characters]
       operationId: sendCharacterChatMessage
       summary: 向 AI 角色发送消息并保存对话
-      description: 本地开发功能。按当前消息检索匹配的角色全局长期记忆和快照；模型返回的来源 ID 会通过候选白名单过滤。需要在服务端配置 LLM_API_KEY 和 LLM_MODEL。
+      description: 本地开发功能。按当前消息检索匹配的角色全局长期记忆和快照；模型返回的来源 ID 会通过候选白名单过滤。推荐在网页的角色模型参数中配置 API Base URL、API Key 和模型名称；服务端环境变量可作为默认回退配置。
       requestBody:
         required: true
         content:
@@ -307,6 +313,33 @@ paths:
           description: 模型调用失败或返回格式无效
         '503':
           description: 模型尚未配置
+  /characters/{characterId}/chat/test-connection:
+    parameters:
+      - $ref: '#/components/parameters/CharacterId'
+    post:
+      security: []
+      tags: [Characters]
+      operationId: testCharacterChatApiConnection
+      summary: 测试角色已保存的模型 API
+      description: 本地开发功能。使用角色保存的 API Base URL、已加密 API Key 与模型名称发起一次轻量请求；不保存对话消息。响应不会包含 API Key。
+      responses:
+        '200':
+          description: 连通性测试结果
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, message]
+                properties:
+                  ok: { type: boolean }
+                  message: { type: string }
+                  model: { type: string }
+                  provider: { type: string }
+                  elapsedMs: { type: integer, minimum: 0 }
+        '403':
+          description: 仅限本机开发模式访问
+        '404':
+          $ref: '#/components/responses/NotFound'
   /characters/{characterId}/chat/{conversationId}:
     parameters:
       - $ref: '#/components/parameters/CharacterId'
@@ -1485,7 +1518,7 @@ components:
         status: { type: string, enum: [active, paused, archived] }
     CharacterPatch:
       type: object
-      description: 更新角色时的部分字段；所有字段均为可选。
+      description: 更新角色时的部分字段；所有字段均为可选。API Key 仅可写入，服务端会加密保存且不会回传。
       properties:
         name: { type: string, minLength: 1, maxLength: 100 }
         avatar: { type: string, nullable: true }
@@ -1494,6 +1527,12 @@ components:
           type: object
           additionalProperties: true
         status: { type: string, enum: [active, paused, archived] }
+        chatApiBaseUrl: { type: string, maxLength: 500 }
+        chatApiKey: { type: string, maxLength: 8192, writeOnly: true }
+        clearApiKey: { type: boolean }
+        chatModel: { type: string, maxLength: 120 }
+        chatTemperature: { type: number, minimum: 0, maximum: 2 }
+        chatMaxTokens: { type: integer, minimum: 256, maximum: 8192 }
     Character:
       allOf:
         - $ref: '#/components/schemas/CharacterInput'

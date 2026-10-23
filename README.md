@@ -29,8 +29,9 @@ Worker 配置模型后会调用 LLM 对周期对话进行结构化总结，验�
 - 每次回复只携带最近 20 条会话消息、按当前话题匹配的最多 8 条活动长期记忆和最多 4 份当前快照；不会把整个记忆库塞入模型上下文。
 - 模型引用的长期记忆/快照 ID 会按本次实际提供的来源白名单过滤；聊天页面会展示通过验证的来源。当前版本只使用角色全局记忆，不把不同用户的私人记忆混入上下文。
 - 历史会话支持按标题/消息内容搜索、重命名、归档与恢复；归档不会删除消息或来源记录，归档会话只读。完整对话可以导出为 Markdown，AI 回复可一键复制。
-- 可为每个角色单独设置模型名称、温度和最大输出 Token；模型密钥与 API 地址仍只从服务端环境变量读取，不会保存到角色配置。
-- 需要服务端配置 `LLM_API_KEY`、`LLM_MODEL`，必要时设置 `LLM_BASE_URL`。开发接口仍仅限本机访问；真实渠道 Adapter 与正式管理员登录尚未完成。
+- 每个角色的“AI 对话 → 模型参数”可填写 API Base URL、API Key、模型名称、温度和最大输出 Token，并可直接测试 API 连通性；聊天和周期记忆 Worker 都会使用该角色的配置。
+- API Key 使用 AES-256-GCM 加密后保存，网页不会读取或回显密钥原文。加密密钥会自动生成在本机 `.data/credentials-encryption.key`，该文件已被 Git 忽略；备份/迁移数据库时必须一并保管，丢失后需要重新填写 API Key。
+- `LLM_API_KEY`、`LLM_MODEL`、`LLM_BASE_URL` 现在是可选的服务端默认/兼容配置；没有填写角色 API 时才会按规则回退。开发接口仍仅限本机访问；真实渠道 Adapter 与正式管理员登录尚未完成。
 - 检索逻辑可运行 `yarn test:memory-retrieval` 测试；角色模型参数可运行 `yarn test:chat-model-config` 测试。
 
 ## 从哪里开始
@@ -78,7 +79,7 @@ Worker 配置模型后会调用 LLM 对周期对话进行结构化总结，验�
 Copy-Item .env.example .env
 ```
 
-编辑 `.env`，至少修改 `POSTGRES_PASSWORD`、`DATABASE_URL` 中对应的密码，以及 `DEV_OWNER_PASSWORD`（至少 12 位）。三处数据库用户名、密码、端口与数据库名必须匹配。配置真实模型调用时还需填写 `LLM_API_KEY` 和 `LLM_MODEL`；兼容 OpenAI Chat Completions 的服务可通过 `LLM_BASE_URL` 指定地址。密钥必须只保存在服务端 `.env` 中。请勿把 `.env` 提交到 Git。
+编辑 `.env`，至少修改 `POSTGRES_PASSWORD`、`DATABASE_URL` 中对应的密码，以及 `DEV_OWNER_PASSWORD`（至少 12 位）。三处数据库用户名、密码、端口与数据库名必须匹配。模型 API 推荐在角色的“AI 对话 → 模型参数”中填写；若你仍配置 `LLM_API_KEY`、`LLM_MODEL`、`LLM_BASE_URL`，它们只作为默认回退配置。请勿把真实密钥提交到 Git。
 
 ### 2. 安装并启动数据库
 

@@ -17,6 +17,9 @@ export type CharacterDto = {
   chatModel: string;
   chatTemperature: number;
   chatMaxTokens: number;
+  chatApiBaseUrl: string;
+  chatApiKeyConfigured: boolean;
+  chatApiKeySource: "character" | "environment" | "missing";
 };
 
 type CharacterRecord = {
@@ -122,5 +125,8 @@ export function toCharacterDto(input: unknown): CharacterDto {
     chatModel: chatSettings.model,
     chatTemperature: chatSettings.temperature,
     chatMaxTokens: chatSettings.maxTokens,
+    chatApiBaseUrl: chatSettings.apiBaseUrl,
+    chatApiKeyConfigured: chatSettings.apiKeyConfigured,
+    chatApiKeySource: chatSettings.apiKeySource,
   };
 }

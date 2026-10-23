@@ -30,6 +30,8 @@
 - 真实 `.env` 不提交到 Git。
 - 仓库只提交不含秘密的 `.env.example`。
 - 平台凭据优先加密保存或放到专门的 Secret Store。
+- 角色模型 API Key 使用 AES-256-GCM 加密后保存在角色配置中；加密密钥自动生成在本机被 Git 忽略的 `.data/credentials-encryption.key` 文件。
+- 备份或迁移数据库时必须一并安全保管该加密密钥；密钥文件丢失后，已保存的 API Key 将无法解密，需要重新录入。
 - 数据库连接串、API Key、Cookie 不得回显给用户或写入错误日志。
 - 生产与本地使用不同凭据。
 

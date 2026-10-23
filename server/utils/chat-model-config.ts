@@ -1,20 +1,74 @@
-export type StoredChatModelSettings = {
-  chatModel: string;
-  chatTemperature: number;
-  chatMaxTokens: number;
+import { isCharacterApiKeySaved } from "./credential-encryption";
+
+export type ChatModelSettingsPatch = {
+  chatModel?: string;
+  chatTemperature?: number;
+  chatMaxTokens?: number;
+  chatApiBaseUrl?: string;
+  chatApiKey?: string;
+  clearApiKey?: boolean;
 };
-export type ResolvedChatModelSettings = { model: string; temperature: number; maxTokens: number };
+export type ResolvedChatModelSettings = {
+  model: string;
+  temperature: number;
+  maxTokens: number;
+  apiBaseUrl: string;
+  apiKeyConfigured: boolean;
+  apiKeySource: "character" | "environment" | "missing";
+};
+
 const DEFAULT_TEMPERATURE = 0.7;
 const DEFAULT_MAX_TOKENS = 1800;
 const MIN_MAX_TOKENS = 256;
 const MAX_MAX_TOKENS = 8192;
 const MAX_MODEL_LENGTH = 120;
+const MAX_BASE_URL_LENGTH = 500;
+const MAX_API_KEY_LENGTH = 8192;
+const DEFAULT_BASE_URL = "https://api.openai.com/v1";
+
 function asRecord(value: unknown): Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
 }
-/** Credentials and API endpoints deliberately remain server-side environment config. */
-export function readChatModelSettingsPatch(body: Record<string, unknown>): Partial<StoredChatModelSettings> {
-  const patch: Partial<StoredChatModelSettings> = {};
+
+export function validateChatApiBaseUrl(value: string): string {
+  const input = value.trim();
+  if (!input) return "";
+  if (input.length > MAX_BASE_URL_LENGTH) throw new Error("API Base URL 不能超过 500 个字符。");
+  let url: URL;
+  try {
+    url = new URL(input);
+  } catch {
+    throw new Error("API Base URL 格式无效，请填写完整地址，例如 https://api.deepseek.com/v1。");
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") {
+    throw new Error("API Base URL 只支持 HTTPS；HTTP 仅允许 localhost 本机地址。");
+  }
+  if (url.username || url.password || url.search || url.hash) {
+    throw new Error("API Base URL 不应包含用户名、密码、查询参数或片段。");
+  }
+  const hostname = url.hostname.toLowerCase();
+  const localHttpHosts = ["localhost", "127.0.0.1", "[::1]"];
+  if (url.protocol === "http:" && !localHttpHosts.includes(hostname)) {
+    throw new Error("为了保护 API Key，非本机 API 地址必须使用 HTTPS。");
+  }
+  if (url.pathname.endsWith("/chat/completions")) {
+    throw new Error("请填写 API 根地址（例如 https://api.example.com/v1），不要填写 /chat/completions。");
+  }
+  const pathname = url.pathname.replace(/\/+$/, "");
+  return url.origin + (pathname === "/" ? "" : pathname);
+}
+
+export function buildChatCompletionsEndpoint(baseUrl: string): URL {
+  const normalized = validateChatApiBaseUrl(baseUrl);
+  if (!normalized) throw new Error("请先填写 API Base URL。");
+  return new URL(normalized + "/chat/completions");
+}
+
+/** API Key is accepted for saving but must be encrypted before it reaches modelConfig. */
+export function readChatModelSettingsPatch(body: Record<string, unknown>): ChatModelSettingsPatch {
+  const patch: ChatModelSettingsPatch = {};
   if ("chatModel" in body) {
     if (typeof body.chatModel !== "string") throw new Error("模型名称必须是文本。");
     const model = body.chatModel.trim();
@@ -31,16 +85,51 @@ export function readChatModelSettingsPatch(body: Record<string, unknown>): Parti
     if (typeof value !== "number" || !Number.isInteger(value) || value < MIN_MAX_TOKENS || value > MAX_MAX_TOKENS) throw new Error("最大输出 Token 必须是 256 到 8192 之间的整数。");
     patch.chatMaxTokens = value;
   }
+  if ("chatApiBaseUrl" in body) {
+    if (typeof body.chatApiBaseUrl !== "string") throw new Error("API Base URL 必须是文本。");
+    patch.chatApiBaseUrl = validateChatApiBaseUrl(body.chatApiBaseUrl);
+  }
+  if ("chatApiKey" in body) {
+    if (typeof body.chatApiKey !== "string") throw new Error("API Key 必须是文本。");
+    const key = body.chatApiKey.trim();
+    if (key.length > MAX_API_KEY_LENGTH) throw new Error("API Key 不能超过 8192 个字符。");
+    if (key) patch.chatApiKey = key;
+  }
+  if ("clearApiKey" in body) {
+    if (typeof body.clearApiKey !== "boolean") throw new Error("清除 API Key 的参数无效。");
+    patch.clearApiKey = body.clearApiKey;
+  }
   return patch;
 }
-export function resolveChatModelSettings(value: unknown, fallbackModel = process.env.LLM_MODEL?.trim() || "gpt-4o-mini"): ResolvedChatModelSettings {
+
+export function resolveChatModelSettings(
+  value: unknown,
+  fallbackModel = process.env.LLM_MODEL?.trim() || "gpt-4o-mini",
+): ResolvedChatModelSettings {
   const config = asRecord(value);
   const configuredModel = typeof config.chatModel === "string" ? config.chatModel.trim() : "";
   const temperature = config.chatTemperature;
   const maxTokens = config.chatMaxTokens;
+  const configuredBaseUrl = typeof config.chatApiBaseUrl === "string" ? config.chatApiBaseUrl.trim() : "";
+  const apiBaseUrl = validateChatApiBaseUrl(configuredBaseUrl || process.env.LLM_BASE_URL?.trim() || DEFAULT_BASE_URL);
+  const characterKeySaved = isCharacterApiKeySaved(config);
+  const environmentBaseUrl = validateChatApiBaseUrl(process.env.LLM_BASE_URL?.trim() || DEFAULT_BASE_URL);
+  const environmentKeySaved = Boolean(process.env.LLM_API_KEY?.trim()) && (!configuredBaseUrl || apiBaseUrl === environmentBaseUrl);
   return {
     model: (configuredModel || fallbackModel).slice(0, MAX_MODEL_LENGTH),
     temperature: typeof temperature === "number" && Number.isFinite(temperature) && temperature >= 0 && temperature <= 2 ? Math.round(temperature * 10) / 10 : DEFAULT_TEMPERATURE,
     maxTokens: typeof maxTokens === "number" && Number.isInteger(maxTokens) && maxTokens >= MIN_MAX_TOKENS && maxTokens <= MAX_MAX_TOKENS ? maxTokens : DEFAULT_MAX_TOKENS,
+    apiBaseUrl,
+    apiKeyConfigured: characterKeySaved || environmentKeySaved,
+    apiKeySource: characterKeySaved ? "character" : environmentKeySaved ? "environment" : "missing",
   };
+}
+
+export function isChatModelConfigured(configValue?: unknown): boolean {
+  try {
+    const settings = resolveChatModelSettings(configValue);
+    return Boolean(settings.model && settings.apiKeyConfigured);
+  } catch {
+    return false;
+  }
 }

@@ -56,6 +56,8 @@ PostgreSQL 的运行数据存放在 Docker named volume `yiling_postgres_data`�
 
 如果上传图片或其他文件存放在本地目录，还必须单独备份这些文件。仅备份 PostgreSQL 不会自动包含文件系统中的图片或附件。
 
+另外，网页中保存的角色 API Key 使用本机生成的加密密钥 `.data/credentials-encryption.key` 加密。备份/迁移包含 API Key 的数据库时，必须将该文件安全地一并备份并恢复到新电脑项目根目录的 `.data/` 下；如果丢失，原有 API Key 无法解密，需要在角色的“AI 对话 → 模型参数”中重新录入。该文件已被 Git 忽略，不能提交到仓库。
+
 ## 4. 备份数据库
 
 从仓库根目录运行：

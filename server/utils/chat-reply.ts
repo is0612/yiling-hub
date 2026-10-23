@@ -1,3 +1,4 @@
+import { buildChatCompletionsEndpoint } from "./chat-model-config";
 export type ConversationContextMessage = { role: "USER" | "ASSISTANT"; content: string; occurredAt: string };
 export type ConversationContextMemory = { id: string; category: string; content: string; confidence: number | null; relevanceScore: number };
 export type ConversationContextSnapshot = { id: string; summary: string; periodStart: string; periodEnd: string; version: number; relevanceScore: number };
@@ -5,6 +6,8 @@ export type ConversationReplyInput = {
   characterName: string;
   characterPrompt: string;
   model?: string;
+  apiKey?: string;
+  apiBaseUrl?: string;
   temperature?: number;
   maxTokens?: number;
   currentMessage: string;
@@ -60,7 +63,7 @@ function systemPrompt(): string {
 }
 
 export async function generateConversationReply(input: ConversationReplyInput): Promise<ConversationReplyResult> {
-  const apiKey = process.env.LLM_API_KEY?.trim();
+  const apiKey = input.apiKey?.trim() || process.env.LLM_API_KEY?.trim();
   const model = input.model?.trim() || process.env.LLM_MODEL?.trim();
   if (!apiKey || !model) {
     throw new Error("LLM_NOT_CONFIGURED: 请在服务端 .env 配置 LLM_API_KEY，并为当前角色设置模型名称或配置 LLM_MODEL。");
@@ -72,13 +75,10 @@ export async function generateConversationReply(input: ConversationReplyInput): 
     ? input.maxTokens
     : 1800;
 
-  const baseUrl = (process.env.LLM_BASE_URL?.trim() || "https://api.openai.com/v1").replace(/\/+$/, "");
+  const baseUrl = input.apiBaseUrl?.trim() || process.env.LLM_BASE_URL?.trim() || "https://api.openai.com/v1";
   let endpoint: URL;
   try {
-    endpoint = new URL(baseUrl + "/chat/completions");
-    if (endpoint.protocol !== "https:" && !["localhost", "127.0.0.1", "::1", "[::1]"].includes(endpoint.hostname)) {
-      throw new Error("模型 API 必须使用 HTTPS（本机回环地址除外）。");
-    }
+    endpoint = buildChatCompletionsEndpoint(baseUrl);
   } catch (error) {
     throw new Error("LLM_INVALID_BASE_URL: " + (error instanceof Error ? error.message : String(error)));
   }
@@ -110,8 +110,7 @@ export async function generateConversationReply(input: ConversationReplyInput): 
   }
 
   if (!response.ok) {
-    const detail = (await response.text()).slice(0, 400);
-    throw new Error("LLM_HTTP_ERROR: 模型服务返回 HTTP " + response.status + (detail ? " - " + detail : ""));
+    throw new Error("LLM_HTTP_ERROR: 模型服务返回 HTTP " + response.status + "。请检查 API 地址、Key 和模型权限。");
   }
 
   const payload = asRecord(await response.json());
