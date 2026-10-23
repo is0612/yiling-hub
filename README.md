@@ -10,6 +10,8 @@
 - [本地开发与数据迁移规范](docs/local-development-and-data-migration.md)
 - [记忆系统与周期快照规则](docs/memory-system.md)
 - [数据模型设计](docs/data-model.md)
+- [Prisma Schema](prisma/schema.prisma)
+- [Phase 0 审查清单](docs/phase-0-review-checklist.md)
 - [OpenAPI 契约](docs/openapi.yaml)
 - [安全规范](docs/security.md)
 - [开发阶段与验收标准](docs/development-phases.md)
