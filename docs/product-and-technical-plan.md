@@ -94,7 +94,7 @@
 - 前端与 API：Next.js App Router + TypeScript
 - UI：Tailwind CSS + shadcn/ui
 - 数据库：PostgreSQL
-- ORM/迁移：Prisma
+- ORM/迁移：Prisma ORM 7；数据库连接配置在 `prisma.config.ts`，PostgreSQL 使用 `@prisma/adapter-pg` 与 `pg`
 - 本地依赖：Docker Compose
 - 后台任务：后续阶段增加独立 Node.js Worker
 - 模型服务：统一供应商适配接口，初期调用外部 API
@@ -104,7 +104,7 @@ Web 与 Worker 可共用仓库，但正式后台任务应作为独立进程执�
 
 ## 8. API 契约
 
-Phase 0 建立 OpenAPI 3.0 契约，作为前端 Mock、后端接口和测试的共同依据。接口清单见 [openapi.yaml](openapi.yaml)。更新接口时必须同步更新契约与类型。
+Phase 0 已将初版数据模型落在 `prisma/schema.prisma`，并通过 `prisma.config.ts` 配置 Prisma CLI。安装依赖后先运行 `npm run db:format` 与 `npm run db:validate`，在验证通过并经过审查前不要对重要数据库应用迁移。OpenAPI 3.0 契约位于 [openapi.yaml](openapi.yaml)，作为前端 Mock、后端接口和测试的共同依据。更新接口时必须同步更新契约与类型。
 
 ## 9. 安全与部署
 
