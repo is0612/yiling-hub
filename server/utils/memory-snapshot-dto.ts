@@ -1,3 +1,5 @@
+import type { SnapshotAnalysis } from "../../app/utils/mock-data";
+
 export type MemorySnapshotDto = {
   id: string;
   number: number;
@@ -9,12 +11,17 @@ export type MemorySnapshotDto = {
   messages: number;
   status: "当前版本" | "已被替代";
   statusTone: "green" | "gray";
+  kind: "AUTOMATIC" | "MANUAL";
+  generatedBy?: string;
+  model?: { name?: string; provider?: string; promptTemplateVersion?: string };
+  analysis?: SnapshotAnalysis;
 };
 
 type SnapshotRecord = {
   id: string;
   snapshotKey: string;
   version: number;
+  kind: "AUTOMATIC" | "MANUAL";
   periodStart: Date;
   periodEnd: Date;
   summary: string;
@@ -23,6 +30,109 @@ type SnapshotRecord = {
   createdAt: Date;
   sources: Array<{ sourceType: string }>;
 };
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function readString(value: unknown, limit = 2000): string {
+  return typeof value === "string" ? value.trim().slice(0, limit) : "";
+}
+
+function readEvidenceIds(value: unknown): string[] {
+  return Array.isArray(value)
+    ? [...new Set(value.filter((item): item is string => typeof item === "string"))].slice(0, 10)
+    : [];
+}
+
+function readRows<T>(value: unknown, mapper: (record: Record<string, unknown>) => T | null): T[] {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 80).flatMap((item) => {
+    const record = asRecord(item);
+    if (!record) return [];
+    const mapped = mapper(record);
+    return mapped ? [mapped] : [];
+  });
+}
+
+function readSnapshotAnalysis(value: unknown): SnapshotAnalysis | undefined {
+  const root = asRecord(value);
+  const analysis = asRecord(root?.analysis);
+  if (!analysis) return undefined;
+
+  const withEvidence = (record: Record<string, unknown>) => {
+    const evidenceMessageIds = readEvidenceIds(record.evidenceMessageIds);
+    return evidenceMessageIds.length > 0 ? evidenceMessageIds : null;
+  };
+
+  return {
+    importantEvents: readRows(analysis.importantEvents, (record) => {
+      const title = readString(record.title, 300);
+      const detail = readString(record.detail);
+      const evidenceMessageIds = withEvidence(record);
+      return title && detail && evidenceMessageIds ? { title, detail, evidenceMessageIds } : null;
+    }),
+    factAndPreferenceChanges: readRows(analysis.factAndPreferenceChanges, (record) => {
+      const description = readString(record.description);
+      const changeType = readString(record.changeType, 80);
+      const evidenceMessageIds = withEvidence(record);
+      return description && evidenceMessageIds ? { description, changeType, evidenceMessageIds } : null;
+    }),
+    relationshipChanges: readRows(analysis.relationshipChanges, (record) => {
+      const description = readString(record.description);
+      const evidenceMessageIds = withEvidence(record);
+      return description && evidenceMessageIds ? { description, evidenceMessageIds } : null;
+    }),
+    goalsAndCommitments: readRows(analysis.goalsAndCommitments, (record) => {
+      const description = readString(record.description);
+      const status = readString(record.status, 80);
+      const evidenceMessageIds = withEvidence(record);
+      return description && evidenceMessageIds ? { description, status, evidenceMessageIds } : null;
+    }),
+    unresolvedTopics: readRows(analysis.unresolvedTopics, (record) => {
+      const description = readString(record.description);
+      const evidenceMessageIds = withEvidence(record);
+      return description && evidenceMessageIds ? { description, evidenceMessageIds } : null;
+    }),
+    differencesFromPrevious: Array.isArray(analysis.differencesFromPrevious)
+      ? analysis.differencesFromPrevious.filter((item): item is string => typeof item === "string").map((item) => item.slice(0, 1000)).slice(0, 30)
+      : [],
+    memoryChangesApplied: readRows(root?.memoryChangesApplied, (record) => {
+      const action = readString(record.action, 40);
+      const result = readString(record.result, 80);
+      if (!action || !result) return null;
+      const category = readString(record.category, 40);
+      const content = readString(record.content);
+      const memoryItemId = readString(record.memoryItemId, 100);
+      const supersededMemoryId = readString(record.supersededMemoryId, 100);
+      const confidence = typeof record.confidence === "number" && Number.isFinite(record.confidence) ? record.confidence : undefined;
+      const evidenceMessageIds = readEvidenceIds(record.evidenceMessageIds);
+      return {
+        action,
+        result,
+        ...(category ? { category } : {}),
+        ...(content ? { content } : {}),
+        ...(memoryItemId ? { memoryItemId } : {}),
+        ...(supersededMemoryId ? { supersededMemoryId } : {}),
+        ...(confidence !== undefined ? { confidence } : {}),
+        ...(evidenceMessageIds.length ? { evidenceMessageIds } : {}),
+      };
+    }),
+  };
+}
+
+function readModel(value: unknown): MemorySnapshotDto["model"] | undefined {
+  const root = asRecord(value);
+  const model = asRecord(root?.model);
+  if (!model) return undefined;
+  return {
+    ...(readString(model.name, 200) ? { name: readString(model.name, 200) } : {}),
+    ...(readString(model.provider, 500) ? { provider: readString(model.provider, 500) } : {}),
+    ...(readString(model.promptTemplateVersion, 100) ? { promptTemplateVersion: readString(model.promptTemplateVersion, 100) } : {}),
+  };
+}
 
 function formatDate(value: Date, timeZone: string, includeTime = false): string {
   const options: Intl.DateTimeFormatOptions = {
@@ -44,12 +154,18 @@ function formatDate(value: Date, timeZone: string, includeTime = false): string 
 }
 
 function readEventCount(value: unknown): number {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return 0;
-  const record = value as Record<string, unknown>;
-  if (typeof record.eventCount === "number" && Number.isFinite(record.eventCount)) {
-    return Math.max(0, record.eventCount);
+  const root = asRecord(value);
+  if (!root) return 0;
+  if (typeof root.eventCount === "number" && Number.isFinite(root.eventCount)) {
+    return Math.max(0, root.eventCount);
   }
-  return Array.isArray(record.events) ? record.events.length : 0;
+  const counts = asRecord(root.counts);
+  if (typeof counts?.eventCount === "number" && Number.isFinite(counts.eventCount)) {
+    return Math.max(0, counts.eventCount);
+  }
+  const analysis = asRecord(root.analysis);
+  if (Array.isArray(analysis?.importantEvents)) return analysis.importantEvents.length;
+  return Array.isArray(root.events) ? root.events.length : 0;
 }
 
 export function toMemorySnapshotDtos(
@@ -68,6 +184,9 @@ export function toMemorySnapshotDtos(
     .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.version - a.version)
     .map((record) => {
       const current = record.status === "CURRENT";
+      const model = readModel(record.structuredContent);
+      const generatedBy = readString(asRecord(record.structuredContent)?.generatedBy, 100);
+      const analysis = readSnapshotAnalysis(record.structuredContent);
       return {
         id: record.id,
         number: sequenceByKey.get(record.snapshotKey) ?? 1,
@@ -79,6 +198,10 @@ export function toMemorySnapshotDtos(
         messages: record.sources.filter((source) => source.sourceType === "MESSAGE").length,
         status: current ? "当前版本" : "已被替代",
         statusTone: current ? "green" : "gray",
+        kind: record.kind,
+        ...(generatedBy ? { generatedBy } : {}),
+        ...(model ? { model } : {}),
+        ...(analysis ? { analysis } : {}),
       };
     });
 }
