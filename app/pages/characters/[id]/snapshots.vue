@@ -58,7 +58,7 @@ function evidenceLabel(ids: string[]) {
 }
 function memoryChangeLabel(action: string, result: string) {
   const actionLabel = action === "ADD" ? "新增" : action === "UPDATE" ? "更新" : action === "INVALIDATE" ? "标记失效" : action;
-  const resultLabel = result === "CREATED" ? "已创建" : result === "REPLACED" ? "已替换旧记忆" : result === "INVALIDATED" ? "已失效" : result === "DUPLICATE_IGNORED" ? "忽略重复项" : result;
+  const resultLabel = result === "CREATED" ? "已创建" : result === "REPLACED" ? "已替换旧记忆" : result === "INVALIDATED" ? "已失效" : result === "DUPLICATE_IGNORED" ? "忽略重复项" : result === "NOT_APPLIED_REGENERATION" ? "仅供审核（未应用）" : result;
   return actionLabel + " · " + resultLabel;
 }
 
@@ -236,7 +236,7 @@ watch(id, () => {
               <ul><li v-for="(item, index) in detail.analysis.differencesFromPrevious" :key="'diff-' + index">{{ item }}</li></ul>
             </section>
             <section v-if="detail.analysis.memoryChangesApplied.length" class="analysis-block">
-              <h3>长期记忆维护</h3>
+              <h3>长期记忆变化与审核建议</h3>
               <article v-for="(item, index) in detail.analysis.memoryChangesApplied" :key="'change-' + index" class="analysis-item">
                 <strong>{{ memoryChangeLabel(item.action, item.result) }}</strong>
                 <p>{{ item.content || '关联记忆 ' + (item.memoryItemId || item.supersededMemoryId || '—') }}</p>
