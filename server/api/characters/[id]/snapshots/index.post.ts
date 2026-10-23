@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { createError, getRouterParam, readBody } from "h3";
+import { isMemoryModelConfigured } from "../../../../utils/memory-ai";
 import { requireLocalDevOwner, requireUuid } from "../../../../utils/local-api";
 import { getPrisma } from "../../../../utils/prisma";
 
 type CreateSnapshotBody = {
   snapshotId?: unknown;
+  mode?: unknown;
 };
 
 export default defineEventHandler(async (event) => {
@@ -18,6 +20,13 @@ export default defineEventHandler(async (event) => {
       throw createError({ statusCode: 400, statusMessage: "快照 ID 格式无效。" });
     }
     sourceSnapshotId = requireUuid(body.snapshotId, "快照");
+  }
+
+  if (body?.mode !== undefined && body.mode !== "ai") {
+    throw createError({ statusCode: 400, statusMessage: "快照操作模式无效。" });
+  }
+  if (body?.mode === "ai" && !sourceSnapshotId) {
+    throw createError({ statusCode: 400, statusMessage: "AI 重新提炼必须指定一份已有的自动快照。" });
   }
 
   const prisma = getPrisma();
@@ -46,12 +55,64 @@ export default defineEventHandler(async (event) => {
   const sourceSnapshot = sourceSnapshotId
     ? await prisma.memorySnapshot.findFirst({
         where: { id: sourceSnapshotId, memoryScopeId },
-        select: { snapshotKey: true, periodStart: true, periodEnd: true },
+        select: { id: true, snapshotKey: true, periodStart: true, periodEnd: true, kind: true, status: true, version: true },
       })
     : null;
 
   if (sourceSnapshotId && !sourceSnapshot) {
     throw createError({ statusCode: 404, statusMessage: "快照不存在。" });
+  }
+
+  if (body?.mode === "ai") {
+    if (!sourceSnapshot || sourceSnapshot.kind !== "AUTOMATIC") {
+      throw createError({ statusCode: 409, statusMessage: "只有自动 AI 快照支持 AI 重新提炼；手动快照请使用普通的版本复制操作。" });
+    }
+    if (!isMemoryModelConfigured()) {
+      throw createError({ statusCode: 503, statusMessage: "尚未配置 AI 模型。请先在服务端 .env 填写 LLM_API_KEY 和 LLM_MODEL。" });
+    }
+
+    const activeJob = await prisma.memoryJob.findFirst({
+      where: { memoryScopeId, snapshotId: sourceSnapshot.id, type: "REGENERATE_SNAPSHOT", status: { in: ["QUEUED", "RUNNING", "RETRY_WAIT"] } },
+      orderBy: [{ createdAt: "desc" }],
+      select: { id: true, status: true },
+    });
+    if (activeJob) {
+      setResponseStatus(event, 202);
+      return { id: activeJob.id, jobId: activeJob.id, status: activeJob.status, snapshotId: sourceSnapshot.id, queued: true, duplicate: true };
+    }
+
+    const now = new Date();
+    const queuedJob = await prisma.$transaction(async (tx) => {
+      const job = await tx.memoryJob.create({
+        data: {
+          memoryScopeId,
+          snapshotId: sourceSnapshot.id,
+          type: "REGENERATE_SNAPSHOT",
+          idempotencyKey: "regenerate-snapshot:" + sourceSnapshot.id + ":" + randomUUID(),
+          periodStart: sourceSnapshot.periodStart,
+          periodEnd: sourceSnapshot.periodEnd,
+          status: "QUEUED",
+          runAt: now,
+          maxAttempts: 3,
+        },
+        select: { id: true, status: true },
+      });
+      await tx.auditLog.create({
+        data: {
+          actorType: "USER",
+          actorId: ownerId,
+          characterId,
+          action: "snapshot.ai_regeneration_requested",
+          entityType: "MemorySnapshot",
+          entityId: sourceSnapshot.id,
+          details: { jobId: job.id, sourceVersion: sourceSnapshot.version, periodStart: sourceSnapshot.periodStart.toISOString(), periodEnd: sourceSnapshot.periodEnd.toISOString() },
+        },
+      });
+      return job;
+    });
+
+    setResponseStatus(event, 202);
+    return { id: queuedJob.id, jobId: queuedJob.id, status: queuedJob.status, snapshotId: sourceSnapshot.id, queued: true, duplicate: false };
   }
 
   const now = new Date();
