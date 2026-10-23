@@ -67,7 +67,7 @@ export async function processNextMemoryJob(
 
   const staleJobs = await prisma.memoryJob.findMany({
     where: {
-      type: "GENERATE_SNAPSHOT",
+      type: { in: ["GENERATE_SNAPSHOT", "REGENERATE_SNAPSHOT"] },
       status: "RUNNING",
       lockedAt: { lt: staleBefore },
       ...ownership,
@@ -100,14 +100,14 @@ export async function processNextMemoryJob(
 
   const candidates = await prisma.memoryJob.findMany({
     where: {
-      type: "GENERATE_SNAPSHOT",
+      type: { in: ["GENERATE_SNAPSHOT", "REGENERATE_SNAPSHOT"] },
       status: { in: ["QUEUED", "RETRY_WAIT"] },
       runAt: { lte: now },
       ...ownership,
     },
     orderBy: [{ runAt: "asc" }, { periodEnd: "asc" }, { createdAt: "asc" }, { id: "asc" }],
     take: 10,
-    select: { id: true, status: true, attemptCount: true, maxAttempts: true },
+    select: { id: true, type: true, status: true, attemptCount: true, maxAttempts: true },
   });
 
   let claimedJobId = "";
@@ -150,6 +150,8 @@ export async function processNextMemoryJob(
       where: { id: claimedJobId },
       select: {
         id: true,
+        type: true,
+        snapshotId: true,
         memoryScopeId: true,
         idempotencyKey: true,
         periodStart: true,
@@ -166,32 +168,39 @@ export async function processNextMemoryJob(
       throw new Error("周期任务缺少有效的起止时间。");
     }
 
-    const priorSnapshot = await prisma.memorySnapshot.findFirst({
-      where: { snapshotKey: job.idempotencyKey, memoryScopeId: job.memoryScopeId },
-      orderBy: [{ version: "desc" }, { createdAt: "desc" }],
-      select: { id: true },
-    });
-    if (priorSnapshot) {
-      await prisma.memoryJob.updateMany({
-        where: { id: job.id, status: "RUNNING", lockedBy: workerId },
-        data: {
-          status: "SUCCEEDED",
-          snapshotId: priorSnapshot.id,
-          completedAt: now,
-          lockedAt: null,
-          lockedBy: null,
-          lastError: null,
-        },
-      });
-      return {
-        processed: true,
-        jobId: job.id,
-        status: "SUCCEEDED",
-        snapshotId: priorSnapshot.id,
-        message: "检测到相同周期已有快照，已复用历史结果。",
-      };
-    }
+    const isRegeneration = job.type === "REGENERATE_SNAPSHOT";
+    let logicalSnapshotKey = job.idempotencyKey;
 
+    if (isRegeneration) {
+      if (!job.snapshotId) throw new Error("AI 快照重新提炼任务缺少原始快照 ID。");
+      const regenerationTarget = await prisma.memorySnapshot.findFirst({
+        where: { id: job.snapshotId, memoryScopeId: job.memoryScopeId },
+        select: { id: true, snapshotKey: true, kind: true, periodStart: true, periodEnd: true },
+      });
+      if (!regenerationTarget || regenerationTarget.kind !== "AUTOMATIC") {
+        throw new Error("AI 快照重新提炼只能针对仍保留在数据库中的自动快照。");
+      }
+      if (
+        regenerationTarget.periodStart.getTime() !== job.periodStart.getTime() ||
+        regenerationTarget.periodEnd.getTime() !== job.periodEnd.getTime()
+      ) {
+        throw new Error("重新提炼任务的周期范围与原始快照不一致。");
+      }
+      logicalSnapshotKey = regenerationTarget.snapshotKey;
+    } else {
+      const priorSnapshot = await prisma.memorySnapshot.findFirst({
+        where: { snapshotKey: job.idempotencyKey, memoryScopeId: job.memoryScopeId },
+        orderBy: [{ version: "desc" }, { createdAt: "desc" }],
+        select: { id: true },
+      });
+      if (priorSnapshot) {
+        await prisma.memoryJob.updateMany({
+          where: { id: job.id, status: "RUNNING", lockedBy: workerId },
+          data: { status: "SUCCEEDED", snapshotId: priorSnapshot.id, completedAt: now, lockedAt: null, lockedBy: null, lastError: null },
+        });
+        return { processed: true, jobId: job.id, status: "SUCCEEDED", snapshotId: priorSnapshot.id, message: "检测到相同周期已有快照，已复用历史结果。" };
+      }
+    }
     const messageWhere = {
       conversation: { is: { memoryScopeId: job.memoryScopeId } },
       occurredAt: { gte: job.periodStart, lt: job.periodEnd },
@@ -315,32 +324,37 @@ export async function processNextMemoryJob(
         throw new Error("任务租约已失效；拒绝提交模型结果。");
       }
 
-      const racedSnapshot = await tx.memorySnapshot.findFirst({
-        where: { snapshotKey: job.idempotencyKey, memoryScopeId: job.memoryScopeId },
-        orderBy: [{ version: "desc" }, { createdAt: "desc" }],
-        select: { id: true },
-      });
-      if (racedSnapshot) {
-        await tx.memoryJob.update({
-          where: { id: job.id },
-          data: {
-            status: "SUCCEEDED",
-            snapshotId: racedSnapshot.id,
-            completedAt: now,
-            lockedAt: null,
-            lockedBy: null,
-            lastError: null,
-          },
+      if (!isRegeneration) {
+        const racedSnapshot = await tx.memorySnapshot.findFirst({
+          where: { snapshotKey: job.idempotencyKey, memoryScopeId: job.memoryScopeId },
+          orderBy: [{ version: "desc" }, { createdAt: "desc" }],
+          select: { id: true },
         });
-        return {
-          status: "SUCCEEDED" as const,
-          snapshotId: racedSnapshot.id,
-          message: "同一周期已由其他执行完成，复用已有快照。",
-        };
+        if (racedSnapshot) {
+          await tx.memoryJob.update({
+            where: { id: job.id },
+            data: { status: "SUCCEEDED", snapshotId: racedSnapshot.id, completedAt: now, lockedAt: null, lockedBy: null, lastError: null },
+          });
+          return { status: "SUCCEEDED" as const, snapshotId: racedSnapshot.id, message: "同一周期已由其他执行完成，复用已有快照。" };
+        }
       }
 
+      const latestSnapshot = await tx.memorySnapshot.findFirst({
+        where: { snapshotKey: logicalSnapshotKey, memoryScopeId: job.memoryScopeId },
+        orderBy: [{ version: "desc" }, { createdAt: "desc" }],
+        select: { version: true },
+      });
+      const nextSnapshotVersion = isRegeneration ? (latestSnapshot?.version ?? 0) + 1 : 1;
+
+      if (isRegeneration) {
+        await tx.memorySnapshot.updateMany({
+          where: { snapshotKey: logicalSnapshotKey, memoryScopeId: job.memoryScopeId, status: "CURRENT" },
+          data: { status: "SUPERSEDED" },
+        });
+      }
       const structuredContent = {
         generatedBy: "llm",
+        generationMode: isRegeneration ? "REGENERATE" : "GENERATE",
         capturedAt: now.toISOString(),
         period: {
           start: job.periodStart!.toISOString(),
@@ -365,15 +379,17 @@ export async function processNextMemoryJob(
         analysis: aiResult.analysis,
         activeMemoriesConsidered: aiMemoryContext.map((item) => item.id),
         memoryChangesApplied: [] as Array<Record<string, unknown>>,
-        note: "AI 提炼结果；每条被采纳的新长期记忆都关联至少一条本周期原始消息。",
+        note: isRegeneration
+          ? "AI 重新提炼版本；为避免历史重放改写当前长期记忆，本次提出的长期记忆变化仅供审核，不会自动应用。"
+          : "AI 提炼结果；每条被采纳的新长期记忆都关联至少一条本周期原始消息。",
       };
 
       const snapshot = await tx.memorySnapshot.create({
         data: {
-          snapshotKey: job.idempotencyKey,
+          snapshotKey: logicalSnapshotKey,
           memoryScopeId: job.memoryScopeId,
           kind: "AUTOMATIC",
-          version: 1,
+          version: nextSnapshotVersion,
           periodStart: job.periodStart!,
           periodEnd: job.periodEnd!,
           summary: aiResult.analysis.summary,
@@ -415,6 +431,10 @@ export async function processNextMemoryJob(
       );
 
       for (const change of aiResult.analysis.memoryChanges) {
+        if (isRegeneration) {
+          appliedChanges.push({ action: change.action, result: "NOT_APPLIED_REGENERATION", category: change.category, content: change.content, confidence: change.confidence, evidenceMessageIds: change.evidenceMessageIds, ...(change.relatedMemoryId ? { relatedMemoryId: change.relatedMemoryId } : {}) });
+          continue;
+        }
         if (!validConfidence(change)) continue;
         const evidence = change.evidenceMessageIds
           .map((id) => messagesById.get(id))
@@ -592,6 +612,12 @@ export async function processNextMemoryJob(
         data: { structuredContent: finalStructuredContent as never },
       });
 
+      if (isRegeneration) {
+        await tx.auditLog.create({
+          data: { actorType: "WORKER", characterId: scope.characterId, action: "snapshot.ai_regenerated", entityType: "MemorySnapshot", entityId: snapshot.id, details: { previousSnapshotId: job.snapshotId, version: nextSnapshotVersion, periodStart: job.periodStart!.toISOString(), periodEnd: job.periodEnd!.toISOString(), memoryChangesApplied: false } },
+        });
+      }
+
       await tx.memoryJob.update({
         where: { id: job.id },
         data: {
@@ -606,7 +632,9 @@ export async function processNextMemoryJob(
       return {
         status: "SUCCEEDED" as const,
         snapshotId: snapshot.id,
-        message: `AI 周期总结已生成；应用 ${appliedChanges.length} 项长期记忆变化。`,
+        message: isRegeneration
+          ? `AI 快照重新提炼完成，已创建版本 ${nextSnapshotVersion}；长期记忆变化仅供审核，未自动应用。`
+          : `AI 周期总结已生成；应用 ${appliedChanges.length} 项长期记忆变化。`
       };
     });
 
