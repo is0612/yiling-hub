@@ -72,16 +72,20 @@
 - 对模型调用做并发、超时和成本控制。
 - 不在普通日志中记录 API 密钥或不必要的私人聊天全文。
 
-## 8. 周期调度与后台任务（当前实现边界）
+## 8. 周期调度与 AI 记忆引擎（当前实现边界）
 
-- `CharacterMemorySetting.nextSnapshotAt` 表示下一个待处理的周期结束边界。
-- 当周期到期，调度器会将从该边界开始的每段周期写入 `MemoryJob` 队列，任务类型为 `GENERATE_SNAPSHOT`。
-- 任务使用由记忆范围与周期起止时间构成的稳定幂等键；数据库唯一约束用于防止重复排队。
-- 调度器通过事务更新下一边界，并限制每个记忆范围单次补处理的周期数；仍然过期的设置会在下一轮继续处理。
-- 可以手动运行一次 `yarn scheduler:run`，或在单独终端运行 `yarn scheduler:watch` 定时扫描（默认每 60 秒，可通过 `YILING_MEMORY_SCHEDULER_INTERVAL_MS` 调整，最小 5 秒）。
-- 记忆驾驶舱的「后台任务」页面现在查询 PostgreSQL 任务列表，并提供「扫描到期周期」操作。
-- 独立 Worker 已支持领取周期快照任务、租约过期恢复、有限重试、空周期跳过以及事务性写入自动快照与任务结果。
-- 当前快照为规则版结构化记录，不调用大模型，也不生成语义总结；Worker 暂只执行 `GENERATE_SNAPSHOT`，其他任务类型仍待实现。
+- `CharacterMemorySetting.nextSnapshotAt` 表示下一个待处理的周期结束边界；启用自动快照但缺少边界的设置，会根据 `anchorAt + snapshotIntervalDays` 自动修复并在日志中报告。
+- 调度器会检查启用/禁用设置、缺失边界与未到期设置。若 `jobsQueued=0`，请先查看 `settingsDisabled`、`settingsNotDue`、`settingsWithoutNextSnapshotAt` 和 `missingGlobalScope`，不要默认判断为代码故障。
+- 当周期到期，调度器把每段周期写入 `MemoryJob` 队列并推进下一边界；稳定幂等键与数据库唯一约束防止重复排队。每次最多补处理 24 个周期（可由调用参数覆盖），剩余逾期周期在后续扫描补齐。
+- 手动运行 `yarn scheduler:run`，或单独运行 `yarn scheduler:watch`（默认每 60 秒扫描；`YILING_MEMORY_SCHEDULER_INTERVAL_MS` 可调整，最小 5 秒）。
+- Worker 的模型调用在数据库事务外执行，避免长耗时 HTTP 请求占用事务；只有在模型返回通过验证、快照和记忆变化都持久化后任务才标记为成功。
+- AI 通过服务端 OpenAI-compatible Chat Completions 接口调用。配置 `LLM_BASE_URL`（默认 `https://api.openai.com/v1`）、`LLM_API_KEY`、`LLM_MODEL` 和可选的 `LLM_TIMEOUT_MS`。密钥不能以 `NEXT_PUBLIC_*` 命名，也不能写入仓库或日志。
+- 快照保存周期摘要、重要事件、事实/偏好变化、关系变化、目标/承诺、未解决话题、与上一快照差异、模型/提示版本/用量元数据和消息来源。模型输出先经过 JSON 与来源 ID 校验；模型编造的消息 ID 不会作为有效来源采纳。
+- 长期记忆变化支持 `ADD`、`UPDATE`、`INVALIDATE`。新增记忆必须含至少一条本周期有效原始消息作为证据，并将 `sourceMessageId`、`sourceSnapshotId` 保存到数据库；更新通过创建替代条目并把旧条目标记为 `SUPERSEDED` 保留历史，失效则保留条目并标为 `INVALIDATED`。所有自动变更会写审计日志。
+- 置信度低于 0.65 的变化不会自动写入长期记忆。模型输出中的 UPDATE/INVALIDATE 只能指向本次上下文中存在的活动记忆，且必须附有本周期原始消息证据。
+- 没有配置模型时，Worker 不领取/消耗排队任务，而是输出提示并保留任务；配置完成后可继续消费。模型暂不可用、超时或返回格式错误时，任务按退避策略重试。
+- 模型服务会收到所选周期对话文本和活动长期记忆。使用外部供应商前，应确认其数据处理和隐私条款；本项目不在普通日志中记录完整聊天正文。
+
 
 ## 9. 对话时检索
 
