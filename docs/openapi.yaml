@@ -207,7 +207,7 @@ paths:
       tags: [Memories]
       operationId: getCharacterMemoryTimeline
       summary: 获取角色的已保存记忆时间线
-      description: 本地开发过渡接口，只返回数据库中已存在的消息、长期记忆和快照记录；聊天渠道导入与模型总结尚未接入。
+      description: 本地开发过渡接口。返回数据库中已保存的消息、长期记忆和快照；本机可手动录入记忆与纯文本对话。外部渠道接入、事件自动提炼和模型总结尚未接入。
       security: []
       responses:
         '200':
@@ -290,6 +290,54 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /characters/{characterId}/conversations/import:
+    parameters:
+      - $ref: '#/components/parameters/CharacterId'
+    post:
+      tags: [Memories]
+      operationId: importCharacterTranscript
+      summary: 在本地开发环境手动录入纯文本对话
+      description: 仅限 localhost 的开发过渡接口。未提供 occurredAt 的消息会用导入时间附近的毫秒偏移保留输入顺序，不代表原始消息时间；不会调用模型。
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [messages]
+              properties:
+                title: { type: string, maxLength: 255 }
+                messages:
+                  type: array
+                  minItems: 1
+                  maxItems: 200
+                  items:
+                    type: object
+                    required: [role, content]
+                    properties:
+                      role: { type: string, enum: [USER, ASSISTANT] }
+                      content: { type: string, minLength: 1, maxLength: 12000 }
+                      occurredAt: { type: string, format: date-time }
+      responses:
+        '201':
+          description: 对话及消息已保存
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [conversationId, title, messageCount, timestampsEstimated]
+                properties:
+                  conversationId: { type: string, format: uuid }
+                  title: { type: string }
+                  messageCount: { type: integer }
+                  timestampsEstimated: { type: boolean }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          description: 该接口仅限本地开发环境
+        '404':
+          $ref: '#/components/responses/NotFound'
   /conversations/{conversationId}/messages:
     parameters:
       - name: conversationId
@@ -397,7 +445,10 @@ paths:
           $ref: '#/components/responses/Unauthorized'
     post:
       tags: [Memories]
-      summary: 手动创建长期记忆
+      operationId: createCharacterMemory
+      summary: 手动创建长期记忆（本地开发）
+      description: 仅限 localhost 的开发过渡接口；创建的条目默认 ACTIVE，并立即显示在角色时间线中。
+      security: []
       requestBody:
         required: true
         content:
@@ -407,7 +458,7 @@ paths:
               required: [content, category]
               properties:
                 content: { type: string, minLength: 1 }
-                category: { type: string }
+                category: { type: string, enum: [FACT, PREFERENCE, RELATIONSHIP, COMMITMENT, GOAL, EVENT, SUMMARY, OTHER] }
                 scopeId: { type: string, format: uuid }
       responses:
         '201':
@@ -424,6 +475,8 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: 该接口仅限本地开发环境
   /memories/{memoryId}:
     parameters:
       - name: memoryId
