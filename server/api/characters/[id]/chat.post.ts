@@ -69,8 +69,8 @@ export default defineEventHandler(async (event) => {
     select: { id: true, category: true, content: true, confidence: true, updatedAt: true, createdAt: true },
   });
   const retrievalQuery = [
-    ...recentMessages.filter((item) => item.role === "USER").slice(-2).map((item) => item.content),
     message,
+    ...recentMessages.filter((item) => item.role === "USER").slice(-2).map((item) => item.content),
   ].join("\n");
   const memories = rankMemoryCandidates(retrievalQuery, memoryCandidates, 8).map((memory) => ({
     id: memory.id,
