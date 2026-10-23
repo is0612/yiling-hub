@@ -42,5 +42,6 @@
     "typescript": "^5.9.0",
     "vue-eslint-parser": "^10.4.1",
     "vue-tsc": "^3.0.0"
-  }
+  },
+  "packageManager": "yarn@1.22.22"
 }
