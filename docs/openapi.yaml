@@ -947,7 +947,7 @@ paths:
       tags: [Tasks]
       operationId: runOneMemoryWorkerJob
       summary: 由本地开发界面执行一条周期快照任务（本地开发）
-      description: 手动触发单次 Worker 处理。当前仅执行 GENERATE_SNAPSHOT 任务，并生成不调用大模型的规则版结构化快照。
+      description: 手动触发单次 Worker 处理。当前仅消费 GENERATE_SNAPSHOT 任务；服务端配置 LLM_BASE_URL、LLM_API_KEY 与 LLM_MODEL 后，会调用 OpenAI-compatible Chat Completions 生成周期总结和有原始消息证据的长期记忆变化。未配置模型时任务留在队列；手动快照仍不调用模型。此接口仅限本地开发环境。
       security: []
       responses:
         '200':
