@@ -36,3 +36,26 @@
 - 后台任务：后续阶段增加独立 Node.js Worker
 
 具体实施以 `docs/` 中的正式规范为准。
+
+## 本地运行（前端演示阶段）
+
+需要安装 Node.js 22、npm 和 Docker Desktop（数据库现在不是启动前端预览的必要条件）。
+
+```powershell
+Copy-Item .env.example .env
+# 编辑 .env，将 POSTGRES_PASSWORD 改成自己的本地开发密码
+npm install
+npm run dev
+```
+
+在浏览器打开 `http://localhost:3000`。当前页面使用 Mock 演示数据，新增/编辑、重试和归档按钮只会更改当前页面状态，不会写入数据库。
+
+如需启动本地 PostgreSQL：
+
+```powershell
+docker compose up -d db
+npm run db:format
+npm run db:validate
+```
+
+当前提供了 Prisma Schema，但正式迁移文件和真实 API 尚未完成；不要误以为只启动数据库就已接入持久化。换电脑和备份流程见 [本地开发与数据迁移规范](docs/local-development-and-data-migration.md)。
