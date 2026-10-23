@@ -122,7 +122,7 @@ assert(importedConversation.timestampsEstimated === true, "Plain transcript impo
 
 const importedTimeline = await request(`/api/characters/${created.id}/timeline`);
 assert(importedTimeline.length === 4, "The timeline should include one memory and all three imported messages.");
-assert(importedTimeline.some((entry) => entry.id === `memory:${createdMemory.id}` && entry.summary.includes(memoryContent)), "Timeline must include the created long-term memory.");
+assert(importedTimeline.some((entry) => entry.id === `memory:${createdMemory.id}` && entry.title === "事实记忆" && entry.summary.includes(`CI 已修改记忆 ${unique}`)), "Timeline must show the updated memory content and category.");
 assert(importedTimeline.filter((entry) => entry.type === "message").length === 3, "Timeline must include all imported conversation messages.");
 assert(importedTimeline.some((entry) => entry.summary.includes(`角色回复 ${unique}`)), "Timeline must include imported assistant content.");
 
