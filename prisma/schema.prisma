@@ -1,0 +1,410 @@
+// Yiling Hub data model.
+// This schema is the intended Phase 0 contract. Run Prisma validation and migration
+// generation locally before applying it to any database.
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserStatus {
+  ACTIVE
+  DISABLED
+}
+
+enum CharacterStatus {
+  ACTIVE
+  PAUSED
+  ARCHIVED
+}
+
+enum PlatformConnectionStatus {
+  CONNECTED
+  DISCONNECTED
+  ERROR
+  DISABLED
+}
+
+enum BindingStatus {
+  ACTIVE
+  PAUSED
+}
+
+enum ExternalIdentityStatus {
+  UNVERIFIED
+  VERIFIED
+  REVOKED
+}
+
+enum ConversationStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+enum MessageRole {
+  SYSTEM
+  USER
+  ASSISTANT
+  TOOL
+}
+
+enum MemoryScopeType {
+  CHARACTER_GLOBAL
+  USER_PRIVATE
+  EXTERNAL_IDENTITY
+}
+
+enum MemoryCategory {
+  FACT
+  PREFERENCE
+  RELATIONSHIP
+  COMMITMENT
+  GOAL
+  EVENT
+  SUMMARY
+  OTHER
+}
+
+enum MemoryItemStatus {
+  ACTIVE
+  SUPERSEDED
+  ARCHIVED
+  INVALIDATED
+}
+
+enum SnapshotKind {
+  AUTOMATIC
+  MANUAL
+}
+
+enum SnapshotStatus {
+  CURRENT
+  SUPERSEDED
+}
+
+enum SnapshotSourceType {
+  MESSAGE
+  MEMORY_ITEM
+  PLATFORM_EVENT
+  EXTERNAL_REFERENCE
+}
+
+enum MemoryJobType {
+  GENERATE_SNAPSHOT
+  REGENERATE_SNAPSHOT
+  UPDATE_LONG_TERM_MEMORY
+  CLEAN_EXPIRED_MESSAGES
+}
+
+enum MemoryJobStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+  SKIPPED
+  RETRY_WAIT
+  CANCELLED
+}
+
+enum AuditActorType {
+  USER
+  SYSTEM
+  WORKER
+}
+
+model User {
+  id               String           @id @default(uuid()) @db.Uuid
+  username         String           @unique @db.VarChar(100)
+  passwordHash     String           @db.VarChar(255)
+  displayName      String?          @db.VarChar(120)
+  status           UserStatus       @default(ACTIVE)
+  createdAt        DateTime         @default(now()) @db.Timestamptz(6)
+  updatedAt        DateTime         @updatedAt @db.Timestamptz(6)
+  ownedCharacters  Character[]      @relation("CharacterOwner")
+  linkedIdentities ExternalIdentity[] @relation("IdentityLinkedUser")
+  memoryScopes     MemoryScope[]    @relation("MemoryScopeUser")
+  auditLogs        AuditLog[]       @relation("AuditActor")
+
+  @@map("users")
+}
+
+model Character {
+  id             String                   @id @default(uuid()) @db.Uuid
+  ownerId        String                   @db.Uuid
+  name           String                   @db.VarChar(100)
+  avatar         String?
+  basePrompt     String                   @db.Text
+  modelConfig    Json                     @default("{}") @db.JsonB
+  status         CharacterStatus          @default(ACTIVE)
+  createdAt      DateTime                 @default(now()) @db.Timestamptz(6)
+  updatedAt      DateTime                 @updatedAt @db.Timestamptz(6)
+  owner          User                     @relation("CharacterOwner", fields: [ownerId], references: [id], onDelete: Restrict)
+  channelBindings CharacterChannelBinding[]
+  conversations  Conversation[]
+  memoryScopes   MemoryScope[]
+  memorySetting  CharacterMemorySetting?
+  auditLogs      AuditLog[]               @relation("CharacterAuditLogs")
+
+  @@index([ownerId, status])
+  @@index([updatedAt])
+  @@map("characters")
+}
+
+model PlatformConnection {
+  id                    String                    @id @default(uuid()) @db.Uuid
+  platform              String                    @db.VarChar(50)
+  displayName           String                    @db.VarChar(120)
+  platformAccountKey    String?                   @db.VarChar(255)
+  status                PlatformConnectionStatus  @default(DISCONNECTED)
+  credentialsCiphertext Bytes?                    @db.ByteA
+  credentialKeyId       String?                   @db.VarChar(255)
+  metadata              Json?                     @db.JsonB
+  lastEventAt           DateTime?                 @db.Timestamptz(6)
+  createdAt             DateTime                  @default(now()) @db.Timestamptz(6)
+  updatedAt             DateTime                  @updatedAt @db.Timestamptz(6)
+  characterBindings     CharacterChannelBinding[]
+  externalIdentities    ExternalIdentity[]
+
+  @@unique([platform, platformAccountKey])
+  @@index([platform, status])
+  @@map("platform_connections")
+}
+
+model CharacterChannelBinding {
+  id           String          @id @default(uuid()) @db.Uuid
+  characterId  String          @db.Uuid
+  connectionId String          @db.Uuid
+  status       BindingStatus   @default(ACTIVE)
+  routingKey   String?         @db.VarChar(255)
+  config       Json?           @db.JsonB
+  createdAt    DateTime        @default(now()) @db.Timestamptz(6)
+  updatedAt    DateTime        @updatedAt @db.Timestamptz(6)
+  character    Character       @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  connection   PlatformConnection @relation(fields: [connectionId], references: [id], onDelete: Restrict)
+  conversations Conversation[]
+
+  @@unique([characterId, connectionId])
+  @@index([status])
+  @@map("character_channel_bindings")
+}
+
+model ExternalIdentity {
+  id               String                 @id @default(uuid()) @db.Uuid
+  platform         String                 @db.VarChar(50)
+  platformUid      String                 @db.VarChar(255)
+  displayName      String?                @db.VarChar(255)
+  linkedUserId     String?                @db.Uuid
+  connectionId     String?                @db.Uuid
+  status           ExternalIdentityStatus @default(UNVERIFIED)
+  verifiedAt       DateTime?              @db.Timestamptz(6)
+  metadata         Json?                  @db.JsonB
+  createdAt        DateTime               @default(now()) @db.Timestamptz(6)
+  updatedAt        DateTime               @updatedAt @db.Timestamptz(6)
+  linkedUser       User?                  @relation("IdentityLinkedUser", fields: [linkedUserId], references: [id], onDelete: SetNull)
+  connection       PlatformConnection?    @relation(fields: [connectionId], references: [id], onDelete: SetNull)
+  memoryScopes     MemoryScope[]
+
+  @@unique([platform, platformUid])
+  @@index([linkedUserId, status])
+  @@index([connectionId])
+  @@map("external_identities")
+}
+
+model MemoryScope {
+  id                 String           @id @default(uuid()) @db.Uuid
+  characterId        String           @db.Uuid
+  scopeType          MemoryScopeType
+  scopeKey           String           @unique @db.VarChar(500)
+  userId             String?          @db.Uuid
+  externalIdentityId String?          @db.Uuid
+  createdAt          DateTime         @default(now()) @db.Timestamptz(6)
+  updatedAt          DateTime         @updatedAt @db.Timestamptz(6)
+  character          Character        @relation(fields: [characterId], references: [id], onDelete: Restrict)
+  user               User?            @relation("MemoryScopeUser", fields: [userId], references: [id], onDelete: SetNull)
+  externalIdentity   ExternalIdentity? @relation(fields: [externalIdentityId], references: [id], onDelete: SetNull)
+  conversations      Conversation[]
+  memoryItems        MemoryItem[]
+  snapshots          MemorySnapshot[]
+  jobs               MemoryJob[]
+
+  @@index([characterId, scopeType])
+  @@index([userId])
+  @@index([externalIdentityId])
+  @@map("memory_scopes")
+}
+
+model Conversation {
+  id                    String              @id @default(uuid()) @db.Uuid
+  characterId           String              @db.Uuid
+  memoryScopeId         String              @db.Uuid
+  channelBindingId      String?             @db.Uuid
+  externalConversationId String?            @db.VarChar(255)
+  title                 String?             @db.VarChar(255)
+  status                ConversationStatus  @default(ACTIVE)
+  metadata              Json?               @db.JsonB
+  lastMessageAt         DateTime?           @db.Timestamptz(6)
+  createdAt             DateTime            @default(now()) @db.Timestamptz(6)
+  updatedAt             DateTime            @updatedAt @db.Timestamptz(6)
+  character             Character           @relation(fields: [characterId], references: [id], onDelete: Restrict)
+  memoryScope           MemoryScope         @relation(fields: [memoryScopeId], references: [id], onDelete: Restrict)
+  channelBinding        CharacterChannelBinding? @relation(fields: [channelBindingId], references: [id], onDelete: SetNull)
+  messages              Message[]
+
+  @@unique([channelBindingId, externalConversationId])
+  @@index([characterId, updatedAt])
+  @@index([memoryScopeId, updatedAt])
+  @@map("conversations")
+}
+
+model Message {
+  id                String                  @id @default(uuid()) @db.Uuid
+  conversationId    String                  @db.Uuid
+  externalMessageId String?                 @db.VarChar(255)
+  role              MessageRole
+  eventType         String                  @default("message") @db.VarChar(80)
+  content           String                  @db.Text
+  occurredAt        DateTime                @db.Timestamptz(6)
+  ingestedAt        DateTime                @default(now()) @db.Timestamptz(6)
+  metadata          Json?                   @db.JsonB
+  conversation      Conversation            @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  snapshotSources   MemorySnapshotSource[]
+  derivedMemoryItems MemoryItem[]             @relation("MemoryItemSourceMessage")
+
+  @@unique([conversationId, externalMessageId])
+  @@index([conversationId, occurredAt])
+  @@index([eventType, occurredAt])
+  @@map("messages")
+}
+
+model MemoryItem {
+  id              String                 @id @default(uuid()) @db.Uuid
+  memoryScopeId   String                 @db.Uuid
+  category        MemoryCategory
+  content         String                 @db.Text
+  confidence      Float?
+  status          MemoryItemStatus       @default(ACTIVE)
+  sourceMessageId String?                @db.Uuid
+  sourceSnapshotId String?               @db.Uuid
+  dedupeKey       String?                @db.VarChar(255)
+  validFrom       DateTime?              @db.Timestamptz(6)
+  validTo         DateTime?              @db.Timestamptz(6)
+  createdAt       DateTime               @default(now()) @db.Timestamptz(6)
+  updatedAt       DateTime               @updatedAt @db.Timestamptz(6)
+  memoryScope     MemoryScope            @relation(fields: [memoryScopeId], references: [id], onDelete: Cascade)
+  sourceMessage   Message?               @relation("MemoryItemSourceMessage", fields: [sourceMessageId], references: [id], onDelete: SetNull)
+  sourceSnapshot  MemorySnapshot?        @relation("MemoryItemDerivedFromSnapshot", fields: [sourceSnapshotId], references: [id], onDelete: SetNull)
+  snapshotSources MemorySnapshotSource[] @relation("MemoryItemSnapshotSources")
+
+  @@unique([memoryScopeId, dedupeKey])
+  @@index([memoryScopeId, status, category])
+  @@index([memoryScopeId, validTo])
+  @@map("memory_items")
+}
+
+model MemorySnapshot {
+  id                String                 @id @default(uuid()) @db.Uuid
+  snapshotKey       String                 @db.VarChar(500)
+  memoryScopeId     String                 @db.Uuid
+  kind              SnapshotKind           @default(AUTOMATIC)
+  version           Int                    @default(1)
+  periodStart       DateTime               @db.Timestamptz(6)
+  periodEnd         DateTime               @db.Timestamptz(6)
+  summary           String                 @db.Text
+  structuredContent Json                   @db.JsonB
+  status            SnapshotStatus         @default(CURRENT)
+  modelMetadata     Json?                  @db.JsonB
+  generatedAt       DateTime?              @db.Timestamptz(6)
+  createdAt         DateTime               @default(now()) @db.Timestamptz(6)
+  memoryScope       MemoryScope            @relation(fields: [memoryScopeId], references: [id], onDelete: Cascade)
+  sources           MemorySnapshotSource[]
+  derivedMemoryItems MemoryItem[]           @relation("MemoryItemDerivedFromSnapshot")
+  jobs              MemoryJob[]
+
+  @@unique([snapshotKey, version])
+  @@index([memoryScopeId, periodStart, periodEnd])
+  @@index([memoryScopeId, status, periodEnd])
+  @@map("memory_snapshots")
+}
+
+model MemorySnapshotSource {
+  id           String             @id @default(uuid()) @db.Uuid
+  snapshotId   String             @db.Uuid
+  sourceType   SnapshotSourceType
+  sourceRef    String             @db.VarChar(500)
+  messageId    String?            @db.Uuid
+  memoryItemId String?            @db.Uuid
+  createdAt    DateTime           @default(now()) @db.Timestamptz(6)
+  snapshot     MemorySnapshot     @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
+  message      Message?           @relation(fields: [messageId], references: [id], onDelete: SetNull)
+  memoryItem   MemoryItem?        @relation("MemoryItemSnapshotSources", fields: [memoryItemId], references: [id], onDelete: SetNull)
+
+  @@unique([snapshotId, sourceType, sourceRef])
+  @@index([messageId])
+  @@index([memoryItemId])
+  @@map("memory_snapshot_sources")
+}
+
+model CharacterMemorySetting {
+  id                     String    @id @default(uuid()) @db.Uuid
+  characterId            String    @unique @db.Uuid
+  snapshotIntervalDays   Int       @default(8)
+  timezone               String    @default("Asia/Shanghai") @db.VarChar(100)
+  anchorAt               DateTime  @default(now()) @db.Timestamptz(6)
+  nextSnapshotAt         DateTime? @db.Timestamptz(6)
+  autoSnapshotEnabled    Boolean   @default(true)
+  rawMessageRetentionDays Int?
+  createdAt              DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt              DateTime  @updatedAt @db.Timestamptz(6)
+  character              Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+
+  @@map("character_memory_settings")
+}
+
+model MemoryJob {
+  id             String          @id @default(uuid()) @db.Uuid
+  memoryScopeId  String          @db.Uuid
+  snapshotId     String?         @db.Uuid
+  type           MemoryJobType
+  idempotencyKey String          @unique @db.VarChar(500)
+  periodStart    DateTime?       @db.Timestamptz(6)
+  periodEnd      DateTime?       @db.Timestamptz(6)
+  status         MemoryJobStatus @default(QUEUED)
+  attemptCount   Int             @default(0)
+  maxAttempts    Int             @default(3)
+  runAt          DateTime        @default(now()) @db.Timestamptz(6)
+  lockedAt       DateTime?       @db.Timestamptz(6)
+  lockedBy       String?         @db.VarChar(255)
+  lastError      String?         @db.Text
+  startedAt      DateTime?       @db.Timestamptz(6)
+  completedAt    DateTime?       @db.Timestamptz(6)
+  createdAt      DateTime        @default(now()) @db.Timestamptz(6)
+  updatedAt      DateTime        @updatedAt @db.Timestamptz(6)
+  memoryScope    MemoryScope     @relation(fields: [memoryScopeId], references: [id], onDelete: Cascade)
+  snapshot       MemorySnapshot? @relation(fields: [snapshotId], references: [id], onDelete: SetNull)
+
+  @@index([status, runAt])
+  @@index([memoryScopeId, periodStart, periodEnd])
+  @@map("memory_jobs")
+}
+
+model AuditLog {
+  id          String        @id @default(uuid()) @db.Uuid
+  actorType   AuditActorType
+  actorId     String?       @db.Uuid
+  characterId String?       @db.Uuid
+  action      String        @db.VarChar(120)
+  entityType  String        @db.VarChar(120)
+  entityId    String?       @db.VarChar(255)
+  details     Json?         @db.JsonB
+  createdAt   DateTime      @default(now()) @db.Timestamptz(6)
+  actor       User?         @relation("AuditActor", fields: [actorId], references: [id], onDelete: SetNull)
+  character   Character?    @relation("CharacterAuditLogs", fields: [characterId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+  @@index([characterId, createdAt])
+  @@index([entityType, entityId])
+  @@map("audit_logs")
+}
