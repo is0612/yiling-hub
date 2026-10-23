@@ -44,6 +44,12 @@ const navigation = computed<NavigationItem[]>(() => {
       icon: Cpu,
     },
     {
+      key: "chat",
+      label: "AI 对话",
+      href: id ? "/characters/" + id + "/chat" : "/characters",
+      icon: ChatDotRound,
+    },
+    {
       key: "snapshots",
       label: "周期快照",
       href: id ? `/characters/${id}/snapshots` : "/characters",
@@ -64,6 +70,8 @@ function isActive(item: NavigationItem) {
       return path === "/characters";
     case "memory":
       return /^\/characters\/[^/]+(\/settings\/memory)?$/.test(path);
+    case "chat":
+      return path.startsWith("/characters/") && path.endsWith("/chat");
     case "snapshots":
       return /^\/characters\/[^/]+\/snapshots$/.test(path);
     default:

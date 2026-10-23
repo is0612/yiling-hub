@@ -26,7 +26,8 @@
     "test:scheduler": "tsx scripts/test-memory-scheduler.ts",
     "test:memory-ai": "tsx scripts/test-memory-ai.ts",
     "worker:run": "tsx scripts/run-memory-worker.ts",
-    "worker:watch": "tsx scripts/run-memory-worker.ts --watch"
+    "worker:watch": "tsx scripts/run-memory-worker.ts --watch",
+    "test:memory-retrieval": "tsx scripts/test-memory-retrieval.ts"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",

@@ -268,4 +268,51 @@ assert(tracedAiMemory.sourceSnapshotId === aiSnapshot.id && tracedAiMemory.sourc
 const latestList = await request("/api/characters");
 assert(latestList.some((character) => character.id === created.id && character.name === edited.name), "Character changes did not appear in the list.");
 
-console.log("Local API smoke test passed: character CRUD, memory settings, transcript import, scheduler backfill, local-mock AI extraction, source-ID validation, persisted snapshot/memory provenance, snapshot versions, and recycle-bin lifecycle.");
+const chatReply = await request("/api/characters/" + created.id + "/chat", {
+  method: "POST",
+  body: { message: "请回忆一下历史周期用户消息 " + unique },
+});
+assert(typeof chatReply.conversationId === "string", "AI chat should persist a conversation.");
+assert(chatReply.assistantMessage?.content?.includes("CI 模拟模型回复"), "Chat API should return the local mock model response.");
+assert(Array.isArray(chatReply.assistantMessage?.sources?.memories), "Chat reply should expose validated memory source references.");
+assert(chatReply.assistantMessage.sources.memories.length <= chatReply.retrieval.memoriesAvailable, "The chat should not cite more memory items than were retrieved.");
+assert(chatReply.assistantMessage.sources.snapshots.length <= chatReply.retrieval.snapshotsAvailable, "The chat should not cite more snapshots than were retrieved.");
+const chatHistory = await request("/api/characters/" + created.id + "/chat?conversationId=" + chatReply.conversationId);
+assert(chatHistory.selectedConversationId === chatReply.conversationId, "GET chat should reopen the selected conversation.");
+assert(chatHistory.messages.length === 2, "A new chat should persist one user message and one assistant reply.");
+assert(chatHistory.messages[0].role === "USER" && chatHistory.messages[1].role === "ASSISTANT", "Persisted chat messages should keep their speaker roles.");
+assert(chatHistory.messages[1].content === chatReply.assistantMessage.content, "Reopened chat should preserve the assistant reply.");
+
+const searchedChats = await request("/api/characters/" + created.id + "/chat?status=ACTIVE&q=" + encodeURIComponent("历史周期用户消息"));
+assert(searchedChats.conversations.some((conversation) => conversation.id === chatReply.conversationId), "Chat history search should match message text, not only the conversation title.");
+const archiveResult = await request("/api/characters/" + created.id + "/chat/" + chatReply.conversationId, {
+  method: "PATCH",
+  body: { status: "ARCHIVED" },
+});
+assert(archiveResult.status === "ARCHIVED", "Archiving a conversation should retain it with ARCHIVED status.");
+const activeChatsAfterArchive = await request("/api/characters/" + created.id + "/chat");
+assert(!activeChatsAfterArchive.conversations.some((conversation) => conversation.id === chatReply.conversationId), "Archived conversations must be hidden from the active history list.");
+const archivedChats = await request("/api/characters/" + created.id + "/chat?status=ARCHIVED&q=" + encodeURIComponent("历史周期用户消息"));
+assert(archivedChats.conversations.some((conversation) => conversation.id === chatReply.conversationId), "Archived conversations should remain searchable and recoverable.");
+const archivedHistory = await request("/api/characters/" + created.id + "/chat?status=ARCHIVED&conversationId=" + chatReply.conversationId);
+assert(archivedHistory.selectedConversationId === chatReply.conversationId && archivedHistory.messages.length === 2, "Archived conversation history and messages must remain readable.");
+const firstExportPage = await request("/api/characters/" + created.id + "/chat/" + chatReply.conversationId + "?page=1&pageSize=1");
+const secondExportPage = await request("/api/characters/" + created.id + "/chat/" + chatReply.conversationId + "?page=2&pageSize=1");
+assert(firstExportPage.total === 2 && firstExportPage.messages.length === 1 && firstExportPage.page === 1, "Transcript export should paginate the full conversation.");
+assert(secondExportPage.total === 2 && secondExportPage.messages.length === 1 && secondExportPage.page === 2, "Transcript export should return subsequent messages with the total count.");
+assert(firstExportPage.messages[0].role === "USER" && secondExportPage.messages[0].role === "ASSISTANT", "Transcript export pages should preserve chronological speaker order.");
+const archivedSendResponse = await fetch(new URL("/api/characters/" + created.id + "/chat", baseUrl), {
+  method: "POST",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({ message: "不应写入归档会话", conversationId: chatReply.conversationId }),
+});
+assert(archivedSendResponse.status === 404, "Archived conversations must not accept new chat messages.");
+const restoreResult = await request("/api/characters/" + created.id + "/chat/" + chatReply.conversationId, {
+  method: "PATCH",
+  body: { status: "ACTIVE" },
+});
+assert(restoreResult.status === "ACTIVE", "Restoring an archived conversation should make it active again.");
+const restoredChat = await request("/api/characters/" + created.id + "/chat?conversationId=" + chatReply.conversationId);
+assert(restoredChat.selectedConversationId === chatReply.conversationId && restoredChat.messages.length === 2, "Restored chat history must preserve its messages.");
+
+console.log("Local API smoke test passed: character CRUD, memory settings, transcript import, scheduler backfill, local-mock AI extraction, source-ID validation, persisted snapshot/memory provenance, snapshot versions, recycle-bin lifecycle, context-aware AI chat, conversation search, archive/restore, and archived write protection.");

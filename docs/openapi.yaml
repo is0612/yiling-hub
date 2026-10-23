@@ -200,6 +200,192 @@ paths:
                         items: { $ref: '#/components/schemas/MemoryScope' }
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /characters/{characterId}/chat:
+    parameters:
+      - $ref: '#/components/parameters/CharacterId'
+    get:
+      security: []
+      tags: [Characters]
+      operationId: getCharacterChatHistory
+      summary: 获取角色 AI 会话列表和历史消息
+      description: 本地开发功能。只返回当前角色全局记忆范围的会话，不读取其他角色或私人记忆范围。
+      parameters:
+        - name: conversationId
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+        - name: status
+          in: query
+          required: false
+          description: 只查询正常会话或归档会话，默认 ACTIVE。
+          schema: { type: string, enum: [ACTIVE, ARCHIVED], default: ACTIVE }
+        - name: q
+          in: query
+          required: false
+          description: 按会话标题或消息内容搜索，最多 120 个字符。
+          schema: { type: string, maxLength: 120 }
+      responses:
+        '200':
+          description: 会话列表、选中会话的历史消息与模型配置状态
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [character, modelConfigured, conversations, selectedConversationId, messages]
+                properties:
+                  character:
+                    type: object
+                    required: [id, name]
+                    properties:
+                      id: { type: string, format: uuid }
+                      name: { type: string }
+                  modelConfigured: { type: boolean }
+                  selectedConversationId: { type: string, format: uuid, nullable: true }
+                  conversations:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, title, messageCount]
+                      properties:
+                        id: { type: string, format: uuid }
+                        title: { type: string }
+                        lastMessageAt: { type: string, format: date-time, nullable: true }
+                        updatedAt: { type: string, format: date-time }
+                        messageCount: { type: integer }
+                  messages:
+                    type: array
+                    items: { $ref: '#/components/schemas/ChatMessage' }
+        '400':
+          description: conversationId 参数格式无效
+        '403':
+          description: 仅限本机开发模式访问
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      security: []
+      tags: [Characters]
+      operationId: sendCharacterChatMessage
+      summary: 向 AI 角色发送消息并保存对话
+      description: 本地开发功能。按当前消息检索匹配的角色全局长期记忆和快照；模型返回的来源 ID 会通过候选白名单过滤。需要在服务端配置 LLM_API_KEY 和 LLM_MODEL。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatMessageInput'
+      responses:
+        '201':
+          description: 已保存用户消息、模型回复和来源引用
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [conversationId, title, userMessage, assistantMessage, model, retrieval]
+                properties:
+                  conversationId: { type: string, format: uuid }
+                  title: { type: string }
+                  userMessage: { $ref: '#/components/schemas/ChatMessage' }
+                  assistantMessage: { $ref: '#/components/schemas/ChatMessage' }
+                  model:
+                    type: object
+                    properties:
+                      name: { type: string }
+                      provider: { type: string }
+                      promptTemplateVersion: { type: string }
+                  retrieval:
+                    type: object
+                    properties:
+                      memoriesAvailable: { type: integer }
+                      snapshotsAvailable: { type: integer }
+        '400':
+          description: 消息格式无效
+        '403':
+          description: 仅限本机开发模式访问
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '502':
+          description: 模型调用失败或返回格式无效
+        '503':
+          description: 模型尚未配置
+  /characters/{characterId}/chat/{conversationId}:
+    parameters:
+      - $ref: '#/components/parameters/CharacterId'
+      - name: conversationId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      security: []
+      tags: [Characters]
+      operationId: exportCharacterChatTranscript
+      summary: 分页读取完整角色会话及验证过的来源引用
+      description: 本地开发功能。支持读取正常或归档会话，按消息发生时间正序分页；页面可基于该接口导出完整 Markdown 对话。
+      parameters:
+        - name: page
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: pageSize
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 500, default: 200 }
+      responses:
+        '200':
+          description: 会话分页消息、总数与已保存的记忆来源
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [conversationId, title, status, page, pageSize, total, messages]
+                properties:
+                  conversationId: { type: string, format: uuid }
+                  title: { type: string }
+                  status: { type: string, enum: [ACTIVE, ARCHIVED] }
+                  page: { type: integer }
+                  pageSize: { type: integer }
+                  total: { type: integer }
+                  messages:
+                    type: array
+                    items: { $ref: '#/components/schemas/ChatMessage' }
+        '400':
+          description: 分页参数无效
+        '403':
+          description: 仅限本机开发模式访问
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      security: []
+      tags: [Characters]
+      operationId: setCharacterChatConversationStatus
+      summary: 归档或恢复角色会话
+      description: 本地开发功能。归档只改变会话状态，不删除对话消息或模型来源记录，并写入审计日志。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, enum: [ACTIVE, ARCHIVED] }
+      responses:
+        '200':
+          description: 会话状态已更新
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, status, updatedAt]
+                properties:
+                  id: { type: string, format: uuid }
+                  status: { type: string, enum: [ACTIVE, ARCHIVED] }
+                  updatedAt: { type: string, format: date-time }
+        '400':
+          description: status 参数无效
+        '403':
+          description: 仅限本机开发模式访问
+        '404':
+          $ref: '#/components/responses/NotFound'
   /characters/{characterId}/timeline:
     parameters:
       - $ref: '#/components/parameters/CharacterId'
@@ -1128,6 +1314,44 @@ components:
         userId: { type: string, format: uuid, nullable: true }
         externalIdentityId: { type: string, format: uuid, nullable: true }
         createdAt: { type: string, format: date-time }
+    ChatMessageInput:
+      type: object
+      required: [message]
+      properties:
+        conversationId: { type: string, format: uuid }
+        message: { type: string, minLength: 1, maxLength: 8000 }
+    ChatMessage:
+      type: object
+      required: [id, role, content, occurredAt, sources]
+      properties:
+        id: { type: string, format: uuid }
+        role: { type: string, enum: [USER, ASSISTANT] }
+        content: { type: string }
+        occurredAt: { type: string, format: date-time }
+        sources:
+          type: object
+          required: [memories, snapshots]
+          properties:
+            memories:
+              type: array
+              items:
+                type: object
+                required: [id, category, content]
+                properties:
+                  id: { type: string, format: uuid }
+                  category: { type: string }
+                  content: { type: string }
+            snapshots:
+              type: array
+              items:
+                type: object
+                required: [id, summary, periodStart, periodEnd, version]
+                properties:
+                  id: { type: string, format: uuid }
+                  summary: { type: string }
+                  periodStart: { type: string, format: date-time }
+                  periodEnd: { type: string, format: date-time }
+                  version: { type: integer }
     ConversationInput:
       type: object
       required: [memoryScopeId]
