@@ -2,14 +2,14 @@
 
 本文说明如何在本地开发 Yiling Hub、备份 PostgreSQL 数据，并将项目迁移到新电脑。脚本面向 Windows PowerShell；其他系统可按同样原则实现对应脚本。
 
-> 当前仓库先提供开发规范与数据库容器配置。应用依赖、Prisma Schema 和具体迁移命令会在对应开发阶段补齐。请不要把本文件描述的未来应用能力理解为已经实现。
+> 当前仓库已提供 Prisma Schema、Prisma CLI 配置、数据库容器配置与基础验证工作流。Next.js 应用、实际数据库 migration、认证和记忆 Worker 尚未实现。请不要把规划能力理解为已经实现。
 
 ## 1. 文件职责
 
 - `docker-compose.yml`：本地 PostgreSQL 服务。
 - `.env.example`：环境变量模板，不含真实密钥。
 - 本地真实配置放在根目录 `.env`，禁止提交到 Git。
-- `prisma/schema.prisma` 和 `prisma/migrations/`：数据库结构与迁移历史（Phase 0/2 逐步建立）。
+- `prisma/schema.prisma`：Phase 0 初始数据模型；`prisma/migrations/`：Phase 2 审查并生成的数据库迁移历史。
 - `scripts/backup-db.ps1`：生成 PostgreSQL 自定义格式逻辑备份。
 - `scripts/restore-db.ps1`：将指定备份恢复到配置的开发数据库。
 - `backups/`：本地备份输出目录，已加入 Git 忽略规则。
