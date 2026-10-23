@@ -916,6 +916,29 @@ paths:
                   note: { type: string }
         '403':
           description: 该接口仅限本地开发环境
+  /tasks/worker/run:
+    post:
+      tags: [Tasks]
+      operationId: runOneMemoryWorkerJob
+      summary: 由本地开发界面执行一条周期快照任务（本地开发）
+      description: 手动触发单次 Worker 处理。当前仅执行 GENERATE_SNAPSHOT 任务，并生成不调用大模型的规则版结构化快照。
+      security: []
+      responses:
+        '200':
+          description: 本次处理结果；processed=false 表示当前没有可执行的任务
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [processed, message]
+                properties:
+                  processed: { type: boolean }
+                  jobId: { type: string, format: uuid }
+                  status: { type: string, enum: [SUCCEEDED, SKIPPED, RETRY_WAIT, FAILED] }
+                  snapshotId: { type: string, format: uuid }
+                  message: { type: string }
+        '403':
+          description: 该接口仅限本地开发环境
   /tasks/{taskId}:
     parameters:
       - name: taskId

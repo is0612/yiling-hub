@@ -23,7 +23,9 @@
     "db:seed:dev": "tsx scripts/seed-dev-user.ts",
     "scheduler:run": "tsx scripts/run-memory-scheduler.ts",
     "scheduler:watch": "tsx scripts/run-memory-scheduler.ts --watch",
-    "test:scheduler": "tsx scripts/test-memory-scheduler.ts"
+    "test:scheduler": "tsx scripts/test-memory-scheduler.ts",
+    "worker:run": "tsx scripts/run-memory-worker.ts",
+    "worker:watch": "tsx scripts/run-memory-worker.ts --watch"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",

@@ -10,7 +10,13 @@
 - 在独立终端每 60 秒扫描一次：`yarn scheduler:watch`
 - 调整扫描间隔：在环境变量中设置 `YILING_MEMORY_SCHEDULER_INTERVAL_MS`（单位毫秒，最小 5000）。
 
-调度器会把到期周期写入 PostgreSQL 的任务队列，并推进下一周期边界。此阶段只有任务入队，还没有实际消费队列的 Worker，不能据此认为快照已自动生成。
+调度器会把到期周期写入 PostgreSQL 的任务队列，并推进下一周期边界。独立 Worker 的命令：
+
+- 单次执行一条任务：`yarn worker:run`
+- 持续消费任务队列：`yarn worker:watch`
+- 调整 Worker 轮询间隔：`YILING_MEMORY_WORKER_INTERVAL_MS`（毫秒，最小 1000）。
+
+当前 Worker 会生成规则版结构化快照并标明未调用大模型；仅支持周期快照任务，其他任务类型仍待实现。
 
 ## 从哪里开始
 
