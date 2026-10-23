@@ -76,7 +76,7 @@ export function toCharacterDto(input: unknown): CharacterDto {
   const configuredTone = config.avatarTone;
   const avatarTone = tones.includes(configuredTone as (typeof tones)[number])
     ? (configuredTone as (typeof tones)[number])
-    : tones[character.name.codePointAt(0)! % tones.length];
+    : (tones[character.name.codePointAt(0)! % tones.length] ?? "purple");
   const setting = character.memorySetting;
   const snapshots = character.memoryScopes.flatMap((scope) => scope.snapshots.map((snapshot) => snapshot.createdAt));
   const latestSnapshot = snapshots.sort((a, b) => b.getTime() - a.getTime())[0];
