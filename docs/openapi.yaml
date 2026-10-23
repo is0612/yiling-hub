@@ -622,14 +622,21 @@ components:
       properties:
         data: {}
         error:
+          type: object
           nullable: true
-          allOf:
-            - $ref: '#/components/schemas/ApiError'
+          required: [code, message]
+          properties:
+            code: { type: string }
+            message: { type: string }
+            details:
+              type: object
+              additionalProperties: true
     ErrorResponse:
       type: object
       required: [data, error]
       properties:
         data:
+          type: object
           nullable: true
         error:
           $ref: '#/components/schemas/ApiError'
