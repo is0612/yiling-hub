@@ -234,7 +234,7 @@ export async function processNextMemoryJob(
           id: true,
           scopeType: true,
           characterId: true,
-          character: { select: { name: true } },
+          character: { select: { name: true, memorySetting: { select: { timezone: true } } } },
         },
       }),
       prisma.memorySnapshot.findFirst({
@@ -279,7 +279,7 @@ export async function processNextMemoryJob(
     const aiResult = await analyzeMemoryPeriod({
       periodStart: job.periodStart.toISOString(),
       periodEnd: job.periodEnd.toISOString(),
-      timezone: "UTC",
+      timezone: scope.character.memorySetting?.timezone ?? "UTC",
       scopeType: scope.scopeType,
       characterName: scope.character.name,
       messages: aiMessages,
@@ -328,7 +328,7 @@ export async function processNextMemoryJob(
         period: {
           start: job.periodStart!.toISOString(),
           end: job.periodEnd!.toISOString(),
-          timezone: "UTC",
+          timezone: scope.character.memorySetting?.timezone ?? "UTC",
           interval: "[start, end)",
         },
         counts: {
@@ -360,7 +360,7 @@ export async function processNextMemoryJob(
           periodStart: job.periodStart!,
           periodEnd: job.periodEnd!,
           summary: aiResult.analysis.summary,
-          structuredContent,
+          structuredContent: structuredContent as never,
           status: "CURRENT",
           modelMetadata: {
             provider: aiResult.provider,
@@ -509,7 +509,7 @@ export async function processNextMemoryJob(
         ) {
           await tx.memoryItem.updateMany({
             where: { id: relatedId, memoryScopeId: job.memoryScopeId, status: "ACTIVE" },
-            data: { status: "SUPERSEDED", validTo },
+            data: { status: "SUPERSEDED", validTo: primaryEvidence.occurredAt },
           });
           const dedupeKey = makeMemoryDedupeKey(change.category, change.content);
           const keyUsed = existingDedupeKeys.has(dedupeKey) || Boolean(await tx.memoryItem.findFirst({
@@ -568,7 +568,7 @@ export async function processNextMemoryJob(
       };
       await tx.memorySnapshot.update({
         where: { id: snapshot.id },
-        data: { structuredContent: finalStructuredContent },
+        data: { structuredContent: finalStructuredContent as never },
       });
 
       await tx.memoryJob.update({
