@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { DataAnalysis, ArrowDown, ArrowRight, TopRight, Calendar, Clock, Files, MagicStick, User } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
-import { initialTasks, initialTimeline, type Character } from "~/utils/mock-data";
+import { initialTasks, initialTimeline } from "~/utils/mock-data";
 
-const characters = ref<Character[]>([]);
+const characters = useCharacterList();
+const primaryCharacter = computed(() => characters.value[0] ?? null);
 const timeline = initialTimeline;
 const tasks = useState("demo-tasks", () => initialTasks.map((item) => ({ ...item })));
 const weeks = [
@@ -12,10 +13,11 @@ const weeks = [
 ];
 const taskTone: Record<string, string> = { 成功: "green", 等待执行: "amber", 失败待重试: "rose", 跳过: "gray", 运行中: "blue" };
 
-onMounted(async () => {
-  try {
-    characters.value = await $fetch<Character[]>("/api/characters");
-  } catch {
+// 与布局共用同一份角色数据，首屏直接渲染真实角色。
+await useCharacterListData();
+
+onMounted(() => {
+  if (!characters.value.length) {
     ElMessage.warning("角色数据暂不可用；请完成本地数据库初始化后刷新页面。");
   }
 });
@@ -60,9 +62,9 @@ onMounted(async () => {
         </SectionTitle>
         <div class="next-snapshot">
           <div class="character-card-head">
-            <div class="avatar" style="width:44px;height:44px;font-size:18px">鱼</div>
+            <div class="avatar" :class="primaryCharacter ? 'avatar-' + primaryCharacter.avatarTone : ''" style="width:44px;height:44px;font-size:18px">{{ primaryCharacter?.avatar || '—' }}</div>
             <div class="character-info">
-              <div class="character-name-row"><span class="character-name" style="font-size:13px">大肥鱼</span><span class="pill pill-green">运行中</span></div>
+              <div class="character-name-row"><span class="character-name" style="font-size:13px">{{ primaryCharacter?.name || '暂无角色' }}</span><span class="pill" :class="primaryCharacter?.status === '已暂停' ? 'pill-gray' : 'pill-green'">{{ primaryCharacter?.status || '待创建' }}</span></div>
               <div class="character-alias">当前周期 · 第 13 份快照</div>
             </div>
             <el-icon style="font-size:18px;color:#948af0"><MagicStick /></el-icon>
@@ -74,12 +76,12 @@ onMounted(async () => {
           <el-progress :percentage="87.5" :show-text="false" :stroke-width="6" color="#8172ed" />
           <div class="period-label"><span>10 月 21 日 09:00</span><span>10 月 29 日 09:00</span></div>
         </div>
-        <div v-for="character in characters.filter(c => c.id !== 'big-fish').slice(0, 2)" :key="character.id" class="mini-character">
+        <div v-for="character in characters.slice(1, 3)" :key="character.id" class="mini-character">
           <div class="avatar" :class="'avatar-' + character.avatarTone" style="width:36px;height:36px;font-size:12px">{{ character.avatar }}</div>
           <div class="character-info"><div class="character-name" style="font-size:11px">{{ character.name }}</div><div class="character-alias">{{ character.intervalDays }} 天周期 · {{ character.nextSnapshot }}</div></div>
           <span class="pill" :class="character.status === '已暂停' ? 'pill-gray' : 'pill-blue'">{{ character.status === '已暂停' ? '已暂停' : '计划中' }}</span>
         </div>
-        <el-button plain style="width:100%;margin-top:12px" @click="navigateTo('/characters/big-fish/settings/memory')">管理归档计划<el-icon class="el-icon--right"><ArrowRight /></el-icon></el-button>
+        <el-button plain style="width:100%;margin-top:12px" :disabled="!primaryCharacter" @click="primaryCharacter && navigateTo(`/characters/${primaryCharacter.id}/settings/memory`)">管理归档计划<el-icon class="el-icon--right"><ArrowRight /></el-icon></el-button>
       </section>
     </div>
 

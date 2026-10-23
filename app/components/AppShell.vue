@@ -14,25 +14,61 @@ import {
 } from "@element-plus/icons-vue";
 
 const route = useRoute();
-type NavigationItem = { label: string; href: string; icon: Component; section?: string; count?: string };
+type NavigationItem = {
+  key: string;
+  label: string;
+  href: string;
+  icon: Component;
+  section?: string;
+  count?: string;
+};
 
-const navigation: NavigationItem[] = [
-  { label: "总览", href: "/", icon: DataBoard, section: "工作空间" },
-  { label: "角色管理", href: "/characters", icon: User },
-  { label: "记忆驾驶舱", href: "/characters/big-fish", icon: Cpu },
-  { label: "周期快照", href: "/characters/big-fish/snapshots", icon: Calendar },
-  { label: "渠道管理", href: "/channels", icon: ChatDotRound, section: "系统管理" },
-  { label: "任务监控", href: "/tasks", icon: DataAnalysis, count: "2" },
-  { label: "系统设置", href: "/settings", icon: Setting },
-];
+const activeCharacterId = useActiveCharacterId();
 
-function isActive(href: string) {
+// 首屏就取到角色列表，避免侧边栏角色入口先指向列表页再跳变。
+await useCharacterListData();
+
+/**
+ * 角色相关的入口必须指向数据库里的真实角色 id；
+ * 未取到角色时退回角色列表，由用户在列表里新建或选择。
+ */
+const navigation = computed<NavigationItem[]>(() => {
+  const id = activeCharacterId.value;
+  return [
+    { key: "home", label: "总览", href: "/", icon: DataBoard, section: "工作空间" },
+    { key: "characters", label: "角色管理", href: "/characters", icon: User },
+    {
+      key: "memory",
+      label: "记忆驾驶舱",
+      href: id ? `/characters/${id}` : "/characters",
+      icon: Cpu,
+    },
+    {
+      key: "snapshots",
+      label: "周期快照",
+      href: id ? `/characters/${id}/snapshots` : "/characters",
+      icon: Calendar,
+    },
+    { key: "channels", label: "渠道管理", href: "/channels", icon: ChatDotRound, section: "系统管理" },
+    { key: "tasks", label: "任务监控", href: "/tasks", icon: DataAnalysis, count: "2" },
+    { key: "settings", label: "系统设置", href: "/settings", icon: Setting },
+  ];
+});
+
+function isActive(item: NavigationItem) {
   const path = route.path;
-  if (href === "/") return path === "/";
-  if (href === "/characters") return path === "/characters";
-  if (href.includes("/snapshots")) return path.includes("/snapshots");
-  if (href.includes("/characters/big-fish")) return path.startsWith("/characters/") && !path.includes("/snapshots") && !path.includes("/settings/");
-  return path === href || path.startsWith(href + "/");
+  switch (item.key) {
+    case "home":
+      return path === "/";
+    case "characters":
+      return path === "/characters";
+    case "memory":
+      return /^\/characters\/[^/]+(\/settings\/memory)?$/.test(path);
+    case "snapshots":
+      return /^\/characters\/[^/]+\/snapshots$/.test(path);
+    default:
+      return path === item.href || path.startsWith(`${item.href}/`);
+  }
 }
 </script>
 
@@ -59,7 +95,7 @@ function isActive(href: string) {
       <nav class="sidebar-nav" aria-label="主导航">
         <template v-for="item in navigation" :key="item.href">
           <div v-if="item.section" class="sidebar-section">{{ item.section }}</div>
-          <NuxtLink :to="item.href" class="sidebar-link" :class="{ active: isActive(item.href) }">
+          <NuxtLink :to="item.href" class="sidebar-link" :class="{ active: isActive(item) }">
             <el-icon><component :is="item.icon" /></el-icon>
             <span class="sidebar-label">{{ item.label }}</span>
             <span v-if="item.count" class="nav-count">{{ item.count }}</span>
