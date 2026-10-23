@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Bot, CirclePlus, Plus, Search, Sparkles, UserRound, X } from "@element-plus/icons-vue";
+import { ArrowRight, CirclePlus, MoreFilled, Plus, Search, Sparkles, X } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
 import type { Character, CharacterStatus } from "~/utils/mock-data";
 import { initialCharacters } from "~/utils/mock-data";
