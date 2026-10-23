@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ArrowLeft, Calendar, Clock, Files, Refresh, Search, Sparkles } from "@element-plus/icons-vue";
+import { ArrowLeft, Calendar, Clock, Files, Refresh, Search, MagicStick } from "@element-plus/icons-vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { initialCharacters, initialSnapshots, type Character, type Snapshot } from "~/utils/mock-data";
 
@@ -37,7 +37,7 @@ async function regenerate(snapshot: Snapshot) {
 <template>
   <div class="page-wrap">
     <PageHeader :eyebrow="`角色管理 / ${character.name} / 周期快照`" title="周期快照档案" description="每份快照都是一个时间段的记忆归档。重新生成会创建新版本，旧版本不会被覆盖。">
-      <template #actions><DemoTag /><el-button @click="navigateTo('/characters/' + character.id)"><el-icon><ArrowLeft /></el-icon>返回驾驶舱</el-button><el-button type="primary" @click="ElMessage.info('已排入演示快照任务；真实生成器尚未接入。')"><el-icon><Sparkles /></el-icon>生成快照</el-button></template>
+      <template #actions><DemoTag /><el-button @click="navigateTo('/characters/' + character.id)"><el-icon><ArrowLeft /></el-icon>返回驾驶舱</el-button><el-button type="primary" @click="ElMessage.info('已排入演示快照任务；真实生成器尚未接入。')"><el-icon><MagicStick /></el-icon>生成快照</el-button></template>
     </PageHeader>
 
     <div class="stat-grid" style="grid-template-columns:repeat(3,minmax(0,1fr))">
