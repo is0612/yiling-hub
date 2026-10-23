@@ -7,6 +7,12 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3
  * Production is denied even if the feature flag is accidentally enabled.
  */
 export function requireLocalDevOwner(event: Parameters<typeof getHeader>[0]): string {
+  const remoteAddress = event.node.req.socket.remoteAddress ?? "";
+  const loopbackSocket =
+    remoteAddress === "::1" ||
+    remoteAddress === "127.0.0.1" ||
+    remoteAddress.startsWith("::ffff:127.");
+
   const hostHeader = (getHeader(event, "host") ?? "").toLowerCase();
   const hostname = hostHeader.startsWith("[")
     ? hostHeader.slice(1, hostHeader.indexOf("]"))
@@ -15,6 +21,7 @@ export function requireLocalDevOwner(event: Parameters<typeof getHeader>[0]): st
   if (
     process.env.NODE_ENV !== "development" ||
     process.env.YILING_LOCAL_API_ENABLED !== "true" ||
+    !loopbackSocket ||
     !["localhost", "127.0.0.1", "::1"].includes(hostname)
   ) {
     throw createError({
