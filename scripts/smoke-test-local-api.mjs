@@ -105,7 +105,28 @@ assert(reloadedSettings.snapshotIntervalDays === 3, "Memory interval did not per
 assert(reloadedSettings.autoSnapshotEnabled === true, "Auto-snapshot switch did not persist.");
 assert(reloadedSettings.changePolicy === "IMMEDIATE_RECALC", "Change policy did not persist after a new read.");
 
+const createdSnapshot = await request(`/api/characters/${created.id}/snapshots`, { method: "POST" });
+assert(typeof createdSnapshot.id === "string", "POST snapshots must return the persisted snapshot id.");
+assert(createdSnapshot.version === 1, "The first manual snapshot must be version 1.");
+
+const snapshotList = await request(`/api/characters/${created.id}/snapshots`);
+assert(Array.isArray(snapshotList) && snapshotList.length === 1, "GET snapshots must return the created snapshot.");
+assert(snapshotList[0].id === createdSnapshot.id, "Snapshot list did not return the created snapshot.");
+assert(snapshotList[0].status === "当前版本", "The first snapshot should be current.");
+assert(snapshotList[0].messages === 0, "A snapshot without ingested messages must report zero source messages.");
+
+const regeneratedSnapshot = await request(`/api/characters/${created.id}/snapshots`, {
+  method: "POST",
+  body: { snapshotId: createdSnapshot.id },
+});
+assert(typeof regeneratedSnapshot.id === "string" && regeneratedSnapshot.id !== createdSnapshot.id, "Regeneration must create a new snapshot version.");
+
+const snapshotHistory = await request(`/api/characters/${created.id}/snapshots`);
+assert(snapshotHistory.length === 2, "Regeneration must preserve the old snapshot version.");
+assert(snapshotHistory.some((snapshot) => snapshot.id === createdSnapshot.id && snapshot.status === "已被替代"), "The previous snapshot must be marked as superseded.");
+assert(snapshotHistory.some((snapshot) => snapshot.id === regeneratedSnapshot.id && snapshot.version === 2 && snapshot.status === "当前版本"), "The regenerated version must be current and increment to version 2.");
+
 const latestList = await request("/api/characters");
 assert(latestList.some((character) => character.id === created.id && character.name === edited.name), "Character changes did not appear in the list.");
 
-console.log("Local API smoke test passed: create/read/update character, create memory scope, save/reload memory settings.");
+console.log("Local API smoke test passed: character CRUD, memory settings persistence, manual snapshot create/read, and version regeneration.");
