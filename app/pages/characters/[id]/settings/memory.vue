@@ -3,47 +3,131 @@ import { ArrowLeft, Calendar, InfoFilled, RefreshLeft, Lock, Select } from "@ele
 import { ElMessage } from "element-plus";
 import { initialCharacters, type Character } from "~/utils/mock-data";
 
+type MemorySettings = {
+  snapshotIntervalDays: number;
+  timezone: string;
+  anchorAt: string;
+  rawMessageRetentionDays: number;
+  autoSnapshotEnabled: boolean;
+  nextSnapshotAt: string | null;
+  updatedAt: string;
+};
+
 const route = useRoute();
-const id = computed(() => String(route.params.id || "big-fish"));
-const characters = useState<Character[]>("characters", () => initialCharacters.map((item) => ({ ...item, channels: [...item.channels] })));
-const character = computed(() => characters.value.find((item) => item.id === id.value) || { ...initialCharacters[0], id: id.value, name: "新建角色" });
-const interval = ref(character.value.intervalDays);
+const id = computed(() => String(route.params.id || ""));
+const character = ref<Character>({ ...initialCharacters[0], id: "", name: "角色加载中" });
+const interval = ref(8);
 const timezone = ref("Asia/Shanghai");
 const anchor = ref("2026-10-21T09:00:00");
 const retention = ref(90);
-const autoSnapshot = ref(character.value.status !== "已暂停");
+const autoSnapshot = ref(false);
 const effectivePolicy = ref("下一个周期生效");
-watch(character, (value) => { interval.value = value.intervalDays; autoSnapshot.value = value.status !== "已暂停"; });
+const loading = ref(false);
+const saving = ref(false);
 const safeInterval = computed(() => Math.min(365, Math.max(1, Number(interval.value) || 8)));
-function saveSettings() {
-  const target = characters.value.find((item) => item.id === id.value);
-  if (target) {
-    target.intervalDays = safeInterval.value;
-    target.nextSnapshot = autoSnapshot.value ? "每 " + safeInterval.value + " 天归档" : "已暂停";
-    if (!autoSnapshot.value) target.status = "已暂停";
+
+function formatAnchor(iso: string, timeZone: string): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone, year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
+  }).formatToParts(new Date(iso));
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}T${values.hour}:${values.minute}:${values.second}`;
+}
+
+function zonedInputToIso(value: string, timeZone: string): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/.exec(value);
+  if (!match) throw new Error("周期启用锚点无效。");
+  const targetUtc = Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]), Number(match[4]), Number(match[5]), Number(match[6] || 0));
+  let candidate = targetUtc;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone, year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
+    }).formatToParts(new Date(candidate));
+    const values = Object.fromEntries(parts.map((part) => [part.type, Number(part.value)]));
+    const displayedAsUtc = Date.UTC(values.year, values.month - 1, values.day, values.hour, values.minute, values.second);
+    const difference = targetUtc - displayedAsUtc;
+    candidate += difference;
+    if (difference === 0) break;
   }
-  ElMessage.success("已保存演示设置；真实数据库接入后才会持久保存。");
+  return new Date(candidate).toISOString();
 }
+
+async function loadSettings() {
+  loading.value = true;
+  try {
+    const [loadedCharacter, settings] = await Promise.all([
+      $fetch<Character>(`/api/characters/${encodeURIComponent(id.value)}`),
+      $fetch<MemorySettings>(`/api/characters/${encodeURIComponent(id.value)}/memory-settings`),
+    ]);
+    character.value = loadedCharacter;
+    interval.value = settings.snapshotIntervalDays;
+    timezone.value = settings.timezone;
+    anchor.value = formatAnchor(settings.anchorAt, settings.timezone);
+    retention.value = settings.rawMessageRetentionDays;
+    autoSnapshot.value = settings.autoSnapshotEnabled;
+  } catch (error) {
+    const message = error && typeof error === "object" && "statusMessage" in error
+      ? String(error.statusMessage)
+      : "无法读取记忆设置，请确认数据库已初始化。";
+    ElMessage.error(message);
+  } finally {
+    loading.value = false;
+  }
+}
+
+async function saveSettings() {
+  saving.value = true;
+  try {
+    const anchorAt = zonedInputToIso(anchor.value, timezone.value);
+    const saved = await $fetch<MemorySettings>(`/api/characters/${encodeURIComponent(id.value)}/memory-settings`, {
+      method: "PATCH",
+      body: {
+        snapshotIntervalDays: safeInterval.value,
+        timezone: timezone.value,
+        anchorAt,
+        rawMessageRetentionDays: retention.value,
+        autoSnapshotEnabled: autoSnapshot.value,
+      },
+    });
+    interval.value = saved.snapshotIntervalDays;
+    anchor.value = formatAnchor(saved.anchorAt, saved.timezone);
+    ElMessage.success("记忆周期设置已保存到本地数据库。");
+  } catch (error) {
+    const message = error && typeof error === "object" && "statusMessage" in error
+      ? String(error.statusMessage)
+      : error instanceof Error ? error.message : "保存失败，请检查数据库连接。";
+    ElMessage.error(message);
+  } finally {
+    saving.value = false;
+  }
+}
+
 function resetSettings() {
-  interval.value = character.value.intervalDays;
+  interval.value = 8;
   timezone.value = "Asia/Shanghai";
-  anchor.value = "2026-10-21T09:00:00";
+  const now = new Date();
+  anchor.value = formatAnchor(now.toISOString(), timezone.value);
   retention.value = 90;
-  autoSnapshot.value = character.value.status !== "已暂停";
+  autoSnapshot.value = false;
   effectivePolicy.value = "下一个周期生效";
-  ElMessage.info("已恢复为示例配置。");
+  ElMessage.info("已将表单恢复为默认值；点击“保存设置”后才会写入数据库。");
 }
+
+onMounted(() => void loadSettings());
+watch(id, () => void loadSettings());
 </script>
 
 <template>
   <div class="page-wrap">
-    <PageHeader :eyebrow="'角色管理 / ' + character.name + ' / 记忆设置'" title="记忆周期设置" description="控制角色多久归档一次阶段记忆。快照生成周期与原始消息保留期限是两套独立规则。">
-      <template #actions><DemoTag /><el-button @click="navigateTo('/characters/' + character.id)"><el-icon><ArrowLeft /></el-icon>返回驾驶舱</el-button></template>
+    <PageHeader :eyebrow="'角色管理 / ' + character.name + ' / 记忆设置'" title="记忆周期设置" description="控制角色多久归档一次阶段记忆。设置会保存到 PostgreSQL；真正的定时执行器将在后续 Worker 阶段接入。">
+      <template #actions><el-button @click="navigateTo('/characters/' + character.id)"><el-icon><ArrowLeft /></el-icon>返回驾驶舱</el-button></template>
     </PageHeader>
 
     <div class="settings-grid">
       <div>
-        <section class="surface form-section">
+        <section v-loading="loading" class="surface form-section">
           <div class="settings-section-head"><div><div class="form-title">自动归档规则 <span class="pill pill-purple">核心设置</span></div><p class="section-description">每完成一个周期，就为这个记忆范围生成阶段总结。</p></div><el-icon class="section-icon"><Calendar /></el-icon></div>
           <div class="interval-box">
             <div class="interval-top"><div><div class="interval-label">快照生成间隔</div><p class="form-help">周期可设为 1–365 天；默认值为 8 天。</p></div><div class="interval-input"><el-input-number v-model="interval" :min="1" :max="365" :controls="true" size="large" /><span>天 / 次</span></div></div>
@@ -55,13 +139,13 @@ function resetSettings() {
             <div class="form-grid">
               <el-form-item label="记忆时区"><el-select v-model="timezone" style="width:100%"><el-option label="中国标准时间（Asia/Shanghai）" value="Asia/Shanghai" /><el-option label="协调世界时（UTC）" value="UTC" /><el-option label="美国太平洋时间（America/Los_Angeles）" value="America/Los_Angeles" /></el-select></el-form-item>
               <el-form-item label="周期启用锚点"><el-date-picker v-model="anchor" type="datetime" value-format="YYYY-MM-DDTHH:mm:ss" placeholder="选择周期起始时间" style="width:100%" /></el-form-item>
-              <el-form-item label="原始消息保留期限"><el-select v-model="retention" style="width:100%"><el-option label="30 天" :value="30" /><el-option label="90 天" :value="90" /><el-option label="180 天" :value="180" /><el-option label="永久保留" :value="0" /></el-select><div class="form-help">该期限独立于快照周期，当前只保存演示配置。</div></el-form-item>
+              <el-form-item label="原始消息保留期限"><el-select v-model="retention" style="width:100%"><el-option label="30 天" :value="30" /><el-option label="90 天" :value="90" /><el-option label="180 天" :value="180" /><el-option label="永久保留" :value="0" /></el-select><div class="form-help">该期限独立于快照周期；清理任务尚未接入 Worker。</div></el-form-item>
               <el-form-item label="修改何时生效"><el-radio-group v-model="effectivePolicy"><el-radio value="下一个周期生效">下一个周期</el-radio><el-radio value="立即重算">立即重算</el-radio></el-radio-group></el-form-item>
             </div>
           </el-form>
           <el-divider />
           <div class="toggle-row"><div><strong>自动生成周期快照</strong><p class="form-help">关闭后保留历史归档，停止自动创建新的周期快照。</p></div><el-switch v-model="autoSnapshot" /></div>
-          <div class="form-actions"><el-button @click="resetSettings"><el-icon><RefreshLeft /></el-icon>恢复默认</el-button><el-button type="primary" @click="saveSettings"><el-icon><Select /></el-icon>保存设置</el-button></div>
+          <div class="form-actions"><el-button @click="resetSettings"><el-icon><RefreshLeft /></el-icon>恢复默认</el-button><el-button type="primary" :loading="saving" @click="saveSettings"><el-icon><Select /></el-icon>保存设置</el-button></div>
         </section>
       </div>
 
@@ -75,15 +159,15 @@ function resetSettings() {
           <div class="rule-item"><span class="rule-number">03</span><div><strong>时区影响计划时间</strong><p>计划会基于角色设定的时区和启用锚点计算。</p></div></div>
         </section>
         <section class="surface panel" style="margin-top:16px">
-          <SectionTitle title="当前计划预览" description="保存后仅更新演示界面状态" />
+          <SectionTitle title="当前计划预览" description="保存后写入本地数据库" />
           <div class="metric-row"><span>归档间隔</span><span class="metric-value">{{ safeInterval }} 天</span></div>
           <div class="metric-row"><span>执行状态</span><span class="pill" :class="autoSnapshot ? 'pill-green' : 'pill-gray'">{{ autoSnapshot ? '自动归档开启' : '自动归档已暂停' }}</span></div>
           <div class="metric-row"><span>生效策略</span><span class="metric-value">{{ effectivePolicy }}</span></div>
-          <div class="info-callout" style="margin-top:15px"><el-icon><InfoFilled /></el-icon><span>正式任务调度与补处理机制将在后续 Worker 阶段实现。</span></div>
+          <div class="info-callout" style="margin-top:15px"><el-icon><InfoFilled /></el-icon><span>设置已持久化，但该时间目前只是计划预览；后台调度、任务补处理将在后续 Worker 阶段实现。</span></div>
         </section>
       </aside>
     </div>
-    <p class="footer-note">页面设置暂存在当前应用状态；尚未连接真实数据库或任务调度器。</p>
+    <p class="footer-note">记忆周期、时区、锚点与原始消息保留期限已写入数据库；自动执行与消息清理仍未接入 Worker。</p>
   </div>
 </template>
 
