@@ -1,7 +1,7 @@
 import { createError, getRouterParam } from "h3";
-import { requireLocalDevOwner, requireUuid } from "~/server/utils/local-api";
-import { getPrisma } from "~/server/utils/prisma";
-import { toMemorySnapshotDtos } from "~/server/utils/memory-snapshot-dto";
+import { requireLocalDevOwner, requireUuid } from "../../../../utils/local-api";
+import { getPrisma } from "../../../../utils/prisma";
+import { toMemorySnapshotDtos } from "../../../../utils/memory-snapshot-dto";
 
 export default defineEventHandler(async (event) => {
   const ownerId = requireLocalDevOwner(event);
