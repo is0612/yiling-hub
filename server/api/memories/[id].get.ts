@@ -19,6 +19,28 @@ export default defineEventHandler(async (event) => {
       confidence: true,
       createdAt: true,
       updatedAt: true,
+      sourceMessageId: true,
+      sourceSnapshotId: true,
+      sourceMessage: {
+        select: {
+          id: true,
+          role: true,
+          eventType: true,
+          content: true,
+          occurredAt: true,
+          conversation: { select: { id: true, title: true } },
+        },
+      },
+      sourceSnapshot: {
+        select: {
+          id: true,
+          summary: true,
+          periodStart: true,
+          periodEnd: true,
+          version: true,
+          status: true,
+        },
+      },
     },
   });
 
