@@ -484,6 +484,39 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+  /characters/{characterId}/timeline:
+    parameters:
+      - $ref: '#/components/parameters/CharacterId'
+    get:
+      tags: [Memories]
+      operationId: getCharacterMemoryTimeline
+      summary: 获取角色的已保存记忆时间线
+      description: 本地开发过渡接口，只返回数据库中已存在的消息、长期记忆和快照记录；聊天渠道导入与模型总结尚未接入。
+      security: []
+      responses:
+        '200':
+          description: 按时间倒序排列的真实时间线记录
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  required: [id, type, title, summary, time, channel, tag, tagTone, source]
+                  properties:
+                    id: { type: string }
+                    type: { type: string, enum: [message, memory, snapshot, event] }
+                    title: { type: string }
+                    summary: { type: string }
+                    time: { type: string }
+                    channel: { type: string }
+                    tag: { type: string }
+                    tagTone: { type: string, enum: [green, purple, blue, amber, gray] }
+                    source: { type: string }
+        '403':
+          description: 该接口仅限本地开发环境
+        '404':
+          $ref: '#/components/responses/NotFound'
   /characters/{characterId}/snapshots:
     parameters:
       - $ref: '#/components/parameters/CharacterId'
