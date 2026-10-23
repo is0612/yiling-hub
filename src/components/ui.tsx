@@ -137,6 +137,6 @@ export function ViewAllLink({ href, children }: { href: string; children: ReactN
   return (
     <Link href={href} className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#786be4] transition hover:text-[#5c4ed6]">
       {children} <ArrowUpRight size={13} />
-    </a>
+    </Link>
   );
 }
