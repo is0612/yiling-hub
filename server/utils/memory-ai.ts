@@ -315,10 +315,10 @@ export async function analyzeMemoryPeriod(input: MemoryAiInput): Promise<{
   const existingIds = input.activeMemories.map((memory) => memory.id);
   const analysis = validateMemoryAiOutput(parsed, sourceIds, existingIds);
   const usageRecord = asRecord(payload.usage);
-  const numberField = (key: string) =>
-    typeof usageRecord?.[key] === "number" && Number.isFinite(usageRecord[key])
-      ? usageRecord[key] as number
-      : undefined;
+  const numberField = (key: string) => {
+    const value = usageRecord?.[key];
+    return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+  };
 
   return {
     analysis,
