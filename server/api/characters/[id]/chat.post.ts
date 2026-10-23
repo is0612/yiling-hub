@@ -167,6 +167,7 @@ export default defineEventHandler(async (event) => {
   setResponseStatus(event, 201);
   return {
     ...saved,
+    userMessage: { ...saved.userMessage, sources: { memories: [], snapshots: [] } },
     assistantMessage: { ...saved.assistantMessage, sources: usedSources },
     model: { name: generated.model, provider: generated.provider, promptTemplateVersion: generated.promptTemplateVersion },
     retrieval: { memoriesAvailable: memories.length, snapshotsAvailable: snapshots.length },
