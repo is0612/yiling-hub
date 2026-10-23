@@ -43,6 +43,7 @@ export default defineEventHandler(async (event) => {
   if (body.changePolicy !== "NEXT_CYCLE" && body.changePolicy !== "IMMEDIATE_RECALC") {
     throw createError({ statusCode: 400, statusMessage: "无效的设置生效策略。" });
   }
+  const changePolicy = body.changePolicy as "NEXT_CYCLE" | "IMMEDIATE_RECALC";
 
   const rawRetention = Number(body.rawMessageRetentionDays);
   if (!Number.isInteger(rawRetention) || !allowedRetentionDays.has(rawRetention)) {
@@ -72,7 +73,7 @@ export default defineEventHandler(async (event) => {
       anchorAt: rawAnchor,
       nextSnapshotAt,
       autoSnapshotEnabled: body.autoSnapshotEnabled,
-      changePolicy: body.changePolicy,
+      changePolicy,
       rawMessageRetentionDays: rawRetention === 0 ? null : rawRetention,
     },
     update: {
@@ -81,6 +82,7 @@ export default defineEventHandler(async (event) => {
       anchorAt: rawAnchor,
       nextSnapshotAt,
       autoSnapshotEnabled: body.autoSnapshotEnabled,
+      changePolicy,
       rawMessageRetentionDays: rawRetention === 0 ? null : rawRetention,
     },
   });
