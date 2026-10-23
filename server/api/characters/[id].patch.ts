@@ -1,4 +1,5 @@
 import { createError, readBody } from "h3";
+import type { Prisma } from "../../src/generated/prisma/client";
 import { characterInclude, toCharacterDto } from "../../utils/character-dto";
 import { readTrimmedString, requireLocalDevOwner, requireUuid } from "../../utils/local-api";
 import { getPrisma } from "../../utils/prisma";
@@ -17,12 +18,7 @@ export default defineEventHandler(async (event) => {
   const config = existing.modelConfig && typeof existing.modelConfig === "object" && !Array.isArray(existing.modelConfig)
     ? existing.modelConfig as Record<string, unknown>
     : {};
-  const data: {
-    name?: string;
-    basePrompt?: string;
-    status?: "ACTIVE" | "PAUSED" | "ARCHIVED";
-    modelConfig?: Record<string, unknown>;
-  } = {};
+  const data: Prisma.CharacterUpdateInput = {};
 
   if (body.name !== undefined) {
     data.name = readTrimmedString(body.name, "角色名称", 100, { required: true });
@@ -46,7 +42,7 @@ export default defineEventHandler(async (event) => {
       ...config,
       ...(body.alias !== undefined ? { alias: readTrimmedString(body.alias, "角色标签", 100) } : {}),
       ...(body.description !== undefined ? { description: readTrimmedString(body.description, "角色简介", 2000) } : {}),
-    };
+    } as Prisma.InputJsonObject;
   }
 
   const updated = await prisma.character.update({
