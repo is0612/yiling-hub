@@ -51,3 +51,24 @@
 ## 5. 实施顺序
 
 Phase 0 先审查本逻辑模型并生成 Prisma Schema 与 OpenAPI 契约；Phase 2 再应用数据库迁移。具体模型必须附关系说明、必要唯一约束、索引策略与测试。
+
+## 6. Concrete Prisma schema
+
+The initial concrete schema is now located at [`prisma/schema.prisma`](../prisma/schema.prisma), with connection configuration in [`prisma.config.ts`](../prisma.config.ts).
+
+The initial model set includes:
+- `User`, `Character`
+- `PlatformConnection`, `CharacterChannelBinding`, `ExternalIdentity`
+- `Conversation`, `Message`
+- `MemoryScope`, `MemoryItem`
+- `MemorySnapshot`, `MemorySnapshotSource`
+- `CharacterMemorySetting`, `MemoryJob`
+- `AuditLog`
+
+Prisma enum values are uppercase internally. The HTTP API uses lower-case enum strings for user-facing status/role values where specified by `docs/openapi.yaml`; the API service must perform explicit mapping and validation rather than persisting arbitrary strings.
+
+Character creation should be transactional: create the character, its `character_global` memory scope, and default memory settings together. Scope-type consistency must be validated in the application (for example, a global scope has neither `userId` nor `externalIdentityId`; a private user scope uses a verified internal user; an external-identity scope is isolated to one unverified external identity).
+
+The Prisma schema declares `@@unique([snapshotKey, version])`. During the initial SQL migration, add a PostgreSQL partial unique index so at most one row per logical snapshot key can have `status = 'CURRENT'`. Prisma's schema language does not express this partial index directly; preserve it in a committed SQL migration and test it under concurrent worker execution.
+
+The schema is a Phase 0 artifact and has not been applied to any production database. Run `npm install`, `npm run db:format`, and `npm run db:validate` locally before creating migrations.
