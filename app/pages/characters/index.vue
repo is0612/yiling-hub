@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ArrowRight, CirclePlus, MoreFilled, Plus, Search, Sparkles, X } from "@element-plus/icons-vue";
+import { ArrowRight, CirclePlus, MoreFilled, Plus, Search, MagicStick, X } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
 import type { Character, CharacterStatus } from "~/utils/mock-data";
 import { initialCharacters } from "~/utils/mock-data";
@@ -67,7 +67,7 @@ function statusTone(status: CharacterStatus) {
           <el-option label="已暂停" value="已暂停" />
           <el-option label="未连接" value="未连接" />
         </el-select>
-        <el-button @click="resetFilters"><el-icon><X /></el-icon>重置筛选</el-button>
+        <el-button @click="resetFilters"><el-icon><Close /></el-icon>重置筛选</el-button>
       </div>
       <div class="filter-summary"><span>找到 <strong>{{ filtered.length }}</strong> 个角色</span><span>角色数据仅保存在当前演示状态</span></div>
     </section>
@@ -109,7 +109,7 @@ function statusTone(status: CharacterStatus) {
         <el-form-item label="角色名称" required><el-input v-model="name" placeholder="例如：星海旅人" maxlength="40" show-word-limit /></el-form-item>
         <el-form-item label="角色简介"><el-input v-model="description" type="textarea" :rows="2" placeholder="用一句话描述角色的个性或定位。" /></el-form-item>
         <el-form-item label="基础人设"><el-input v-model="personality" type="textarea" :rows="3" placeholder="角色的性格、说话方式、行为规则……" /></el-form-item>
-        <div class="info-callout"><el-icon><Sparkles /></el-icon><span>当前为演示模式。角色仅保存在本次应用状态里，接入数据库后才会永久保存。</span></div>
+        <div class="info-callout"><el-icon><MagicStick /></el-icon><span>当前为演示模式。角色仅保存在本次应用状态里，接入数据库后才会永久保存。</span></div>
         <div class="dialog-actions"><el-button @click="dialogOpen = false">取消</el-button><el-button type="primary" @click="createCharacter"><el-icon><CirclePlus /></el-icon>创建角色</el-button></div>
       </el-form>
     </el-dialog>
