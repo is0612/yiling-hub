@@ -843,37 +843,79 @@ paths:
   /tasks:
     get:
       tags: [Tasks]
-      summary: 查询后台任务
+      operationId: listMemoryJobs
+      summary: 查询当前本地开发用户的持久化后台任务
+      description: 本地开发过渡接口；仅返回当前本地开发用户拥有的角色任务，最多返回最近 100 条。
+      security: []
       parameters:
         - name: status
           in: query
-          schema: { type: string }
-        - name: characterId
+          schema:
+            type: string
+            enum: [QUEUED, RUNNING, SUCCEEDED, FAILED, SKIPPED, RETRY_WAIT, CANCELLED]
+        - name: limit
           in: query
-          schema: { type: string, format: uuid }
-        - $ref: '#/components/parameters/Page'
-        - $ref: '#/components/parameters/PageSize'
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
       responses:
         '200':
-          description: 任务分页列表
+          description: 任务列表
           content:
             application/json:
               schema:
-                allOf:
-                  - $ref: '#/components/schemas/ApiResponse'
-                  - type: object
-                    properties:
-                      data:
-                        type: object
-                        properties:
-                          items:
-                            type: array
-                            items: { $ref: '#/components/schemas/MemoryJob' }
-                          page: { type: integer }
-                          pageSize: { type: integer }
-                          total: { type: integer }
-        '401':
-          $ref: '#/components/responses/Unauthorized'
+                type: object
+                required: [items, total]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, type, status, attemptCount, maxAttempts, runAt, createdAt, updatedAt, characterId, characterName]
+                      properties:
+                        id: { type: string, format: uuid }
+                        type: { type: string, enum: [GENERATE_SNAPSHOT, REGENERATE_SNAPSHOT, UPDATE_LONG_TERM_MEMORY, CLEAN_EXPIRED_MESSAGES] }
+                        status: { type: string, enum: [QUEUED, RUNNING, SUCCEEDED, FAILED, SKIPPED, RETRY_WAIT, CANCELLED] }
+                        attemptCount: { type: integer }
+                        maxAttempts: { type: integer }
+                        runAt: { type: string, format: date-time }
+                        periodStart: { type: string, nullable: true, format: date-time }
+                        periodEnd: { type: string, nullable: true, format: date-time }
+                        lastError: { type: string, nullable: true }
+                        startedAt: { type: string, nullable: true, format: date-time }
+                        completedAt: { type: string, nullable: true, format: date-time }
+                        createdAt: { type: string, format: date-time }
+                        updatedAt: { type: string, format: date-time }
+                        characterId: { type: string, format: uuid }
+                        characterName: { type: string }
+                  total: { type: integer, minimum: 0 }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          description: 该接口仅限本地开发环境
+  /tasks/scheduler/run:
+    post:
+      tags: [Tasks]
+      operationId: enqueueDueMemoryJobs
+      summary: 扫描到期周期并排入持久化任务队列（本地开发）
+      description: 处理到期的周期边界并使用幂等键排队；此操作不执行快照生成，实际 Worker 尚未接入。
+      security: []
+      responses:
+        '200':
+          description: 本次扫描统计
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [settingsChecked, settingsAdvanced, jobsQueued, periodsConsidered, missingGlobalScope, settingsStillDue, note]
+                properties:
+                  settingsChecked: { type: integer }
+                  settingsAdvanced: { type: integer }
+                  jobsQueued: { type: integer }
+                  periodsConsidered: { type: integer }
+                  missingGlobalScope: { type: integer }
+                  settingsStillDue: { type: integer }
+                  note: { type: string }
+        '403':
+          description: 该接口仅限本地开发环境
   /tasks/{taskId}:
     parameters:
       - name: taskId

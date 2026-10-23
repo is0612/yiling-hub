@@ -4,6 +4,14 @@
 
 > 当前状态：角色档案、记忆周期设置、手动长期记忆、纯文本对话录入、数据库时间线和快照版本已接入 PostgreSQL。原始渠道适配器、自动事件提炼、模型总结、真实任务 Worker 和管理员登录仍按后续阶段实施。
 
+## 周期任务调度（开发阶段）
+
+- 手动扫描一次已到期的周期：`yarn scheduler:run`
+- 在独立终端每 60 秒扫描一次：`yarn scheduler:watch`
+- 调整扫描间隔：在环境变量中设置 `YILING_MEMORY_SCHEDULER_INTERVAL_MS`（单位毫秒，最小 5000）。
+
+调度器会把到期周期写入 PostgreSQL 的任务队列，并推进下一周期边界。此阶段只有任务入队，还没有实际消费队列的 Worker，不能据此认为快照已自动生成。
+
 ## 从哪里开始
 
 - [产品与技术开发方案 V1.2](docs/product-and-technical-plan.md)
