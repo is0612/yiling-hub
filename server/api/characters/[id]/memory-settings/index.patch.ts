@@ -40,6 +40,10 @@ export default defineEventHandler(async (event) => {
     throw createError({ statusCode: 400, statusMessage: "自动归档开关无效。" });
   }
 
+  if (body.changePolicy !== "NEXT_CYCLE" && body.changePolicy !== "IMMEDIATE_RECALC") {
+    throw createError({ statusCode: 400, statusMessage: "无效的设置生效策略。" });
+  }
+
   const rawRetention = Number(body.rawMessageRetentionDays);
   if (!Number.isInteger(rawRetention) || !allowedRetentionDays.has(rawRetention)) {
     throw createError({ statusCode: 400, statusMessage: "原始消息保留期限只能选择永久、30、90 或 180 天。" });
@@ -68,6 +72,7 @@ export default defineEventHandler(async (event) => {
       anchorAt: rawAnchor,
       nextSnapshotAt,
       autoSnapshotEnabled: body.autoSnapshotEnabled,
+      changePolicy: body.changePolicy,
       rawMessageRetentionDays: rawRetention === 0 ? null : rawRetention,
     },
     update: {
