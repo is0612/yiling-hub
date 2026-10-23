@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Refresh, Search, Warning, Play, Files } from "@element-plus/icons-vue";
+import { Refresh, Search, Warning, MagicStick, Files } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
 
 type MemoryTask = {
@@ -159,7 +159,7 @@ onMounted(() => void loadTasks());
     <PageHeader eyebrow="系统管理 / 任务监控" title="后台任务" description="这里显示数据库中的持久化任务，并可手动扫描已到期的记忆周期。任务入队与快照执行是两个阶段；当前尚未接入实际 Worker。">
       <template #actions>
         <el-button :loading="loading" @click="loadTasks"><el-icon><Refresh /></el-icon>刷新列表</el-button>
-        <el-button type="primary" :loading="schedulerRunning" @click="runScheduler"><el-icon><Play /></el-icon>扫描到期周期</el-button>
+        <el-button type="primary" :loading="schedulerRunning" @click="runScheduler"><el-icon><MagicStick /></el-icon>扫描到期周期</el-button>
       </template>
     </PageHeader>
 
@@ -184,7 +184,7 @@ onMounted(() => void loadTasks());
           <template #default="{ row }"><div class="table-main">{{ taskTypeText(row.type) }}</div><div class="table-sub">{{ row.characterName }}</div></template>
         </el-table-column>
         <el-table-column label="处理范围" min-width="240">
-          <template #default="{ row }">{{ periodText(row) }}</template>
+          <template #default="{ row }">{{ periodText(row as MemoryTask) }}</template>
         </el-table-column>
         <el-table-column label="状态" width="125">
           <template #default="{ row }"><el-tag :type="tone(row.status)" effect="light" round>{{ statusText(row.status) }}</el-tag></template>
@@ -196,7 +196,7 @@ onMounted(() => void loadTasks());
           <template #default="{ row }">{{ formatDate(row.updatedAt) }}</template>
         </el-table-column>
         <el-table-column label="操作" width="90" fixed="right">
-          <template #default="{ row }"><el-button text type="primary" @click="openDetails(row)">详情</el-button></template>
+          <template #default="{ row }"><el-button text type="primary" @click="openDetails(row as MemoryTask)">详情</el-button></template>
         </el-table-column>
         <template #empty><div class="empty-state">{{ loadError || "暂无数据库任务。启用角色的自动归档并到达周期边界后，可以扫描到期任务。" }}</div></template>
       </el-table>
