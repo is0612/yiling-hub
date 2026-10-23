@@ -65,7 +65,7 @@ Worker 配置模型后会调用 LLM 对周期对话进行结构化总结，验�
 - 数据库：PostgreSQL
 - ORM：Prisma 7（通过 PostgreSQL driver adapter）
 - 本地容器：Docker Compose
-- 后台任务：后续阶段增加独立 Node.js Worker
+- 后台任务：独立 Node.js Worker + PostgreSQL 持久化任务队列
 
 ## 本地运行
 
