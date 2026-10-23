@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ArrowLeft, Calendar, Clock, Files, Refresh, Search, Sparkles, Version } from "@element-plus/icons-vue";
+import { ArrowLeft, Calendar, Clock, Files, Refresh, Search, Sparkles } from "@element-plus/icons-vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { initialCharacters, initialSnapshots, type Character, type Snapshot } from "~/utils/mock-data";
 
