@@ -1,9 +1,20 @@
 import { randomUUID } from "node:crypto";
 import type { PrismaClient } from "../../src/generated/prisma/client";
+import {
+  analyzeMemoryPeriod,
+  isMemoryModelConfigured,
+  makeMemoryDedupeKey,
+  type MemoryAiMessage,
+  type MemoryCategoryValue,
+  type MemoryChange,
+} from "./memory-ai";
 
 const LEASE_MS = 5 * 60 * 1000;
 const MAX_SOURCE_MESSAGES = 250;
 const MAX_SOURCE_MEMORIES = 250;
+const MAX_AI_MESSAGES = 120;
+const MAX_AI_MEMORIES = 80;
+const MIN_MEMORY_CONFIDENCE = 0.65;
 
 export type MemoryWorkerResult =
   | { processed: false; message: string }
@@ -17,6 +28,31 @@ type WorkerOptions = {
 
 function ownerFilter(ownerId?: string) {
   return ownerId ? { memoryScope: { is: { character: { is: { ownerId } } } } } : {};
+}
+
+function selectAiMessages(messages: Array<{
+  id: string; role: string; eventType: string; content: string; occurredAt: Date;
+}>): MemoryAiMessage[] {
+  let selected = messages;
+  if (messages.length > MAX_AI_MESSAGES) {
+    const edge = Math.floor(MAX_AI_MESSAGES / 2);
+    selected = [...messages.slice(0, edge), ...messages.slice(-edge)];
+  }
+  return selected.map((message) => ({
+    id: message.id,
+    role: message.role,
+    eventType: message.eventType,
+    occurredAt: message.occurredAt.toISOString(),
+    content: message.content.slice(0, 1200),
+  }));
+}
+
+function normalizeMemoryText(value: string): string {
+  return value.normalize("NFKC").toLocaleLowerCase().replace(/[\s\p{P}\p{S}]+/gu, " ").trim();
+}
+
+function validConfidence(change: MemoryChange): boolean {
+  return change.confidence >= MIN_MEMORY_CONFIDENCE;
 }
 
 export async function processNextMemoryJob(
@@ -51,6 +87,14 @@ export async function processNextMemoryJob(
         completedAt: exhausted ? now : null,
       },
     });
+  }
+
+  // Leave jobs queued until a model is configured; do not burn retry attempts for setup errors.
+  if (!isMemoryModelConfigured()) {
+    return {
+      processed: false,
+      message: "尚未配置 AI 模型。请在服务端 .env 设置 LLM_API_KEY 和 LLM_MODEL；现有任务会留在队列中。",
+    };
   }
 
   const candidates = await prisma.memoryJob.findMany({
@@ -101,129 +145,211 @@ export async function processNextMemoryJob(
   if (!claimedJobId) return { processed: false, message: "当前没有可领取的周期快照任务。" };
 
   try {
-    const outcome = await prisma.$transaction(async (tx) => {
-      const job = await tx.memoryJob.findUnique({
-        where: { id: claimedJobId },
-        select: {
-          id: true,
-          memoryScopeId: true,
-          idempotencyKey: true,
-          periodStart: true,
-          periodEnd: true,
-          status: true,
-          lockedBy: true,
-          attemptCount: true,
+    const job = await prisma.memoryJob.findUnique({
+      where: { id: claimedJobId },
+      select: {
+        id: true,
+        memoryScopeId: true,
+        idempotencyKey: true,
+        periodStart: true,
+        periodEnd: true,
+        status: true,
+        lockedBy: true,
+        attemptCount: true,
+      },
+    });
+    if (!job || job.status !== "RUNNING" || job.lockedBy !== workerId) {
+      throw new Error("任务已不属于当前 Worker，拒绝继续执行。");
+    }
+    if (!job.periodStart || !job.periodEnd || job.periodStart >= job.periodEnd) {
+      throw new Error("周期任务缺少有效的起止时间。");
+    }
+
+    const priorSnapshot = await prisma.memorySnapshot.findFirst({
+      where: { snapshotKey: job.idempotencyKey, memoryScopeId: job.memoryScopeId },
+      orderBy: [{ version: "desc" }, { createdAt: "desc" }],
+      select: { id: true },
+    });
+    if (priorSnapshot) {
+      await prisma.memoryJob.updateMany({
+        where: { id: job.id, status: "RUNNING", lockedBy: workerId },
+        data: {
+          status: "SUCCEEDED",
+          snapshotId: priorSnapshot.id,
+          completedAt: now,
+          lockedAt: null,
+          lockedBy: null,
+          lastError: null,
         },
       });
-      if (!job || job.status !== "RUNNING" || job.lockedBy !== workerId) {
-        throw new Error("任务已不属于当前 Worker，拒绝继续执行。");
-      }
-      if (!job.periodStart || !job.periodEnd || job.periodStart >= job.periodEnd) {
-        throw new Error("周期任务缺少有效的起止时间。");
+      return {
+        processed: true,
+        jobId: job.id,
+        status: "SUCCEEDED",
+        snapshotId: priorSnapshot.id,
+        message: "检测到相同周期已有快照，已复用历史结果。",
+      };
+    }
+
+    const messageWhere = {
+      conversation: { is: { memoryScopeId: job.memoryScopeId } },
+      occurredAt: { gte: job.periodStart, lt: job.periodEnd },
+    };
+    const memoryActivityWhere = {
+      memoryScopeId: job.memoryScopeId,
+      status: { not: "TRASHED" as const },
+      OR: [
+        { createdAt: { gte: job.periodStart, lt: job.periodEnd } },
+        { updatedAt: { gte: job.periodStart, lt: job.periodEnd } },
+      ],
+    };
+
+    const [messageCount, eventCount, sourceMessages, memoryActivityCount, activeItems, scope, previousSnapshot] = await Promise.all([
+      prisma.message.count({ where: messageWhere }),
+      prisma.message.count({ where: { ...messageWhere, eventType: { not: "message" } } }),
+      prisma.message.findMany({
+        where: messageWhere,
+        orderBy: [{ occurredAt: "asc" }, { id: "asc" }],
+        take: MAX_SOURCE_MESSAGES,
+        select: { id: true, role: true, eventType: true, content: true, occurredAt: true },
+      }),
+      prisma.memoryItem.count({ where: memoryActivityWhere }),
+      prisma.memoryItem.findMany({
+        where: {
+          memoryScopeId: job.memoryScopeId,
+          status: "ACTIVE",
+          createdAt: { lte: job.periodEnd },
+          updatedAt: { lte: job.periodEnd },
+        },
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+        take: MAX_SOURCE_MEMORIES,
+        select: {
+          id: true, category: true, content: true, confidence: true,
+          validFrom: true, validTo: true, createdAt: true,
+        },
+      }),
+      prisma.memoryScope.findUnique({
+        where: { id: job.memoryScopeId },
+        select: {
+          id: true,
+          scopeType: true,
+          characterId: true,
+          character: { select: { name: true } },
+        },
+      }),
+      prisma.memorySnapshot.findFirst({
+        where: {
+          memoryScopeId: job.memoryScopeId,
+          periodEnd: { lte: job.periodStart },
+          status: "CURRENT",
+        },
+        orderBy: [{ periodEnd: "desc" }, { version: "desc" }],
+        select: { summary: true, periodEnd: true },
+      }),
+    ]);
+
+    if (!scope) throw new Error("找不到任务关联的记忆范围。");
+
+    if (messageCount === 0 && memoryActivityCount === 0) {
+      await prisma.memoryJob.updateMany({
+        where: { id: job.id, status: "RUNNING", lockedBy: workerId },
+        data: {
+          status: "SKIPPED",
+          completedAt: now,
+          lastError: "该周期内没有已保存的对话消息、平台事件或长期记忆变更。",
+          lockedAt: null,
+          lockedBy: null,
+        },
+      });
+      return { processed: true, jobId: job.id, status: "SKIPPED", message: "周期内无已保存活动，已跳过快照生成。" };
+    }
+
+    const aiMessages = selectAiMessages(sourceMessages);
+    const aiMemoryContext = activeItems.slice(-MAX_AI_MEMORIES).map((item) => ({
+      id: item.id,
+      category: item.category,
+      content: item.content.slice(0, 800),
+      confidence: item.confidence,
+      validFrom: item.validFrom?.toISOString() ?? null,
+      validTo: item.validTo?.toISOString() ?? null,
+      createdAt: item.createdAt.toISOString(),
+    }));
+
+    // The model call deliberately happens outside a database transaction.
+    const aiResult = await analyzeMemoryPeriod({
+      periodStart: job.periodStart.toISOString(),
+      periodEnd: job.periodEnd.toISOString(),
+      timezone: "UTC",
+      scopeType: scope.scopeType,
+      characterName: scope.character.name,
+      messages: aiMessages,
+      totalMessageCount: messageCount,
+      omittedMessageCount: Math.max(0, messageCount - aiMessages.length),
+      activeMemories: aiMemoryContext,
+      previousSnapshotSummary: previousSnapshot?.summary ?? null,
+    });
+
+    const outcome = await prisma.$transaction(async (tx) => {
+      const latestJob = await tx.memoryJob.findUnique({
+        where: { id: job.id },
+        select: { status: true, lockedBy: true },
+      });
+      if (latestJob?.status !== "RUNNING" || latestJob.lockedBy !== workerId) {
+        throw new Error("任务租约已失效；拒绝提交模型结果。");
       }
 
-      const priorSnapshot = await tx.memorySnapshot.findFirst({
+      const racedSnapshot = await tx.memorySnapshot.findFirst({
         where: { snapshotKey: job.idempotencyKey, memoryScopeId: job.memoryScopeId },
         orderBy: [{ version: "desc" }, { createdAt: "desc" }],
         select: { id: true },
       });
-      if (priorSnapshot) {
+      if (racedSnapshot) {
         await tx.memoryJob.update({
           where: { id: job.id },
           data: {
             status: "SUCCEEDED",
-            snapshotId: priorSnapshot.id,
+            snapshotId: racedSnapshot.id,
             completedAt: now,
             lockedAt: null,
             lockedBy: null,
             lastError: null,
           },
         });
-        return { status: "SUCCEEDED" as const, snapshotId: priorSnapshot.id, message: "检测到相同周期已有快照，已复用历史结果。" };
+        return {
+          status: "SUCCEEDED" as const,
+          snapshotId: racedSnapshot.id,
+          message: "同一周期已由其他执行完成，复用已有快照。",
+        };
       }
 
-      const messageWhere = {
-        conversation: { is: { memoryScopeId: job.memoryScopeId } },
-        occurredAt: { gte: job.periodStart, lt: job.periodEnd },
-      };
-      const memoryActivityWhere = {
-        memoryScopeId: job.memoryScopeId,
-        status: { not: "TRASHED" as const },
-        OR: [
-          { createdAt: { gte: job.periodStart, lt: job.periodEnd } },
-          { updatedAt: { gte: job.periodStart, lt: job.periodEnd } },
-        ],
-      };
-
-      const [messageCount, eventCount, sourceMessages, memoryActivityCount, activeItems] = await Promise.all([
-        tx.message.count({ where: messageWhere }),
-        tx.message.count({ where: { ...messageWhere, eventType: { not: "message" } } }),
-        tx.message.findMany({
-          where: messageWhere,
-          orderBy: [{ occurredAt: "asc" }, { id: "asc" }],
-          take: MAX_SOURCE_MESSAGES,
-          select: { id: true, role: true, eventType: true, content: true, occurredAt: true },
-        }),
-        tx.memoryItem.count({ where: memoryActivityWhere }),
-        tx.memoryItem.findMany({
-          where: {
-            memoryScopeId: job.memoryScopeId,
-            status: "ACTIVE",
-            createdAt: { lte: job.periodEnd },
-            updatedAt: { lte: job.periodEnd },
-          },
-          orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-          take: MAX_SOURCE_MEMORIES,
-          select: {
-            id: true, category: true, content: true, confidence: true,
-            validFrom: true, validTo: true, createdAt: true,
-          },
-        }),
-      ]);
-
-      if (messageCount === 0 && memoryActivityCount === 0) {
-        await tx.memoryJob.update({
-          where: { id: job.id },
-          data: {
-            status: "SKIPPED",
-            completedAt: now,
-            lastError: "该周期内没有已保存的对话消息、平台事件或长期记忆变更。",
-            lockedAt: null,
-            lockedBy: null,
-          },
-        });
-        return { status: "SKIPPED" as const, message: "周期内无已保存活动，已跳过快照生成。" };
-      }
-
-      const storedMessages = sourceMessages.map((message) => ({
-        id: message.id,
-        role: message.role,
-        eventType: message.eventType,
-        occurredAt: message.occurredAt.toISOString(),
-        excerpt: message.content.slice(0, 1000),
-        excerptTruncated: message.content.length > 1000,
-      }));
       const structuredContent = {
-        generatedBy: "rule-based-worker-v1",
+        generatedBy: "llm",
         capturedAt: now.toISOString(),
-        messageCount,
-        storedSourceMessageCount: sourceMessages.length,
-        omittedMessageCount: Math.max(0, messageCount - sourceMessages.length),
-        eventCount,
-        memoryActivityCount,
-        messages: storedMessages,
-        memoryItems: activeItems.map((item) => ({
-          id: item.id,
-          category: item.category,
-          content: item.content,
-          ...(item.confidence !== null ? { confidence: item.confidence } : {}),
-          ...(item.validFrom ? { validFrom: item.validFrom.toISOString() } : {}),
-          ...(item.validTo ? { validTo: item.validTo.toISOString() } : {}),
-          createdAt: item.createdAt.toISOString(),
-        })),
-        note: "规则版结构化快照；未调用大模型，不代表语义总结。",
+        period: {
+          start: job.periodStart!.toISOString(),
+          end: job.periodEnd!.toISOString(),
+          timezone: "UTC",
+          interval: "[start, end)",
+        },
+        counts: {
+          messageCount,
+          eventCount,
+          storedSourceMessageCount: sourceMessages.length,
+          aiAnalyzedMessageCount: aiMessages.length,
+          omittedMessageCount: Math.max(0, messageCount - aiMessages.length),
+          memoryActivityCount,
+        },
+        model: {
+          name: aiResult.model,
+          provider: aiResult.provider,
+          promptTemplateVersion: aiResult.promptTemplateVersion,
+          ...(aiResult.usage ? { usage: aiResult.usage } : {}),
+        },
+        analysis: aiResult.analysis,
+        activeMemoriesConsidered: aiMemoryContext.map((item) => item.id),
+        memoryChangesApplied: [] as Array<Record<string, unknown>>,
+        note: "AI 提炼结果；每条被采纳的新长期记忆都关联至少一条本周期原始消息。",
       };
-      const summary = `自动周期快照（规则版）：记录 ${messageCount} 条消息、${eventCount} 个事件、${memoryActivityCount} 条长期记忆变更。仅保存结构化记录，未调用大模型生成语义总结。`;
 
       const snapshot = await tx.memorySnapshot.create({
         data: {
@@ -231,11 +357,17 @@ export async function processNextMemoryJob(
           memoryScopeId: job.memoryScopeId,
           kind: "AUTOMATIC",
           version: 1,
-          periodStart: job.periodStart,
-          periodEnd: job.periodEnd,
-          summary,
+          periodStart: job.periodStart!,
+          periodEnd: job.periodEnd!,
+          summary: aiResult.analysis.summary,
           structuredContent,
           status: "CURRENT",
+          modelMetadata: {
+            provider: aiResult.provider,
+            model: aiResult.model,
+            promptTemplateVersion: aiResult.promptTemplateVersion,
+            ...(aiResult.usage ? { usage: aiResult.usage } : {}),
+          },
           generatedAt: now,
           sources: {
             create: [
@@ -255,6 +387,190 @@ export async function processNextMemoryJob(
         select: { id: true },
       });
 
+      const currentItems = new Map(activeItems.map((item) => [item.id, item]));
+      const eligibleModelMemoryIds = new Set(aiMemoryContext.map((item) => item.id));
+      const handledMemoryIds = new Set<string>();
+      const appliedChanges: Array<Record<string, unknown>> = [];
+      const messagesById = new Map(sourceMessages.map((message) => [message.id, message]));
+      const existingDedupeKeys = new Set<string>();
+      const existingItemSignatures = new Set(
+        activeItems.map((item) => item.category + ":" + normalizeMemoryText(item.content)),
+      );
+
+      for (const change of aiResult.analysis.memoryChanges) {
+        if (!validConfidence(change)) continue;
+        const evidence = change.evidenceMessageIds
+          .map((id) => messagesById.get(id))
+          .filter((message): message is NonNullable<typeof message> => Boolean(message));
+        if (evidence.length === 0) continue;
+        const primaryEvidence = [...evidence].sort((a, b) => a.occurredAt.getTime() - b.occurredAt.getTime())[0]!;
+        const validFrom = primaryEvidence.occurredAt;
+        const relatedId = change.relatedMemoryId;
+
+        if (change.action === "ADD") {
+          const signature = change.category + ":" + normalizeMemoryText(change.content);
+          if (existingItemSignatures.has(signature)) {
+            appliedChanges.push({
+              action: "ADD",
+              result: "DUPLICATE_IGNORED",
+              category: change.category,
+              content: change.content,
+              evidenceMessageIds: change.evidenceMessageIds,
+            });
+            continue;
+          }
+
+          const dedupeKey = makeMemoryDedupeKey(change.category, change.content);
+          const keyUsed = existingDedupeKeys.has(dedupeKey) || Boolean(await tx.memoryItem.findFirst({
+            where: { memoryScopeId: job.memoryScopeId, dedupeKey },
+            select: { id: true },
+          }));
+          existingDedupeKeys.add(dedupeKey);
+          const created = await tx.memoryItem.create({
+            data: {
+              memoryScopeId: job.memoryScopeId,
+              category: change.category as MemoryCategoryValue,
+              content: change.content,
+              confidence: change.confidence,
+              status: "ACTIVE",
+              validFrom,
+              sourceMessageId: primaryEvidence.id,
+              sourceSnapshotId: snapshot.id,
+              dedupeKey: keyUsed ? null : dedupeKey,
+            },
+            select: { id: true },
+          });
+          existingItemSignatures.add(signature);
+          await tx.auditLog.create({
+            data: {
+              actorType: "WORKER",
+              characterId: scope.characterId,
+              action: "memory.ai_added",
+              entityType: "MemoryItem",
+              entityId: created.id,
+              details: {
+                category: change.category,
+                confidence: change.confidence,
+                evidenceMessageIds: change.evidenceMessageIds,
+                snapshotId: snapshot.id,
+              },
+            },
+          });
+          appliedChanges.push({
+            action: "ADD",
+            result: "CREATED",
+            memoryItemId: created.id,
+            category: change.category,
+            content: change.content,
+            confidence: change.confidence,
+            evidenceMessageIds: change.evidenceMessageIds,
+          });
+          continue;
+        }
+
+        if (!relatedId || handledMemoryIds.has(relatedId) || !eligibleModelMemoryIds.has(relatedId)) continue;
+        const previous = currentItems.get(relatedId);
+        if (!previous || previous.category === undefined) continue;
+        handledMemoryIds.add(relatedId);
+
+        if (change.action === "INVALIDATE") {
+          await tx.memoryItem.updateMany({
+            where: { id: relatedId, memoryScopeId: job.memoryScopeId, status: "ACTIVE" },
+            data: { status: "INVALIDATED", validTo: primaryEvidence.occurredAt },
+          });
+          await tx.auditLog.create({
+            data: {
+              actorType: "WORKER",
+              characterId: scope.characterId,
+              action: "memory.ai_invalidated",
+              entityType: "MemoryItem",
+              entityId: relatedId,
+              details: {
+                reason: change.changeReason ?? change.content,
+                confidence: change.confidence,
+                evidenceMessageIds: change.evidenceMessageIds,
+                snapshotId: snapshot.id,
+              },
+            },
+          });
+          appliedChanges.push({
+            action: "INVALIDATE",
+            result: "INVALIDATED",
+            memoryItemId: relatedId,
+            content: change.content,
+            evidenceMessageIds: change.evidenceMessageIds,
+          });
+          continue;
+        }
+
+        if (
+          change.action === "UPDATE" &&
+          (previous.category !== change.category || normalizeMemoryText(previous.content) !== normalizeMemoryText(change.content))
+        ) {
+          await tx.memoryItem.updateMany({
+            where: { id: relatedId, memoryScopeId: job.memoryScopeId, status: "ACTIVE" },
+            data: { status: "SUPERSEDED", validTo },
+          });
+          const dedupeKey = makeMemoryDedupeKey(change.category, change.content);
+          const keyUsed = existingDedupeKeys.has(dedupeKey) || Boolean(await tx.memoryItem.findFirst({
+            where: { memoryScopeId: job.memoryScopeId, dedupeKey },
+            select: { id: true },
+          }));
+          existingDedupeKeys.add(dedupeKey);
+          const created = await tx.memoryItem.create({
+            data: {
+              memoryScopeId: job.memoryScopeId,
+              category: change.category as MemoryCategoryValue,
+              content: change.content,
+              confidence: change.confidence,
+              status: "ACTIVE",
+              validFrom,
+              sourceMessageId: primaryEvidence.id,
+              sourceSnapshotId: snapshot.id,
+              dedupeKey: keyUsed ? null : dedupeKey,
+            },
+            select: { id: true },
+          });
+          await tx.auditLog.create({
+            data: {
+              actorType: "WORKER",
+              characterId: scope.characterId,
+              action: "memory.ai_updated",
+              entityType: "MemoryItem",
+              entityId: created.id,
+              details: {
+                supersededMemoryId: relatedId,
+                previousContent: previous.content.slice(0, 1000),
+                newContent: change.content,
+                confidence: change.confidence,
+                evidenceMessageIds: change.evidenceMessageIds,
+                snapshotId: snapshot.id,
+              },
+            },
+          });
+          appliedChanges.push({
+            action: "UPDATE",
+            result: "REPLACED",
+            memoryItemId: created.id,
+            supersededMemoryId: relatedId,
+            category: change.category,
+            content: change.content,
+            confidence: change.confidence,
+            evidenceMessageIds: change.evidenceMessageIds,
+          });
+        }
+      }
+
+      // Keep applied mutation results with the immutable snapshot used to produce them.
+      const finalStructuredContent = {
+        ...structuredContent,
+        memoryChangesApplied: appliedChanges,
+      };
+      await tx.memorySnapshot.update({
+        where: { id: snapshot.id },
+        data: { structuredContent: finalStructuredContent },
+      });
+
       await tx.memoryJob.update({
         where: { id: job.id },
         data: {
@@ -266,10 +582,14 @@ export async function processNextMemoryJob(
           lastError: null,
         },
       });
-      return { status: "SUCCEEDED" as const, snapshotId: snapshot.id, message: "已生成规则版结构化快照；尚未调用大模型。" };
+      return {
+        status: "SUCCEEDED" as const,
+        snapshotId: snapshot.id,
+        message: `AI 周期总结已生成；应用 ${appliedChanges.length} 项长期记忆变化。`,
+      };
     });
 
-    return { processed: true, jobId: claimedJobId, ...outcome };
+    return { processed: true, jobId: job.id, ...outcome };
   } catch (error) {
     const failedAt = new Date();
     const latest = await prisma.memoryJob.findUnique({
