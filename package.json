@@ -18,7 +18,7 @@
     "build": "nuxt build",
     "start": "node .output/server/index.mjs",
     "preview": "nuxt preview",
-    "lint": "eslint app nuxt.config.ts prisma.config.ts",
+    "lint": "eslint app server scripts nuxt.config.ts prisma.config.ts",
     "typecheck": "nuxt typecheck",
     "db:seed:dev": "tsx scripts/seed-dev-user.ts"
   },
