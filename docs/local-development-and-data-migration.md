@@ -2,7 +2,7 @@
 
 本文说明如何在本地开发 Yiling Hub、备份 PostgreSQL 数据，并将项目迁移到新电脑。脚本面向 Windows PowerShell；其他系统可按同样原则实现对应脚本。
 
-> 当前仓库已提供 Prisma Schema、Prisma CLI 配置、数据库容器配置与基础验证工作流。Next.js 应用、实际数据库 migration、认证和记忆 Worker 尚未实现。请不要把规划能力理解为已经实现。
+> 当前仓库已提供 Prisma Schema、Prisma CLI 配置、数据库容器配置与基础验证工作流。Nuxt 管理后台已具备 Mock 页面原型；实际数据库 migration、认证和记忆 Worker 尚未实现。请不要把规划能力理解为已经实现。
 
 ## 1. 文件职责
 
