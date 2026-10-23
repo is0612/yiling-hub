@@ -104,7 +104,7 @@ jobs:
         run: |
           npm run dev -- --host 127.0.0.1 --port 3000 > /tmp/yiling-nuxt.log 2>&1 &
           server_pid=$!
-          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          trap 'status=$?; kill "$server_pid" 2>/dev/null || true; if [ "$status" -ne 0 ]; then cat /tmp/yiling-nuxt.log; fi; exit "$status"' EXIT
           node scripts/smoke-test-local-api.mjs
 
       - name: Nuxt 生产构建
