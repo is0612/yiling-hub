@@ -25,7 +25,13 @@
    ```
 
 4. 编辑 `.env`，至少修改 `POSTGRES_PASSWORD`，并确保 `DATABASE_URL` 中的用户名、密码、主机、端口和数据库名一致。只在本地开发中使用这些示例值，不要用于公开服务。
-5. 创建备份目录并启动数据库：
+5. 安装项目工具依赖（这会在本地生成 `package-lock.json`；请把锁文件提交到 Git，以固定依赖版本）：
+
+   ```powershell
+   npm install
+   ```
+
+6. 创建备份目录并启动数据库：
 
    ```powershell
    New-Item -ItemType Directory -Force backups
@@ -33,7 +39,14 @@
    docker compose ps
    ```
 
-6. 等 Phase 0/2 添加 Prisma Schema 与迁移文件后，再使用项目文档规定的 Prisma 命令初始化数据库。不要对已有数据数据库随意运行重置命令。
+7. Phase 0 已提供 Prisma Schema 与 CLI 配置。先验证模型：
+
+   ```powershell
+   npm run db:format
+   npm run db:validate
+   ```
+
+   迁移文件仍需审查后在 Phase 2 生成；不要对已有数据数据库随意运行重置命令。
 
 ## 3. 本地数据存放位置
 
