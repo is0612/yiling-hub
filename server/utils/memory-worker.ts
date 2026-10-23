@@ -470,14 +470,15 @@ export async function processNextMemoryJob(
 
         if (!relatedId || handledMemoryIds.has(relatedId) || !eligibleModelMemoryIds.has(relatedId)) continue;
         const previous = currentItems.get(relatedId);
-        if (!previous || previous.category === undefined) continue;
-        handledMemoryIds.add(relatedId);
+        if (!previous) continue;
 
         if (change.action === "INVALIDATE") {
-          await tx.memoryItem.updateMany({
+          const invalidated = await tx.memoryItem.updateMany({
             where: { id: relatedId, memoryScopeId: job.memoryScopeId, status: "ACTIVE" },
             data: { status: "INVALIDATED", validTo: primaryEvidence.occurredAt },
           });
+          if (invalidated.count !== 1) continue;
+          handledMemoryIds.add(relatedId);
           await tx.auditLog.create({
             data: {
               actorType: "WORKER",
@@ -507,10 +508,12 @@ export async function processNextMemoryJob(
           change.action === "UPDATE" &&
           (previous.category !== change.category || normalizeMemoryText(previous.content) !== normalizeMemoryText(change.content))
         ) {
-          await tx.memoryItem.updateMany({
+          const superseded = await tx.memoryItem.updateMany({
             where: { id: relatedId, memoryScopeId: job.memoryScopeId, status: "ACTIVE" },
             data: { status: "SUPERSEDED", validTo: primaryEvidence.occurredAt },
           });
+          if (superseded.count !== 1) continue;
+          handledMemoryIds.add(relatedId);
           const dedupeKey = makeMemoryDedupeKey(change.category, change.content);
           const keyUsed = existingDedupeKeys.has(dedupeKey) || Boolean(await tx.memoryItem.findFirst({
             where: { memoryScopeId: job.memoryScopeId, dedupeKey },
