@@ -31,14 +31,18 @@ function assert(condition, message) {
 async function waitForServer() {
   let lastError = "Nuxt dev server did not become ready.";
   for (let attempt = 0; attempt < 90; attempt += 1) {
+    let response;
     try {
-      const response = await fetch(new URL("/api/characters", baseUrl));
-      if (response.status === 200) return;
-      lastError = `API returned HTTP ${response.status}: ${await response.text()}`;
-      if (response.status === 403) throw new Error(lastError);
+      response = await fetch(new URL("/api/characters", baseUrl));
     } catch (error) {
       lastError = error instanceof Error ? error.message : String(error);
+      await sleep(500);
+      continue;
     }
+
+    if (response.status === 200) return;
+    lastError = `API returned HTTP ${response.status}: ${await response.text()}`;
+    if (response.status === 403) throw new Error(`Local API guard rejected the smoke test: ${lastError}`);
     await sleep(500);
   }
   throw new Error(`Nuxt server readiness timed out: ${lastError}`);
