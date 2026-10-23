@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { DataAnalysis, ArrowDown, ArrowRight, TopRight, Cpu, Calendar, Clock, Files, MagicStick, User } from "@element-plus/icons-vue";
+import { DataAnalysis, ArrowDown, ArrowRight, TopRight, Calendar, Clock, Files, MagicStick, User } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
 import { initialCharacters, initialTasks, initialTimeline } from "~/utils/mock-data";
 
