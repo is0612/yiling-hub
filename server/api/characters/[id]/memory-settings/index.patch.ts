@@ -91,6 +91,7 @@ export default defineEventHandler(async (event) => {
     anchorAt: settings.anchorAt.toISOString().slice(0, 19),
     rawMessageRetentionDays: settings.rawMessageRetentionDays ?? 0,
     autoSnapshotEnabled: settings.autoSnapshotEnabled,
+    changePolicy: settings.changePolicy,
     nextSnapshotAt: settings.nextSnapshotAt?.toISOString() ?? null,
     updatedAt: settings.updatedAt.toISOString(),
   };
