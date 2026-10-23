@@ -483,9 +483,36 @@ paths:
         in: path
         required: true
         schema: { type: string, format: uuid }
+    get:
+      tags: [Memories]
+      operationId: getMemoryItem
+      summary: 获取长期记忆详情（本地开发）
+      description: 仅限 localhost 的开发过渡接口，且只允许读取当前本地开发用户拥有角色下的记忆。
+      security: []
+      responses:
+        '200':
+          description: 记忆详情
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, category, content, status, createdAt, updatedAt]
+                properties:
+                  id: { type: string, format: uuid }
+                  category: { type: string, enum: [FACT, PREFERENCE, RELATIONSHIP, COMMITMENT, GOAL, EVENT, SUMMARY, OTHER] }
+                  content: { type: string }
+                  status: { type: string, enum: [ACTIVE, SUPERSEDED, ARCHIVED, INVALIDATED] }
+                  confidence: { type: number, nullable: true }
+                  createdAt: { type: string, format: date-time }
+                  updatedAt: { type: string, format: date-time }
+        '403':
+          description: 该接口仅限本地开发环境
+        '404':
+          $ref: '#/components/responses/NotFound'
     patch:
       tags: [Memories]
-      summary: 更新长期记忆
+      operationId: updateMemoryItem
+      summary: 更新长期记忆（本地开发）
       requestBody:
         required: true
         content:
@@ -493,8 +520,8 @@ paths:
             schema:
               type: object
               properties:
-                content: { type: string, minLength: 1 }
-                category: { type: string }
+                content: { type: string, minLength: 1, maxLength: 12000 }
+                category: { type: string, enum: [FACT, PREFERENCE, RELATIONSHIP, COMMITMENT, GOAL, EVENT, SUMMARY, OTHER] }
                 status: { type: string, enum: [active, superseded, archived, invalidated] }
       responses:
         '200':
@@ -507,8 +534,8 @@ paths:
                   - type: object
                     properties:
                       data: { $ref: '#/components/schemas/MemoryItem' }
-        '401':
-          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: 该接口仅限本地开发环境
         '404':
           $ref: '#/components/responses/NotFound'
     delete:

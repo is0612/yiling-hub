@@ -80,6 +80,30 @@ const createdMemory = await request(`/api/characters/${created.id}/memories`, {
 });
 assert(typeof createdMemory.id === "string", "POST memories must return the persisted memory id.");
 assert(createdMemory.category === "PREFERENCE" && createdMemory.status === "ACTIVE", "Created memory should preserve its category and active status.");
+const memoryDetail = await request(`/api/memories/${createdMemory.id}`);
+assert(memoryDetail.content === memoryContent, "GET memory detail should return the full persisted content.");
+const revisedMemory = await request(`/api/memories/${createdMemory.id}`, {
+  method: "PATCH",
+  body: { category: "FACT", content: `CI 已修改记忆 ${unique}` },
+});
+assert(revisedMemory.category === "FACT" && revisedMemory.content === `CI 已修改记忆 ${unique}`, "PATCH should persist memory content and category.");
+const archivedMemory = await request(`/api/memories/${createdMemory.id}`, {
+  method: "PATCH",
+  body: { status: "archived" },
+});
+assert(archivedMemory.status === "ARCHIVED", "Memory should support the archived status.");
+const archivedTimeline = await request(`/api/characters/${created.id}/timeline`);
+assert(archivedTimeline.some((entry) => entry.id === `memory:${createdMemory.id}` && entry.tag === "已归档"), "Archived memory should remain in the timeline with its status.");
+const invalidatedMemory = await request(`/api/memories/${createdMemory.id}`, {
+  method: "PATCH",
+  body: { status: "invalidated" },
+});
+assert(invalidatedMemory.status === "INVALIDATED", "Memory should support the invalidated status.");
+const reactivatedMemory = await request(`/api/memories/${createdMemory.id}`, {
+  method: "PATCH",
+  body: { status: "active" },
+});
+assert(reactivatedMemory.status === "ACTIVE", "Archived or invalidated memory should be recoverable.");
 
 const importedConversation = await request(`/api/characters/${created.id}/conversations/import`, {
   method: "POST",

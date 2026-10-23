@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ArrowRight, Cpu, Calendar, Files, Search, Setting, MagicStick } from "@element-plus/icons-vue";
-import { ElMessage } from "element-plus";
+import { ElMessage, ElMessageBox } from "element-plus";
 import { initialCharacters, type Character, type Snapshot, type TimelineEntry, type TimelineType } from "~/utils/mock-data";
 
 type MemoryCategory = "FACT" | "PREFERENCE" | "RELATIONSHIP" | "COMMITMENT" | "GOAL" | "EVENT" | "SUMMARY" | "OTHER";
@@ -24,6 +24,12 @@ const memoryDialogOpen = ref(false);
 const memorySaving = ref(false);
 const draftMemoryCategory = ref<MemoryCategory>("FACT");
 const draftMemoryContent = ref("");
+const memoryEditDialogOpen = ref(false);
+const memoryEditLoading = ref(false);
+const memoryEditSaving = ref(false);
+const editingMemoryId = ref("");
+const draftEditMemoryCategory = ref<MemoryCategory>("FACT");
+const draftEditMemoryContent = ref("");
 const conversationDialogOpen = ref(false);
 const conversationSaving = ref(false);
 const draftConversationTitle = ref("");
@@ -150,6 +156,89 @@ async function saveMemory() {
     ElMessage.error(message);
   } finally {
     memorySaving.value = false;
+  }
+}
+
+async function openMemoryEditor(entry: TimelineEntry) {
+  const memoryId = entry.id.startsWith("memory:") ? entry.id.slice("memory:".length) : "";
+  if (!memoryId) return;
+
+  editingMemoryId.value = memoryId;
+  memoryEditDialogOpen.value = true;
+  memoryEditLoading.value = true;
+  try {
+    const memory = await $fetch<{ id: string; category: MemoryCategory; content: string }>(
+      `/api/memories/${encodeURIComponent(memoryId)}`,
+    );
+    draftEditMemoryCategory.value = memory.category;
+    draftEditMemoryContent.value = memory.content;
+  } catch (error) {
+    memoryEditDialogOpen.value = false;
+    const message = error && typeof error === "object" && "statusMessage" in error
+      ? String(error.statusMessage)
+      : error instanceof Error ? error.message : "读取长期记忆失败。";
+    ElMessage.error(message);
+  } finally {
+    memoryEditLoading.value = false;
+  }
+}
+
+async function saveEditedMemory() {
+  if (memoryEditSaving.value || !editingMemoryId.value) return;
+  if (!draftEditMemoryContent.value.trim()) {
+    ElMessage.warning("记忆内容不能为空。");
+    return;
+  }
+
+  memoryEditSaving.value = true;
+  try {
+    await $fetch(`/api/memories/${encodeURIComponent(editingMemoryId.value)}`, {
+      method: "PATCH",
+      body: {
+        category: draftEditMemoryCategory.value,
+        content: draftEditMemoryContent.value.trim(),
+      },
+    });
+    memoryEditDialogOpen.value = false;
+    await loadCharacter();
+    ElMessage.success("长期记忆已更新。已有快照会保留生成时的历史内容。");
+  } catch (error) {
+    const message = error && typeof error === "object" && "statusMessage" in error
+      ? String(error.statusMessage)
+      : error instanceof Error ? error.message : "更新长期记忆失败。";
+    ElMessage.error(message);
+  } finally {
+    memoryEditSaving.value = false;
+  }
+}
+
+async function setMemoryStatus(entry: TimelineEntry, status: "active" | "archived" | "invalidated") {
+  const memoryId = entry.id.startsWith("memory:") ? entry.id.slice("memory:".length) : "";
+  if (!memoryId) return;
+
+  const actionLabel = status === "archived" ? "归档" : status === "invalidated" ? "标记失效" : "恢复为有效";
+  try {
+    await ElMessageBox.confirm(
+      `确定将这条记忆“${actionLabel}”吗？此操作会保留历史记录，不会删除已有快照。`,
+      "维护长期记忆",
+      { confirmButtonText: "确认", cancelButtonText: "取消", type: "warning" },
+    );
+  } catch {
+    return;
+  }
+
+  try {
+    await $fetch(`/api/memories/${encodeURIComponent(memoryId)}`, {
+      method: "PATCH",
+      body: { status },
+    });
+    await loadCharacter();
+    ElMessage.success(`记忆已${actionLabel}。`);
+  } catch (error) {
+    const message = error && typeof error === "object" && "statusMessage" in error
+      ? String(error.statusMessage)
+      : error instanceof Error ? error.message : "更新记忆状态失败。";
+    ElMessage.error(message);
   }
 }
 
@@ -284,6 +373,14 @@ watch(id, () => void loadCharacter());
                 <div class="timeline-heading"><span class="timeline-title">{{ entry.title }}</span><span class="muted-note">{{ entry.time }}</span></div>
                 <p class="timeline-summary">{{ entry.summary }}</p>
                 <div class="timeline-meta"><span class="pill" :class="toneFor(entry.tagTone)">{{ entry.tag }}</span><span>{{ entry.channel }}</span><span>{{ entry.source }}</span></div>
+                <div v-if="entry.type === 'memory'" class="memory-actions">
+                  <el-button link type="primary" size="small" @click="openMemoryEditor(entry)">编辑</el-button>
+                  <template v-if="entry.tag === '长期记忆'">
+                    <el-button link size="small" @click="setMemoryStatus(entry, 'archived')">归档</el-button>
+                    <el-button link type="danger" size="small" @click="setMemoryStatus(entry, 'invalidated')">标记失效</el-button>
+                  </template>
+                  <el-button v-else link type="success" size="small" @click="setMemoryStatus(entry, 'active')">恢复有效</el-button>
+                </div>
               </div>
             </article>
             <div v-if="!filteredEntries.length" class="empty-state">{{ timelineEntries.length ? "没有匹配的时间线记录，试试修改筛选条件。" : "暂无已保存的时间线记录。接入聊天消息或保存长期记忆后，这里会显示对应记录；生成的快照也会显示在这里。" }}</div>
@@ -326,6 +423,25 @@ watch(id, () => void loadCharacter());
       </template>
     </el-dialog>
 
+    <el-dialog v-model="memoryEditDialogOpen" title="编辑长期记忆" width="min(560px, 94vw)" :close-on-click-modal="!memoryEditSaving">
+      <div v-if="memoryEditLoading" class="empty-state">正在加载记忆详情……</div>
+      <el-form v-else label-position="top">
+        <el-form-item label="记忆分类">
+          <el-select v-model="draftEditMemoryCategory" style="width:100%">
+            <el-option v-for="option in memoryCategoryOptions" :key="option.value" :label="option.label" :value="option.value" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="记忆内容">
+          <el-input v-model="draftEditMemoryContent" type="textarea" :rows="5" maxlength="12000" show-word-limit />
+        </el-form-item>
+        <div class="info-callout"><span>修改只更新当前长期记忆。已经生成的快照会保留生成时的历史副本。</span></div>
+      </el-form>
+      <template #footer>
+        <el-button @click="memoryEditDialogOpen = false">取消</el-button>
+        <el-button type="primary" :loading="memoryEditSaving" :disabled="memoryEditLoading" @click="saveEditedMemory">保存修改</el-button>
+      </template>
+    </el-dialog>
+
     <el-dialog v-model="conversationDialogOpen" title="录入对话记录" width="min(640px, 94vw)">
       <el-form label-position="top">
         <el-form-item label="会话标题（可选）">
@@ -358,7 +474,7 @@ watch(id, () => void loadCharacter());
 .profile-description{margin:16px 0;color:#728098;font-size:11px;line-height:1.8}
 .timeline-filters{display:flex;gap:9px;margin-top:17px}
 .memory-tabs{margin-top:9px}.timeline-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:9px}
-.timeline-marker.pill-green{background:#e8f8f1}.timeline-marker.pill-purple{background:#f0eeff}.timeline-marker.pill-blue{background:#eef5ff}.timeline-marker.pill-amber{background:#fff5e4}.timeline-marker.pill-gray{background:#f1f3f8}
+.memory-actions{display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-top:7px}\n.timeline-marker.pill-green{background:#e8f8f1}.timeline-marker.pill-purple{background:#f0eeff}.timeline-marker.pill-blue{background:#eef5ff}.timeline-marker.pill-amber{background:#fff5e4}.timeline-marker.pill-gray{background:#f1f3f8}
 .memory-score{display:flex;align-items:center;gap:13px;margin-top:22px}.memory-score-ring{display:flex;width:65px;height:65px;flex:0 0 auto;align-items:center;justify-content:center;border:6px solid #e4e0ff;border-right-color:#8678ed;border-top-color:#8678ed;border-radius:50%;color:#7062df;font-size:16px;font-weight:850}
 .memory-score strong{color:#47526d;font-size:12px}.memory-score p{margin-top:6px;color:#969fb2;font-size:10px}
 .recent-snapshot{margin-top:12px;padding:12px;border:1px solid #eceef5;border-radius:12px}.recent-snapshot-top{display:flex;justify-content:space-between;color:#58637d;font-size:11px;font-weight:800}.recent-snapshot p{margin:8px 0;color:#7d889f;font-size:10px;line-height:1.8}
