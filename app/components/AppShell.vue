@@ -1,15 +1,15 @@
 <script setup lang="ts">
 import {
-  Activity,
+  DataAnalysis,
   Bell,
-  Brain,
+  Cpu,
   Calendar,
   ChatDotRound,
   DataBoard,
   Files,
   Search,
   Setting,
-  Sparkles,
+  MagicStick,
   User,
 } from "@element-plus/icons-vue";
 
@@ -17,10 +17,10 @@ const route = useRoute();
 const navigation = [
   { label: "总览", href: "/", icon: DataBoard, section: "工作空间" },
   { label: "角色管理", href: "/characters", icon: User },
-  { label: "记忆驾驶舱", href: "/characters/big-fish", icon: Brain },
+  { label: "记忆驾驶舱", href: "/characters/big-fish", icon: Cpu },
   { label: "周期快照", href: "/characters/big-fish/snapshots", icon: Calendar },
   { label: "渠道管理", href: "/channels", icon: ChatDotRound, section: "系统管理" },
-  { label: "任务监控", href: "/tasks", icon: Activity, count: "2" },
+  { label: "任务监控", href: "/tasks", icon: DataAnalysis, count: "2" },
   { label: "系统设置", href: "/settings", icon: Setting },
 ];
 
@@ -46,7 +46,7 @@ function isActive(href: string) {
           </div>
         </NuxtLink>
         <div class="workspace-pill">
-          <div class="workspace-glyph"><el-icon><Sparkles /></el-icon></div>
+          <div class="workspace-glyph"><el-icon><MagicStick /></el-icon></div>
           <div class="workspace-copy">
             <div class="workspace-name">个人工作空间</div>
             <div class="workspace-note">本地演示环境</div>
