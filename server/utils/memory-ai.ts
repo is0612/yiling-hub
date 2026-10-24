@@ -268,6 +268,7 @@ export async function analyzeMemoryPeriod(input: MemoryAiInput): Promise<{
     : 60_000;
   const response = await fetch(endpoint, {
     method: "POST",
+    redirect: "error",
     headers: {
       authorization: "Bearer " + apiKey,
       "content-type": "application/json",
