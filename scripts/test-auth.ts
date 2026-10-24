@@ -20,7 +20,7 @@ import {
 } from "../server/utils/auth";
 import { checkSameOrigin } from "../server/utils/local-api";
 
-const user = { id: "11111111-1111-4111-8111-111111111111", username: "admin", displayName: "管理员" };
+const user = { id: "11111111-1111-4111-8111-111111111111", username: "admin", displayName: "管理员", role: "ADMIN" as const };
 
 // 1. Password hashing round-trips and rejects wrong input.
 const stored = await hashPassword("correct horse battery staple");

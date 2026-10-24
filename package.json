@@ -19,7 +19,7 @@
     "start": "node .output/server/index.mjs",
     "preview": "nuxt preview",
     "lint": "eslint app server scripts nuxt.config.ts prisma.config.ts",
-    "typecheck": "nuxt typecheck",
+    "typecheck": "nuxt typecheck && tsc -p tsconfig.server.json --noEmit",
     "db:seed:dev": "tsx scripts/seed-dev-user.ts",
     "scheduler:run": "tsx scripts/run-memory-scheduler.ts",
     "scheduler:watch": "tsx scripts/run-memory-scheduler.ts --watch",

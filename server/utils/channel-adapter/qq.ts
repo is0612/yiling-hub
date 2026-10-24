@@ -107,17 +107,19 @@ export async function sendQqMessage(
 // ---------------------------------------------------------------------------
 
 export type QqGatewayHandlers = {
-  onMessageEvent: (eventType: QqMessageEventType, data: unknown) => void | Promise<void>;
+  onMessageEvent: (eventType: QqMessageEventType, data: unknown) => void | Promise<unknown>;
   onStatus?: (status: "connecting" | "ready" | "disconnected" | "error", detail?: string) => void;
   onClose?: () => void;
 };
 
 const QQ_GATEWAY_INTENTS = (1 << 0) | (1 << 25); // GROUP_AT_MESSAGE_CREATE | C2C_MESSAGE_CREATE
 
-function safeJson(value: unknown): { op?: number; d?: unknown; t?: string } | null {
+type QqGatewayFrame = { op?: number; d?: unknown; t?: string; s?: number };
+
+function safeJson(value: unknown): QqGatewayFrame | null {
   if (typeof value !== "string") return null;
   try {
-    const parsed = JSON.parse(value) as { op?: number; d?: unknown; t?: string };
+    const parsed = JSON.parse(value) as QqGatewayFrame;
     return parsed && typeof parsed.op === "number" ? parsed : null;
   } catch {
     return null;
