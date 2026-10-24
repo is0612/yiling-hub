@@ -1219,7 +1219,7 @@ paths:
                 properties:
                   processed: { type: boolean }
                   jobId: { type: string, format: uuid }
-                  status: { type: string, enum: [SUCCEEDED, SKIPPED, RETRY_WAIT, FAILED] }
+                  status: { type: string, enum: [SUCCEEDED, SKIPPED, RETRY_WAIT, FAILED, CANCELLED] }
                   snapshotId: { type: string, format: uuid }
                   message: { type: string }
         '403':
@@ -1251,9 +1251,9 @@ paths:
   /tasks/{taskId}/retry:
     post:
       tags: [Tasks]
-      operationId: requeueSnapshotTask
+      operationId: requeueMemoryTask
       summary: 手动重新排队快照任务（本地开发）
-      description: 仅支持 GENERATE_SNAPSHOT / REGENERATE_SNAPSHOT 类型，且任务当前状态为 FAILED、RETRY_WAIT 或 CANCELLED。会将尝试计数重置为 0，并写入审计日志。
+      description: 支持 GENERATE_SNAPSHOT / REGENERATE_SNAPSHOT；CLEAN_EXPIRED_MESSAGES 仅在当前角色已明确授权且保留期限为有限天数时可重新入队。任务状态需为 FAILED、RETRY_WAIT 或 CANCELLED。会将尝试计数重置为 0，并写入审计日志。
       security: []
       parameters:
         - name: taskId
@@ -1603,7 +1603,7 @@ components:
         createdAt: { type: string, format: date-time }
     MemorySettings:
       type: object
-      required: [snapshotIntervalDays, timezone, anchorAt, rawMessageRetentionDays, autoSnapshotEnabled, changePolicy, nextSnapshotAt, updatedAt]
+      required: [snapshotIntervalDays, timezone, anchorAt, rawMessageRetentionDays, rawMessageCleanupEnabled, autoSnapshotEnabled, changePolicy, nextSnapshotAt, updatedAt]
       properties:
         snapshotIntervalDays: { type: integer, minimum: 1, maximum: 365, default: 8 }
         timezone: { type: string, example: Asia/Shanghai }
@@ -1612,14 +1612,15 @@ components:
           type: integer
           enum: [0, 30, 90, 180]
           default: 0
-          description: 0 表示永久保留；有限保留期会允许系统自动清理过期原始消息。
+          description: 0 表示永久保留；有限保留期仅配置保留期限，不代表用户已授权删除。
+        rawMessageCleanupEnabled: { type: boolean, default: false, description: 用户明确授权后才会排入原始消息清理任务。 }
         autoSnapshotEnabled: { type: boolean, default: false }
         changePolicy: { type: string, enum: [NEXT_CYCLE, IMMEDIATE_RECALC], default: NEXT_CYCLE }
         nextSnapshotAt: { type: string, format: date-time, nullable: true, readOnly: true }
         updatedAt: { type: string, format: date-time, readOnly: true }
     MemorySettingsInput:
       type: object
-      required: [snapshotIntervalDays, timezone, anchorAt, rawMessageRetentionDays, autoSnapshotEnabled, changePolicy]
+      required: [snapshotIntervalDays, timezone, anchorAt, rawMessageRetentionDays, rawMessageCleanupEnabled, autoSnapshotEnabled, changePolicy]
       properties:
         snapshotIntervalDays: { type: integer, minimum: 1, maximum: 365 }
         timezone: { type: string, example: Asia/Shanghai }
@@ -1628,6 +1629,7 @@ components:
           type: integer
           enum: [0, 30, 90, 180]
           description: 0 表示永久保留；允许的有限期限为 30、90 或 180 天。
+        rawMessageCleanupEnabled: { type: boolean, description: 必须由用户明确确认授权；仅填写有限保留天数不会启用自动删除。 }
         autoSnapshotEnabled: { type: boolean }
         changePolicy: { type: string, enum: [NEXT_CYCLE, IMMEDIATE_RECALC] }
     MemoryJob:
