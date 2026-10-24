@@ -41,12 +41,34 @@ export default defineEventHandler(async (event) => {
         completedAt: true,
         createdAt: true,
         updatedAt: true,
-        memoryScope: { select: { character: { select: { id: true, name: true } } } },
+        memoryScope: { select: { id: true, character: { select: { id: true, name: true } } } },
       },
     }),
     prisma.memoryJob.count({ where }),
     prisma.memoryJob.groupBy({ by: ["status"], where: { memoryScope: { is: { character: { is: { ownerId } } } } }, _count: { _all: true } }),
   ]);
+
+  const cleanupAudits = await Promise.all(jobs.filter((job) => job.type === "CLEAN_EXPIRED_MESSAGES").map(async (job) => {
+    const audit = await prisma.auditLog.findFirst({
+      where: {
+        action: "message.retention_cleanup",
+        entityType: "MemoryScope",
+        entityId: job.memoryScope.id,
+        details: { path: ["jobId"], equals: job.id },
+      },
+      orderBy: { createdAt: "desc" },
+      select: { details: true, createdAt: true },
+    });
+    const details = audit?.details && typeof audit.details === "object" && !Array.isArray(audit.details)
+      ? audit.details as Record<string, unknown>
+      : null;
+    return [job.id, audit ? {
+      deletedMessageCount: typeof details?.deletedMessages === "number" ? details.deletedMessages : null,
+      cutoff: typeof details?.cutoff === "string" ? details.cutoff : null,
+      recordedAt: audit.createdAt.toISOString(),
+    } : null] as const;
+  }));
+  const cleanupResultByJobId = new Map(cleanupAudits);
 
   return {
     items: jobs.map((job) => ({
@@ -65,6 +87,7 @@ export default defineEventHandler(async (event) => {
       updatedAt: job.updatedAt.toISOString(),
       characterId: job.memoryScope.character.id,
       characterName: job.memoryScope.character.name,
+      cleanupResult: cleanupResultByJobId.get(job.id) ?? null,
     })),
     total,
     statusCounts: {

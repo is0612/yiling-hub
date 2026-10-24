@@ -18,6 +18,7 @@ type MemoryTask = {
   updatedAt: string;
   characterId: string;
   characterName: string;
+  cleanupResult: { deletedMessageCount: number | null; cutoff: string | null; recordedAt: string } | null;
 };
 type TaskListResponse = {
   items: MemoryTask[];
@@ -291,6 +292,15 @@ onMounted(() => void loadTasks());
         <el-table-column label="状态" width="125">
           <template #default="{ row }"><el-tag :type="tone(row.status)" effect="light" round>{{ statusText(row.status) }}</el-tag></template>
         </el-table-column>
+        <el-table-column label="执行结果" min-width="135">
+          <template #default="{ row }">
+            <span v-if="row.type === 'CLEAN_EXPIRED_MESSAGES' && row.cleanupResult">
+              已删除 {{ row.cleanupResult.deletedMessageCount ?? '未知' }} 条
+            </span>
+            <span v-else-if="row.type === 'CLEAN_EXPIRED_MESSAGES' && row.status === 'SUCCEEDED'">审计记录暂不可用</span>
+            <span v-else>—</span>
+          </template>
+        </el-table-column>
         <el-table-column label="尝试次数" width="105" align="center">
           <template #default="{ row }">{{ row.attemptCount }} / {{ row.maxAttempts }}</template>
         </el-table-column>
@@ -319,6 +329,11 @@ onMounted(() => void loadTasks());
         <div class="detail-row"><span>尝试次数</span><strong>{{ selectedTask.attemptCount }} / {{ selectedTask.maxAttempts }}</strong></div>
         <div class="detail-row"><span>计划执行时间</span><strong>{{ formatDate(selectedTask.runAt) }}</strong></div>
         <div class="detail-row"><span>开始时间</span><strong>{{ formatDate(selectedTask.startedAt) }}</strong></div>\n        <div class="detail-row"><span>完成时间</span><strong>{{ formatDate(selectedTask.completedAt) }}</strong></div>\n        <div class="detail-row"><span>创建时间</span><strong>{{ formatDate(selectedTask.createdAt) }}</strong></div>
+        <template v-if="selectedTask.type === 'CLEAN_EXPIRED_MESSAGES'">
+          <div class="detail-row"><span>清理结果</span><strong>{{ selectedTask.cleanupResult ? `已删除 ${selectedTask.cleanupResult.deletedMessageCount ?? "未知"} 条原始消息` : selectedTask.status === 'SUCCEEDED' ? "未找到对应审计记录" : "尚无成功清理记录" }}</strong></div>
+          <div v-if="selectedTask.cleanupResult?.cutoff" class="detail-row"><span>清理截止时间</span><strong>{{ formatDate(selectedTask.cleanupResult.cutoff) }} 之前</strong></div>
+          <div v-if="selectedTask.cleanupResult" class="detail-row"><span>审计记录时间</span><strong>{{ formatDate(selectedTask.cleanupResult.recordedAt) }}</strong></div>
+        </template>
         <div v-if="selectedTask.lastError" class="task-error"><strong>最近错误</strong><p>{{ selectedTask.lastError }}</p></div>
         <div v-else class="info-callout" style="margin-top:14px"><el-icon><Files /></el-icon><span>当前为持久化排队记录；还没有 Worker 执行日志。</span></div>
       </template>
