@@ -116,6 +116,9 @@ jobs:
       - name: 私人记忆范围数据库隔离测试
         run: yarn run test:chat-private-memory-db
 
+      - name: 聊天请求幂等性数据库集成测试
+        run: yarn run test:chat-request-idempotency-db
+
       - name: 管理员登录与会话鉴权单元测试
         run: yarn run test:auth
 
