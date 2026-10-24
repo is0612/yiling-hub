@@ -2,7 +2,7 @@
 
 本文说明如何在本地开发 Yiling Hub、备份 PostgreSQL 数据，并将项目迁移到新电脑。脚本面向 Windows PowerShell；其他系统可按同样原则实现对应脚本。
 
-> 当前仓库已提供 Prisma Schema、Prisma CLI 配置、数据库容器配置与基础验证工作流。Nuxt 管理后台已具备 Mock 页面原型；实际数据库 migration、认证和记忆 Worker 尚未实现。请不要把规划能力理解为已经实现。
+> 当前实现状态：Nuxt 管理后台已经接入 PostgreSQL，角色 CRUD、记忆设置、会话录入/对话、快照版本、AI 记忆提炼、长期记忆、持久化任务队列、Scheduler/Worker、原始消息保留清理与审计均已有实现和自动化验收。真实外部聊天渠道适配器、正式用户登录/会话认证、生产部署安全与 Windows 备份/恢复的真实数据演练仍待完成。
 
 ## 1. 文件职责
 
@@ -24,11 +24,11 @@
    Copy-Item .env.example .env
    ```
 
-4. 编辑 `.env`，至少修改 `POSTGRES_PASSWORD`，并确保 `DATABASE_URL` 中的用户名、密码、主机、端口和数据库名一致。只在本地开发中使用这些示例值，不要用于公开服务。
-5. 安装项目工具依赖（这会在本地生成 `package-lock.json`；请把锁文件提交到 Git，以固定依赖版本）：
+4. 编辑 `.env`，至少修改 `POSTGRES_PASSWORD` 与 `DEV_OWNER_PASSWORD`（至少 12 位），并确保 `DATABASE_URL` 中的用户名、密码、主机、端口和数据库名与上方设置一致。保持 `YILING_LOCAL_API_ENABLED=true` 仅用于本机开发；这些示例值不能用于公开服务。
+5. 使用仓库锁文件安装依赖（项目统一使用 Yarn Classic 1.22.22，不要额外生成 `package-lock.json`）：
 
    ```powershell
-   npm install
+   yarn install --frozen-lockfile
    ```
 
 6. 创建备份目录并启动数据库：
@@ -39,14 +39,16 @@
    docker compose ps
    ```
 
-7. Phase 0 已提供 Prisma Schema 与 CLI 配置。先验证模型：
+7. 仓库已经包含 Prisma Schema 与初始迁移。首次使用时先校验并应用迁移、生成 Prisma Client，再创建本地开发用户：
 
    ```powershell
-   npm run db:format
-   npm run db:validate
+   yarn db:validate
+   yarn db:migrate:deploy
+   yarn db:generate
+   yarn db:seed:dev
    ```
 
-   迁移文件仍需审查后在 Phase 2 生成；不要对已有数据数据库随意运行重置命令。
+   初始迁移面向全新、空的本地开发数据库。若数据库中已有重要数据或手动创建的表，先停止并备份；不要对已有数据数据库运行重置命令。
 
 ## 3. 本地数据存放位置
 
@@ -107,7 +109,7 @@ PostgreSQL 的运行数据存放在 Docker named volume `yiling_postgres_data`�
 4. 创建 `backups/`，将备份文件复制到该目录。
 5. 运行 `docker compose up -d db`。
 6. 使用恢复脚本恢复数据库。
-7. 安装项目依赖，并按当前 README 及迁移文档执行 Prisma 生成/迁移命令。
+7. 安装项目依赖（`yarn install --frozen-lockfile`），确认 `.data/credentials-encryption.key` 已安全恢复，然后执行 `yarn db:generate` 并按当前 README 检查迁移状态。
 8. 在本地启动应用，检查角色、消息、快照、版本和周期设置。
 9. 测试无误后，再继续开发。
 
