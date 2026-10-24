@@ -464,8 +464,46 @@ assert(retentionCleanupTask && typeof retentionCleanupTask.id === "string", "Sch
 
 const cancelledCleanupTask = await request(`/api/tasks/${retentionCleanupTask.id}/cancel`, { method: "POST" });
 assert(cancelledCleanupTask.status === "CANCELLED", "Queued cleanup tasks should support safe manual cancellation.");
+
+const disableCleanupAuthorization = await request(
+  `/api/characters/${retentionCharacter.id}/memory-settings`,
+  {
+    method: "PATCH",
+    body: {
+      snapshotIntervalDays: 8,
+      timezone: "America/Los_Angeles",
+      anchorAt: retentionSettings.anchorAt,
+      rawMessageRetentionDays: 30,
+      rawMessageCleanupEnabled: false,
+      autoSnapshotEnabled: false,
+      changePolicy: "NEXT_CYCLE",
+    },
+  }
+);
+assert(disableCleanupAuthorization.rawMessageCleanupEnabled === false, "Cleanup authorization should be revocable.");
+const rejectedCleanupRetry = await fetch(
+  new URL(`/api/tasks/${retentionCleanupTask.id}/retry`, baseUrl),
+  { method: "POST" }
+);
+assert(rejectedCleanupRetry.status === 409, "Manual cleanup retry must be rejected while authorization is disabled.");
+await rejectedCleanupRetry.text();
+const taskAfterRejectedRetry = (await request("/api/tasks?limit=100")).items.find((task) => task.id === retentionCleanupTask.id);
+assert(taskAfterRejectedRetry?.status === "CANCELLED", "Rejected cleanup retry must leave the task cancelled.");
+
+await request(`/api/characters/${retentionCharacter.id}/memory-settings`, {
+  method: "PATCH",
+  body: {
+    snapshotIntervalDays: 8,
+    timezone: "America/Los_Angeles",
+    anchorAt: retentionSettings.anchorAt,
+    rawMessageRetentionDays: 30,
+    rawMessageCleanupEnabled: true,
+    autoSnapshotEnabled: false,
+    changePolicy: "NEXT_CYCLE",
+  },
+});
 const retriedCleanupTask = await request(`/api/tasks/${retentionCleanupTask.id}/retry`, { method: "POST" });
-assert(retriedCleanupTask.status === "QUEUED", "Cancelled cleanup tasks should be manually re-queued.");
+assert(retriedCleanupTask.status === "QUEUED", "Cleanup tasks can be re-queued again after authorization is explicitly restored.");
 
 let retentionCleanupResult = null;
 for (let attempt = 0; attempt < 10; attempt += 1) {
