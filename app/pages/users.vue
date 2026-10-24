@@ -53,6 +53,27 @@ async function loadUsers() {
   }
 }
 
+type AuditItem = { id: string; action: string; createdAt: string; actor: string | null; details: unknown };
+const auditItems = ref<AuditItem[]>([]);
+const actionLabels: Record<string, string> = {
+  "auth.login": "登录",
+  "auth.login_failed": "登录失败",
+  "auth.logout": "退出登录",
+  "auth.register": "注册账号",
+  "auth.password_changed": "修改密码",
+  "auth.session_revoked": "撤销会话",
+  "auth.sessions_revoked": "退出其他设备",
+};
+
+async function loadAudit() {
+  try {
+    const response = await $fetch<{ items: AuditItem[] }>("/api/admin/audit?limit=30");
+    auditItems.value = response.items;
+  } catch {
+    // 审计读取失败不影响用户管理主功能。
+  }
+}
+
 async function toggleStatus(user: AdminUser) {
   const next = user.status === "ACTIVE" ? "DISABLED" : "ACTIVE";
   const confirmed = await ElMessageBox.confirm(
@@ -105,7 +126,10 @@ async function submitReset() {
   }
 }
 
-onMounted(loadUsers);
+onMounted(() => {
+  loadUsers();
+  loadAudit();
+});
 </script>
 
 <template>
@@ -245,6 +269,39 @@ onMounted(loadUsers);
       </div>
     </section>
 
+    <section
+      class="surface"
+      style="margin-top:16px"
+    >
+      <div class="audit-title">
+        最近登录活动
+      </div>
+      <div
+        v-if="!auditItems.length"
+        class="audit-empty"
+      >
+        暂无记录。
+      </div>
+      <div
+        v-for="item in auditItems"
+        :key="item.id"
+        class="audit-row"
+      >
+        <span
+          class="audit-action"
+          :class="{ 'is-fail': item.action === 'auth.login_failed' }"
+        >
+          {{ actionLabels[item.action] || item.action }}
+        </span>
+        <span class="audit-actor">
+          {{ item.actor || "—" }}
+        </span>
+        <span class="audit-time">
+          {{ formatDateTime(item.createdAt) }}
+        </span>
+      </div>
+    </section>
+
     <el-dialog
       v-model="dialogVisible"
       title="重置密码"
@@ -282,4 +339,12 @@ onMounted(loadUsers);
 .user-name { color: #48536d; font-size: 13px; font-weight: 700; }
 .user-sub { margin-top: 2px; color: #9aa4b7; font-size: 11px; }
 .reset-hint { margin: 0 0 12px; color: #8c97ac; font-size: 12px; line-height: 1.6; }
+.audit-title { color: #48536d; font-size: 12px; font-weight: 800; margin-bottom: 8px; }
+.audit-empty { padding: 16px 0; color: #b4bbc8; font-size: 11px; }
+.audit-row { display: flex; align-items: center; gap: 14px; border-bottom: 1px solid #f0f2f7; padding: 9px 0; font-size: 12px; }
+.audit-row:last-child { border-bottom: 0; }
+.audit-action { color: #5f6a83; font-weight: 700; }
+.audit-action.is-fail { color: #c45e76; }
+.audit-actor { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #7d879c; }
+.audit-time { color: #a3aabb; font-size: 11px; }
 </style>

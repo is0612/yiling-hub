@@ -428,6 +428,44 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           description: 仅管理员可访问
+  /admin/audit:
+    get:
+      tags: [Auth]
+      summary: 最近审计活动（仅管理员）
+      description: 默认返回鉴权相关审计（登录、登出、注册、改密、撤销会话）；可用 action 精确筛选。
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+        - name: action
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: 审计事件列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, action, createdAt, actor]
+                      properties:
+                        id: { type: string, format: uuid }
+                        action: { type: string }
+                        entityType: { type: string, nullable: true }
+                        entityId: { type: string, nullable: true }
+                        details: { type: object, nullable: true }
+                        createdAt: { type: string, format: date-time }
+                        actor: { type: string, nullable: true }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: 仅管理员可访问
   /characters:
     get:
       tags: [Characters]

@@ -37,6 +37,18 @@ export default defineEventHandler(async (event) => {
   await recordLoginAttempt({ username, ip, succeeded: authenticated });
 
   if (!authenticated || !account) {
+    await prisma.auditLog
+      .create({
+        data: {
+          actorType: "USER",
+          actorId: account?.id ?? null,
+          action: "auth.login_failed",
+          entityType: "User",
+          entityId: account?.id ?? null,
+          details: { username },
+        },
+      })
+      .catch(() => undefined);
     throw createError({ statusCode: 401, statusMessage: "用户名或密码不正确。" });
   }
 
@@ -47,6 +59,18 @@ export default defineEventHandler(async (event) => {
   });
   setHeader(event, "set-cookie", buildSessionCookie(session.token, sessionTtlMs()));
   await revokeExpiredSessions().catch(() => undefined);
+  await prisma.auditLog
+    .create({
+      data: {
+        actorType: "USER",
+        actorId: account.id,
+        action: "auth.login",
+        entityType: "User",
+        entityId: account.id,
+        details: { username: account.username },
+      },
+    })
+    .catch(() => undefined);
 
   return {
     user: { id: account.id, username: account.username, displayName: account.displayName, role: account.role },

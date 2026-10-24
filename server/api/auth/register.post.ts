@@ -83,5 +83,18 @@ export default defineEventHandler(async (event) => {
   const session = await createSession({ userId: user.id, ip, userAgent: getHeader(event, "user-agent") ?? undefined });
   setHeader(event, "set-cookie", buildSessionCookie(session.token, sessionTtlMs()));
 
+  await prisma.auditLog
+    .create({
+      data: {
+        actorType: "USER",
+        actorId: user.id,
+        action: "auth.register",
+        entityType: "User",
+        entityId: user.id,
+        details: { email },
+      },
+    })
+    .catch(() => undefined);
+
   return { user, expiresAt: session.expiresAt.toISOString() };
 });

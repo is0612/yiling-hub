@@ -254,6 +254,17 @@ try {
   assert(forbiddenPatch.status === 403, "A normal user must not modify accounts.");
   await forbiddenPatch.arrayBuffer();
 
+  // Audit log: login and registration are recorded, and only administrators can read them.
+  const auditResponse = await fetch(new URL("/api/admin/audit?limit=50", baseUrl), { headers: { cookie: adminCookie } });
+  assert(auditResponse.status === 200, "The administrator must be able to read the audit log.");
+  const auditPayload = await auditResponse.json();
+  assert(Array.isArray(auditPayload.items) && auditPayload.items.length > 0, "The audit log must contain recent auth events.");
+  assert(auditPayload.items.some((item) => item.action === "auth.login"), "A login must be recorded as auth.login.");
+  assert(auditPayload.items.some((item) => item.action === "auth.register"), "A registration must be recorded as auth.register.");
+  const forbiddenAudit = await fetch(new URL("/api/admin/audit", baseUrl), { headers: { cookie: userCookie } });
+  assert(forbiddenAudit.status === 403, "A normal user must not read the audit log.");
+  await forbiddenAudit.arrayBuffer();
+
   // The administrator can list accounts and see only identity and statistics.
   const adminList = await (await fetch(new URL("/api/admin/users", baseUrl), { headers: { cookie: adminCookie } })).json();
   const listedUser = adminList.users.find((entry) => entry.id === registeredUserId);
@@ -1104,6 +1115,6 @@ assert(
   "Permanent retention must not enqueue raw-message cleanup work."
 );
 
-console.log("Local API smoke test passed: character CRUD, encrypted per-character API settings and connection test, memory settings including deferred changes, pending-change cancellation and immediate recalculation, transcript import, scheduler backfill, local-mock AI extraction, source-ID validation, persisted provenance, manual and AI snapshot versions, safe AI regeneration, task cancel/requeue, recycle-bin lifecycle, context-aware AI chat with private-scope isolation, conversation search/rename, archive/restore, archived write protection, end-to-end raw-message retention cleanup with audit-result visibility, cleanup-task cancel/retry, retention-widening protection, permanent-retention safety, login/logout with throttling, device listing, cross-site revocation refusal, sign-out-others, password policy plus rotation with session invalidation, and open email registration with role isolation and admin-only account management.");
+console.log("Local API smoke test passed: character CRUD, encrypted per-character API settings and connection test, memory settings including deferred changes, pending-change cancellation and immediate recalculation, transcript import, scheduler backfill, local-mock AI extraction, source-ID validation, persisted provenance, manual and AI snapshot versions, safe AI regeneration, task cancel/requeue, recycle-bin lifecycle, context-aware AI chat with private-scope isolation, conversation search/rename, archive/restore, archived write protection, end-to-end raw-message retention cleanup with audit-result visibility, cleanup-task cancel/retry, retention-widening protection, permanent-retention safety, login/logout with throttling, login-logout audit trail, device listing, cross-site revocation refusal, sign-out-others, password policy plus rotation with session invalidation, and open email registration with role isolation and admin-only account management.");
 
 await prisma.$disconnect();
