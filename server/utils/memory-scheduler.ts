@@ -85,12 +85,11 @@ export async function enqueueDueMemorySnapshots(
       anchorAt: true,
       nextSnapshotAt: true,
       autoSnapshotEnabled: true,
+      rawMessageRetentionDays: true,
       character: {
         select: {
           memoryScopes: {
-            where: { scopeType: "CHARACTER_GLOBAL" },
-            select: { id: true },
-            take: 1,
+            select: { id: true, scopeType: true },
           },
         },
       },
