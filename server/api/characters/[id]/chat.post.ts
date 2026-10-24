@@ -68,7 +68,7 @@ export default defineEventHandler(async (event) => {
           { status: "PROCESSING", updatedAt: { lt: staleBefore } },
         ],
       },
-      data: { status: "PROCESSING", lastError: null, response: undefined, conversationId: null },
+      data: { status: "PROCESSING", claimToken: randomUUID(), lastError: null, response: undefined, conversationId: null },
     });
     if (claimed.count !== 1) {
       throw createError({ statusCode: 409, statusMessage: "相同聊天请求正在处理中，请稍后刷新会话，避免重复发送。" });
@@ -77,7 +77,7 @@ export default defineEventHandler(async (event) => {
   } else {
     try {
       chatRequest = await prisma.chatRequest.create({
-        data: { ownerId, characterId, requestKey, status: "PROCESSING" },
+        data: { ownerId, characterId, requestKey, claimToken: randomUUID(), status: "PROCESSING" },
       });
     } catch (error) {
       if (typeof error === "object" && error !== null && "code" in error && error.code === "P2002") {
@@ -264,10 +264,15 @@ export default defineEventHandler(async (event) => {
     };
     // Commit messages and the replayable response atomically. A database failure must not
     // leave saved messages behind while the request is marked FAILED and retried.
-    await tx.chatRequest.update({
-      where: { id: chatRequest.id },
+    const finalized = await tx.chatRequest.updateMany({
+      where: { id: chatRequest.id, status: "PROCESSING", claimToken: chatRequest.claimToken },
       data: { status: "COMPLETED", conversationId: saved.conversationId, response: result, lastError: null },
     });
+    if (finalized.count !== 1) {
+      // The lease was reclaimed while this model call was running. Throwing rolls back
+      // this transaction, so the stale claimant cannot append duplicate messages.
+      throw createError({ statusCode: 409, statusMessage: "聊天请求已被新的重试接管，请刷新会话后查看结果。" });
+    }
     return result;
   });
   setResponseStatus(event, 201);
