@@ -207,17 +207,17 @@ try {
     },
     select: { id: true },
   });
-  const cleanupJob = await prisma.memoryJob.create({
-    data: {
-      memoryScopeId: retentionScopeId,
-      type: "CLEAN_EXPIRED_MESSAGES",
-      idempotencyKey: `clean-expired-messages:${retentionScopeId}:2026-09-24`,
-      periodEnd: new Date("2026-09-24T00:00:00.000Z"),
-      status: "QUEUED",
-      runAt: now,
-    },
-    select: { id: true },
+  // Disable automatic snapshots only after scheduler/backfill assertions; retention remains enabled.
+  await prisma.characterMemorySetting.update({
+    where: { characterId },
+    data: { autoSnapshotEnabled: false },
   });
+  await enqueueDueMemorySnapshots(prisma, { now });
+  const cleanupJob = await prisma.memoryJob.findUniqueOrThrow({
+    where: { idempotencyKey: `clean-expired-messages:${retentionScopeId}:2026-09-24` },
+    select: { id: true, memoryScopeId: true },
+  });
+  assert.equal(cleanupJob.memoryScopeId, retentionScopeId, "Scheduler should enqueue cleanup for scopes whose retention period has expired.");
   const cleanupResult = await processNextMemoryJob(prisma, {
     now,
     workerId: `retention-worker-${suffix}`,
