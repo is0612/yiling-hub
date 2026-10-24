@@ -1,3 +1,4 @@
+import { isIP } from "node:net";
 import { isCharacterApiKeySaved } from "./credential-encryption";
 
 export type ChatModelSettingsPatch = {
@@ -49,9 +50,43 @@ export function validateChatApiBaseUrl(value: string): string {
     throw new Error("API Base URL 不应包含用户名、密码、查询参数或片段。");
   }
   const hostname = url.hostname.toLowerCase();
-  const localHttpHosts = ["localhost", "127.0.0.1", "[::1]"];
-  if (url.protocol === "http:" && !localHttpHosts.includes(hostname)) {
-    throw new Error("为了保护 API Key，非本机 API 地址必须使用 HTTPS。");
+  const unbracketedHostname = hostname.startsWith("[") && hostname.endsWith("]")
+    ? hostname.slice(1, -1)
+    : hostname;
+  const isLoopbackName = unbracketedHostname === "localhost"
+    || unbracketedHostname.endsWith(".localhost")
+    || unbracketedHostname === "127.0.0.1"
+    || unbracketedHostname === "::1";
+  const ipVersion = isIP(unbracketedHostname);
+  const isPrivateIpv4 = ipVersion === 4 && (() => {
+    const octets = unbracketedHostname.split(".").map(Number);
+    return octets[0] === 10
+      || octets[0] === 127
+      || (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31)
+      || (octets[0] === 192 && octets[1] === 168)
+      || (octets[0] === 169 && octets[1] === 254)
+      || octets[0] === 0;
+  })();
+  const isPrivateIpv6 = ipVersion === 6 && (
+    unbracketedHostname === "::"
+    || unbracketedHostname.startsWith("fc")
+    || unbracketedHostname.startsWith("fd")
+    || /^fe[89ab]/.test(unbracketedHostname)
+    || unbracketedHostname.startsWith("::ffff:")
+  );
+  const isLocalOnlyHostname = isLoopbackName
+    || unbracketedHostname.endsWith(".local")
+    || unbracketedHostname.endsWith(".internal")
+    || unbracketedHostname.endsWith(".lan")
+    || unbracketedHostname === "home.arpa";
+  if (isPrivateIpv4 || isPrivateIpv6 || isLocalOnlyHostname && process.env.NODE_ENV === "production") {
+    throw new Error("API Base URL 不允许指向私有网络或本机地址；生产环境请使用可公开访问的 HTTPS 模型服务。");
+  }
+  if (isIP(unbracketedHostname) === 4 && isPrivateIpv4) {
+    throw new Error("API Base URL 不允许使用私有网络 IP 地址。");
+  }
+  if (url.protocol === "http:" && !(isLoopbackName && process.env.NODE_ENV !== "production")) {
+    throw new Error("为了保护 API Key，HTTP 仅允许非生产环境的本机 API 地址；其他地址必须使用 HTTPS。");
   }
   if (url.pathname.endsWith("/chat/completions")) {
     throw new Error("请填写 API 根地址（例如 https://api.example.com/v1），不要填写 /chat/completions。");
