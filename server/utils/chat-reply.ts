@@ -125,7 +125,13 @@ export async function generateConversationReply(input: ConversationReplyInput): 
     throw new Error("LLM_HTTP_ERROR: 模型服务返回 HTTP " + response.status + "。请检查 API 地址、Key 和模型权限。");
   }
 
-  const payload = asRecord(await response.json());
+  let responsePayload: unknown;
+  try {
+    responsePayload = await response.json();
+  } catch {
+    throw new Error("LLM_INVALID_RESPONSE: 模型服务没有返回有效的 JSON 响应。");
+  }
+  const payload = asRecord(responsePayload);
   const choices = payload && Array.isArray(payload.choices) ? payload.choices : [];
   const firstChoice = asRecord(choices[0]);
   const assistantMessage = asRecord(firstChoice?.message);
