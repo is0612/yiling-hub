@@ -29,7 +29,7 @@ export default defineEventHandler(async (event) => {
   const prisma = getPrisma();
   const account = await prisma.user.findUnique({
     where: { username },
-    select: { id: true, username: true, displayName: true, status: true, passwordHash: true },
+    select: { id: true, username: true, displayName: true, status: true, role: true, passwordHash: true },
   });
   const passwordMatches = await verifyPassword(password, account?.passwordHash ?? DUMMY_PASSWORD_HASH);
   const authenticated = Boolean(account) && passwordMatches && account?.status === "ACTIVE";
@@ -49,7 +49,7 @@ export default defineEventHandler(async (event) => {
   await revokeExpiredSessions().catch(() => undefined);
 
   return {
-    user: { id: account.id, username: account.username, displayName: account.displayName },
+    user: { id: account.id, username: account.username, displayName: account.displayName, role: account.role },
     expiresAt: session.expiresAt.toISOString(),
   };
 });

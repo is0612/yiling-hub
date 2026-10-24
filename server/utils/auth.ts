@@ -18,10 +18,13 @@ export const DEFAULT_SESSION_TTL_HOURS = 12;
 
 export type AuthMode = "session" | "local-dev" | "anonymous";
 
+export type UserRoleValue = "ADMIN" | "USER";
+
 export type AuthenticatedUser = {
   id: string;
   username: string;
   displayName: string | null;
+  role: UserRoleValue;
 };
 
 export type ActorContext =
@@ -238,10 +241,10 @@ export async function findLocalDevUser(): Promise<AuthenticatedUser | null> {
   if (!ownerId) return null;
   const user = await getPrisma().user.findUnique({
     where: { id: ownerId },
-    select: { id: true, username: true, displayName: true, status: true },
+    select: { id: true, username: true, displayName: true, status: true, role: true },
   });
   if (!user || user.status !== "ACTIVE") return null;
-  return { id: user.id, username: user.username, displayName: user.displayName };
+  return { id: user.id, username: user.username, displayName: user.displayName, role: user.role };
 }
 
 export async function resolveSessionUser(token: string): Promise<AuthenticatedUser | null> {
@@ -254,7 +257,7 @@ export async function resolveSessionUser(token: string): Promise<AuthenticatedUs
       expiresAt: true,
       revokedAt: true,
       lastUsedAt: true,
-      user: { select: { id: true, username: true, displayName: true, status: true } },
+      user: { select: { id: true, username: true, displayName: true, status: true, role: true } },
     },
   });
   if (!session) return null;
@@ -265,7 +268,7 @@ export async function resolveSessionUser(token: string): Promise<AuthenticatedUs
   if (now.getTime() - session.lastUsedAt.getTime() > SESSION_LAST_USED_REFRESH_MS) {
     await prisma.session.update({ where: { id: session.id }, data: { lastUsedAt: now } }).catch(() => undefined);
   }
-  return { id: session.user.id, username: session.user.username, displayName: session.user.displayName };
+  return { id: session.user.id, username: session.user.username, displayName: session.user.displayName, role: session.user.role };
 }
 
 export async function resolveActorContext(event: H3Event): Promise<ActorContext> {
@@ -289,6 +292,22 @@ export async function requireActor(event: H3Event): Promise<Extract<ActorContext
 export async function requireActorUserId(event: H3Event): Promise<string> {
   const actor = await requireActor(event);
   return actor.user.id;
+}
+
+// ---------------------------------------------------------------------------
+// Administrator gate
+// ---------------------------------------------------------------------------
+
+export function canAdminister(role: UserRoleValue | null | undefined): boolean {
+  return role === "ADMIN";
+}
+
+export async function requireAdminActor(event: H3Event): Promise<Extract<ActorContext, { mode: "session" | "local-dev" }>> {
+  const actor = await requireActor(event);
+  if (actor.user.role !== "ADMIN") {
+    throw createError({ statusCode: 403, statusMessage: "该操作仅限管理员。" });
+  }
+  return actor;
 }
 
 // ---------------------------------------------------------------------------

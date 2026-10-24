@@ -2,7 +2,7 @@
 
 一个用于管理多角色 AI、周期性记忆快照和长期记忆的项目。
 
-> 当前状态：角色档案、记忆周期设置、对话录入、快照版本和周期任务已接入 PostgreSQL。周期 Worker 已接入 OpenAI-compatible 模型调用，可生成周期语义总结、识别有来源支持的事实/偏好变化，并维护长期记忆；AI 对话可按身份隔离读取角色全局记忆与当前用户私人记忆。管理员登录、服务端会话、CSRF 校验、登录限流、管理员改密与登录设备管理已实现；真实渠道适配器、多用户权限与公网部署加固仍待后续阶段完成。
+> 当前状态：角色档案、记忆周期设置、对话录入、快照版本和周期任务已接入 PostgreSQL。周期 Worker 已接入 OpenAI-compatible 模型调用，可生成周期语义总结、识别有来源支持的事实/偏好变化，并维护长期记忆；AI 对话可按身份隔离读取角色全局记忆与当前用户私人记忆。管理员登录、服务端会话、CSRF 校验、登录限流、管理员改密与登录设备管理、多用户（管理员 + 邮箱注册用户）与账号管理已实现；真实渠道适配器与公网部署加固仍待后续阶段完成。
 
 ## 周期任务调度（开发阶段）
 
@@ -41,10 +41,10 @@ Worker 配置模型后会调用 LLM 对周期对话进行结构化总结，验�
 - 历史会话支持按标题/消息内容搜索、重命名、归档与恢复；归档不会删除消息或来源记录，归档会话只读。完整对话可以导出为 Markdown，AI 回复可一键复制。
 - 每个角色的“AI 对话 → 模型参数”可填写 API Base URL、API Key、模型名称、温度和最大输出 Token，并可直接测试 API 连通性；聊天和周期记忆 Worker 都会使用该角色的配置。
 - API Key 使用 AES-256-GCM 加密后保存，网页不会读取或回显密钥原文。加密密钥会自动生成在本机 `.data/credentials-encryption.key`，该文件已被 Git 忽略；备份/迁移数据库时必须一并保管，丢失后需要重新填写 API Key。
-- `LLM_API_KEY`、`LLM_MODEL`、`LLM_BASE_URL` 现在是可选的服务端默认/兼容配置；没有填写角色 API 时才会按规则回退。业务接口需要登录会话，本地开发保留受限回退；真实渠道 Adapter 与多用户权限仍未完成。
+- `LLM_API_KEY`、`LLM_MODEL`、`LLM_BASE_URL` 现在是可选的服务端默认/兼容配置；没有填写角色 API 时才会按规则回退。业务接口需要登录会话，本地开发保留受限回退；真实渠道 Adapter 仍未完成。
 - 检索逻辑可运行 `yarn test:memory-retrieval` 测试；角色模型参数和全局 Key 的供应商隔离可运行 `yarn test:chat-model-config` 测试；提示词凭据隔离、来源 ID 校验和异常模型响应可运行 `yarn test:chat-reply` 测试；私人记忆范围隔离（纯逻辑 + 数据库查询）可运行 `yarn test:chat-private-memory` 和 `yarn test:chat-private-memory-db` 测试。
 
-## 管理员登录与会话鉴权
+## 管理员登录、注册与账号管理
 
 - 登录页在 `/login`，使用 `DEV_OWNER_USERNAME` / `DEV_OWNER_PASSWORD` 创建的账号登录（由 `yarn db:seed:dev` 写入）。密码用 scrypt 存储与校验。
 - 会话保存在 PostgreSQL `sessions` 表，浏览器只持有 HttpOnly、SameSite=Strict 的 `yiling_session` Cookie；数据库只存该令牌的 SHA-256 哈希。有效期由 `AUTH_SESSION_TTL_HOURS` 控制（1–720，默认 12）。生产环境（或 `YILING_COOKIE_SECURE=true`）自动加 `Secure`。
@@ -52,9 +52,17 @@ Worker 配置模型后会调用 LLM 对周期对话进行结构化总结，验�
 - 登录失败按用户名（15 分钟 5 次）与来源地址（15 分钟 20 次）限流，超过返回 429；成功登录会清除该账号的失败记录。失败记录保存在 `login_attempts` 表，来源地址只存哈希。
 - 本地开发默认仍允许免登录回退：`yarn dev` + `YILING_LOCAL_API_ENABLED=true` + 通过 localhost 访问 + 未关闭 `YILING_ALLOW_DEV_OWNER_BYPASS` 时，以 `DEV_OWNER_ID` 身份运行，侧边栏会标注「本地开发身份」。把 `YILING_ALLOW_DEV_OWNER_BYPASS=false` 写进 `.env` 即可强制本地也走真实登录；生产构建没有这个回退。
 - 携带失效或已撤销的 Cookie 时不会回退成开发身份，而是要求重新登录，避免「看起来已登录、实际是以开发用户操作」的错觉。
-- 系统设置页的「账户与安全」可以修改管理员密码，并列出当前有效登录设备（设备名由 User-Agent 派生）、撤销单个会话或退出其他所有设备。改密成功后其他会话立即失效，当前会话保留；新密码要求 10–128 个字符且同时包含字母与数字。
-- 相关操作写入 `audit_logs`：`auth.password_changed`、`auth.session_revoked`、`auth.sessions_revoked`。
-- 验证命令：`yarn test:auth`（哈希、Cookie 属性、同源矩阵、身份回退决策、限流阈值、密码策略、设备名派生）与 `yarn test:auth-db`（会话签发/过期/撤销、停用账号拒绝、哈希存储、限流计数、设备列表、越权撤销拒绝、退出其他设备、改密与旧密码失效）。完整登录/登出/限流/改密/会话撤销流程在冒烟脚本中覆盖。
+- 系统设置页的「账户与安全」可以修改自己的密码，并列出当前有效登录设备（设备名由 User-Agent 派生）、撤销单个会话或退出其他所有设备。改密成功后其他会话立即失效，当前会话保留；新密码要求 10–128 个字符且同时包含字母与数字。
+- 相关操作写入 `audit_logs`：`auth.password_changed`、`auth.session_revoked`、`auth.sessions_revoked`、`admin.user_updated`。
+- 验证命令：`yarn test:auth`（哈希、Cookie 属性、同源矩阵、身份回退决策、限流阈值、密码策略、设备名派生、管理员判定）与 `yarn test:auth-db`（会话签发/过期/撤销、停用账号拒绝、哈希存储、限流计数、设备列表、越权撤销拒绝、退出其他设备、改密与旧密码失效、角色读写）。完整登录/登出/限流/改密/会话撤销流程在冒烟脚本中覆盖。
+
+### 多用户：管理员 + 邮箱注册用户
+
+- 账号分两档：`User.role` 为 `ADMIN`（唯一管理员）或 `USER`。管理员只能有一个来源——`db:seed:dev` 种下的账号（迁移会把迁移前已有的账号统一提升为 ADMIN）。
+- 普通用户用邮箱自助注册：登录页「用邮箱注册」进入 `/register`，邮箱即登录标识（存入 `email` 唯一列和 `username`），注册后自动登录。**不发送验证邮件**（本部署无 SMTP），注册 IP 只存哈希；可用 `YILING_ALLOW_REGISTRATION=false` 关闭注册入口。
+- 每个用户拥有独立的数据空间：所有角色/记忆/会话都按会话里的 `userId` 过滤，用户之间天然互不可见。
+- 管理员在「用户管理」页（`/users`）查看账号列表与统计（角色数、注册时间、最后活跃）、停用/启用账号、重置密码。该页**不展示**任何人的对话或记忆内容；停用账号会立即让对方的会话失效。
+- 普通用户看不到「渠道管理 / 任务监控 / 用户管理 / 系统设置」这些系统管理入口，访问对应接口返回 403。
 
 ## 从哪里开始
 

@@ -208,6 +208,88 @@ try {
   await prisma.user.deleteMany({ where: { id: passwordUserId } });
 }
 
+// --- Multi-user: open registration, role isolation, admin-only endpoints ---
+const adminLogin = await loginAs(process.env.DEV_OWNER_USERNAME, process.env.DEV_OWNER_PASSWORD);
+assert(adminLogin.status === 200, "The administrator must be able to log in for the multi-user checks.");
+assert(adminLogin.payload.user.role === "ADMIN", "The developer owner must be reported as ADMIN.");
+const adminCookie = adminLogin.cookie;
+
+const userEmail = `ci-user-${Date.now().toString()}@example.com`;
+const userPassword = "ci-user-password-1";
+
+const registerResponse = await fetch(new URL("/api/auth/register", baseUrl), {
+  method: "POST",
+  headers: writeHeaders,
+  body: JSON.stringify({ email: userEmail, password: userPassword }),
+});
+const registerPayload = await registerResponse.json().catch(() => null);
+assert(registerResponse.status === 200, `POST /api/auth/register failed (${registerResponse.status}): ${JSON.stringify(registerPayload)}`);
+assert(registerPayload.user?.role === "USER", "Self-registered accounts must default to USER.");
+const userCookie = (registerResponse.headers.get("set-cookie") || "").split(";")[0];
+const registeredUserId = registerPayload.user.id;
+
+// A duplicate email is rejected.
+const duplicateRegister = await fetch(new URL("/api/auth/register", baseUrl), {
+  method: "POST",
+  headers: writeHeaders,
+  body: JSON.stringify({ email: userEmail, password: userPassword }),
+});
+assert(duplicateRegister.status === 409, "Registering the same email twice must be rejected.");
+await duplicateRegister.arrayBuffer();
+
+try {
+  // A normal user owns nothing and sees none of the administrator's characters.
+  const userCharacters = await (await fetch(new URL("/api/characters", baseUrl), { headers: { cookie: userCookie } })).json();
+  assert(Array.isArray(userCharacters) && userCharacters.length === 0, "A new user must start with an empty character list, not the admin's.");
+
+  // The same user is refused the admin endpoints.
+  const forbiddenList = await fetch(new URL("/api/admin/users", baseUrl), { headers: { cookie: userCookie } });
+  assert(forbiddenList.status === 403, "A normal user must not list accounts.");
+  await forbiddenList.arrayBuffer();
+  const forbiddenPatch = await fetch(new URL(`/api/admin/users/${registeredUserId}`, baseUrl), {
+    method: "PATCH",
+    headers: { ...writeHeaders, cookie: userCookie },
+    body: JSON.stringify({ displayName: "hacked" }),
+  });
+  assert(forbiddenPatch.status === 403, "A normal user must not modify accounts.");
+  await forbiddenPatch.arrayBuffer();
+
+  // The administrator can list accounts and see only identity and statistics.
+  const adminList = await (await fetch(new URL("/api/admin/users", baseUrl), { headers: { cookie: adminCookie } })).json();
+  const listedUser = adminList.users.find((entry) => entry.id === registeredUserId);
+  assert(listedUser, "The administrator list must include the newly registered user.");
+  assert(listedUser.role === "USER", "The registered user must be listed with role USER.");
+  assert(listedUser.email === userEmail, "The registered user must be listed under their email.");
+  assert("characterCount" in listedUser, "The list must include per-account statistics.");
+  assert(!("conversations" in listedUser), "The account list must not leak conversation data.");
+  assert(!("memories" in listedUser), "The account list must not leak memory data.");
+
+  // The administrator cannot disable their own account.
+  const selfDisable = await fetch(new URL(`/api/admin/users/${process.env.DEV_OWNER_ID}`, baseUrl), {
+    method: "PATCH",
+    headers: { ...writeHeaders, cookie: adminCookie },
+    body: JSON.stringify({ status: "DISABLED" }),
+  });
+  assert(selfDisable.status === 400, "An administrator must not be able to disable their own account.");
+  await selfDisable.arrayBuffer();
+
+  // Disabling a user immediately invalidates their session.
+  const disable = await fetch(new URL(`/api/admin/users/${registeredUserId}`, baseUrl), {
+    method: "PATCH",
+    headers: { ...writeHeaders, cookie: adminCookie },
+    body: JSON.stringify({ status: "DISABLED" }),
+  });
+  assert(disable.status === 200, `Disabling a user failed (${disable.status}).`);
+  await disable.arrayBuffer();
+  const afterDisable = await (await fetch(new URL("/api/auth/session", baseUrl), { headers: { cookie: userCookie } })).json();
+  assert(afterDisable.mode === "anonymous" && afterDisable.user === null, "A disabled user's session must stop authenticating.");
+} finally {
+  await prisma.session.deleteMany({ where: { userId: registeredUserId } });
+  await prisma.loginAttempt.deleteMany({ where: { username: userEmail } });
+  await prisma.auditLog.deleteMany({ where: { actorId: registeredUserId } });
+  await prisma.user.deleteMany({ where: { id: registeredUserId } });
+}
+
 const noSuchAccount = "ci-no-such-user-" + Date.now().toString();
 const badLogin = await fetch(new URL("/api/auth/login", baseUrl), {
   method: "POST",
@@ -1022,6 +1104,6 @@ assert(
   "Permanent retention must not enqueue raw-message cleanup work."
 );
 
-console.log("Local API smoke test passed: character CRUD, encrypted per-character API settings and connection test, memory settings including deferred changes, pending-change cancellation and immediate recalculation, transcript import, scheduler backfill, local-mock AI extraction, source-ID validation, persisted provenance, manual and AI snapshot versions, safe AI regeneration, task cancel/requeue, recycle-bin lifecycle, context-aware AI chat with private-scope isolation, conversation search/rename, archive/restore, archived write protection, end-to-end raw-message retention cleanup with audit-result visibility, cleanup-task cancel/retry, retention-widening protection, permanent-retention safety, login/logout with throttling, device listing, cross-site revocation refusal, sign-out-others, and password policy plus rotation with session invalidation.");
+console.log("Local API smoke test passed: character CRUD, encrypted per-character API settings and connection test, memory settings including deferred changes, pending-change cancellation and immediate recalculation, transcript import, scheduler backfill, local-mock AI extraction, source-ID validation, persisted provenance, manual and AI snapshot versions, safe AI regeneration, task cancel/requeue, recycle-bin lifecycle, context-aware AI chat with private-scope isolation, conversation search/rename, archive/restore, archived write protection, end-to-end raw-message retention cleanup with audit-result visibility, cleanup-task cancel/retry, retention-widening protection, permanent-retention safety, login/logout with throttling, device listing, cross-site revocation refusal, sign-out-others, password policy plus rotation with session invalidation, and open email registration with role isolation and admin-only account management.");
 
 await prisma.$disconnect();

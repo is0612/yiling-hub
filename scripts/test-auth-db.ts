@@ -42,7 +42,7 @@ function expectStatus(fn: () => Promise<unknown>, statusCode: number) {
 
 try {
   const user = await prisma.user.create({
-    data: { username, passwordHash: await hashPassword(initialPassword), displayName: "认证测试" },
+    data: { username, passwordHash: await hashPassword(initialPassword), displayName: "认证测试", role: "ADMIN" },
     select: { id: true },
   });
   userId = user.id;
@@ -51,6 +51,7 @@ try {
   const session = await createSession({ userId, ip, userAgent: "auth-db-test" });
   const resolved = await resolveSessionUser(session.token);
   assert.equal(resolved?.id, userId, "A freshly created session must resolve to its user.");
+  assert.equal(resolved?.role, "ADMIN", "A session must carry the account role.");
   assert.equal(await resolveSessionUser("not-a-real-token"), null, "Unknown tokens must not resolve.");
 
   // 2. Only the hashed token is stored.
@@ -150,6 +151,11 @@ try {
     "Another account's session must look missing, not revocable.",
   );
   assert.equal((await resolveSessionUser(intruderSession.token))?.id, intruderId, "The foreign session must survive the attempt.");
+  assert.equal(
+    (await resolveSessionUser(intruderSession.token))?.role,
+    "USER",
+    "Accounts created without an explicit role must default to USER.",
+  );
 
   // 11. Revoking your own session is reported as such, so the caller can clear the cookie.
   const ownSessionId = (await prisma.session.findUnique({

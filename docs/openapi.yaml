@@ -75,6 +75,38 @@ paths:
       responses:
         '204':
           description: 已退出并清除会话
+  /auth/register:
+    post:
+      tags: [Auth]
+      summary: 邮箱自助注册
+      description: "用邮箱创建普通用户账号并自动登录。邮箱即登录标识（同时存入 email 与 username），不发送验证邮件；新密码要求 10 至 128 个字符且同时包含字母和数字。可通过 YILING_ALLOW_REGISTRATION=false 关闭。"
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email, maxLength: 100 }
+                password: { type: string, format: password, minLength: 10, maxLength: 128 }
+                displayName: { type: string, maxLength: 120 }
+      responses:
+        '200':
+          description: 注册成功并设置会话 Cookie
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '400':
+          description: 邮箱格式不正确或密码不符合策略
+        '403':
+          description: 已关闭自助注册
+        '409':
+          description: 该邮箱已注册
+        '429':
+          description: 注册尝试过于频繁，已被临时限流
   /auth/password:
     post:
       tags: [Auth]
@@ -174,6 +206,65 @@ paths:
                   revoked: { type: integer, minimum: 0 }
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /admin/users:
+    get:
+      tags: [Auth]
+      summary: 列出所有账号（仅管理员）
+      description: 只返回身份与活动统计（角色数、最后活跃时间），不包含任何对话或记忆内容。
+      responses:
+        '200':
+          description: 账号列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [users]
+                properties:
+                  users:
+                    type: array
+                    items: { $ref: '#/components/schemas/AdminUserSummary' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: 仅管理员可访问
+  /admin/users/{userId}:
+    patch:
+      tags: [Auth]
+      summary: 维护账号（仅管理员）
+      description: 修改显示名、启用/停用账号、或强制重置密码。不能停用自己的账号，也不能停用最后一个可用管理员。
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                displayName: { type: string, maxLength: 120 }
+                status: { type: string, enum: [ACTIVE, DISABLED] }
+                password: { type: string, format: password, minLength: 10, maxLength: 128 }
+      responses:
+        '200':
+          description: 更新成功
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [updated]
+                properties:
+                  updated: { type: boolean }
+        '400':
+          description: 无有效更新内容、密码不符合策略，或试图停用自己 / 最后一个管理员
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: 仅管理员可访问
+        '404':
+          $ref: '#/components/responses/NotFound'
   /characters:
     get:
       tags: [Characters]
@@ -1500,6 +1591,10 @@ components:
             id: { type: string, format: uuid }
             username: { type: string }
             displayName: { type: string, nullable: true }
+            role:
+              type: string
+              enum: [ADMIN, USER]
+              description: ADMIN=管理员；USER=普通用户。local-dev 模式也返回 ADMIN。
     SessionSummary:
       type: object
       required: [id, current, createdAt, lastUsedAt, expiresAt, device]
@@ -1519,17 +1614,33 @@ components:
             kind:
               type: string
               enum: [desktop, mobile, tablet, unknown]
+    AdminUserSummary:
+      type: object
+      required: [id, username, email, displayName, role, status, createdAt, characterCount, lastActiveAt]
+      properties:
+        id: { type: string, format: uuid }
+        username: { type: string }
+        email: { type: string, nullable: true }
+        displayName: { type: string, nullable: true }
+        role: { type: string, enum: [ADMIN, USER] }
+        status: { type: string, enum: [ACTIVE, DISABLED] }
+        createdAt: { type: string, format: date-time }
+        characterCount: { type: integer, minimum: 0 }
+        lastActiveAt: { type: string, format: date-time, nullable: true }
     LoginResponse:
       type: object
       required: [user, expiresAt]
       properties:
         user:
           type: object
-          required: [id, username, displayName]
+          required: [id, username, displayName, role]
           properties:
             id: { type: string, format: uuid }
             username: { type: string }
             displayName: { type: string, nullable: true }
+            role:
+              type: string
+              enum: [ADMIN, USER]
         expiresAt: { type: string, format: date-time }
     MemoryScope:
       type: object

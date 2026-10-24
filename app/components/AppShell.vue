@@ -12,12 +12,16 @@ import {
   MagicStick,
   SwitchButton,
   User,
+  UserFilled,
 } from "@element-plus/icons-vue";
 
 const route = useRoute();
-const { displayName, logout, isLocalDevIdentity } = useAuthSession();
+const { displayName, logout, isLocalDevIdentity, isAdmin } = useAuthSession();
 const loggingOut = ref(false);
 const avatarLetter = computed(() => (displayName.value || "管").slice(0, 1));
+const roleLabel = computed(() =>
+  isLocalDevIdentity.value ? "本地开发身份" : isAdmin.value ? "已登录管理员" : "已登录用户",
+);
 
 async function handleLogout() {
   if (loggingOut.value) return;
@@ -48,7 +52,7 @@ await useCharacterListData();
  */
 const navigation = computed<NavigationItem[]>(() => {
   const id = activeCharacterId.value;
-  return [
+  const items: NavigationItem[] = [
     { key: "home", label: "总览", href: "/", icon: DataBoard, section: "工作空间" },
     { key: "characters", label: "角色管理", href: "/characters", icon: User },
     {
@@ -69,10 +73,16 @@ const navigation = computed<NavigationItem[]>(() => {
       href: id ? `/characters/${id}/snapshots` : "/characters",
       icon: Calendar,
     },
-    { key: "channels", label: "渠道管理", href: "/channels", icon: ChatDotRound, section: "系统管理" },
-    { key: "tasks", label: "任务监控", href: "/tasks", icon: DataAnalysis },
-    { key: "settings", label: "系统设置", href: "/settings", icon: Setting },
   ];
+  if (isAdmin.value) {
+    items.push(
+      { key: "channels", label: "渠道管理", href: "/channels", icon: ChatDotRound, section: "系统管理" },
+      { key: "tasks", label: "任务监控", href: "/tasks", icon: DataAnalysis },
+      { key: "users", label: "用户管理", href: "/users", icon: UserFilled },
+      { key: "settings", label: "系统设置", href: "/settings", icon: Setting },
+    );
+  }
+  return items;
 });
 
 function isActive(item: NavigationItem) {
@@ -130,7 +140,7 @@ function isActive(item: NavigationItem) {
           <div class="admin-avatar">{{ avatarLetter }}</div>
           <div class="admin-info sidebar-bottom-copy">
             <div class="admin-name">{{ displayName }}</div>
-            <div class="admin-note">{{ isLocalDevIdentity ? "本地开发身份" : "已登录管理员" }}</div>
+            <div class="admin-note">{{ roleLabel }}</div>
           </div>
         </div>
         <el-button class="sidebar-logout" text size="small" :loading="loggingOut" @click="handleLogout">

@@ -64,8 +64,8 @@ async function submit() {
       />
 
       <el-form label-position="top" @submit.prevent="submit">
-        <el-form-item label="用户名">
-          <el-input v-model="username" size="large" autocomplete="username" placeholder="请输入管理员用户名" :prefix-icon="User" />
+        <el-form-item label="邮箱或用户名">
+          <el-input v-model="username" size="large" autocomplete="username" placeholder="请输入邮箱或用户名" :prefix-icon="User" />
         </el-form-item>
         <el-form-item label="密码">
           <el-input
@@ -84,6 +84,9 @@ async function submit() {
 
       <p class="login-note">
         登录会话保存在服务端，浏览器只持有 HttpOnly、SameSite=Strict 的会话 Cookie。连续输错会被临时限流。
+      </p>
+      <p class="login-note" style="text-align:center">
+        还没有账号？<NuxtLink to="/register" class="register-link">用邮箱注册</NuxtLink>
       </p>
     </div>
   </div>
@@ -111,4 +114,5 @@ async function submit() {
 .login-alert { margin-bottom: 16px; }
 .login-submit { width: 100%; margin-top: 4px; }
 .login-note { margin: 18px 0 0; color: var(--muted); font-size: 11px; line-height: 1.7; }
+.register-link { color: #6d5fe0; font-weight: 700; }
 </style>

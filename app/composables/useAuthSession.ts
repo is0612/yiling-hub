@@ -2,6 +2,7 @@ export type AuthUser = {
   id: string;
   username: string;
   displayName: string | null;
+  role?: "ADMIN" | "USER";
 };
 
 export type AuthSessionState = {
@@ -38,6 +39,7 @@ export function useAuthSession() {
   const isAuthenticated = computed(() => Boolean(state.value.user));
   const displayName = computed(() => state.value.user?.displayName || state.value.user?.username || "管理员");
   const isLocalDevIdentity = computed(() => state.value.mode === "local-dev");
+  const isAdmin = computed(() => state.value.user?.role === "ADMIN" || state.value.mode === "local-dev");
 
-  return { state, refresh, logout, isAuthenticated, displayName, isLocalDevIdentity };
+  return { state, refresh, logout, isAuthenticated, displayName, isLocalDevIdentity, isAdmin };
 }

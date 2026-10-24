@@ -3,6 +3,7 @@ import { randomBytes, scryptSync } from "node:crypto";
 import {
   buildClearSessionCookie,
   buildSessionCookie,
+  canAdminister,
   checkPasswordPolicy,
   createSessionToken,
   DEFAULT_SESSION_TTL_HOURS,
@@ -181,4 +182,10 @@ assert.deepEqual(
 );
 assert.deepEqual(describeUserAgent("curl/8.4.0"), { label: "未知设备", kind: "desktop" });
 
-console.log("Auth unit tests passed: scrypt hashing and seed compatibility, token hashing, cookie attributes, TTL bounds, same-origin/CSRF matrix, actor fallback refusal, login throttling thresholds, password policy, and device-label derivation.");
+// 11. Administrator gate: only the ADMIN role may administer accounts.
+assert.equal(canAdminister("ADMIN"), true);
+assert.equal(canAdminister("USER"), false);
+assert.equal(canAdminister(null), false, "An absent role must never grant administration.");
+assert.equal(canAdminister(undefined), false);
+
+console.log("Auth unit tests passed: scrypt hashing and seed compatibility, token hashing, cookie attributes, TTL bounds, same-origin/CSRF matrix, actor fallback refusal, login throttling thresholds, password policy, device-label derivation, and the administrator gate.");
