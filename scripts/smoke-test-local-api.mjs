@@ -160,6 +160,7 @@ assert(apiTest.ok === true && apiTest.provider === "127.0.0.1", "API connection 
 const initialSettings = await request(`/api/characters/${created.id}/memory-settings`);
 assert(initialSettings.snapshotIntervalDays === 8, "New character should get an 8-day default interval.");
 assert(initialSettings.changePolicy === "NEXT_CYCLE", "New character should use NEXT_CYCLE by default.");
+assert(initialSettings.rawMessageRetentionDays === 0, "New characters should preserve raw messages permanently until the user opts into cleanup.");
 
 const schedulerAnchorAt = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
 const savedSettings = await request(`/api/characters/${created.id}/memory-settings`, {

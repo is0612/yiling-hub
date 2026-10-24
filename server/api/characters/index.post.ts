@@ -38,7 +38,7 @@ export default defineEventHandler(async (event) => {
           timezone: "Asia/Shanghai",
           anchorAt: new Date(),
           autoSnapshotEnabled: false,
-          rawMessageRetentionDays: 90,
+          rawMessageRetentionDays: null,
         },
       },
     },

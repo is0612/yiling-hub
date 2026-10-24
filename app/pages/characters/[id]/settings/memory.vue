@@ -20,7 +20,7 @@ const character = ref<Character>({ ...initialCharacters[0]!, id: "", name: "角�
 const interval = ref(8);
 const timezone = ref("Asia/Shanghai");
 const anchor = ref("2026-10-21T09:00:00");
-const retention = ref(90);
+const retention = ref(0);
 const autoSnapshot = ref(false);
 const nextSnapshotAt = ref<string | null>(null);
 const effectivePolicy = ref("下一个周期生效");
@@ -124,7 +124,7 @@ function resetSettings() {
   timezone.value = "Asia/Shanghai";
   const now = new Date();
   anchor.value = formatAnchor(now.toISOString(), timezone.value);
-  retention.value = 90;
+  retention.value = 0;
   autoSnapshot.value = false;
   nextSnapshotAt.value = null;
   effectivePolicy.value = "下一个周期生效";
