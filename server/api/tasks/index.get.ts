@@ -50,16 +50,18 @@ export default defineEventHandler(async (event) => {
 
   const cleanupJobs = jobs.filter((job) => job.type === "CLEAN_EXPIRED_MESSAGES");
   const cleanupJobIds = new Set(cleanupJobs.map((job) => job.id));
-  const cleanupScopeIds = [...new Set(cleanupJobs.map((job) => job.memoryScope.id))];
-  const cleanupAudits = cleanupScopeIds.length > 0
+  const cleanupAudits = cleanupJobs.length > 0
     ? await prisma.auditLog.findMany({
       where: {
         action: "message.retention_cleanup",
         entityType: "MemoryScope",
-        entityId: { in: cleanupScopeIds },
+        OR: cleanupJobs.map((job) => ({
+          entityId: job.memoryScope.id,
+          details: { path: ["jobId"], equals: job.id },
+        })),
       },
       orderBy: { createdAt: "desc" },
-      select: { entityId: true, details: true, createdAt: true },
+      select: { details: true, createdAt: true },
     })
     : [];
   const cleanupResultByJobId = new Map<string, {
