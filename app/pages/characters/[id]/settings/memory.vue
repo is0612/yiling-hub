@@ -131,6 +131,8 @@ async function saveSettings() {
     });
     interval.value = saved.snapshotIntervalDays;
     nextSnapshotAt.value = saved.nextSnapshotAt;
+    retention.value = saved.rawMessageRetentionDays;
+    savedRetention.value = saved.rawMessageRetentionDays;
     autoSnapshot.value = saved.autoSnapshotEnabled;
     anchor.value = formatAnchor(saved.anchorAt, saved.timezone);
     effectivePolicy.value = saved.changePolicy === "IMMEDIATE_RECALC" ? "立即重算" : "下一个周期生效";
