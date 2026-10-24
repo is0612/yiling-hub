@@ -5,6 +5,8 @@ import { initialCharacters, type Character } from "~/utils/mock-data";
 
 type MemorySettings = {
   snapshotIntervalDays: number;
+  activeSnapshotIntervalDays: number;
+  pendingSnapshotIntervalDays: number | null;
   timezone: string;
   anchorAt: string;
   rawMessageRetentionDays: number;
@@ -19,6 +21,11 @@ const route = useRoute();
 const id = computed(() => String(route.params.id || ""));
 const character = ref<Character>({ ...initialCharacters[0]!, id: "", name: "角色加载中" });
 const interval = ref(8);
+const activeInterval = ref(8);
+const pendingInterval = ref<number | null>(null);
+const savedAnchorAt = ref<string | null>(null);
+const savedTimezone = ref("Asia/Shanghai");
+const savedAutoSnapshot = ref(false);
 const timezone = ref("Asia/Shanghai");
 const anchor = ref("2026-10-21T09:00:00");
 const retention = ref(0);
@@ -75,6 +82,11 @@ async function loadSettings() {
     ]);
     character.value = loadedCharacter;
     interval.value = settings.snapshotIntervalDays;
+    activeInterval.value = settings.activeSnapshotIntervalDays;
+    pendingInterval.value = settings.pendingSnapshotIntervalDays;
+    savedAnchorAt.value = settings.anchorAt;
+    savedTimezone.value = settings.timezone;
+    savedAutoSnapshot.value = settings.autoSnapshotEnabled;
     timezone.value = settings.timezone;
     anchor.value = formatAnchor(settings.anchorAt, settings.timezone);
     retention.value = settings.rawMessageRetentionDays;
@@ -134,6 +146,11 @@ async function saveSettings() {
       },
     });
     interval.value = saved.snapshotIntervalDays;
+    activeInterval.value = saved.activeSnapshotIntervalDays;
+    pendingInterval.value = saved.pendingSnapshotIntervalDays;
+    savedAnchorAt.value = saved.anchorAt;
+    savedTimezone.value = saved.timezone;
+    savedAutoSnapshot.value = saved.autoSnapshotEnabled;
     nextSnapshotAt.value = saved.nextSnapshotAt;
     retention.value = saved.rawMessageRetentionDays;
     savedRetention.value = saved.rawMessageRetentionDays;
@@ -167,13 +184,32 @@ function resetSettings() {
 const nextSnapshotPreview = computed(() => {
   if (!autoSnapshot.value) return "未启用";
   try {
-    const firstBoundary = zonedInputToIso(anchor.value, timezone.value);
-    const next = new Date(new Date(firstBoundary).getTime() + safeInterval.value * 24 * 60 * 60 * 1000);
-    return new Intl.DateTimeFormat("zh-CN", {
+    const editedAnchorAt = zonedInputToIso(anchor.value, timezone.value);
+    const anchorChanged = savedAnchorAt.value !== null && (
+      timezone.value !== savedTimezone.value ||
+      Math.floor(new Date(editedAnchorAt).getTime() / 1000) !==
+        Math.floor(new Date(savedAnchorAt.value).getTime() / 1000)
+    );
+    const immediateRecalc = effectivePolicy.value === "立即重算";
+    const formatPreview = (date: Date) => new Intl.DateTimeFormat("zh-CN", {
       timeZone: timezone.value,
       year: "numeric", month: "2-digit", day: "2-digit",
       hour: "2-digit", minute: "2-digit",
-    }).format(next);
+    }).format(date);
+
+    if (savedAutoSnapshot.value && nextSnapshotAt.value && !anchorChanged && !immediateRecalc) {
+      const boundary = formatPreview(new Date(nextSnapshotAt.value));
+      if (safeInterval.value !== activeInterval.value) {
+        return `${boundary}（当前周期结束后切换为 ${safeInterval.value} 天）`;
+      }
+      if (pendingInterval.value !== null) {
+        return `${boundary}（保存后将取消待生效的周期调整）`;
+      }
+      return boundary;
+    }
+
+    const next = new Date(new Date(editedAnchorAt).getTime() + safeInterval.value * 24 * 60 * 60 * 1000);
+    return formatPreview(next);
   } catch {
     return "保存后计算";
   }
@@ -183,7 +219,7 @@ const savedNextSnapshotLabel = computed(() => {
   if (!nextSnapshotAt.value) return "尚未安排";
   try {
     return new Intl.DateTimeFormat("zh-CN", {
-      timeZone: timezone.value,
+      timeZone: savedTimezone.value,
       year: "numeric", month: "2-digit", day: "2-digit",
       hour: "2-digit", minute: "2-digit",
     }).format(new Date(nextSnapshotAt.value));
@@ -217,7 +253,7 @@ watch(id, () => void loadSettings());
               <el-form-item label="记忆时区"><el-select v-model="timezone" style="width:100%"><el-option label="中国标准时间（Asia/Shanghai）" value="Asia/Shanghai" /><el-option label="协调世界时（UTC）" value="UTC" /><el-option label="美国太平洋时间（America/Los_Angeles）" value="America/Los_Angeles" /></el-select></el-form-item>
               <el-form-item label="周期启用锚点"><el-date-picker v-model="anchor" type="datetime" value-format="YYYY-MM-DDTHH:mm:ss" placeholder="选择周期起始时间" style="width:100%" /></el-form-item>
               <el-form-item label="原始消息保留期限"><el-select v-model="retention" style="width:100%"><el-option label="30 天" :value="30" /><el-option label="90 天" :value="90" /><el-option label="180 天" :value="180" /><el-option label="永久保留" :value="0" /></el-select><div class="form-help">{{ Number(retention) === 0 ? "永久保留；保存后不会再排入原始消息清理任务。" : savedRetentionCleanupEnabled ? "自动清理已获授权；缩短保留期时会再次要求确认。较早的快照任务尚未完成时，Worker 会延后清理。" : "当前期限仅为配置，自动清理尚未获授权。保存时需要明确确认；未确认前不会排入清理任务。" }}</div></el-form-item>
-              <el-form-item label="修改何时生效"><el-radio-group v-model="effectivePolicy"><el-radio value="下一个周期生效">下一个周期</el-radio><el-radio value="立即重算">立即重算</el-radio></el-radio-group></el-form-item>
+              <el-form-item label="修改何时生效"><el-radio-group v-model="effectivePolicy"><el-radio value="下一个周期生效">下一个周期</el-radio><el-radio value="立即重算">立即重算</el-radio></el-radio-group><div class="form-help">下一个周期：保留当前已安排的周期边界，新间隔在该周期结束后生效。修改时区或启用锚点会重设计划。立即重算：按当前锚点和新间隔重新计算下次边界。</div></el-form-item>
             </div>
           </el-form>
           <el-divider />
@@ -237,7 +273,8 @@ watch(id, () => void loadSettings());
         </section>
         <section class="surface panel" style="margin-top:16px">
           <SectionTitle title="当前计划预览" description="保存后写入本地数据库" />
-          <div class="metric-row"><span>归档间隔</span><span class="metric-value">{{ safeInterval }} 天</span></div>
+          <div class="metric-row"><span>当前选择间隔</span><span class="metric-value">{{ safeInterval }} 天</span></div>
+          <div v-if="autoSnapshot && savedAutoSnapshot && pendingInterval !== null" class="metric-row"><span>当前周期安排</span><span class="metric-value">现为 {{ activeInterval }} 天，下一边界后 {{ pendingInterval }} 天</span></div>
           <div class="metric-row"><span>执行状态</span><span class="pill" :class="autoSnapshot ? 'pill-green' : 'pill-gray'">{{ autoSnapshot ? '自动归档开启' : '自动归档已暂停' }}</span></div>
           <div class="metric-row"><span>生效策略</span><span class="metric-value">{{ effectivePolicy }}</span></div>
           <div class="metric-row"><span>下次归档（按当前表单）</span><span class="metric-value">{{ nextSnapshotPreview }}</span></div>
