@@ -16,7 +16,7 @@
 - 持续消费任务队列：`yarn worker:watch`
 - 调整 Worker 轮询间隔：`YILING_MEMORY_WORKER_INTERVAL_MS`（毫秒，最小 1000）。
 
-Worker 配置模型后会调用 LLM 对周期对话进行结构化总结，验证来源消息 ID，再将快照、长期记忆新增/更新/失效和审计记录放入同一数据库事务。模型未配置时会保留队列任务；失败时按退避策略重试。可运行 `yarn test:scheduler` 和 `yarn test:memory-ai` 执行周期边界与来源校验测试。
+Worker 配置模型后会调用 LLM 对周期对话进行结构化总结，验证来源消息 ID，再将快照、长期记忆新增/更新/失效和审计记录放入同一数据库事务。模型未配置时会保留队列任务；失败时按退避策略重试。可运行 `yarn test:scheduler`、`yarn test:scheduler-db` 和 `yarn test:memory-ai` 检查周期边界、数据库调度幂等性与来源校验。
 
 ## AI 快照重新提炼与任务控制
 
@@ -32,7 +32,7 @@ Worker 配置模型后会调用 LLM 对周期对话进行结构化总结，验�
 - 每个角色的“AI 对话 → 模型参数”可填写 API Base URL、API Key、模型名称、温度和最大输出 Token，并可直接测试 API 连通性；聊天和周期记忆 Worker 都会使用该角色的配置。
 - API Key 使用 AES-256-GCM 加密后保存，网页不会读取或回显密钥原文。加密密钥会自动生成在本机 `.data/credentials-encryption.key`，该文件已被 Git 忽略；备份/迁移数据库时必须一并保管，丢失后需要重新填写 API Key。
 - `LLM_API_KEY`、`LLM_MODEL`、`LLM_BASE_URL` 现在是可选的服务端默认/兼容配置；没有填写角色 API 时才会按规则回退。开发接口仍仅限本机访问；真实渠道 Adapter 与正式管理员登录尚未完成。
-- 检索逻辑可运行 `yarn test:memory-retrieval` 测试；角色模型参数可运行 `yarn test:chat-model-config` 测试。
+- 检索逻辑可运行 `yarn test:memory-retrieval` 测试；角色模型参数和全局 Key 的供应商隔离可运行 `yarn test:chat-model-config` 测试；提示词凭据隔离、来源 ID 校验和异常模型响应可运行 `yarn test:chat-reply` 测试。
 
 ## 从哪里开始
 
