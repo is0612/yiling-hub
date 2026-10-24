@@ -107,6 +107,9 @@ jobs:
       - name: 角色模型参数校验测试
         run: yarn run test:chat-model-config
 
+      - name: 对话模型提示词凭据隔离测试
+        run: yarn run test:chat-reply
+
       - name: ESLint 检查
         run: yarn run lint
 
