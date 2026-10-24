@@ -531,9 +531,57 @@ try {
     "Revoking cleanup authorization must prevent deletion even when a stale job remains queued.",
   );
 
+  // A stale Worker lease must be recovered; exhausted attempts should fail rather than remain RUNNING.
+  const staleLeaseAt = new Date(now.getTime() - 10 * 60 * 1000);
+  const retryableStaleJob = await prisma.memoryJob.create({
+    data: {
+      memoryScopeId: unauthorizedScopeId,
+      type: "CLEAN_EXPIRED_MESSAGES",
+      idempotencyKey: "stale-lease-retry:" + suffix,
+      periodEnd: new Date("2026-09-01T00:00:00.000Z"),
+      status: "RUNNING",
+      attemptCount: 1,
+      maxAttempts: 3,
+      runAt: staleLeaseAt,
+      startedAt: staleLeaseAt,
+      lockedAt: staleLeaseAt,
+      lockedBy: "stale-retry-worker-" + suffix,
+    },
+    select: { id: true },
+  });
+  const exhaustedStaleJob = await prisma.memoryJob.create({
+    data: {
+      memoryScopeId: unauthorizedScopeId,
+      type: "CLEAN_EXPIRED_MESSAGES",
+      idempotencyKey: "stale-lease-exhausted:" + suffix,
+      periodEnd: new Date("2026-09-01T00:00:00.000Z"),
+      status: "RUNNING",
+      attemptCount: 3,
+      maxAttempts: 3,
+      runAt: staleLeaseAt,
+      startedAt: staleLeaseAt,
+      lockedAt: staleLeaseAt,
+      lockedBy: "stale-exhausted-worker-" + suffix,
+    },
+    select: { id: true },
+  });
+  const leaseRecoveryResult = await processNextMemoryJob(prisma, {
+    now,
+    workerId: "lease-recovery-worker-" + suffix,
+  });
+  assert.equal(leaseRecoveryResult.processed, false, "Lease recovery alone should not falsely report a task as newly executed.");
+  const recoveredRetryJob = await prisma.memoryJob.findUniqueOrThrow({ where: { id: retryableStaleJob.id } });
+  assert.equal(recoveredRetryJob.status, "RETRY_WAIT", "An expired lease with attempts remaining should return to RETRY_WAIT.");
+  assert.equal(recoveredRetryJob.lockedAt, null, "Lease recovery should release the stale lock.");
+  assert.equal(recoveredRetryJob.lockedBy, null, "Lease recovery should clear the stale worker identity.");
+  assert.equal(recoveredRetryJob.runAt?.toISOString(), now.toISOString(), "A recovered job should be eligible for retry immediately.");
+  const recoveredExhaustedJob = await prisma.memoryJob.findUniqueOrThrow({ where: { id: exhaustedStaleJob.id } });
+  assert.equal(recoveredExhaustedJob.status, "FAILED", "An expired lease at the attempt limit should become FAILED.");
+  assert.equal(recoveredExhaustedJob.completedAt?.toISOString(), now.toISOString(), "Exhausted stale jobs should record their completion time.");
+  assert.equal(recoveredExhaustedJob.lockedAt, null, "Exhausted stale jobs should release their lock.");
   console.log("Memory retention integration passed: safe deletion, blocked-snapshot protection, authorization revocation, widened-retention protection, provenance preservation, accurate audit data, and cleanup scheduling idempotency.");
 
-  console.log("Memory DB integration passed: concurrent scheduling, overdue backfill, cursor advancement, repeat-run idempotency, worker replay reuse, and retention cleanup.");
+  console.log("Memory DB integration passed: concurrent scheduling/worker claiming, overdue backfill, cursor advancement, repeat-run idempotency, worker replay reuse, lease recovery, and retention cleanup.");
 } finally {
   await prisma.auditLog.deleteMany({ where: { characterId } });
   await prisma.characterMemorySetting.deleteMany({ where: { characterId } });
