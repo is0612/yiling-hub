@@ -207,6 +207,12 @@ try {
     },
     select: { id: true },
   });
+  // Leave one failed overdue period in the primary scope to assert cleanup is conservatively blocked there.
+  await prisma.memoryJob.update({
+    where: { idempotencyKey: firstJob.idempotencyKey },
+    data: { status: "FAILED", completedAt: now, lastError: "集成测试：模拟失败的逾期快照。" },
+  });
+
   // Disable automatic snapshots only after scheduler/backfill assertions; retention remains enabled.
   await prisma.characterMemorySetting.update({
     where: { characterId },
