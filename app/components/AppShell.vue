@@ -13,6 +13,7 @@ import {
   SwitchButton,
   User,
   UserFilled,
+  Connection,
 } from "@element-plus/icons-vue";
 
 const route = useRoute();
@@ -78,6 +79,7 @@ const navigation = computed<NavigationItem[]>(() => {
     items.push(
       { key: "channels", label: "渠道管理", href: "/channels", icon: ChatDotRound, section: "系统管理" },
       { key: "tasks", label: "任务监控", href: "/tasks", icon: DataAnalysis },
+      { key: "identities", label: "身份管理", href: "/identities", icon: Connection },
       { key: "users", label: "用户管理", href: "/users", icon: UserFilled },
       { key: "settings", label: "系统设置", href: "/settings", icon: Setting },
     );
