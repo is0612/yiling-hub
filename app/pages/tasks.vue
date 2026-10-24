@@ -123,6 +123,23 @@ function periodText(task: MemoryTask) {
   return `${formatDate(task.periodStart)} — ${formatDate(task.periodEnd)}`;
 }
 
+function taskIssueTitle(task: MemoryTask) {
+  if (task.status === "SKIPPED") return "跳过原因";
+  if (task.status === "RETRY_WAIT") return "最近失败原因";
+  if (task.status === "FAILED") return "失败原因";
+  return "任务信息";
+}
+
+function taskStatusHint(task: MemoryTask) {
+  if (task.status === "QUEUED") return "任务已进入持久化队列，等待 Worker 执行。";
+  if (task.status === "RUNNING") return "Worker 正在执行该任务。";
+  if (task.status === "SUCCEEDED") return "任务已完成，没有记录错误。";
+  if (task.status === "SKIPPED") return "该任务没有需要处理的活动，已按规则跳过。";
+  if (task.status === "RETRY_WAIT") return "任务执行未成功，系统会在计划时间再次尝试。";
+  if (task.status === "CANCELLED") return "任务已取消，历史记录与审计信息会保留。";
+  return "该任务已失败，请查看失败原因并在必要时重新入队。";
+}
+
 async function loadTasks() {
   loading.value = true;
   loadError.value = "";
@@ -336,8 +353,14 @@ onMounted(() => void loadTasks());
           <div v-if="selectedTask.cleanupResult?.cutoff" class="detail-row"><span>清理截止时间</span><strong>{{ formatDate(selectedTask.cleanupResult.cutoff) }} 之前</strong></div>
           <div v-if="selectedTask.cleanupResult" class="detail-row"><span>审计记录时间</span><strong>{{ formatDate(selectedTask.cleanupResult.recordedAt) }}</strong></div>
         </template>
-        <div v-if="selectedTask.lastError" class="task-error"><strong>最近错误</strong><p>{{ selectedTask.lastError }}</p></div>
-        <div v-else class="info-callout" style="margin-top:14px"><el-icon><Files /></el-icon><span>当前为持久化排队记录；还没有 Worker 执行日志。</span></div>
+        <div v-if="selectedTask.lastError" class="task-error">
+          <strong>{{ taskIssueTitle(selectedTask) }}</strong>
+          <p>{{ selectedTask.lastError }}</p>
+        </div>
+        <div v-else class="info-callout" style="margin-top:14px">
+          <el-icon><Files /></el-icon>
+          <span>{{ taskStatusHint(selectedTask) }}</span>
+        </div>
       </template>
       <template #footer>
         <el-button v-if="selectedTask && ['FAILED', 'RETRY_WAIT', 'CANCELLED'].includes(selectedTask.status) && ['GENERATE_SNAPSHOT', 'REGENERATE_SNAPSHOT', 'CLEAN_EXPIRED_MESSAGES'].includes(selectedTask.type)" :loading="taskActionLoading" @click="retrySelectedTask"><el-icon><Refresh /></el-icon>重新入队</el-button>
