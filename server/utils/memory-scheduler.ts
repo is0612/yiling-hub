@@ -14,9 +14,11 @@ export function buildDueMemoryPeriods(input: {
   nextSnapshotAt: Date | null;
   intervalDays: number;
   now: Date;
+  pendingIntervalDays?: number | null;
   maxPeriods?: number;
 }): { periods: DueMemoryPeriod[]; nextSnapshotAt: Date | null; stillDue: boolean } {
   const { memoryScopeId, nextSnapshotAt, intervalDays, now } = input;
+  const pendingIntervalDays = input.pendingIntervalDays ?? null;
   const maxPeriods = input.maxPeriods ?? DEFAULT_MAX_PERIODS_PER_SETTING;
   if (
     !nextSnapshotAt ||
@@ -24,6 +26,8 @@ export function buildDueMemoryPeriods(input: {
     !Number.isFinite(now.getTime()) ||
     !Number.isInteger(intervalDays) ||
     intervalDays < 1 ||
+    intervalDays > 365 ||
+    (pendingIntervalDays !== null && (!Number.isInteger(pendingIntervalDays) || pendingIntervalDays < 1 || pendingIntervalDays > 365)) ||
     !Number.isInteger(maxPeriods) ||
     maxPeriods < 1 ||
     nextSnapshotAt.getTime() > now.getTime()
@@ -31,18 +35,28 @@ export function buildDueMemoryPeriods(input: {
     return { periods: [], nextSnapshotAt, stillDue: false };
   }
 
-  const intervalMs = intervalDays * DAY_MS;
   const periods: DueMemoryPeriod[] = [];
   let periodEnd = new Date(nextSnapshotAt);
+  let intervalForCurrentPeriod = intervalDays;
+  let pendingIntervalAppliesAfterCurrentPeriod = pendingIntervalDays !== null;
 
   while (periodEnd.getTime() <= now.getTime() && periods.length < maxPeriods) {
+    const intervalMs = intervalForCurrentPeriod * DAY_MS;
     const periodStart = new Date(periodEnd.getTime() - intervalMs);
     periods.push({
       periodStart,
       periodEnd: new Date(periodEnd),
       idempotencyKey: `auto-snapshot:${memoryScopeId}:${periodStart.toISOString()}:${periodEnd.toISOString()}`,
     });
-    periodEnd = new Date(periodEnd.getTime() + intervalMs);
+
+    // The in-flight period uses the active interval. The pending interval applies
+    // to the period that starts at this boundary and all subsequent periods.
+    const intervalForNextPeriod = pendingIntervalAppliesAfterCurrentPeriod
+      ? pendingIntervalDays!
+      : intervalForCurrentPeriod;
+    periodEnd = new Date(periodEnd.getTime() + intervalForNextPeriod * DAY_MS);
+    intervalForCurrentPeriod = intervalForNextPeriod;
+    pendingIntervalAppliesAfterCurrentPeriod = false;
   }
 
   return {
@@ -82,6 +96,7 @@ export async function enqueueDueMemorySnapshots(
     select: {
       characterId: true,
       snapshotIntervalDays: true,
+      pendingSnapshotIntervalDays: true,
       anchorAt: true,
       nextSnapshotAt: true,
       autoSnapshotEnabled: true,
@@ -168,6 +183,7 @@ export async function enqueueDueMemorySnapshots(
           select: {
             characterId: true,
             snapshotIntervalDays: true,
+            pendingSnapshotIntervalDays: true,
             anchorAt: true,
             nextSnapshotAt: true,
             autoSnapshotEnabled: true,
@@ -187,6 +203,8 @@ export async function enqueueDueMemorySnapshots(
                 autoSnapshotEnabled: true,
                 nextSnapshotAt: null,
                 anchorAt: latest.anchorAt,
+                snapshotIntervalDays: latest.snapshotIntervalDays,
+                pendingSnapshotIntervalDays: latest.pendingSnapshotIntervalDays,
               },
               data: { nextSnapshotAt: firstBoundary },
             });
@@ -201,6 +219,7 @@ export async function enqueueDueMemorySnapshots(
           memoryScopeId,
           nextSnapshotAt: firstBoundary,
           intervalDays: latest.snapshotIntervalDays,
+          pendingIntervalDays: latest.pendingSnapshotIntervalDays,
           now,
           maxPeriods: options.maxPeriodsPerSetting,
         });
@@ -227,8 +246,15 @@ export async function enqueueDueMemorySnapshots(
             characterId: latest.characterId,
             autoSnapshotEnabled: true,
             nextSnapshotAt: latest.nextSnapshotAt,
+            snapshotIntervalDays: latest.snapshotIntervalDays,
+            pendingSnapshotIntervalDays: latest.pendingSnapshotIntervalDays,
           },
-          data: { nextSnapshotAt: built.nextSnapshotAt },
+          data: {
+            nextSnapshotAt: built.nextSnapshotAt,
+            ...(latest.pendingSnapshotIntervalDays !== null
+              ? { snapshotIntervalDays: latest.pendingSnapshotIntervalDays, pendingSnapshotIntervalDays: null }
+              : {}),
+          },
         });
         if (updateResult.count !== 1) {
           throw new Error("MEMORY_SCHEDULER_RACE");
