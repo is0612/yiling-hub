@@ -40,6 +40,7 @@ globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise
 };
 
 const input = {
+  apiKey: secretApiKey,
   apiBaseUrl: privateProviderUrl,
   model: "test-memory-model",
   periodStart: "2026-10-01T00:00:00.000Z",
@@ -69,7 +70,7 @@ const input = {
 };
 
 try {
-  const result = await analyzeMemoryPeriod({ ...input, apiKey: secretApiKey });
+  const result = await analyzeMemoryPeriod(input);
 
   assert.equal(capturedUrl, privateProviderUrl + "/chat/completions");
   assert.equal(capturedHeaders?.get("authorization"), "Bearer " + secretApiKey);
@@ -103,11 +104,21 @@ try {
   process.env.LLM_BASE_URL = "https://global-provider.example/v1";
   const callsBeforeMissingKeyTest = fetchCalls;
   await assert.rejects(
-    analyzeMemoryPeriod(input),
+    analyzeMemoryPeriod({ ...input, apiKey: "" }),
     /LLM_NOT_CONFIGURED/,
-    "Missing explicit credentials must fail closed rather than using the global key.",
+    "Missing API keys must fail closed rather than using the global key.",
   );
-  assert.equal(fetchCalls, callsBeforeMissingKeyTest, "No network request should be made without a resolved API key.");
+  await assert.rejects(
+    analyzeMemoryPeriod({ ...input, apiBaseUrl: "" }),
+    /LLM_NOT_CONFIGURED/,
+    "Missing provider URLs must not silently fall back to the environment default.",
+  );
+  await assert.rejects(
+    analyzeMemoryPeriod({ ...input, model: "" }),
+    /LLM_NOT_CONFIGURED/,
+    "Missing model names must not silently fall back to the environment default.",
+  );
+  assert.equal(fetchCalls, callsBeforeMissingKeyTest, "No network request should be made when resolved connection settings are missing.");
 
   console.log("Memory AI request tests passed: credential isolation, prompt allow-list, and fail-closed provider-key handling.");
 } finally {
