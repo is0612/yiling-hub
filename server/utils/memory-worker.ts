@@ -98,7 +98,7 @@ export async function processNextMemoryJob(
       where: {
         memoryScopeId: candidate.memoryScopeId,
         type: { in: ["GENERATE_SNAPSHOT", "REGENERATE_SNAPSHOT"] },
-        status: { in: ["QUEUED", "RUNNING", "RETRY_WAIT"] },
+        status: { in: ["QUEUED", "RUNNING", "RETRY_WAIT", "FAILED"] },
         periodStart: { lt: candidate.periodEnd },
       },
       select: { id: true },
@@ -159,7 +159,7 @@ export async function processNextMemoryJob(
 
   const staleJobs = await prisma.memoryJob.findMany({
     where: {
-      type: { in: ["GENERATE_SNAPSHOT", "REGENERATE_SNAPSHOT"] },
+      type: { in: ["GENERATE_SNAPSHOT", "REGENERATE_SNAPSHOT", "CLEAN_EXPIRED_MESSAGES"] },
       status: "RUNNING",
       lockedAt: { lt: staleBefore },
       ...ownership,
