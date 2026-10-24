@@ -82,7 +82,27 @@ try {
   assert.deepEqual(result.usedMemoryIds, ["memory-1"], "Invented source IDs must be filtered out.");
   assert.deepEqual(result.usedSnapshotIds, ["snapshot-1"]);
   assert.equal(result.usage?.totalTokens, 20);
-  console.log("Chat reply tests passed: provider credentials stay out of prompts and source IDs are validated.");
+
+  globalThis.fetch = async (): Promise<Response> => new Response("not-json", {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+  await assert.rejects(
+    generateConversationReply({
+      characterName: "测试角色",
+      characterPrompt: "温柔地回复。",
+      model: "test-chat-model",
+      apiKey: secretApiKey,
+      apiBaseUrl: privateProviderUrl,
+      currentMessage: "再试一次",
+      recentMessages: [],
+      memories: [],
+      snapshots: [],
+    }),
+    /LLM_INVALID_RESPONSE: 模型服务没有返回有效的 JSON 响应。/,
+    "Malformed provider JSON should become a safe, predictable model error.",
+  );
+  console.log("Chat reply tests passed: prompt credential isolation, source ID validation, and malformed provider response handling.");
 } finally {
   globalThis.fetch = originalFetch;
 }
