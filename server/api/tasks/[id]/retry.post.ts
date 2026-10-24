@@ -19,7 +19,7 @@ export default defineEventHandler(async (event) => {
         type: true,
         status: true,
         attemptCount: true,
-        memoryScope: { select: { character: { select: { id: true, memorySetting: { select: { rawMessageCleanupEnabled: true, rawMessageRetentionDays: true } } } } },
+        memoryScope: { select: { character: { select: { id: true, memorySetting: { select: { rawMessageCleanupEnabled: true, rawMessageRetentionDays: true } } } } } },
       },
     });
     if (!job) throw createError({ statusCode: 404, statusMessage: "任务不存在。" });
