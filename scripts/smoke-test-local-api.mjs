@@ -161,6 +161,7 @@ const initialSettings = await request(`/api/characters/${created.id}/memory-sett
 assert(initialSettings.snapshotIntervalDays === 8, "New character should get an 8-day default interval.");
 assert(initialSettings.changePolicy === "NEXT_CYCLE", "New character should use NEXT_CYCLE by default.");
 assert(initialSettings.rawMessageRetentionDays === 0, "New characters should preserve raw messages permanently until the user opts into cleanup.");
+assert(initialSettings.rawMessageCleanupEnabled === false, "New characters should require an explicit cleanup opt-in.");
 
 const schedulerAnchorAt = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
 const savedSettings = await request(`/api/characters/${created.id}/memory-settings`, {
@@ -170,6 +171,7 @@ const savedSettings = await request(`/api/characters/${created.id}/memory-settin
     timezone: "America/Los_Angeles",
     anchorAt: schedulerAnchorAt.toISOString(),
     rawMessageRetentionDays: 30,
+    rawMessageCleanupEnabled: true
     autoSnapshotEnabled: true,
     changePolicy: "IMMEDIATE_RECALC",
   },
@@ -189,6 +191,7 @@ const invalidRetentionResponse = await fetch(
       timezone: "America/Los_Angeles",
       anchorAt: schedulerAnchorAt.toISOString(),
       rawMessageRetentionDays: 45,
+      rawMessageCleanupEnabled: true
       autoSnapshotEnabled: true,
       changePolicy: "IMMEDIATE_RECALC",
     }),
@@ -443,6 +446,7 @@ const retentionSettings = await request(`/api/characters/${retentionCharacter.id
     timezone: "America/Los_Angeles",
     anchorAt: new Date(Date.now() - 90 * dayMs).toISOString(),
     rawMessageRetentionDays: 30,
+    rawMessageCleanupEnabled: true
     autoSnapshotEnabled: false,
     changePolicy: "NEXT_CYCLE",
   },
@@ -497,6 +501,41 @@ assert(
   "Task API should expose the exact cutoff between the expired and retained messages."
 );
 
+// A finite retention value is not consent by itself (covers legacy settings after upgrade).
+const unoptedRetentionCharacter = await request("/api/characters", {
+  method: "POST",
+  body: {
+    name: "CI 未授权清理测试 " + unique,
+    alias: "CI 未授权清理",
+    description: "确保有限保留天数本身不会自动授权删除。",
+    personality: "仅用于自动化测试。",
+  },
+});
+const unoptedSettings = await request(
+  `/api/characters/${unoptedRetentionCharacter.id}/memory-settings`,
+  {
+    method: "PATCH",
+    body: {
+      snapshotIntervalDays: 8,
+      timezone: "America/Los_Angeles",
+      anchorAt: new Date(Date.now() - 90 * dayMs).toISOString(),
+      rawMessageRetentionDays: 90,
+      rawMessageCleanupEnabled: false,
+      autoSnapshotEnabled: false,
+      changePolicy: "NEXT_CYCLE",
+    },
+  }
+);
+assert(unoptedSettings.rawMessageRetentionDays === 90 && unoptedSettings.rawMessageCleanupEnabled === false, "Finite retention can be configured without authorizing cleanup.");
+await request("/api/tasks/scheduler/run", { method: "POST" });
+const tasksWithUnoptedRetention = await request("/api/tasks?limit=100");
+assert(
+  !tasksWithUnoptedRetention.items.some((task) =>
+    task.characterId === unoptedRetentionCharacter.id && task.type === "CLEAN_EXPIRED_MESSAGES"
+  ),
+  "A finite retention setting without explicit opt-in must not queue cleanup."
+);
+
 // Permanent retention is a safety mode: scheduler must never enqueue cleanup for it.
 const permanentRetentionCharacter = await request("/api/characters", {
   method: "POST",
@@ -516,6 +555,7 @@ const permanentSettings = await request(
       timezone: "America/Los_Angeles",
       anchorAt: new Date().toISOString(),
       rawMessageRetentionDays: 0,
+      rawMessageCleanupEnabled: false
       autoSnapshotEnabled: false,
       changePolicy: "NEXT_CYCLE",
     },

@@ -60,6 +60,7 @@ try {
       nextSnapshotAt,
       autoSnapshotEnabled: true,
       rawMessageRetentionDays: 30,
+      rawMessageCleanupEnabled: true
     },
   });
 
