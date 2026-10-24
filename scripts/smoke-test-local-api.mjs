@@ -171,7 +171,7 @@ const savedSettings = await request(`/api/characters/${created.id}/memory-settin
     timezone: "America/Los_Angeles",
     anchorAt: schedulerAnchorAt.toISOString(),
     rawMessageRetentionDays: 30,
-    rawMessageCleanupEnabled: true
+    rawMessageCleanupEnabled: true,
     autoSnapshotEnabled: true,
     changePolicy: "IMMEDIATE_RECALC",
   },
@@ -191,7 +191,7 @@ const invalidRetentionResponse = await fetch(
       timezone: "America/Los_Angeles",
       anchorAt: schedulerAnchorAt.toISOString(),
       rawMessageRetentionDays: 45,
-      rawMessageCleanupEnabled: true
+      rawMessageCleanupEnabled: true,
       autoSnapshotEnabled: true,
       changePolicy: "IMMEDIATE_RECALC",
     }),
@@ -446,7 +446,7 @@ const retentionSettings = await request(`/api/characters/${retentionCharacter.id
     timezone: "America/Los_Angeles",
     anchorAt: new Date(Date.now() - 90 * dayMs).toISOString(),
     rawMessageRetentionDays: 30,
-    rawMessageCleanupEnabled: true
+    rawMessageCleanupEnabled: true,
     autoSnapshotEnabled: false,
     changePolicy: "NEXT_CYCLE",
   },
@@ -555,7 +555,7 @@ const permanentSettings = await request(
       timezone: "America/Los_Angeles",
       anchorAt: new Date().toISOString(),
       rawMessageRetentionDays: 0,
-      rawMessageCleanupEnabled: false
+      rawMessageCleanupEnabled: false,
       autoSnapshotEnabled: false,
       changePolicy: "NEXT_CYCLE",
     },
