@@ -55,7 +55,7 @@ export function validateChatApiBaseUrl(value: string): string {
     : hostname;
   const isLoopbackName = unbracketedHostname === "localhost"
     || unbracketedHostname.endsWith(".localhost")
-    || unbracketedHostname === "127.0.0.1"
+    || /^127(?:\.\d{1,3}){3}$/.test(unbracketedHostname)
     || unbracketedHostname === "::1";
   const ipVersion = isIP(unbracketedHostname);
   const isPrivateIpv4 = ipVersion === 4 && (() => {
