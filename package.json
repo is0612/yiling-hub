@@ -30,7 +30,8 @@
     "worker:watch": "tsx scripts/run-memory-worker.ts --watch",
     "test:memory-retrieval": "tsx scripts/test-memory-retrieval.ts",
     "test:chat-model-config": "tsx scripts/test-chat-model-config.ts",
-    "test:chat-reply": "tsx scripts/test-chat-reply.ts"
+    "test:chat-reply": "tsx scripts/test-chat-reply.ts",
+    "verify:local": "yarn run db:validate && yarn run db:generate && yarn nuxt prepare && yarn run typecheck && yarn run test:scheduler && yarn run test:scheduler-db && yarn run test:memory-ai && yarn run test:memory-retrieval && yarn run test:chat-model-config && yarn run test:chat-reply && yarn run lint && yarn run build"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",
