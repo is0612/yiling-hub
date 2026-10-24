@@ -40,7 +40,6 @@ globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise
 };
 
 const input = {
-  apiKey: secretApiKey,
   apiBaseUrl: privateProviderUrl,
   model: "test-memory-model",
   periodStart: "2026-10-01T00:00:00.000Z",
@@ -70,7 +69,7 @@ const input = {
 };
 
 try {
-  const result = await analyzeMemoryPeriod(input);
+  const result = await analyzeMemoryPeriod({ ...input, apiKey: secretApiKey });
 
   assert.equal(capturedUrl, privateProviderUrl + "/chat/completions");
   assert.equal(capturedHeaders?.get("authorization"), "Bearer " + secretApiKey);
@@ -104,7 +103,7 @@ try {
   process.env.LLM_BASE_URL = "https://global-provider.example/v1";
   const callsBeforeMissingKeyTest = fetchCalls;
   await assert.rejects(
-    analyzeMemoryPeriod({ ...input, apiKey: undefined }),
+    analyzeMemoryPeriod(input),
     /LLM_NOT_CONFIGURED/,
     "Missing explicit credentials must fail closed rather than using the global key.",
   );
