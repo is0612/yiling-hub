@@ -78,6 +78,11 @@ const server = http.createServer(async (request, response) => {
       }
       const memories = Array.isArray(input.memories) ? input.memories : [];
       const snapshots = Array.isArray(input.snapshots) ? input.snapshots : [];
+      const privateScopeSentinel = "YILING_PRIVATE_SCOPE_ONLY_SENTINEL_";
+      if (JSON.stringify({ memories, snapshots }).includes(privateScopeSentinel)) {
+        sendJson(response, 400, { error: { message: "Private-scope memory must never enter the role-global chat prompt." } });
+        return;
+      }
       const firstMemory = memories[0] && typeof memories[0].id === "string" ? memories[0].id : null;
       const firstSnapshot = snapshots[0] && typeof snapshots[0].id === "string" ? snapshots[0].id : null;
       sendJson(response, 200, chatCompletion(body, {

@@ -1,2 +1,2 @@
 ALTER TABLE "character_memory_settings"
-ADD COLUMN "pendingSnapshotIntervalDays" INTEGER;
+ADD COLUMN IF NOT EXISTS "pendingSnapshotIntervalDays" INTEGER;
