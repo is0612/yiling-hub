@@ -473,4 +473,3 @@ assert(
 );
 
 console.log("Local API smoke test passed: character CRUD, encrypted per-character API settings and connection test, memory settings, transcript import, scheduler backfill, local-mock AI extraction, source-ID validation, persisted provenance, manual and AI snapshot versions, safe AI regeneration, task cancel/requeue, recycle-bin lifecycle, context-aware AI chat, conversation search/rename, archive/restore, archived write protection, and end-to-end raw-message retention cleanup with audit-result visibility.");
- character CRUD, encrypted per-character API settings and connection test, memory settings, transcript import, scheduler backfill, local-mock AI extraction, source-ID validation, persisted provenance, manual and AI snapshot versions, safe AI regeneration, task cancel/requeue, recycle-bin lifecycle, context-aware AI chat, conversation search/rename, archive/restore, and archived write protection.");
