@@ -18,6 +18,8 @@ const scopeId = randomUUID();
 const retentionScopeId = randomUUID();
 const conversationId = randomUUID();
 const blockedConversationId = randomUUID();
+const unauthorizedScopeId = randomUUID();
+const unauthorizedConversationId = randomUUID();
 const username = `scheduler-test-${suffix}`;
 const now = new Date("2026-10-24T12:00:00.000Z");
 const nextSnapshotAt = new Date("2026-10-01T00:00:00.000Z");
@@ -327,13 +329,67 @@ try {
     "A repeated scheduler pass must not duplicate a completed cleanup audit.",
   );
 
-  console.log("Memory retention integration passed: safe deletion, blocked-snapshot protection, provenance preservation, accurate audit data, and cleanup scheduling idempotency.");
+  // A legacy cleanup job must not delete anything after explicit authorization is revoked.
+  await prisma.characterMemorySetting.update({
+    where: { characterId },
+    data: { rawMessageCleanupEnabled: false },
+  });
+  await prisma.memoryScope.create({
+    data: {
+      id: unauthorizedScopeId,
+      characterId,
+      scopeType: "USER_PRIVATE",
+      scopeKey: `unauthorized-cleanup-test:${suffix}`,
+    },
+  });
+  await prisma.conversation.create({
+    data: {
+      id: unauthorizedConversationId,
+      characterId,
+      memoryScopeId: unauthorizedScopeId,
+      title: "撤销清理授权后保护原文",
+    },
+  });
+  const unauthorizedMessage = await prisma.message.create({
+    data: {
+      conversationId: unauthorizedConversationId,
+      role: "USER",
+      eventType: "message",
+      content: "撤销授权后，即使有旧清理任务也必须保留此消息。",
+      occurredAt: new Date("2026-08-01T00:00:00.000Z"),
+    },
+    select: { id: true },
+  });
+  const legacyCleanupJob = await prisma.memoryJob.create({
+    data: {
+      memoryScopeId: unauthorizedScopeId,
+      type: "CLEAN_EXPIRED_MESSAGES",
+      idempotencyKey: `legacy-cleanup-without-consent:${suffix}`,
+      periodEnd: new Date("2026-09-01T00:00:00.000Z"),
+      status: "QUEUED",
+      runAt: now,
+    },
+    select: { id: true },
+  });
+  const unauthorizedResult = await processNextMemoryJob(prisma, {
+    now,
+    workerId: `unauthorized-retention-worker-${suffix}`,
+  });
+  assert.equal(unauthorizedResult.jobId, legacyCleanupJob.id, "Worker should inspect the legacy cleanup task.");
+  assert.equal(unauthorizedResult.status, "CANCELLED", "Worker must cancel queued cleanup after authorization is revoked.");
+  assert.equal(
+    await prisma.message.count({ where: { id: unauthorizedMessage.id } }),
+    1,
+    "Revoking cleanup authorization must prevent deletion even when a stale job remains queued.",
+  );
+
+  console.log("Memory retention integration passed: safe deletion, blocked-snapshot protection, explicit authorization revocation, provenance preservation, accurate audit data, and cleanup scheduling idempotency.");
 
   console.log("Memory DB integration passed: concurrent scheduling, overdue backfill, cursor advancement, repeat-run idempotency, worker replay reuse, and retention cleanup.");
 } finally {
   await prisma.characterMemorySetting.deleteMany({ where: { characterId } });
-  await prisma.conversation.deleteMany({ where: { id: { in: [conversationId, blockedConversationId] } } });
-  await prisma.memoryScope.deleteMany({ where: { id: { in: [scopeId, retentionScopeId] } } });
+  await prisma.conversation.deleteMany({ where: { id: { in: [conversationId, blockedConversationId, unauthorizedConversationId] } } });
+  await prisma.memoryScope.deleteMany({ where: { id: { in: [scopeId, retentionScopeId, unauthorizedScopeId] } } });
   await prisma.character.deleteMany({ where: { id: characterId } });
   await prisma.user.deleteMany({ where: { id: ownerId } });
   await prisma.$disconnect();
