@@ -27,16 +27,18 @@ try {
       username,
       passwordHash,
       displayName: "本地开发用户",
+      role: "ADMIN",
     },
     update: {
       username,
       passwordHash,
       displayName: "本地开发用户",
+      role: "ADMIN",
     },
-    select: { id: true, username: true },
+    select: { id: true, username: true, role: true },
   });
 
-  console.log(`本地开发用户已准备：${user.username} (${user.id})`);
+  console.log(`本地开发管理员已准备：${user.username} (${user.id}, ${user.role})`);
   console.log("可使用该用户名和 DEV_OWNER_PASSWORD 在网页登录；本地开发默认仍允许 localhost 免登录回退。");
 } finally {
   await prisma.$disconnect();
