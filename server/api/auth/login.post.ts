@@ -1,10 +1,12 @@
 import { createError, getHeader, readBody, setHeader } from "h3";
 import {
+  DUMMY_PASSWORD_HASH,
   buildSessionCookie,
   clientAddressOf,
   countRecentLoginFailures,
   createSession,
   isLoginThrottled,
+  readPasswordField,
   recordLoginAttempt,
   revokeExpiredSessions,
   sessionTtlMs,
@@ -13,19 +15,10 @@ import {
 import { readTrimmedString } from "../../utils/local-api";
 import { getPrisma } from "../../utils/prisma";
 
-// Verified against this constant when the account does not exist, so a missing user and a wrong
-// password take comparable time and cannot be told apart by latency.
-const DUMMY_PASSWORD_HASH = "scrypt$1NXKk3kzK9HVvczz_d_I4Q$NrOGKeahE3B0LhCEErUpuOa1gMif9MMfKSeN_8hw5DKBSkgAJb7TtwsVvtF3VCll9RUGfpUp6KK1saQ_w-0wug";
-
 export default defineEventHandler(async (event) => {
   const body = await readBody<Record<string, unknown>>(event);
   const username = readTrimmedString(body?.username, "用户名", 100, { required: true });
-  if (typeof body?.password !== "string" || body.password.length === 0) {
-    throw createError({ statusCode: 400, statusMessage: "密码不能为空。" });
-  }
-  if (body.password.length > 4096) {
-    throw createError({ statusCode: 400, statusMessage: "密码长度超出限制。" });
-  }
+  const password = readPasswordField(body?.password, "密码");
 
   const ip = clientAddressOf(event);
   const failures = await countRecentLoginFailures({ username, ip });
@@ -38,7 +31,7 @@ export default defineEventHandler(async (event) => {
     where: { username },
     select: { id: true, username: true, displayName: true, status: true, passwordHash: true },
   });
-  const passwordMatches = await verifyPassword(body.password, account?.passwordHash ?? DUMMY_PASSWORD_HASH);
+  const passwordMatches = await verifyPassword(password, account?.passwordHash ?? DUMMY_PASSWORD_HASH);
   const authenticated = Boolean(account) && passwordMatches && account?.status === "ACTIVE";
 
   await recordLoginAttempt({ username, ip, succeeded: authenticated });

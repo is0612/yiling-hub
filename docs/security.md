@@ -13,8 +13,11 @@
 - **CSRF**：所有 `/api` 请求校验 `Origin` 与 `Sec-Fetch-Site` 必须与当前 Host 一致；写操作额外依赖 `SameSite=Strict`。浏览器跨源/跨站请求返回 403。没有这两个头的非浏览器客户端（脚本、服务端调用）仍可访问，但同样需要有效会话。
 - **未登录语义**：业务接口返回 401。携带失效/已撤销 Cookie 时**不会**静默回退到本地开发身份，必须重新登录。
 - **本地开发回退**：仅当 `import.meta.dev` 为真、`YILING_LOCAL_API_ENABLED=true`、`YILING_ALLOW_DEV_OWNER_BYPASS` 未设为 `false`、且 Host 是 localhost/回环地址时，才以 `DEV_OWNER_ID` 身份运行。生产构建不满足 `import.meta.dev`，因此不存在该通道。
+- **密码修改**（`POST /api/auth/password`）：校验当前密码后写入新的 scrypt 哈希。新密码要求 10–128 个字符、同时包含字母和数字、且不能与当前密码相同；**策略只约束新密码**，不会让旧密码失效的账号被锁在门外。修改成功后撤销该账号其他所有会话，发起修改的会话保持有效。
+- **会话管理**（`GET /api/auth/sessions`、`DELETE /api/auth/sessions/{id}`、`POST /api/auth/sessions/revoke-others`）：设备列表只返回会话 id、时间戳和由 User-Agent 派生的设备名，**不返回令牌哈希**。撤销只能作用于当前账号的会话，越权 id 与不存在的 id 同样返回 404，避免通过错误差异探测其他账号是否存在会话。撤销当前会话会同时清除 Cookie。
+- **登录审计**：改密与撤销会话写入 `audit_logs`（`auth.password_changed`、`auth.session_revoked`、`auth.sessions_revoked`）。
 
-仍待完成：密码修改与重置流程、多用户与角色权限、会话管理界面（查看/踢出其他设备）、登录审计日志、以及部署侧的 HTTPS 与反向代理信任配置。
+仍待完成：密码重置（忘记密码）流程、多用户与角色权限、登录/登出的完整审计视图，以及部署侧的 HTTPS 与反向代理信任配置。
 
 ## 2. 服务端 Token
 

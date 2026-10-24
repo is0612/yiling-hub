@@ -3,11 +3,15 @@ import { randomBytes, scryptSync } from "node:crypto";
 import {
   buildClearSessionCookie,
   buildSessionCookie,
+  checkPasswordPolicy,
   createSessionToken,
   DEFAULT_SESSION_TTL_HOURS,
+  describeUserAgent,
   hashPassword,
   hashSessionToken,
   isLoginThrottled,
+  passwordPolicyMessage,
+  readPasswordField,
   resolveActor,
   sessionTtlMs,
   verifyPassword,
@@ -122,4 +126,59 @@ assert.equal(isLoginThrottled({ userFailures: 5, ipFailures: 0 }), true);
 assert.equal(isLoginThrottled({ userFailures: 0, ipFailures: 20 }), true);
 assert.equal(isLoginThrottled({ userFailures: 0, ipFailures: 19 }), false);
 
-console.log("Auth unit tests passed: scrypt hashing and seed compatibility, token hashing, cookie attributes, TTL bounds, same-origin/CSRF matrix, actor fallback refusal, and login throttling thresholds.");
+// 9. Password policy for new passwords (existing passwords are never re-validated).
+assert.deepEqual(checkPasswordPolicy("Abc12345"), { ok: false, reason: "too_short" });
+assert.deepEqual(checkPasswordPolicy("A1" + "b".repeat(127)), { ok: false, reason: "too_long" });
+assert.deepEqual(checkPasswordPolicy("1234567890"), { ok: false, reason: "needs_letter" });
+assert.deepEqual(checkPasswordPolicy("abcdefghij"), { ok: false, reason: "needs_digit" });
+assert.deepEqual(checkPasswordPolicy("Abcdefgh12", "Abcdefgh12"), { ok: false, reason: "reused" });
+assert.deepEqual(checkPasswordPolicy("Abcdefgh12"), { ok: true });
+assert.deepEqual(checkPasswordPolicy("abcdefghij1"), { ok: true }, "Symbols stay optional so the rule is not a barrier.");
+assert(checkPasswordPolicy("Abcdefgh12", "Different99").ok, "A different password is never reported as reused.");
+assert(passwordPolicyMessage("too_short").includes("10"), "The too-short message must state the minimum length.");
+
+// 9b. Password fields are read defensively.
+function expectStatus(fn: () => unknown, statusCode: number) {
+  try {
+    fn();
+  } catch (error) {
+    assert.equal((error as { statusCode?: number }).statusCode, statusCode);
+    return;
+  }
+  assert.fail("Expected the call to throw status " + statusCode + ".");
+}
+expectStatus(() => readPasswordField("", "密码"), 400);
+expectStatus(() => readPasswordField(undefined, "密码"), 400);
+expectStatus(() => readPasswordField(1234, "密码"), 400);
+expectStatus(() => readPasswordField("x".repeat(4097), "密码"), 400);
+assert.equal(readPasswordField("correct horse battery staple", "密码"), "correct horse battery staple");
+
+// 10. Device labels are derived from the User-Agent and never leak the raw string.
+assert.deepEqual(describeUserAgent(""), { label: "未知设备", kind: "unknown" });
+assert.deepEqual(describeUserAgent(null), { label: "未知设备", kind: "unknown" });
+assert.deepEqual(
+  describeUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0"),
+  { label: "Windows · Edge", kind: "desktop" },
+  "Edge must not be reported as Chrome.",
+);
+assert.deepEqual(
+  describeUserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"),
+  { label: "macOS · Safari", kind: "desktop" },
+  "Desktop Safari reports Macintosh without Mobile.",
+);
+assert.deepEqual(
+  describeUserAgent("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"),
+  { label: "iOS · Safari", kind: "mobile" },
+);
+assert.deepEqual(
+  describeUserAgent("Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"),
+  { label: "iOS · Safari", kind: "tablet" },
+  "iPad also reports Mobile, so the tablet check must win.",
+);
+assert.deepEqual(
+  describeUserAgent("Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"),
+  { label: "Android · Chrome", kind: "mobile" },
+);
+assert.deepEqual(describeUserAgent("curl/8.4.0"), { label: "未知设备", kind: "desktop" });
+
+console.log("Auth unit tests passed: scrypt hashing and seed compatibility, token hashing, cookie attributes, TTL bounds, same-origin/CSRF matrix, actor fallback refusal, login throttling thresholds, password policy, and device-label derivation.");

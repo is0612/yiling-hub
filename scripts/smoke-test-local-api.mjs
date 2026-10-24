@@ -1,3 +1,4 @@
+import { randomBytes, scryptSync } from "node:crypto";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "../src/generated/prisma/client";
 
@@ -95,6 +96,117 @@ assert(sessionCookie.startsWith("yiling_session="), "The session cookie name mus
 
 const cookieSession = await (await fetch(new URL("/api/auth/session", baseUrl), { headers: { cookie: sessionCookie } })).json();
 assert(cookieSession.mode === "session" && cookieSession.user?.id === process.env.DEV_OWNER_ID, "A valid session cookie must resolve to the logged-in administrator.");
+
+// --- Device list, session revocation and password change (throwaway account) ---
+// Runs against its own account so a failing assertion can never leave the developer owner with an
+// unknown password.
+async function loginAs(username, password) {
+  const response = await fetch(new URL("/api/auth/login", baseUrl), {
+    method: "POST",
+    headers: writeHeaders,
+    body: JSON.stringify({ username, password }),
+  });
+  return {
+    status: response.status,
+    cookie: (response.headers.get("set-cookie") || "").split(";")[0],
+    payload: await getJson(response),
+  };
+}
+
+function scryptHashOf(password) {
+  const salt = randomBytes(16);
+  return `scrypt$${salt.toString("base64url")}$${scryptSync(password, salt, 64).toString("base64url")}`;
+}
+
+const passwordAccount = `ci-password-${Date.now().toString()}`;
+const initialPassword = "ci-initial-password-1";
+const rotatedPassword = "ci-updated-password-2";
+const passwordUserId = (await prisma.user.create({
+  data: { username: passwordAccount, passwordHash: scryptHashOf(initialPassword), displayName: "CI 改密测试" },
+  select: { id: true },
+})).id;
+
+try {
+  const firstLogin = await loginAs(passwordAccount, initialPassword);
+  assert(firstLogin.status === 200, `The throwaway account must be able to log in (${firstLogin.status}).`);
+  const tempCookie = firstLogin.cookie;
+
+  // The device list reports the current session and never leaks token hashes.
+  const listResponse = await fetch(new URL("/api/auth/sessions", baseUrl), { headers: { cookie: tempCookie } });
+  assert(listResponse.status === 200, `GET /api/auth/sessions failed (${listResponse.status}).`);
+  const deviceList = await listResponse.json();
+  assert(Array.isArray(deviceList.sessions) && deviceList.sessions.length === 1, "A fresh login must produce exactly one listed session.");
+  assert(deviceList.sessions[0].current === true, "The requesting session must be flagged as current.");
+  assert(!("tokenHash" in deviceList.sessions[0]), "The device list must not expose session token hashes.");
+  assert(typeof deviceList.sessions[0].device?.label === "string", "Each session must carry a derived device label.");
+
+  // Cross-site revocation is refused by the origin guard even though the cookie is valid.
+  const crossSiteRevoke = await fetch(new URL(`/api/auth/sessions/${deviceList.sessions[0].id}`, baseUrl), {
+    method: "DELETE",
+    headers: { cookie: tempCookie, "sec-fetch-site": "cross-site" },
+  });
+  assert(crossSiteRevoke.status === 403, "Cross-site session revocation must be rejected.");
+  await crossSiteRevoke.arrayBuffer();
+
+  async function changePassword(cookie, currentPassword, newPassword) {
+    const response = await fetch(new URL("/api/auth/password", baseUrl), {
+      method: "POST",
+      headers: { ...writeHeaders, cookie },
+      body: JSON.stringify({ currentPassword, newPassword }),
+    });
+    return { status: response.status, payload: await getJson(response) };
+  }
+
+  const wrongCurrent = await changePassword(tempCookie, "definitely-the-wrong-one", rotatedPassword);
+  assert(wrongCurrent.status === 400, "A wrong current password must be rejected with 400.");
+  const tooShort = await changePassword(tempCookie, initialPassword, "short1");
+  assert(tooShort.status === 400, "A too-short new password must be rejected with 400.");
+  const noDigit = await changePassword(tempCookie, initialPassword, "alllettersonly");
+  assert(noDigit.status === 400, "A new password without a digit must be rejected with 400.");
+
+  const changed = await changePassword(tempCookie, initialPassword, rotatedPassword);
+  assert(changed.status === 200 && changed.payload?.changed === true, `POST /api/auth/password failed (${changed.status}).`);
+
+  const oldPasswordLogin = await loginAs(passwordAccount, initialPassword);
+  assert(oldPasswordLogin.status === 401, "The old password must stop working immediately after a change.");
+  const rotatedLogin = await loginAs(passwordAccount, rotatedPassword);
+  assert(rotatedLogin.status === 200, "The new password must work immediately after a change.");
+
+  // The session that changed the password survives; the newly created one joins the list.
+  const survivorSession = await (await fetch(new URL("/api/auth/session", baseUrl), { headers: { cookie: tempCookie } })).json();
+  assert(survivorSession.mode === "session", "The session that changed the password must stay valid.");
+  const twoSessions = await (await fetch(new URL("/api/auth/sessions", baseUrl), { headers: { cookie: tempCookie } })).json();
+  assert(twoSessions.sessions.length === 2, "Both active sessions must be listed after the second login.");
+
+  // "Sign out other devices" keeps the caller and kills the rest.
+  const revokeOthers = await fetch(new URL("/api/auth/sessions/revoke-others", baseUrl), {
+    method: "POST",
+    headers: { cookie: tempCookie, origin: new URL(baseUrl).origin, "sec-fetch-site": "same-origin" },
+  });
+  assert(revokeOthers.status === 200, `POST /api/auth/sessions/revoke-others failed (${revokeOthers.status}).`);
+  const revokeOthersPayload = await revokeOthers.json();
+  assert(revokeOthersPayload.revoked === 1, `Revoking other sessions must report one revocation, got ${revokeOthersPayload.revoked}.`);
+  const rotatedAfterRevoke = await (await fetch(new URL("/api/auth/session", baseUrl), { headers: { cookie: rotatedLogin.cookie } })).json();
+  assert(rotatedAfterRevoke.mode === "anonymous", "The other device must be signed out.");
+  const survivorAfterRevoke = await (await fetch(new URL("/api/auth/session", baseUrl), { headers: { cookie: tempCookie } })).json();
+  assert(survivorAfterRevoke.mode === "session", "The device that requested the sign-out must stay logged in.");
+
+  // Revoking your own session clears the cookie.
+  const currentSessionId = twoSessions.sessions.find((entry) => entry.current)?.id;
+  const selfRevoke = await fetch(new URL(`/api/auth/sessions/${currentSessionId}`, baseUrl), {
+    method: "DELETE",
+    headers: { cookie: tempCookie, origin: new URL(baseUrl).origin, "sec-fetch-site": "same-origin" },
+  });
+  assert(selfRevoke.status === 200, `DELETE /api/auth/sessions/{id} failed (${selfRevoke.status}).`);
+  const selfRevokePayload = await selfRevoke.json();
+  assert(selfRevokePayload.currentRevoked === true, "Revoking the calling session must be reported as such.");
+  assert(/Max-Age=0/i.test(selfRevoke.headers.get("set-cookie") || ""), "Revoking the calling session must clear the cookie.");
+  const afterSelfRevoke = await (await fetch(new URL("/api/auth/session", baseUrl), { headers: { cookie: tempCookie } })).json();
+  assert(afterSelfRevoke.mode === "anonymous", "A self-revoked session must stop authenticating.");
+} finally {
+  await prisma.loginAttempt.deleteMany({ where: { username: passwordAccount } });
+  await prisma.user.deleteMany({ where: { id: passwordUserId } });
+}
 
 const noSuchAccount = "ci-no-such-user-" + Date.now().toString();
 const badLogin = await fetch(new URL("/api/auth/login", baseUrl), {
@@ -910,6 +1022,6 @@ assert(
   "Permanent retention must not enqueue raw-message cleanup work."
 );
 
-console.log("Local API smoke test passed: character CRUD, encrypted per-character API settings and connection test, memory settings including deferred changes, pending-change cancellation and immediate recalculation, transcript import, scheduler backfill, local-mock AI extraction, source-ID validation, persisted provenance, manual and AI snapshot versions, safe AI regeneration, task cancel/requeue, recycle-bin lifecycle, context-aware AI chat with private-scope isolation, conversation search/rename, archive/restore, archived write protection, and end-to-end raw-message retention cleanup with audit-result visibility, cleanup-task cancel/retry, retention-widening protection, and permanent-retention safety.");
+console.log("Local API smoke test passed: character CRUD, encrypted per-character API settings and connection test, memory settings including deferred changes, pending-change cancellation and immediate recalculation, transcript import, scheduler backfill, local-mock AI extraction, source-ID validation, persisted provenance, manual and AI snapshot versions, safe AI regeneration, task cancel/requeue, recycle-bin lifecycle, context-aware AI chat with private-scope isolation, conversation search/rename, archive/restore, archived write protection, end-to-end raw-message retention cleanup with audit-result visibility, cleanup-task cancel/retry, retention-widening protection, permanent-retention safety, login/logout with throttling, device listing, cross-site revocation refusal, sign-out-others, and password policy plus rotation with session invalidation.");
 
 await prisma.$disconnect();

@@ -28,7 +28,7 @@
 - 错误格式一致。
 - 备份和恢复流程在本地验证。
 
-**已实现（2026-10-24）：** 单管理员登录（scrypt 密码校验）、PostgreSQL `sessions` 表会话（只存令牌哈希）、HttpOnly/SameSite=Strict/生产 Secure 的 `yiling_session` Cookie、登录限流、`/api` 同源/跨站校验、所有业务接口从会话取身份并在未登录时返回 401。本地开发保留受限回退（见 `docs/security.md`），生产构建没有该通道。回归测试：`yarn test:auth`、`yarn test:auth-db`。仍待完成：多用户与角色权限、密码修改/重置、会话管理界面、登录审计。
+**已实现（2026-10-24）：** 单管理员登录（scrypt 密码校验）、PostgreSQL `sessions` 表会话（只存令牌哈希）、HttpOnly/SameSite=Strict/生产 Secure 的 `yiling_session` Cookie、登录限流、`/api` 同源/跨站校验、所有业务接口从会话取身份并在未登录时返回 401。管理员可在系统设置页修改密码（改密后注销其他所有设备）并查看/撤销登录设备。本地开发保留受限回退（见 `docs/security.md`），生产构建没有该通道。回归测试：`yarn test:auth`、`yarn test:auth-db`。仍待完成：多用户与角色权限、忘记密码的重置流程、登录/登出的完整审计视图。
 
 ## Phase 3：周期记忆引擎
 **交付：** 独立 Worker、调度、任务表、快照生成、来源关联、长期记忆更新、版本化、重试、补处理、任务监控。

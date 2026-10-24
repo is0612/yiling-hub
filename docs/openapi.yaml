@@ -75,6 +75,105 @@ paths:
       responses:
         '204':
           description: 已退出并清除会话
+  /auth/password:
+    post:
+      tags: [Auth]
+      summary: 修改管理员密码
+      description: "校验当前密码后写入新的 scrypt 哈希。成功后撤销其他所有会话，发起修改的会话保持有效。新密码要求 10 至 128 个字符，且同时包含字母和数字，不能与当前密码相同。"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currentPassword, newPassword]
+              properties:
+                currentPassword: { type: string, format: password }
+                newPassword: { type: string, format: password, minLength: 10, maxLength: 128 }
+      responses:
+        '200':
+          description: 密码已更新
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [changed, revokedSessions]
+                properties:
+                  changed: { type: boolean }
+                  revokedSessions:
+                    type: integer
+                    minimum: 0
+                    description: 本次因改密而注销的其他会话数量
+        '400':
+          description: 当前密码不正确，或新密码不符合策略（过短、过长、缺少字母或数字、与当前密码相同）
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /auth/sessions:
+    get:
+      tags: [Auth]
+      summary: 列出当前账号的有效登录会话
+      description: 只返回未撤销且未过期的会话；会话令牌哈希不会出现在响应中，设备信息由 User-Agent 派生。
+      responses:
+        '200':
+          description: 登录设备列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [mode, sessions]
+                properties:
+                  mode:
+                    type: string
+                    enum: [session, local-dev]
+                  sessions:
+                    type: array
+                    items: { $ref: '#/components/schemas/SessionSummary' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /auth/sessions/{sessionId}:
+    delete:
+      tags: [Auth]
+      summary: 撤销指定的登录会话
+      description: 只能撤销属于当前账号的会话；其他账号的会话与不存在的会话同样返回 404。撤销当前正在使用的会话时会同时清除 Cookie。
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: 撤销结果
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [revoked, currentRevoked]
+                properties:
+                  revoked: { type: boolean }
+                  currentRevoked:
+                    type: boolean
+                    description: 被撤销的是否是发起请求的会话
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /auth/sessions/revoke-others:
+    post:
+      tags: [Auth]
+      summary: 退出其他所有设备
+      description: 撤销除当前会话外的全部有效会话，当前设备保持登录。
+      responses:
+        '200':
+          description: 已撤销的其他会话数量
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [revoked]
+                properties:
+                  revoked: { type: integer, minimum: 0 }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /characters:
     get:
       tags: [Characters]
@@ -1401,6 +1500,25 @@ components:
             id: { type: string, format: uuid }
             username: { type: string }
             displayName: { type: string, nullable: true }
+    SessionSummary:
+      type: object
+      required: [id, current, createdAt, lastUsedAt, expiresAt, device]
+      properties:
+        id: { type: string, format: uuid }
+        current:
+          type: boolean
+          description: 是否是发起本次请求的会话
+        createdAt: { type: string, format: date-time }
+        lastUsedAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+        device:
+          type: object
+          required: [label, kind]
+          properties:
+            label: { type: string, description: 由 User-Agent 派生的可读设备名，例如 Windows · Chrome }
+            kind:
+              type: string
+              enum: [desktop, mobile, tablet, unknown]
     LoginResponse:
       type: object
       required: [user, expiresAt]

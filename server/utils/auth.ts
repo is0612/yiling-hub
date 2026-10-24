@@ -55,6 +55,61 @@ export async function verifyPassword(password: string, storedHash: string): Prom
   return derived.length === parsed.digest.length && timingSafeEqual(derived, parsed.digest);
 }
 
+/**
+ * Verified against this constant when the account does not exist, so a missing user and a wrong
+ * password take comparable time and cannot be told apart by latency.
+ */
+export const DUMMY_PASSWORD_HASH = "scrypt$1NXKk3kzK9HVvczz_d_I4Q$NrOGKeahE3B0LhCEErUpuOa1gMif9MMfKSeN_8hw5DKBSkgAJb7TtwsVvtF3VCll9RUGfpUp6KK1saQ_w-0wug";
+
+// ---------------------------------------------------------------------------
+// Password policy
+// ---------------------------------------------------------------------------
+
+export const MIN_PASSWORD_LENGTH = 10;
+export const MAX_PASSWORD_LENGTH = 128;
+
+export type PasswordPolicyViolation = "too_short" | "too_long" | "needs_letter" | "needs_digit" | "reused";
+
+export type PasswordPolicyDecision = { ok: true } | { ok: false; reason: PasswordPolicyViolation };
+
+/**
+ * Rules for a *new* password. Existing passwords are never re-validated, so tightening the policy
+ * cannot lock out an account that was created under an older one.
+ */
+export function checkPasswordPolicy(password: string, currentPassword?: string): PasswordPolicyDecision {
+  if (password.length < MIN_PASSWORD_LENGTH) return { ok: false, reason: "too_short" };
+  if (password.length > MAX_PASSWORD_LENGTH) return { ok: false, reason: "too_long" };
+  if (!/[A-Za-z]/.test(password)) return { ok: false, reason: "needs_letter" };
+  if (!/[0-9]/.test(password)) return { ok: false, reason: "needs_digit" };
+  if (currentPassword !== undefined && password === currentPassword) return { ok: false, reason: "reused" };
+  return { ok: true };
+}
+
+export function passwordPolicyMessage(reason: PasswordPolicyViolation): string {
+  switch (reason) {
+    case "too_short":
+      return `新密码至少需要 ${MIN_PASSWORD_LENGTH} 个字符。`;
+    case "too_long":
+      return `新密码不能超过 ${MAX_PASSWORD_LENGTH} 个字符。`;
+    case "needs_letter":
+      return "新密码必须包含至少一个字母。";
+    case "needs_digit":
+      return "新密码必须包含至少一个数字。";
+    case "reused":
+      return "新密码不能与当前密码相同。";
+  }
+}
+
+export function readPasswordField(value: unknown, label: string): string {
+  if (typeof value !== "string" || value.length === 0) {
+    throw createError({ statusCode: 400, statusMessage: `${label}不能为空。` });
+  }
+  if (value.length > 4096) {
+    throw createError({ statusCode: 400, statusMessage: `${label}长度超出限制。` });
+  }
+  return value;
+}
+
 // ---------------------------------------------------------------------------
 // Session tokens
 // ---------------------------------------------------------------------------
@@ -329,4 +384,147 @@ export function clientAddressOf(event: H3Event): string {
   } catch {
     return "unknown";
   }
+}
+
+// ---------------------------------------------------------------------------
+// Session management (device list, revocation, password change)
+// ---------------------------------------------------------------------------
+
+export type DeviceKind = "desktop" | "mobile" | "tablet" | "unknown";
+
+export type DeviceDescription = { label: string; kind: DeviceKind };
+
+/**
+ * Turns a User-Agent string into something a person can recognise in a device list. This is a
+ * display aid only: no security decision may depend on it, and the raw string is never returned
+ * to the client.
+ */
+export function describeUserAgent(userAgent: string | null | undefined): DeviceDescription {
+  const ua = (userAgent ?? "").trim();
+  if (!ua) return { label: "未知设备", kind: "unknown" };
+
+  // iPad reports "Macintosh" with "Mobile", so the tablet checks must run before the mobile ones.
+  const kind: DeviceKind = /iPad|Tablet/i.test(ua)
+    ? "tablet"
+    : /iPhone|iPod|Mobile|Android/i.test(ua)
+      ? "mobile"
+      : "desktop";
+
+  let platform = "";
+  if (/Windows NT/i.test(ua)) platform = "Windows";
+  else if (/iPhone|iPad|iPod/i.test(ua)) platform = "iOS";
+  else if (/Android/i.test(ua)) platform = "Android";
+  else if (/Mac OS X|Macintosh/i.test(ua)) platform = "macOS";
+  else if (/Linux/i.test(ua)) platform = "Linux";
+
+  let browser = "";
+  if (/Edg\//i.test(ua)) browser = "Edge";
+  else if (/OPR\/|Opera/i.test(ua)) browser = "Opera";
+  else if (/Firefox\//i.test(ua)) browser = "Firefox";
+  else if (/Chrome\/|CriOS/i.test(ua)) browser = "Chrome";
+  else if (/Safari\//i.test(ua)) browser = "Safari";
+
+  const label = [platform, browser].filter(Boolean).join(" · ") || "未知设备";
+  return { label, kind };
+}
+
+export type SessionSummary = {
+  id: string;
+  current: boolean;
+  createdAt: string;
+  lastUsedAt: string;
+  expiresAt: string;
+  device: DeviceDescription;
+};
+
+/**
+ * Active sessions for one account. `tokenHash` never leaves the server; only the opaque session id
+ * and display metadata are returned.
+ */
+export async function listSessions(input: { userId: string; currentToken?: string }): Promise<SessionSummary[]> {
+  const currentHash = input.currentToken ? hashSessionToken(input.currentToken) : "";
+  const sessions = await getPrisma().session.findMany({
+    where: { userId: input.userId, revokedAt: null, expiresAt: { gt: new Date() } },
+    orderBy: [{ lastUsedAt: "desc" }, { createdAt: "desc" }],
+    select: { id: true, tokenHash: true, createdAt: true, lastUsedAt: true, expiresAt: true, userAgent: true },
+  });
+  return sessions.map((session) => ({
+    id: session.id,
+    current: currentHash.length > 0 && session.tokenHash === currentHash,
+    createdAt: session.createdAt.toISOString(),
+    lastUsedAt: session.lastUsedAt.toISOString(),
+    expiresAt: session.expiresAt.toISOString(),
+    device: describeUserAgent(session.userAgent),
+  }));
+}
+
+export type RevokeSessionOutcome = "revoked" | "revoked_current" | "not_found";
+
+/**
+ * Revokes one session, but only if it belongs to the acting account: a valid session id from
+ * another account must look exactly like a missing one.
+ */
+export async function revokeSessionForUser(input: {
+  userId: string;
+  sessionId: string;
+  currentToken?: string;
+}): Promise<RevokeSessionOutcome> {
+  const prisma = getPrisma();
+  const currentHash = input.currentToken ? hashSessionToken(input.currentToken) : "";
+  const session = await prisma.session.findFirst({
+    where: { id: input.sessionId, userId: input.userId },
+    select: { id: true, tokenHash: true, revokedAt: true },
+  });
+  if (!session || session.revokedAt) return "not_found";
+
+  await prisma.session.update({ where: { id: session.id }, data: { revokedAt: new Date() } });
+  return currentHash.length > 0 && session.tokenHash === currentHash ? "revoked_current" : "revoked";
+}
+
+/** Revokes every active session of the account except the one making the request. */
+export async function revokeOtherSessions(input: { userId: string; currentToken?: string }): Promise<number> {
+  const currentHash = input.currentToken ? hashSessionToken(input.currentToken) : "";
+  const result = await getPrisma().session.updateMany({
+    where: {
+      userId: input.userId,
+      revokedAt: null,
+      ...(currentHash.length > 0 ? { tokenHash: { not: currentHash } } : {}),
+    },
+    data: { revokedAt: new Date() },
+  });
+  return result.count;
+}
+
+/**
+ * Changes the account password and revokes every other session, so a stolen cookie stops working
+ * the moment the owner resets their password. The session performing the change stays valid,
+ * otherwise the user would be thrown out of the page they are standing on.
+ */
+export async function changePassword(input: {
+  userId: string;
+  currentPassword: string;
+  newPassword: string;
+  currentToken?: string;
+}): Promise<{ revokedSessions: number }> {
+  const prisma = getPrisma();
+  const account = await prisma.user.findUnique({
+    where: { id: input.userId },
+    select: { id: true, passwordHash: true, status: true },
+  });
+
+  // Always run the comparison, so "no such account" and "wrong password" cost the same.
+  const currentMatches = await verifyPassword(input.currentPassword, account?.passwordHash ?? DUMMY_PASSWORD_HASH);
+  if (!account || !currentMatches || account.status !== "ACTIVE") {
+    throw createError({ statusCode: 400, statusMessage: "当前密码不正确。" });
+  }
+
+  const policy = checkPasswordPolicy(input.newPassword, input.currentPassword);
+  if (!policy.ok) {
+    throw createError({ statusCode: 400, statusMessage: passwordPolicyMessage(policy.reason) });
+  }
+
+  const passwordHash = await hashPassword(input.newPassword);
+  await prisma.user.update({ where: { id: account.id }, data: { passwordHash } });
+  const revokedSessions = await revokeOtherSessions({ userId: account.id, currentToken: input.currentToken });
+  return { revokedSessions };
 }
