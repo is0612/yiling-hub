@@ -30,7 +30,9 @@ export default defineEventHandler(async (event) => {
   });
 
   return {
-    snapshotIntervalDays: settings.snapshotIntervalDays,
+    snapshotIntervalDays: settings.pendingSnapshotIntervalDays ?? settings.snapshotIntervalDays,
+    activeSnapshotIntervalDays: settings.snapshotIntervalDays,
+    pendingSnapshotIntervalDays: settings.pendingSnapshotIntervalDays,
     timezone: settings.timezone,
     anchorAt: settings.anchorAt.toISOString(),
     rawMessageRetentionDays: settings.rawMessageRetentionDays ?? 0,
