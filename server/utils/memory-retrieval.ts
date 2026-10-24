@@ -4,7 +4,7 @@ export type RankedCandidate<T> = T & {
 };
 
 function normalizeComparable(value: string): string {
-  return value.normalize("NFKC").toLocaleLowerCase().replace(/[\\s\\p{P}\\p{S}]+/gu, "");
+  return value.normalize("NFKC").toLocaleLowerCase().replace(/[\s\p{P}\p{S}]+/gu, "");
 }
 
 const ENGLISH_STOPWORDS = new Set([
@@ -60,7 +60,7 @@ export function extractRetrievalTerms(query: string): string[] {
     if (!ENGLISH_STOPWORDS.has(match[0])) terms.add(match[0]);
   }
 
-  const cjkRuns = normalized.match(/[\\p{Script=Han}\\p{Script=Hiragana}\\p{Script=Katakana}]+/gu) ?? [];
+  const cjkRuns = normalized.match(/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]+/gu) ?? [];
   for (const run of cjkRuns) {
     if (run.length === 1) {
       terms.add(run);
@@ -92,7 +92,7 @@ function dateValue(value: unknown): number {
 }
 
 function termLengthWeight(term: string): number {
-  if (/[\\p{Script=Han}\\p{Script=Hiragana}\\p{Script=Katakana}]/u.test(term)) {
+  if (/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(term)) {
     if (term.length >= 5) return 1.7;
     if (term.length === 4) return 1.55;
     if (term.length === 3) return 1.3;
