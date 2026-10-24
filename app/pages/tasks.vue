@@ -328,7 +328,9 @@ onMounted(() => void loadTasks());
         <div class="detail-row"><span>处理周期</span><strong>{{ periodText(selectedTask) }}</strong></div>
         <div class="detail-row"><span>尝试次数</span><strong>{{ selectedTask.attemptCount }} / {{ selectedTask.maxAttempts }}</strong></div>
         <div class="detail-row"><span>计划执行时间</span><strong>{{ formatDate(selectedTask.runAt) }}</strong></div>
-        <div class="detail-row"><span>开始时间</span><strong>{{ formatDate(selectedTask.startedAt) }}</strong></div>\n        <div class="detail-row"><span>完成时间</span><strong>{{ formatDate(selectedTask.completedAt) }}</strong></div>\n        <div class="detail-row"><span>创建时间</span><strong>{{ formatDate(selectedTask.createdAt) }}</strong></div>
+        <div class="detail-row"><span>开始时间</span><strong>{{ formatDate(selectedTask.startedAt) }}</strong></div>
+        <div class="detail-row"><span>完成时间</span><strong>{{ formatDate(selectedTask.completedAt) }}</strong></div>
+        <div class="detail-row"><span>创建时间</span><strong>{{ formatDate(selectedTask.createdAt) }}</strong></div>
         <template v-if="selectedTask.type === 'CLEAN_EXPIRED_MESSAGES'">
           <div class="detail-row"><span>清理结果</span><strong>{{ selectedTask.cleanupResult ? `已删除 ${selectedTask.cleanupResult.deletedMessageCount ?? "未知"} 条原始消息` : selectedTask.status === 'SUCCEEDED' ? "未找到对应审计记录" : "尚无成功清理记录" }}</strong></div>
           <div v-if="selectedTask.cleanupResult?.cutoff" class="detail-row"><span>清理截止时间</span><strong>{{ formatDate(selectedTask.cleanupResult.cutoff) }} 之前</strong></div>
