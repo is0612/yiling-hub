@@ -112,13 +112,45 @@ export async function enqueueDueMemorySnapshots(
   };
 
   for (const setting of settings) {
-    if (!setting.autoSnapshotEnabled) continue;
+    const globalScopeId = setting.character.memoryScopes.find((scope) => scope.scopeType === "CHARACTER_GLOBAL")?.id;
 
-    const memoryScopeId = setting.character.memoryScopes[0]?.id;
-    if (!memoryScopeId) {
+    // Queue retention cleanup independently from automatic snapshot generation.
+    // Do not queue a cleanup while an older snapshot period is still pending.
+    const retentionDays = setting.rawMessageRetentionDays;
+    if (retentionDays && retentionDays > 0) {
+      const cutoff = addDays(now, -retentionDays);
+      for (const scope of setting.character.memoryScopes) {
+        const pendingSnapshot = await prisma.memoryJob.findFirst({
+          where: {
+            memoryScopeId: scope.id,
+            type: { in: ["GENERATE_SNAPSHOT", "REGENERATE_SNAPSHOT"] },
+            status: { in: ["QUEUED", "RUNNING", "RETRY_WAIT"] },
+            periodStart: { lt: cutoff },
+          },
+          select: { id: true },
+        });
+        if (pendingSnapshot) continue;
+        const cutoffKey = cutoff.toISOString().slice(0, 10);
+        await prisma.memoryJob.createMany({
+          data: [{
+            memoryScopeId: scope.id,
+            type: "CLEAN_EXPIRED_MESSAGES",
+            idempotencyKey: `clean-expired-messages:${scope.id}:${cutoffKey}`,
+            periodEnd: cutoff,
+            status: "QUEUED",
+            runAt: now,
+          }],
+          skipDuplicates: true,
+        });
+      }
+    }
+
+    if (!setting.autoSnapshotEnabled) continue;
+    if (!globalScopeId) {
       report.missingGlobalScope += 1;
       continue;
     }
+    const memoryScopeId = globalScopeId;
 
     try {
       const result = await prisma.$transaction(async (tx) => {

@@ -67,6 +67,96 @@ export async function processNextMemoryJob(
   const ownership = ownerFilter(options.ownerId);
   const staleBefore = new Date(now.getTime() - LEASE_MS);
 
+  // Retention jobs are safe to replay: deleting an already deleted message is a no-op.
+  // Foreign keys preserve snapshot/source records while nulling links to expired raw messages.
+  const cleanupCandidates = await prisma.memoryJob.findMany({
+    where: {
+      type: "CLEAN_EXPIRED_MESSAGES",
+      status: { in: ["QUEUED", "RETRY_WAIT"] },
+      runAt: { lte: now },
+      ...ownership,
+    },
+    orderBy: [{ runAt: "asc" }, { createdAt: "asc" }, { id: "asc" }],
+    take: 20,
+    select: { id: true, status: true, memoryScopeId: true, periodEnd: true },
+  });
+  for (const candidate of cleanupCandidates) {
+    if (!candidate.periodEnd) {
+      await prisma.memoryJob.updateMany({
+        where: { id: candidate.id, status: candidate.status },
+        data: { status: "FAILED", completedAt: now, lastError: "原始消息清理任务缺少截止时间。" },
+      });
+      continue;
+    }
+    const claim = await prisma.memoryJob.updateMany({
+      where: { id: candidate.id, status: candidate.status, runAt: { lte: now } },
+      data: { status: "RUNNING", attemptCount: { increment: 1 }, lockedAt: now, lockedBy: workerId, startedAt: now, lastError: null },
+    });
+    if (claim.count !== 1) continue;
+
+    const pendingSnapshot = await prisma.memoryJob.findFirst({
+      where: {
+        memoryScopeId: candidate.memoryScopeId,
+        type: { in: ["GENERATE_SNAPSHOT", "REGENERATE_SNAPSHOT"] },
+        status: { in: ["QUEUED", "RUNNING", "RETRY_WAIT"] },
+        periodStart: { lt: candidate.periodEnd },
+      },
+      select: { id: true },
+    });
+    if (pendingSnapshot) {
+      await prisma.memoryJob.updateMany({
+        where: { id: candidate.id, status: "RUNNING", lockedBy: workerId },
+        data: { status: "RETRY_WAIT", runAt: new Date(now.getTime() + 60_000), lockedAt: null, lockedBy: null, lastError: "仍有更早的快照任务待处理，清理已延后。" },
+      });
+      return { processed: true, jobId: candidate.id, status: "RETRY_WAIT", message: "仍有过期区间的快照任务待处理，已延后清理。" };
+    }
+
+    const scope = await prisma.memoryScope.findUnique({
+      where: { id: candidate.memoryScopeId },
+      select: { characterId: true },
+    });
+    if (!scope) {
+      await prisma.memoryJob.updateMany({
+        where: { id: candidate.id, status: "RUNNING", lockedBy: workerId },
+        data: { status: "FAILED", completedAt: now, lockedAt: null, lockedBy: null, lastError: "找不到清理任务关联的记忆范围。" },
+      });
+      return { processed: true, jobId: candidate.id, status: "FAILED", message: "找不到清理任务关联的记忆范围。" };
+    }
+
+    try {
+      const deleted = await prisma.message.deleteMany({
+        where: {
+          conversation: { is: { memoryScopeId: candidate.memoryScopeId } },
+          occurredAt: { lt: candidate.periodEnd },
+        },
+      });
+      await prisma.$transaction([
+        prisma.memoryJob.update({
+          where: { id: candidate.id },
+          data: { status: "SUCCEEDED", completedAt: now, lockedAt: null, lockedBy: null, lastError: null },
+        }),
+        prisma.auditLog.create({
+          data: {
+            actorType: "WORKER",
+            characterId: scope.characterId,
+            action: "message.retention_cleanup",
+            entityType: "MemoryScope",
+            entityId: candidate.memoryScopeId,
+            details: { cutoff: candidate.periodEnd.toISOString(), deletedMessages: deleted.count, jobId: candidate.id },
+          },
+        }),
+      ]);
+      return { processed: true, jobId: candidate.id, status: "SUCCEEDED", message: `原始消息清理完成，删除 ${deleted.count} 条过期消息；快照与来源记录已保留。` };
+    } catch (error) {
+      const message = (error instanceof Error ? error.message : String(error)).slice(0, 2000);
+      await prisma.memoryJob.updateMany({
+        where: { id: candidate.id, status: "RUNNING", lockedBy: workerId },
+        data: { status: "RETRY_WAIT", runAt: new Date(now.getTime() + 60_000), lockedAt: null, lockedBy: null, lastError: message },
+      });
+      return { processed: true, jobId: candidate.id, status: "RETRY_WAIT", message: `原始消息清理失败，将稍后重试：${message}` };
+    }
+  }
+
   const staleJobs = await prisma.memoryJob.findMany({
     where: {
       type: { in: ["GENERATE_SNAPSHOT", "REGENERATE_SNAPSHOT"] },
