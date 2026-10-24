@@ -1082,18 +1082,18 @@ paths:
                       data: { $ref: '#/components/schemas/MemorySettings' }
         '401':
           $ref: '#/components/responses/Unauthorized'
-    patch:
+    put:
       tags: [MemorySettings]
-      summary: 更新角色记忆周期和原始消息保留设置
+      summary: 更新角色记忆周期和相关设置
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/MemorySettingsInput'
+              $ref: '#/components/schemas/MemorySettings'
       responses:
         '200':
-          description: 设置已更新；NEXT_CYCLE 保留当前周期边界并在该边界后应用新间隔，IMMEDIATE_RECALC 或明确修改锚点/时区会立即重算计划
+          description: 设置已更新；周期默认于当前周期结束后生效
           content:
             application/json:
               schema:
@@ -1129,7 +1129,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [items, total, statusCounts]
+                required: [items, total]
                 properties:
                   items:
                     type: array
@@ -1152,26 +1152,7 @@ paths:
                         updatedAt: { type: string, format: date-time }
                         characterId: { type: string, format: uuid }
                         characterName: { type: string }
-                        cleanupResult:
-                          type: object
-                          nullable: true
-                          required: [deletedMessageCount, cutoff, recordedAt]
-                          properties:
-                            deletedMessageCount: { type: integer, minimum: 0, nullable: true }
-                            cutoff: { type: string, format: date-time, nullable: true }
-                            recordedAt: { type: string, format: date-time }
                   total: { type: integer, minimum: 0 }
-                  statusCounts:
-                    type: object
-                    required: [QUEUED, RUNNING, SUCCEEDED, FAILED, RETRY_WAIT, SKIPPED, CANCELLED]
-                    properties:
-                      QUEUED: { type: integer, minimum: 0 }
-                      RUNNING: { type: integer, minimum: 0 }
-                      SUCCEEDED: { type: integer, minimum: 0 }
-                      FAILED: { type: integer, minimum: 0 }
-                      RETRY_WAIT: { type: integer, minimum: 0 }
-                      SKIPPED: { type: integer, minimum: 0 }
-                      CANCELLED: { type: integer, minimum: 0 }
         '400':
           $ref: '#/components/responses/BadRequest'
         '403':
@@ -1205,8 +1186,8 @@ paths:
     post:
       tags: [Tasks]
       operationId: runOneMemoryWorkerJob
-      summary: 由本地开发界面执行一条后台记忆任务（本地开发）
-      description: 手动触发一次 Worker 处理。当前消费 GENERATE_SNAPSHOT、REGENERATE_SNAPSHOT 与 CLEAN_EXPIRED_MESSAGES 任务；快照任务调用 OpenAI-compatible Chat Completions，原始消息清理会将删除、任务完成和审计记录放入同一数据库事务。AI 重新提炼会在同一逻辑快照下创建新版本；提议的长期记忆变化只供审核，不会重放应用到当前记忆。未配置模型时任务留在队列。此接口仅限本地开发环境。
+      summary: 由本地开发界面执行一条周期快照任务（本地开发）
+      description: 手动触发一次 Worker 处理。当前消费 GENERATE_SNAPSHOT 与 REGENERATE_SNAPSHOT 任务；配置 LLM_BASE_URL、LLM_API_KEY 与 LLM_MODEL 后调用 OpenAI-compatible Chat Completions。AI 重新提炼会在同一逻辑快照下创建新版本；提议的长期记忆变化只供审核，不会重放应用到当前记忆。未配置模型时任务留在队列。此接口仅限本地开发环境。
       security: []
       responses:
         '200':
@@ -1219,7 +1200,7 @@ paths:
                 properties:
                   processed: { type: boolean }
                   jobId: { type: string, format: uuid }
-                  status: { type: string, enum: [SUCCEEDED, SKIPPED, RETRY_WAIT, FAILED, CANCELLED] }
+                  status: { type: string, enum: [SUCCEEDED, SKIPPED, RETRY_WAIT, FAILED] }
                   snapshotId: { type: string, format: uuid }
                   message: { type: string }
         '403':
@@ -1251,9 +1232,9 @@ paths:
   /tasks/{taskId}/retry:
     post:
       tags: [Tasks]
-      operationId: requeueMemoryTask
+      operationId: requeueSnapshotTask
       summary: 手动重新排队快照任务（本地开发）
-      description: 支持 GENERATE_SNAPSHOT / REGENERATE_SNAPSHOT；CLEAN_EXPIRED_MESSAGES 仅在当前角色已明确授权且保留期限为有限天数时可重新入队。任务状态需为 FAILED、RETRY_WAIT 或 CANCELLED。会将尝试计数重置为 0，并写入审计日志。
+      description: 仅支持 GENERATE_SNAPSHOT / REGENERATE_SNAPSHOT 类型，且任务当前状态为 FAILED、RETRY_WAIT 或 CANCELLED。会将尝试计数重置为 0，并写入审计日志。
       security: []
       parameters:
         - name: taskId
@@ -1603,37 +1584,43 @@ components:
         createdAt: { type: string, format: date-time }
     MemorySettings:
       type: object
-      required: [snapshotIntervalDays, timezone, anchorAt, rawMessageRetentionDays, rawMessageCleanupEnabled, autoSnapshotEnabled, changePolicy, nextSnapshotAt, updatedAt]
+      required: [snapshotIntervalDays, activeSnapshotIntervalDays, timezone, autoSnapshotEnabled, rawMessageCleanupEnabled]
       properties:
-        snapshotIntervalDays: { type: integer, minimum: 1, maximum: 365, default: 8, description: 当前选择的周期；若存在待生效修改则返回待生效间隔。 }
-        activeSnapshotIntervalDays: { type: integer, minimum: 1, maximum: 365, readOnly: true, description: 当前正在用于计算周期的间隔。 }
-        pendingSnapshotIntervalDays: { type: integer, minimum: 1, maximum: 365, nullable: true, readOnly: true, description: 下一个周期边界后生效的间隔；应用后会清空。 }
+        snapshotIntervalDays:
+          type: integer
+          minimum: 1
+          maximum: 365
+          default: 8
+          description: 当前表单选择的间隔；若存在待生效值则返回待生效值，否则返回当前生效值
+        activeSnapshotIntervalDays:
+          type: integer
+          minimum: 1
+          maximum: 365
+          readOnly: true
+          description: 当前周期实际使用的快照间隔
+        pendingSnapshotIntervalDays:
+          type: integer
+          minimum: 1
+          maximum: 365
+          nullable: true
+          description: 下一周期边界生效的快照间隔；立即重算策略下为 null
         timezone: { type: string, example: Asia/Shanghai }
         anchorAt: { type: string, format: date-time, nullable: true }
-        rawMessageRetentionDays:
-          type: integer
-          enum: [0, 30, 90, 180]
-          default: 0
-          description: 0 表示永久保留；有限保留期仅配置保留期限，不代表用户已授权删除。
-        rawMessageCleanupEnabled: { type: boolean, default: false, description: 用户明确授权后才会排入原始消息清理任务。 }
-        autoSnapshotEnabled: { type: boolean, default: false }
-        changePolicy: { type: string, enum: [NEXT_CYCLE, IMMEDIATE_RECALC], default: NEXT_CYCLE }
         nextSnapshotAt: { type: string, format: date-time, nullable: true, readOnly: true }
-        updatedAt: { type: string, format: date-time, readOnly: true }
-    MemorySettingsInput:
-      type: object
-      required: [snapshotIntervalDays, timezone, anchorAt, rawMessageRetentionDays, rawMessageCleanupEnabled, autoSnapshotEnabled, changePolicy]
-      properties:
-        snapshotIntervalDays: { type: integer, minimum: 1, maximum: 365 }
-        timezone: { type: string, example: Asia/Shanghai }
-        anchorAt: { type: string, format: date-time }
         rawMessageRetentionDays:
           type: integer
-          enum: [0, 30, 90, 180]
-          description: 0 表示永久保留；允许的有限期限为 30、90 或 180 天。
-        rawMessageCleanupEnabled: { type: boolean, description: 必须由用户明确确认授权；仅填写有限保留天数不会启用自动删除。 }
-        autoSnapshotEnabled: { type: boolean }
-        changePolicy: { type: string, enum: [NEXT_CYCLE, IMMEDIATE_RECALC] }
+          minimum: 0
+          nullable: true
+          description: 0 或 null 表示永久保留；期限本身不会自动启用清理
+        rawMessageCleanupEnabled:
+          type: boolean
+          default: false
+          description: 是否允许后台清理超过保留期限的原始消息
+        autoSnapshotEnabled: { type: boolean, default: true }
+        changePolicy:
+          type: string
+          enum: [NEXT_CYCLE, IMMEDIATE_RECALC]
+          default: NEXT_CYCLE
     MemoryJob:
       type: object
       required: [id, type, status, attemptCount, createdAt]
