@@ -17,6 +17,7 @@ const characterId = randomUUID();
 const scopeId = randomUUID();
 const retentionScopeId = randomUUID();
 const conversationId = randomUUID();
+const blockedConversationId = randomUUID();
 const username = `scheduler-test-${suffix}`;
 const now = new Date("2026-10-24T12:00:00.000Z");
 const nextSnapshotAt = new Date("2026-10-01T00:00:00.000Z");
@@ -60,6 +61,26 @@ try {
       autoSnapshotEnabled: true,
       rawMessageRetentionDays: 30,
     },
+  });
+
+  // This message falls in the failed overdue snapshot's period and before the cleanup cutoff.
+  await prisma.conversation.create({
+    data: {
+      id: blockedConversationId,
+      characterId,
+      memoryScopeId: scopeId,
+      title: "失败快照阻塞清理集成测试",
+    },
+  });
+  const blockedExpiredMessage = await prisma.message.create({
+    data: {
+      conversationId: blockedConversationId,
+      role: "USER",
+      eventType: "message",
+      content: "较早快照失败时，这条尚待归档的过期原文也必须保留。",
+      occurredAt: new Date("2026-09-24T00:00:00.000Z"),
+    },
+    select: { id: true },
   });
 
   // Two schedulers starting together must not lose the cursor or duplicate cycle jobs.
@@ -219,11 +240,25 @@ try {
     data: { autoSnapshotEnabled: false },
   });
   await enqueueDueMemorySnapshots(prisma, { now });
+  const blockedCleanupJob = await prisma.memoryJob.findUniqueOrThrow({
+    where: { idempotencyKey: `clean-expired-messages:${scopeId}:2026-09-24` },
+    select: { id: true, memoryScopeId: true },
+  });
   const cleanupJob = await prisma.memoryJob.findUniqueOrThrow({
     where: { idempotencyKey: `clean-expired-messages:${retentionScopeId}:2026-09-24` },
     select: { id: true, memoryScopeId: true },
   });
   assert.equal(cleanupJob.memoryScopeId, retentionScopeId, "Scheduler should enqueue cleanup for scopes whose retention period has expired.");
+
+  // Make ordering deterministic: the scope with an unresolved older snapshot is examined first.
+  await prisma.memoryJob.update({
+    where: { id: blockedCleanupJob.id },
+    data: { runAt: new Date(now.getTime() - 2_000) },
+  });
+  await prisma.memoryJob.update({
+    where: { id: cleanupJob.id },
+    data: { runAt: new Date(now.getTime() - 1_000) },
+  });
   const cleanupResult = await processNextMemoryJob(prisma, {
     now,
     workerId: `retention-worker-${suffix}`,
@@ -241,6 +276,15 @@ try {
   assert.equal(preservedMemory.sourceSnapshotId, retentionSnapshot.id, "Long-term memory must keep its snapshot provenance.");
   const completedCleanup = await prisma.memoryJob.findUniqueOrThrow({ where: { id: cleanupJob.id } });
   assert.equal(completedCleanup.status, "SUCCEEDED", "Cleanup job should be marked successful.");
+
+  const blockedCleanupState = await prisma.memoryJob.findUniqueOrThrow({ where: { id: blockedCleanupJob.id } });
+  assert.equal(blockedCleanupState.status, "RETRY_WAIT", "Cleanup must defer while an earlier snapshot job has failed.");
+  assert.match(blockedCleanupState.lastError ?? "", /较早的快照任务待处理/, "The deferred cleanup task should explain the snapshot dependency.");
+  assert.equal(
+    await prisma.message.count({ where: { id: blockedExpiredMessage.id } }),
+    1,
+    "Raw messages in an unresolved snapshot period must remain untouched.",
+  );
 
   const cleanupAudit = await prisma.auditLog.findFirstOrThrow({
     where: {
@@ -281,12 +325,12 @@ try {
     "A repeated scheduler pass must not duplicate a completed cleanup audit.",
   );
 
-  console.log("Memory retention integration passed: safe deletion, provenance preservation, accurate audit data, and cleanup scheduling idempotency.");
+  console.log("Memory retention integration passed: safe deletion, blocked-snapshot protection, provenance preservation, accurate audit data, and cleanup scheduling idempotency.");
 
   console.log("Memory DB integration passed: concurrent scheduling, overdue backfill, cursor advancement, repeat-run idempotency, worker replay reuse, and retention cleanup.");
 } finally {
   await prisma.characterMemorySetting.deleteMany({ where: { characterId } });
-  await prisma.conversation.deleteMany({ where: { id: conversationId } });
+  await prisma.conversation.deleteMany({ where: { id: { in: [conversationId, blockedConversationId] } } });
   await prisma.memoryScope.deleteMany({ where: { id: { in: [scopeId, retentionScopeId] } } });
   await prisma.character.deleteMany({ where: { id: characterId } });
   await prisma.user.deleteMany({ where: { id: ownerId } });
