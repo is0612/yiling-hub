@@ -44,10 +44,11 @@ Phase 0 结束前由开发者与 AI 一起审查本清单。标记为“待本�
 
 ## 最近一次自动化回归
 
-- 2026-10-24，分支 `docs/project-blueprint` 的提交 [`97e926e`](https://github.com/is0612/yiling-hub/commit/97e926e770d8c2e14b8a6f55613fb774e9365106) 的 GitHub Actions 全量校验已通过：[查看运行结果](https://github.com/is0612/yiling-hub/actions/runs/40075129087)。
-- 该次 CI 包含 Prisma Schema 与迁移一致性、TypeScript、周期调度单元测试、PostgreSQL 并发/幂等与消息保留期限集成测试、AI 来源校验、记忆检索、角色模型配置、ESLint、Nuxt 生产构建、OpenAPI lint，以及使用模拟模型的本地 API 端到端冒烟测试。
-- 清理相关验收覆盖：原文实际删除数量、较新的消息保留、快照/来源/长期记忆保留、旧快照失败时阻止清理、保留期限放宽或撤销授权后的取消、永久保留不排队，以及任务审计结果展示。
-- **仍待本机或部署环境验证：** 真实供应商模型的实际表现、Windows + Docker 的真实数据备份/恢复演练、正式管理员登录与公开部署前的安全检查。CI 通过不代表这些环境级验收已经完成。
+- 2026-10-24，分支 `docs/project-blueprint` 的最新验收提交 [`def511c`](https://github.com/is0612/yiling-hub/commit/def511cc600854a8976deae959d1a221a88631f8) 的 GitHub Actions 全量校验已通过：[查看运行结果](https://github.com/is0612/yiling-hub/actions/runs/40082657343)。
+- CI 检查覆盖 Prisma Schema 与迁移一致性、TypeScript、周期调度单元测试、PostgreSQL 调度/清理集成测试、AI 来源校验、记忆检索、角色模型配置、ESLint、Nuxt 生产构建、OpenAPI lint，以及使用模拟模型执行的本地 API 端到端冒烟测试。
+- 当前清理验收覆盖：精确保留截止边界（等于 cutoff 的消息保留）、真实删除数量与零删除审计、快照/来源/长期记忆保留、旧快照失败保护、保留期延长或撤销授权后的取消、永久保留不排队、同一清理任务的并发 Worker 争抢，以及过期 Worker 租约的重试/失败恢复。
+- 本地开发 API 额外验证了跨源/跨站请求被拒绝、合法同源请求可正常访问；这只属于开发阶段的纵深防御，不替代正式管理员认证与授权。
+- **仍待本机或部署环境验证：** 真实供应商模型的表现与费用/延迟、Windows + Docker 的真实数据备份/恢复演练、正式管理员登录和公开部署安全审查。CI 通过不代表这些环境级验收已经完成。
 
 推荐命令（安装项目依赖后）：
 ```powershell
