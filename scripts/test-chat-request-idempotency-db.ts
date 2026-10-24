@@ -17,7 +17,7 @@ const requestIds: string[] = [];
 
 try {
   const request = await prisma.chatRequest.create({
-    data: { ownerId, characterId, requestKey, status: "PROCESSING" },
+    data: { ownerId, characterId, requestKey, claimToken: randomUUID(), status: "PROCESSING" },
     select: { id: true, status: true },
   });
   requestIds.push(request.id);
@@ -34,13 +34,13 @@ try {
   const staleAt = new Date(Date.now() - 11 * 60 * 1000);
   await prisma.chatRequest.update({
     where: { id: request.id },
-    data: { updatedAt: staleAt },
+    data: { updatedAt: staleAt, claimToken: randomUUID() },
   });
   const staleBefore = new Date(Date.now() - 10 * 60 * 1000);
   const claims = await Promise.all([
     prisma.chatRequest.updateMany({
       where: { id: request.id, status: "PROCESSING", updatedAt: { lt: staleBefore } },
-      data: { status: "PROCESSING", lastError: null, response: undefined, conversationId: null },
+      data: { status: "PROCESSING", claimToken: randomUUID(), lastError: null, response: undefined, conversationId: null },
     }),
     prisma.chatRequest.updateMany({
       where: { id: request.id, status: "PROCESSING", updatedAt: { lt: staleBefore } },
@@ -49,6 +49,16 @@ try {
   ]);
   assert.equal(claims.reduce((sum, claim) => sum + claim.count, 0), 1,
     "Only one concurrent retry may reclaim a stale PROCESSING request.");
+
+  const winningClaim = await prisma.chatRequest.findUniqueOrThrow({ where: { id: request.id } });
+  const staleFinalize = await prisma.chatRequest.updateMany({
+    where: { id: request.id, status: "PROCESSING", claimToken: request.claimToken },
+    data: { status: "COMPLETED", response: { stale: true } },
+  });
+  assert.equal(staleFinalize.count, 0,
+    "A previous claimant must not finalize after a retry has replaced its claim token.");
+  assert.notEqual(winningClaim.claimToken, request.claimToken,
+    "Reclaiming a stale request must rotate its claim token.");
 
   const conversationId = randomUUID();
   const cachedResponse = {
@@ -71,7 +81,7 @@ try {
 
   const failedKey = randomUUID();
   const failed = await prisma.chatRequest.create({
-    data: { ownerId, characterId, requestKey: failedKey, status: "FAILED", lastError: "temporary test failure" },
+    data: { ownerId, characterId, requestKey: failedKey, claimToken: randomUUID(), status: "FAILED", lastError: "temporary test failure" },
     select: { id: true, status: true },
   });
   requestIds.push(failed.id);
