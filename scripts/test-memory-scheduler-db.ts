@@ -20,6 +20,8 @@ const conversationId = randomUUID();
 const blockedConversationId = randomUUID();
 const unauthorizedScopeId = randomUUID();
 const unauthorizedConversationId = randomUUID();
+const relaxedScopeId = randomUUID();
+const relaxedConversationId = randomUUID();
 const username = `scheduler-test-${suffix}`;
 const now = new Date("2026-10-24T12:00:00.000Z");
 const nextSnapshotAt = new Date("2026-10-01T00:00:00.000Z");
@@ -330,8 +332,6 @@ try {
   );
 
   // A queued 30-day cleanup must be cancelled if the owner widens retention to 90 days.
-  const relaxedScopeId = randomUUID();
-  const relaxedConversationId = randomUUID();
   await prisma.memoryScope.create({
     data: {
       id: relaxedScopeId,
@@ -444,7 +444,7 @@ try {
     "Revoking cleanup authorization must prevent deletion even when a stale job remains queued.",
   );
 
-  console.log("Memory retention integration passed: safe deletion, blocked-snapshot protection, explicit authorization revocation, provenance preservation, accurate audit data, and cleanup scheduling idempotency.");
+  console.log("Memory retention integration passed: safe deletion, blocked-snapshot protection, authorization revocation, widened-retention protection, provenance preservation, accurate audit data, and cleanup scheduling idempotency.");
 
   console.log("Memory DB integration passed: concurrent scheduling, overdue backfill, cursor advancement, repeat-run idempotency, worker replay reuse, and retention cleanup.");
 } finally {
