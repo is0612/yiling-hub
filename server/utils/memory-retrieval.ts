@@ -8,7 +8,7 @@ function normalizeComparable(value: string): string {
 }
 
 const ENGLISH_STOPWORDS = new Set([
-  "a", "an", "and", "are", "as", "at", "be", "been", "but", "by", "can", "did",
+  "a", "an", "and", "are", "as", "at", "about", "be", "been", "but", "by", "can", "did",
   "do", "for", "from", "how", "i", "in", "is", "it", "me", "my", "of", "on",
   "or", "our", "the", "their", "them", "they", "this", "that", "to", "was",
   "we", "what", "when", "where", "which", "who", "why", "with", "you", "your",
