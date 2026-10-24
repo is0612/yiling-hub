@@ -1,10 +1,11 @@
 import { createError, getRouterParam } from "h3";
-import { requireLocalDevOwner, requireUuid } from "../../../utils/local-api";
+import { requireActorUserId } from "../../../utils/auth";
+import { requireUuid } from "../../../utils/local-api";
 import { getPrisma } from "../../../utils/prisma";
 import { toMemoryTimelineDtos } from "../../../utils/memory-timeline-dto";
 
 export default defineEventHandler(async (event) => {
-  const ownerId = requireLocalDevOwner(event);
+  const ownerId = await requireActorUserId(event);
   const characterId = requireUuid(getRouterParam(event, "id") ?? "", "角色");
   const prisma = getPrisma();
 
@@ -51,6 +52,7 @@ export default defineEventHandler(async (event) => {
         status: true,
         createdAt: true,
         updatedAt: true,
+        memoryScope: { select: { scopeType: true } },
       },
     }),
     prisma.memorySnapshot.findMany({

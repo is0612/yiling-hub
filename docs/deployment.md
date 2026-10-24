@@ -1,0 +1,99 @@
+# 部署与扩展
+
+本文汇总 Phase 6「部署和扩展」相关事项：HTTPS 与反向代理、配置管理、监控与告警、日志轮转、数据删除策略，以及后续扩展方向。备份与恢复见 `docs/local-development-and-data-migration.md`。
+
+## 1. 进程模型
+
+Yiling Hub 由两部分组成：
+
+- **Web 服务**（Nuxt/Nitro）：`yarn build` 后 `node .output/server/index.mjs`（或 `yarn start`），对外提供页面与 `/api`。
+- **后台进程**（独立运行，与 Web 服务解耦）：
+  - `yarn scheduler:run`：按周期边界把快照/清理任务入队。
+  - `yarn worker:run`：领取并执行记忆任务（调用模型）。
+  - `yarn channel:run`：QQ 渠道适配器（长连接收消息并回复）。
+
+这些后台进程可以与本机 Web 服务同机运行，也可以部署到独立主机/容器。它们之间通过 PostgreSQL 的任务队列协调，天然支持横向拆分。
+
+## 2. HTTPS 与反向代理
+
+Web 服务默认监听 HTTP（本地 `127.0.0.1`）。公网部署时，在它前面放反向代理并终结 TLS。
+
+Nginx 示例（`/etc/nginx/sites-available/yiling`）：
+
+```nginx
+server {
+    listen 80;
+    server_name hub.example.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name hub.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/hub.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/hub.example.com/privkey.pem;
+
+    # 会话 Cookie 依赖这几个头；Host 必须与浏览器看到的域名一致（否则同源校验会拒绝请求）。
+    proxy_set_header Host              $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+
+    client_max_body_size 10m;
+}
+```
+
+要点：
+
+- `YILING_COOKIE_SECURE=true`（或 `NODE_ENV=production`）会让会话 Cookie 带 `Secure`，必须配合 HTTPS。
+- 同源/跨站校验依赖 `Host` 头与浏览器 `Origin` 一致；反向代理务必保留 `Host`，不要改写域名。
+- 反向代理可配置客户端 IP 透传（`X-Forwarded-For`），但服务端只在明确配置可信代理后才应信任它——当前实现默认不信任该头。
+
+## 3. 配置管理
+
+所有配置经环境变量注入（见 `.env.example`）。生产环境不要复用本地 `.env`，而是为每个环境单独设置：
+
+- `DATABASE_URL`：指向独立、受保护的 PostgreSQL。
+- `POSTGRES_*`：仅本地 `docker compose` 使用。
+- `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL`：模型服务的默认回退（角色的 API Key 可单独在网页配置，加密保存）。
+- `AUTH_SESSION_TTL_HOURS`、`YILING_COOKIE_SECURE`、`YILING_ALLOW_REGISTRATION`、`YILING_ALLOW_DEV_OWNER_BYPASS`：鉴权相关。
+- `QQ_*`：QQ 渠道端点（默认官方值）。
+
+秘密（数据库密码、模型 Key、QQ AppSecret、加密密钥 `.data/credentials-encryption.key`）不得进入 Git 或镜像层，应通过 Secret 管理或受控的环境注入提供。
+
+## 4. 监控与告警
+
+- **存活探针**：`GET /api/health` 返回 `{ ok: true, ... }`，不依赖数据库，供负载均衡/探活使用。
+- **就绪探针（仅管理员）**：`GET /api/admin/health` 返回数据库连通性与任务队列计数（queued / running / succeeded / failed），可用作外部监控的数据源。
+- **任务状态**：`/tasks` 页面可查看任务的排队、执行、失败与重试状态；后台进程把状态写回 `memory_jobs`。
+- **告警建议**：至少对「连续失败任务数」与「数据库连通性」设置阈值告警；磁盘告警针对数据库数据卷（`yiling_postgres_data`）与备份目录所在磁盘。
+
+## 5. 日志轮转
+
+Web 服务与后台进程写标准输出。部署到容器或 systemd 时，由宿主机负责轮转：
+
+- Docker：`logging` 驱动 `json-file` 的 `max-size` / `max-file`，或用 `docker compose` 的 `logging:` 段。
+- systemd：`journald` 自带轮转与上限。
+
+应用层日志不落盘文件，因此无需在代码内做轮转；若将来需要持久化审计日志，应写入 `audit_logs` 表而不是日志文件。
+
+## 6. 数据删除策略
+
+- **原始消息清理**：每个角色可配置原始消息保留期（永久 / 30 / 90 / 180 天），由后台清理任务在周期内删除过期原文并写审计记录；有限保留需单独确认授权，不会自动触发。
+- **回收站与记忆**：角色删除、记忆删除走回收站/软删除流程（见 `docs/memory-system.md`）。
+- **账号注销**：管理员可停用账号（会话立即失效）；账号的完整物理删除与关联数据清理需按产品删除策略另行设计。
+- **备份保留**：备份文件按敏感数据对待，异地存放、定期轮换、定期做恢复演练（见迁移文档）。
+
+## 7. 后续扩展
+
+- **水平扩展**：后台进程与 Web 服务解耦，可拆分到独立机器；任务队列以数据库为协调点，注意并发 Worker 的领取互斥（已由状态机保证不重复领取）。
+- **对象存储**：若接入图片/附件，需将文件迁出本地目录并纳入独立备份。
+- **多渠道**：`server/utils/channel-adapter/` 已抽象出平台无关的消息管线，接入下一个平台只需新增一个 Adapter 并注册连接。
+- **多实例部署**：迁移/备份、模型调用与渠道适配器都可独立扩容；数据库作为唯一状态源，保持单写主库 + 定期备份即可。

@@ -10,10 +10,28 @@ import {
   Search,
   Setting,
   MagicStick,
+  SwitchButton,
   User,
+  UserFilled,
 } from "@element-plus/icons-vue";
 
 const route = useRoute();
+const { displayName, logout, isLocalDevIdentity, isAdmin } = useAuthSession();
+const loggingOut = ref(false);
+const avatarLetter = computed(() => (displayName.value || "管").slice(0, 1));
+const roleLabel = computed(() =>
+  isLocalDevIdentity.value ? "本地开发身份" : isAdmin.value ? "已登录管理员" : "已登录用户",
+);
+
+async function handleLogout() {
+  if (loggingOut.value) return;
+  loggingOut.value = true;
+  try {
+    await logout();
+  } finally {
+    loggingOut.value = false;
+  }
+}
 type NavigationItem = {
   key: string;
   label: string;
@@ -34,7 +52,7 @@ await useCharacterListData();
  */
 const navigation = computed<NavigationItem[]>(() => {
   const id = activeCharacterId.value;
-  return [
+  const items: NavigationItem[] = [
     { key: "home", label: "总览", href: "/", icon: DataBoard, section: "工作空间" },
     { key: "characters", label: "角色管理", href: "/characters", icon: User },
     {
@@ -44,15 +62,27 @@ const navigation = computed<NavigationItem[]>(() => {
       icon: Cpu,
     },
     {
+      key: "chat",
+      label: "AI 对话",
+      href: id ? "/characters/" + id + "/chat" : "/characters",
+      icon: ChatDotRound,
+    },
+    {
       key: "snapshots",
       label: "周期快照",
       href: id ? `/characters/${id}/snapshots` : "/characters",
       icon: Calendar,
     },
-    { key: "channels", label: "渠道管理", href: "/channels", icon: ChatDotRound, section: "系统管理" },
-    { key: "tasks", label: "任务监控", href: "/tasks", icon: DataAnalysis, count: "2" },
-    { key: "settings", label: "系统设置", href: "/settings", icon: Setting },
   ];
+  if (isAdmin.value) {
+    items.push(
+      { key: "channels", label: "渠道管理", href: "/channels", icon: ChatDotRound, section: "系统管理" },
+      { key: "tasks", label: "任务监控", href: "/tasks", icon: DataAnalysis },
+      { key: "users", label: "用户管理", href: "/users", icon: UserFilled },
+      { key: "settings", label: "系统设置", href: "/settings", icon: Setting },
+    );
+  }
+  return items;
 });
 
 function isActive(item: NavigationItem) {
@@ -64,6 +94,8 @@ function isActive(item: NavigationItem) {
       return path === "/characters";
     case "memory":
       return /^\/characters\/[^/]+(\/settings\/memory)?$/.test(path);
+    case "chat":
+      return path.startsWith("/characters/") && path.endsWith("/chat");
     case "snapshots":
       return /^\/characters\/[^/]+\/snapshots$/.test(path);
     default:
@@ -105,12 +137,15 @@ function isActive(item: NavigationItem) {
 
       <div class="sidebar-bottom">
         <div class="admin-row">
-          <div class="admin-avatar">你</div>
+          <div class="admin-avatar">{{ avatarLetter }}</div>
           <div class="admin-info sidebar-bottom-copy">
-            <div class="admin-name">本地管理员</div>
-            <div class="admin-note">开发预览</div>
+            <div class="admin-name">{{ displayName }}</div>
+            <div class="admin-note">{{ roleLabel }}</div>
           </div>
         </div>
+        <el-button class="sidebar-logout" text size="small" :loading="loggingOut" @click="handleLogout">
+          <el-icon><SwitchButton /></el-icon>退出登录
+        </el-button>
         <div class="sidebar-version"><span>Yiling Hub · 预览版</span><span>v0.1</span></div>
       </div>
     </aside>
@@ -123,10 +158,13 @@ function isActive(item: NavigationItem) {
           </el-input>
         </div>
         <div class="topbar-right">
-          <span class="env-indicator"><span class="env-dot" />本地环境</span>
+          <span class="env-indicator"><span class="env-dot" />{{ isLocalDevIdentity ? "本地开发" : "已登录" }}</span>
           <el-button text circle aria-label="通知"><el-icon><Bell /></el-icon></el-button>
           <el-divider direction="vertical" />
-          <div class="user-pill"><el-avatar :size="30">你</el-avatar><span>管理员</span></div>
+          <div class="user-pill"><el-avatar :size="30">{{ avatarLetter }}</el-avatar><span>{{ displayName }}</span></div>
+          <el-button text size="small" :loading="loggingOut" @click="handleLogout">
+            <el-icon><SwitchButton /></el-icon>退出
+          </el-button>
         </div>
       </header>
       <main><slot /></main>

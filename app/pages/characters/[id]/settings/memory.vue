@@ -1,13 +1,16 @@
 <script setup lang="ts">
 import { ArrowLeft, Calendar, InfoFilled, RefreshLeft, Lock, Select } from "@element-plus/icons-vue";
-import { ElMessage } from "element-plus";
+import { ElMessage, ElMessageBox } from "element-plus";
 import { initialCharacters, type Character } from "~/utils/mock-data";
 
 type MemorySettings = {
   snapshotIntervalDays: number;
+  activeSnapshotIntervalDays: number;
+  pendingSnapshotIntervalDays: number | null;
   timezone: string;
   anchorAt: string;
   rawMessageRetentionDays: number;
+  rawMessageCleanupEnabled: boolean;
   autoSnapshotEnabled: boolean;
   changePolicy: "NEXT_CYCLE" | "IMMEDIATE_RECALC";
   nextSnapshotAt: string | null;
@@ -18,10 +21,18 @@ const route = useRoute();
 const id = computed(() => String(route.params.id || ""));
 const character = ref<Character>({ ...initialCharacters[0]!, id: "", name: "角色加载中" });
 const interval = ref(8);
+const activeInterval = ref(8);
+const pendingInterval = ref<number | null>(null);
+const savedAnchorAt = ref<string | null>(null);
+const savedTimezone = ref("Asia/Shanghai");
+const savedAutoSnapshot = ref(false);
 const timezone = ref("Asia/Shanghai");
 const anchor = ref("2026-10-21T09:00:00");
-const retention = ref(90);
+const retention = ref(0);
+const savedRetention = ref(0);
+const savedRetentionCleanupEnabled = ref(false);
 const autoSnapshot = ref(false);
+const nextSnapshotAt = ref<string | null>(null);
 const effectivePolicy = ref("下一个周期生效");
 const loading = ref(false);
 const saving = ref(false);
@@ -71,10 +82,18 @@ async function loadSettings() {
     ]);
     character.value = loadedCharacter;
     interval.value = settings.snapshotIntervalDays;
+    activeInterval.value = settings.activeSnapshotIntervalDays;
+    pendingInterval.value = settings.pendingSnapshotIntervalDays;
+    savedAnchorAt.value = settings.anchorAt;
+    savedTimezone.value = settings.timezone;
+    savedAutoSnapshot.value = settings.autoSnapshotEnabled;
     timezone.value = settings.timezone;
     anchor.value = formatAnchor(settings.anchorAt, settings.timezone);
     retention.value = settings.rawMessageRetentionDays;
+    savedRetention.value = settings.rawMessageRetentionDays;
+    savedRetentionCleanupEnabled.value = settings.rawMessageCleanupEnabled;
     autoSnapshot.value = settings.autoSnapshotEnabled;
+    nextSnapshotAt.value = settings.nextSnapshotAt;
     effectivePolicy.value = settings.changePolicy === "IMMEDIATE_RECALC" ? "立即重算" : "下一个周期生效";
   } catch (error) {
     const message = error && typeof error === "object" && "statusMessage" in error
@@ -87,6 +106,30 @@ async function loadSettings() {
 }
 
 async function saveSettings() {
+  const previousRetention = savedRetention.value;
+  const nextRetention = Number(retention.value);
+  const retentionBecomesMoreDestructive = nextRetention > 0 &&
+    (!savedRetentionCleanupEnabled.value || (previousRetention > 0 && nextRetention < previousRetention));
+  if (retentionBecomesMoreDestructive) {
+    const archiveWarning = autoSnapshot.value
+      ? ""
+      : "\n\n注意：当前自动归档处于关闭状态，历史原文可能没有对应的周期快照。";
+    try {
+      await ElMessageBox.confirm(
+        `此设置会允许系统在下一次调度后排队删除超过 ${nextRetention} 天的原始消息。原文删除不可恢复；已有快照、长期记忆和来源追溯记录会保留。${archiveWarning}\n\n确认启用该保留期限吗？`,
+        "确认原始消息自动清理",
+        {
+          confirmButtonText: "确认并保存",
+          cancelButtonText: "返回检查",
+          type: "warning",
+          distinguishCancelAndClose: true,
+        },
+      );
+    } catch {
+      return;
+    }
+  }
+
   saving.value = true;
   try {
     const anchorAt = zonedInputToIso(anchor.value, timezone.value);
@@ -97,11 +140,22 @@ async function saveSettings() {
         timezone: timezone.value,
         anchorAt,
         rawMessageRetentionDays: retention.value,
+        rawMessageCleanupEnabled: nextRetention > 0,
         autoSnapshotEnabled: autoSnapshot.value,
         changePolicy: effectivePolicy.value === "立即重算" ? "IMMEDIATE_RECALC" : "NEXT_CYCLE",
       },
     });
     interval.value = saved.snapshotIntervalDays;
+    activeInterval.value = saved.activeSnapshotIntervalDays;
+    pendingInterval.value = saved.pendingSnapshotIntervalDays;
+    savedAnchorAt.value = saved.anchorAt;
+    savedTimezone.value = saved.timezone;
+    savedAutoSnapshot.value = saved.autoSnapshotEnabled;
+    nextSnapshotAt.value = saved.nextSnapshotAt;
+    retention.value = saved.rawMessageRetentionDays;
+    savedRetention.value = saved.rawMessageRetentionDays;
+    savedRetentionCleanupEnabled.value = saved.rawMessageCleanupEnabled;
+    autoSnapshot.value = saved.autoSnapshotEnabled;
     anchor.value = formatAnchor(saved.anchorAt, saved.timezone);
     effectivePolicy.value = saved.changePolicy === "IMMEDIATE_RECALC" ? "立即重算" : "下一个周期生效";
     ElMessage.success("记忆周期设置已保存到本地数据库。");
@@ -120,11 +174,59 @@ function resetSettings() {
   timezone.value = "Asia/Shanghai";
   const now = new Date();
   anchor.value = formatAnchor(now.toISOString(), timezone.value);
-  retention.value = 90;
+  retention.value = 0;
   autoSnapshot.value = false;
+  nextSnapshotAt.value = null;
   effectivePolicy.value = "下一个周期生效";
   ElMessage.info("已将表单恢复为默认值；点击“保存设置”后才会写入数据库。");
 }
+
+const nextSnapshotPreview = computed(() => {
+  if (!autoSnapshot.value) return "未启用";
+  try {
+    const editedAnchorAt = zonedInputToIso(anchor.value, timezone.value);
+    const anchorChanged = savedAnchorAt.value !== null && (
+      timezone.value !== savedTimezone.value ||
+      Math.floor(new Date(editedAnchorAt).getTime() / 1000) !==
+        Math.floor(new Date(savedAnchorAt.value).getTime() / 1000)
+    );
+    const immediateRecalc = effectivePolicy.value === "立即重算";
+    const formatPreview = (date: Date) => new Intl.DateTimeFormat("zh-CN", {
+      timeZone: timezone.value,
+      year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit",
+    }).format(date);
+
+    if (savedAutoSnapshot.value && nextSnapshotAt.value && !anchorChanged && !immediateRecalc) {
+      const boundary = formatPreview(new Date(nextSnapshotAt.value));
+      if (safeInterval.value !== activeInterval.value) {
+        return `${boundary}（当前周期结束后切换为 ${safeInterval.value} 天）`;
+      }
+      if (pendingInterval.value !== null) {
+        return `${boundary}（保存后将取消待生效的周期调整）`;
+      }
+      return boundary;
+    }
+
+    const next = new Date(new Date(editedAnchorAt).getTime() + safeInterval.value * 24 * 60 * 60 * 1000);
+    return formatPreview(next);
+  } catch {
+    return "保存后计算";
+  }
+});
+
+const savedNextSnapshotLabel = computed(() => {
+  if (!nextSnapshotAt.value) return "尚未安排";
+  try {
+    return new Intl.DateTimeFormat("zh-CN", {
+      timeZone: savedTimezone.value,
+      year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit",
+    }).format(new Date(nextSnapshotAt.value));
+  } catch {
+    return nextSnapshotAt.value;
+  }
+});
 
 onMounted(() => void loadSettings());
 watch(id, () => void loadSettings());
@@ -132,7 +234,7 @@ watch(id, () => void loadSettings());
 
 <template>
   <div class="page-wrap">
-    <PageHeader :eyebrow="'角色管理 / ' + character.name + ' / 记忆设置'" title="记忆周期设置" description="控制角色多久归档一次阶段记忆。设置会保存到 PostgreSQL；真正的定时执行器将在后续 Worker 阶段接入。">
+    <PageHeader :eyebrow="'角色管理 / ' + character.name + ' / 记忆设置'" title="记忆周期设置" description="控制角色多久归档一次阶段记忆。设置保存到 PostgreSQL，由 Scheduler 生成到期任务，再由 Worker 调用角色模型完成 AI 提炼。">
       <template #actions><el-button @click="navigateTo('/characters/' + character.id)"><el-icon><ArrowLeft /></el-icon>返回驾驶舱</el-button></template>
     </PageHeader>
 
@@ -150,8 +252,8 @@ watch(id, () => void loadSettings());
             <div class="form-grid">
               <el-form-item label="记忆时区"><el-select v-model="timezone" style="width:100%"><el-option label="中国标准时间（Asia/Shanghai）" value="Asia/Shanghai" /><el-option label="协调世界时（UTC）" value="UTC" /><el-option label="美国太平洋时间（America/Los_Angeles）" value="America/Los_Angeles" /></el-select></el-form-item>
               <el-form-item label="周期启用锚点"><el-date-picker v-model="anchor" type="datetime" value-format="YYYY-MM-DDTHH:mm:ss" placeholder="选择周期起始时间" style="width:100%" /></el-form-item>
-              <el-form-item label="原始消息保留期限"><el-select v-model="retention" style="width:100%"><el-option label="30 天" :value="30" /><el-option label="90 天" :value="90" /><el-option label="180 天" :value="180" /><el-option label="永久保留" :value="0" /></el-select><div class="form-help">该期限独立于快照周期；清理任务尚未接入 Worker。</div></el-form-item>
-              <el-form-item label="修改何时生效"><el-radio-group v-model="effectivePolicy"><el-radio value="下一个周期生效">下一个周期</el-radio><el-radio value="立即重算">立即重算</el-radio></el-radio-group></el-form-item>
+              <el-form-item label="原始消息保留期限"><el-select v-model="retention" style="width:100%"><el-option label="30 天" :value="30" /><el-option label="90 天" :value="90" /><el-option label="180 天" :value="180" /><el-option label="永久保留" :value="0" /></el-select><div class="form-help">{{ Number(retention) === 0 ? "永久保留；保存后不会再排入原始消息清理任务。" : savedRetentionCleanupEnabled ? "自动清理已获授权；缩短保留期时会再次要求确认。较早的快照任务尚未完成时，Worker 会延后清理。" : "当前期限仅为配置，自动清理尚未获授权。保存时需要明确确认；未确认前不会排入清理任务。" }}</div></el-form-item>
+              <el-form-item label="修改何时生效"><el-radio-group v-model="effectivePolicy"><el-radio value="下一个周期生效">下一个周期</el-radio><el-radio value="立即重算">立即重算</el-radio></el-radio-group><div class="form-help">下一个周期：保留当前已安排的周期边界，新间隔在该周期结束后生效。修改时区或启用锚点会重设计划。立即重算：按当前锚点和新间隔重新计算下次边界。</div></el-form-item>
             </div>
           </el-form>
           <el-divider />
@@ -171,14 +273,17 @@ watch(id, () => void loadSettings());
         </section>
         <section class="surface panel" style="margin-top:16px">
           <SectionTitle title="当前计划预览" description="保存后写入本地数据库" />
-          <div class="metric-row"><span>归档间隔</span><span class="metric-value">{{ safeInterval }} 天</span></div>
+          <div class="metric-row"><span>当前选择间隔</span><span class="metric-value">{{ safeInterval }} 天</span></div>
+          <div v-if="autoSnapshot && savedAutoSnapshot && pendingInterval !== null" class="metric-row"><span>当前周期安排</span><span class="metric-value">现为 {{ activeInterval }} 天，下一边界后 {{ pendingInterval }} 天</span></div>
           <div class="metric-row"><span>执行状态</span><span class="pill" :class="autoSnapshot ? 'pill-green' : 'pill-gray'">{{ autoSnapshot ? '自动归档开启' : '自动归档已暂停' }}</span></div>
           <div class="metric-row"><span>生效策略</span><span class="metric-value">{{ effectivePolicy }}</span></div>
-          <div class="info-callout" style="margin-top:15px"><el-icon><InfoFilled /></el-icon><span>设置已持久化，但该时间目前只是计划预览；后台调度、任务补处理将在后续 Worker 阶段实现。</span></div>
+          <div class="metric-row"><span>下次归档（按当前表单）</span><span class="metric-value">{{ nextSnapshotPreview }}</span></div>
+          <div class="metric-row"><span>数据库中的计划时间</span><span class="metric-value">{{ savedNextSnapshotLabel }}</span></div>
+          <div class="info-callout" style="margin-top:15px"><el-icon><InfoFilled /></el-icon><span>计划时间以角色时区计算。要自动执行，请保持 Scheduler 与 Worker 进程运行；如果没有配置角色模型 API，任务会保留在队列中，不会消耗掉。</span></div>
         </section>
       </aside>
     </div>
-    <p class="footer-note">记忆周期、时区、锚点与原始消息保留期限已写入数据库；自动执行与消息清理仍未接入 Worker。</p>
+    <p class="footer-note">记忆周期、时区、锚点与原始消息保留期限已写入数据库。清理任务会删除截止时间之前的原始消息，并保留快照与来源追溯记录。</p>
   </div>
 </template>
 

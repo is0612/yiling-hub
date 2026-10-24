@@ -48,6 +48,15 @@ export type SnapshotAnalysis = {
   }>;
 };
 
+export type SnapshotSourceMessage = {
+  id: string;
+  role: string;
+  eventType: string;
+  content: string;
+  occurredAt: string;
+  conversationTitle: string | null;
+};
+
 export type Snapshot = {
   id: string;
   number: number;
@@ -63,6 +72,7 @@ export type Snapshot = {
   generatedBy?: string;
   model?: { name?: string; provider?: string; promptTemplateVersion?: string };
   analysis?: SnapshotAnalysis;
+  sourceMessages?: SnapshotSourceMessage[];
 };
 
 export type DemoTask = {

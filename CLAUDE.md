@@ -28,6 +28,14 @@
 
 ## 当前仓库状态
 
-开发分支已经包含 PostgreSQL 持久化的角色/记忆设置、对话录入、周期调度与独立 Worker。Worker 可通过服务端 OpenAI-compatible Chat Completions API 对周期消息生成结构化总结、验证来源消息 ID，并以事务方式保存快照、带 `sourceMessageId`/`sourceSnapshotId` 的长期记忆变更和审计日志。模型参数位于服务端 `.env`：`LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL`、可选的 `LLM_TIMEOUT_MS`。
+开发分支已包含 PostgreSQL 持久化的角色/记忆设置、对话录入、周期调度与独立 Worker。Worker 通过服务端 OpenAI-compatible Chat Completions API 对周期消息生成结构化总结，校验来源消息 ID，再以事务方式保存快照、长期记忆变更和审计日志。模型参数位于服务端 `.env`：`LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL`、可选的 `LLM_TIMEOUT_MS`。
 
-AI 自动处理仍有明确边界：当前 worker 只消费 `GENERATE_SNAPSHOT`；自动快照重新提炼入口、真实聊天渠道 Adapter、正式管理员登录和公网部署安全仍未完成。模型未配置时任务应留在队列，不得使用规则摘要冒充 AI 输出。来源证据必须通过本周期原始消息 ID 白名单校验；不要把未验证的模型推断自动写入长期记忆。完成代码修改后仍必须运行适用的类型检查、测试、lint 与构建；没有执行的检查不能声称通过。
+Worker 当前消费 `GENERATE_SNAPSHOT` 与 `REGENERATE_SNAPSHOT`。AI 重新提炼会在同一逻辑快照下创建新版本并保留旧版本；为了避免重放历史周期意外改写当前长期记忆，重新提炼提出的记忆变化只作为审核建议，不自动应用。任务监控支持取消等待中的任务，以及对支持的快照任务手动重新入队，操作会写入审计日志。
+
+AI 对话的检索范围按身份隔离：`resolveChatMemoryScopes()` 只放行角色全局范围与当前用户自己的私人范围，未验证外部身份、他人范围与未知类型一律拒绝；记忆写入接口支持 `scope: character | private`。来源带上 `character` / `private` 语义标签，提示词不包含范围 ID 或用户 ID。相关回归测试为 `yarn test:chat-private-memory`（纯逻辑与提示词）和 `yarn test:chat-private-memory-db`（数据库查询隔离）。
+
+鉴权已实现服务端会话：`sessions` 表只存会话令牌的 SHA-256 哈希，Cookie 为 `yiling_session`（HttpOnly / SameSite=Strict / 生产 Secure），密码用 scrypt 校验，登录失败写 `login_attempts` 并按用户名与来源地址限流。所有 `/api` 请求经过同源/跨站校验；业务接口通过 `requireActorUserId()` 从会话取身份。本地开发保留一条受限回退（开发构建 + `YILING_LOCAL_API_ENABLED=true` + 未关闭 `YILING_ALLOW_DEV_OWNER_BYPASS` + 回环 Host），生产构建没有该通道；携带失效 Cookie 时必须重新登录，不能回退成开发身份。回归测试为 `yarn test:auth`、`yarn test:auth-db`，登录/登出/限流链路由冒烟脚本覆盖。
+
+仍未完成的边界：密码重置（需 SMTP）、注册邮箱验证（需 SMTP）、渠道适配器的断线重连与主动消息、渠道按外部用户隔离私人记忆、公网部署加固（HTTPS、反向代理信任、备份演练）；真实模型端到端调用也需要开发者在本机配置 API 后验证。当前 CI 用仅监听回环地址的模拟模型服务验证完整数据流。模型未配置时任务必须留在队列，不得用规则摘要冒充 AI 输出。来源证据必须通过当前周期原始消息 ID 白名单校验；不要把未验证的模型推断当作确定事实自动写入长期记忆。每次代码修改后运行适用的类型检查、测试、lint 与构建；没有实际执行的检查不能声称通过。
+
+账号模型为「1 个管理员 + 邮箱注册普通用户」：`User.role` 只有 ADMIN/USER；业务接口按会话 `userId` 过滤，天然隔离；管理员接口 `/api/admin/*` 走 `requireAdminActor()`。QQ 渠道适配器（`server/utils/channel-adapter/*`）走官方开放平台 WebSocket 网关 + REST 发消息，AppSecret 加密入库，消息处理按角色绑定路由、幂等去重、回写平台；回归测试 `yarn test:channel`。

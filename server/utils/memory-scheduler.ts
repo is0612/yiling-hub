@@ -14,9 +14,11 @@ export function buildDueMemoryPeriods(input: {
   nextSnapshotAt: Date | null;
   intervalDays: number;
   now: Date;
+  pendingIntervalDays?: number | null;
   maxPeriods?: number;
 }): { periods: DueMemoryPeriod[]; nextSnapshotAt: Date | null; stillDue: boolean } {
   const { memoryScopeId, nextSnapshotAt, intervalDays, now } = input;
+  const pendingIntervalDays = input.pendingIntervalDays ?? null;
   const maxPeriods = input.maxPeriods ?? DEFAULT_MAX_PERIODS_PER_SETTING;
   if (
     !nextSnapshotAt ||
@@ -24,6 +26,8 @@ export function buildDueMemoryPeriods(input: {
     !Number.isFinite(now.getTime()) ||
     !Number.isInteger(intervalDays) ||
     intervalDays < 1 ||
+    intervalDays > 365 ||
+    (pendingIntervalDays !== null && (!Number.isInteger(pendingIntervalDays) || pendingIntervalDays < 1 || pendingIntervalDays > 365)) ||
     !Number.isInteger(maxPeriods) ||
     maxPeriods < 1 ||
     nextSnapshotAt.getTime() > now.getTime()
@@ -31,18 +35,28 @@ export function buildDueMemoryPeriods(input: {
     return { periods: [], nextSnapshotAt, stillDue: false };
   }
 
-  const intervalMs = intervalDays * DAY_MS;
   const periods: DueMemoryPeriod[] = [];
   let periodEnd = new Date(nextSnapshotAt);
+  let intervalForCurrentPeriod = intervalDays;
+  let pendingIntervalAppliesAfterCurrentPeriod = pendingIntervalDays !== null;
 
   while (periodEnd.getTime() <= now.getTime() && periods.length < maxPeriods) {
+    const intervalMs = intervalForCurrentPeriod * DAY_MS;
     const periodStart = new Date(periodEnd.getTime() - intervalMs);
     periods.push({
       periodStart,
       periodEnd: new Date(periodEnd),
       idempotencyKey: `auto-snapshot:${memoryScopeId}:${periodStart.toISOString()}:${periodEnd.toISOString()}`,
     });
-    periodEnd = new Date(periodEnd.getTime() + intervalMs);
+
+    // The in-flight period uses the active interval. The pending interval applies
+    // to the period that starts at this boundary and all subsequent periods.
+    const intervalForNextPeriod = pendingIntervalAppliesAfterCurrentPeriod
+      ? pendingIntervalDays!
+      : intervalForCurrentPeriod;
+    periodEnd = new Date(periodEnd.getTime() + intervalForNextPeriod * DAY_MS);
+    intervalForCurrentPeriod = intervalForNextPeriod;
+    pendingIntervalAppliesAfterCurrentPeriod = false;
   }
 
   return {
@@ -82,15 +96,16 @@ export async function enqueueDueMemorySnapshots(
     select: {
       characterId: true,
       snapshotIntervalDays: true,
+      pendingSnapshotIntervalDays: true,
       anchorAt: true,
       nextSnapshotAt: true,
       autoSnapshotEnabled: true,
+      rawMessageRetentionDays: true,
+      rawMessageCleanupEnabled: true,
       character: {
         select: {
           memoryScopes: {
-            where: { scopeType: "CHARACTER_GLOBAL" },
-            select: { id: true },
-            take: 1,
+            select: { id: true, scopeType: true },
           },
         },
       },
@@ -112,13 +127,54 @@ export async function enqueueDueMemorySnapshots(
   };
 
   for (const setting of settings) {
-    if (!setting.autoSnapshotEnabled) continue;
+    const globalScopeId = setting.character.memoryScopes.find((scope) => scope.scopeType === "CHARACTER_GLOBAL")?.id;
 
-    const memoryScopeId = setting.character.memoryScopes[0]?.id;
-    if (!memoryScopeId) {
+    // Queue retention cleanup independently from automatic snapshot generation.
+    // Do not queue a cleanup while an older snapshot period is still pending.
+    const retentionDays = setting.rawMessageRetentionDays;
+    const cutoff = setting.rawMessageCleanupEnabled && retentionDays && retentionDays > 0
+      ? addDays(now, -retentionDays)
+      : null;
+    const firstSnapshotBoundary = setting.nextSnapshotAt ?? addDays(setting.anchorAt, setting.snapshotIntervalDays);
+    const hasUnqueuedExpiredSnapshotPeriods = Boolean(
+      setting.autoSnapshotEnabled &&
+      cutoff &&
+      firstSnapshotBoundary.getTime() <= now.getTime() &&
+      firstSnapshotBoundary.getTime() - setting.snapshotIntervalDays * DAY_MS < cutoff.getTime()
+    );
+    if (cutoff && !hasUnqueuedExpiredSnapshotPeriods) {
+      for (const scope of setting.character.memoryScopes) {
+        const pendingSnapshot = await prisma.memoryJob.findFirst({
+          where: {
+            memoryScopeId: scope.id,
+            type: { in: ["GENERATE_SNAPSHOT", "REGENERATE_SNAPSHOT"] },
+            status: { in: ["QUEUED", "RUNNING", "RETRY_WAIT"] },
+            periodStart: { lt: cutoff },
+          },
+          select: { id: true },
+        });
+        if (pendingSnapshot) continue;
+        const cutoffKey = cutoff.toISOString().slice(0, 10);
+        await prisma.memoryJob.createMany({
+          data: [{
+            memoryScopeId: scope.id,
+            type: "CLEAN_EXPIRED_MESSAGES",
+            idempotencyKey: `clean-expired-messages:${scope.id}:${cutoffKey}`,
+            periodEnd: cutoff,
+            status: "QUEUED",
+            runAt: now,
+          }],
+          skipDuplicates: true,
+        });
+      }
+    }
+
+    if (!setting.autoSnapshotEnabled) continue;
+    if (!globalScopeId) {
       report.missingGlobalScope += 1;
       continue;
     }
+    const memoryScopeId = globalScopeId;
 
     try {
       const result = await prisma.$transaction(async (tx) => {
@@ -127,6 +183,7 @@ export async function enqueueDueMemorySnapshots(
           select: {
             characterId: true,
             snapshotIntervalDays: true,
+            pendingSnapshotIntervalDays: true,
             anchorAt: true,
             nextSnapshotAt: true,
             autoSnapshotEnabled: true,
@@ -146,6 +203,8 @@ export async function enqueueDueMemorySnapshots(
                 autoSnapshotEnabled: true,
                 nextSnapshotAt: null,
                 anchorAt: latest.anchorAt,
+                snapshotIntervalDays: latest.snapshotIntervalDays,
+                pendingSnapshotIntervalDays: latest.pendingSnapshotIntervalDays,
               },
               data: { nextSnapshotAt: firstBoundary },
             });
@@ -160,6 +219,7 @@ export async function enqueueDueMemorySnapshots(
           memoryScopeId,
           nextSnapshotAt: firstBoundary,
           intervalDays: latest.snapshotIntervalDays,
+          pendingIntervalDays: latest.pendingSnapshotIntervalDays,
           now,
           maxPeriods: options.maxPeriodsPerSetting,
         });
@@ -186,8 +246,15 @@ export async function enqueueDueMemorySnapshots(
             characterId: latest.characterId,
             autoSnapshotEnabled: true,
             nextSnapshotAt: latest.nextSnapshotAt,
+            snapshotIntervalDays: latest.snapshotIntervalDays,
+            pendingSnapshotIntervalDays: latest.pendingSnapshotIntervalDays,
           },
-          data: { nextSnapshotAt: built.nextSnapshotAt },
+          data: {
+            nextSnapshotAt: built.nextSnapshotAt,
+            ...(latest.pendingSnapshotIntervalDays !== null
+              ? { snapshotIntervalDays: latest.pendingSnapshotIntervalDays, pendingSnapshotIntervalDays: null }
+              : {}),
+          },
         });
         if (updateResult.count !== 1) {
           throw new Error("MEMORY_SCHEDULER_RACE");

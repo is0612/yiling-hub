@@ -1,9 +1,10 @@
 import { createError } from "h3";
-import { requireLocalDevOwner, requireUuid } from "../../../../utils/local-api";
+import { requireActorUserId } from "../../../../utils/auth";
+import { requireUuid } from "../../../../utils/local-api";
 import { getPrisma } from "../../../../utils/prisma";
 
 export default defineEventHandler(async (event) => {
-  const ownerId = requireLocalDevOwner(event);
+  const ownerId = await requireActorUserId(event);
   const characterId = requireUuid(getRouterParam(event, "id") ?? "");
   const prisma = getPrisma();
   const character = await prisma.character.findFirst({
@@ -23,16 +24,20 @@ export default defineEventHandler(async (event) => {
       timezone: "Asia/Shanghai",
       anchorAt: new Date(),
       autoSnapshotEnabled: false,
-      rawMessageRetentionDays: 90,
+      rawMessageRetentionDays: null,
+      rawMessageCleanupEnabled: false,
     },
     update: {},
   });
 
   return {
-    snapshotIntervalDays: settings.snapshotIntervalDays,
+    snapshotIntervalDays: settings.pendingSnapshotIntervalDays ?? settings.snapshotIntervalDays,
+    activeSnapshotIntervalDays: settings.snapshotIntervalDays,
+    pendingSnapshotIntervalDays: settings.pendingSnapshotIntervalDays,
     timezone: settings.timezone,
     anchorAt: settings.anchorAt.toISOString(),
     rawMessageRetentionDays: settings.rawMessageRetentionDays ?? 0,
+    rawMessageCleanupEnabled: settings.rawMessageCleanupEnabled,
     autoSnapshotEnabled: settings.autoSnapshotEnabled,
     changePolicy: settings.changePolicy,
     nextSnapshotAt: settings.nextSnapshotAt?.toISOString() ?? null,

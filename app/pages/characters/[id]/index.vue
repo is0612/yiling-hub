@@ -56,6 +56,7 @@ const memoryDialogOpen = ref(false);
 const memorySaving = ref(false);
 const draftMemoryCategory = ref<MemoryCategory>("FACT");
 const draftMemoryContent = ref("");
+const draftMemoryScope = ref<"character" | "private">("character");
 const memoryEditDialogOpen = ref(false);
 const memoryEditLoading = ref(false);
 const memoryEditSaving = ref(false);
@@ -180,11 +181,13 @@ async function saveMemory() {
       body: {
         category: draftMemoryCategory.value,
         content: draftMemoryContent.value.trim(),
+        scope: draftMemoryScope.value,
       },
     });
     memoryDialogOpen.value = false;
     draftMemoryContent.value = "";
     draftMemoryCategory.value = "FACT";
+    draftMemoryScope.value = "character";
     await loadCharacter();
     ElMessage.success("长期记忆已保存到数据库，并加入时间线。");
   } catch (error) {
@@ -561,10 +564,16 @@ watch(id, () => void loadCharacter());
             <el-option v-for="option in memoryCategoryOptions" :key="option.value" :label="option.label" :value="option.value" />
           </el-select>
         </el-form-item>
+        <el-form-item label="记忆范围">
+          <el-radio-group v-model="draftMemoryScope">
+            <el-radio-button value="character">角色全局</el-radio-button>
+            <el-radio-button value="private">我的私人</el-radio-button>
+          </el-radio-group>
+        </el-form-item>
         <el-form-item label="记忆内容">
           <el-input v-model="draftMemoryContent" type="textarea" :rows="5" maxlength="12000" show-word-limit placeholder="例如：用户更喜欢简洁、直接的解释。" />
         </el-form-item>
-        <div class="info-callout"><span>保存后会写入 PostgreSQL，并立即出现在角色记忆时间线中。当前为手动记录，不会调用大模型提炼。</span></div>
+        <div class="info-callout"><span>保存后会写入 PostgreSQL，并立即出现在角色记忆时间线中。角色全局记忆在本角色所有对话中都可检索；私人记忆只在你自己和这个角色对话时使用，不会混入其他用户。</span></div>
       </el-form>
       <template #footer>
         <el-button @click="memoryDialogOpen = false">取消</el-button>

@@ -1,3 +1,5 @@
+import { resolveChatModelSettings } from "./chat-model-config";
+import { resolveCharacterApiKey } from "./credential-encryption";
 import { randomUUID } from "node:crypto";
 import type { PrismaClient } from "../../src/generated/prisma/client";
 import {
@@ -19,7 +21,7 @@ const MIN_MEMORY_CONFIDENCE = 0.65;
 
 export type MemoryWorkerResult =
   | { processed: false; message: string }
-  | { processed: true; jobId: string; status: "SUCCEEDED" | "SKIPPED" | "RETRY_WAIT" | "FAILED"; snapshotId?: string; message: string };
+  | { processed: true; jobId: string; status: "SUCCEEDED" | "SKIPPED" | "RETRY_WAIT" | "FAILED" | "CANCELLED"; snapshotId?: string; message: string };
 
 type WorkerOptions = {
   ownerId?: string;
@@ -65,9 +67,233 @@ export async function processNextMemoryJob(
   const ownership = ownerFilter(options.ownerId);
   const staleBefore = new Date(now.getTime() - LEASE_MS);
 
+  // Retention jobs are safe to replay: deleting an already deleted message is a no-op.
+  // Foreign keys preserve snapshot/source records while nulling links to expired raw messages.
+  const cleanupCandidates = await prisma.memoryJob.findMany({
+    where: {
+      type: "CLEAN_EXPIRED_MESSAGES",
+      status: { in: ["QUEUED", "RETRY_WAIT"] },
+      runAt: { lte: now },
+      ...ownership,
+    },
+    orderBy: [{ runAt: "asc" }, { createdAt: "asc" }, { id: "asc" }],
+    take: 20,
+    select: { id: true, status: true, memoryScopeId: true, periodEnd: true, attemptCount: true, maxAttempts: true },
+  });
+  let deferredCleanupResult: MemoryWorkerResult | null = null;
+  for (const candidate of cleanupCandidates) {
+    if (!candidate.periodEnd) {
+      await prisma.memoryJob.updateMany({
+        where: { id: candidate.id, status: candidate.status },
+        data: { status: "FAILED", completedAt: now, lastError: "原始消息清理任务缺少截止时间。" },
+      });
+      continue;
+    }
+    if (candidate.attemptCount >= candidate.maxAttempts) {
+      await prisma.memoryJob.updateMany({
+        where: { id: candidate.id, status: candidate.status },
+        data: {
+          status: "FAILED",
+          completedAt: now,
+          lockedAt: null,
+          lockedBy: null,
+          lastError: "任务已达到最大尝试次数。",
+        },
+      });
+      continue;
+    }
+    const claim = await prisma.memoryJob.updateMany({
+      where: { id: candidate.id, status: candidate.status, runAt: { lte: now } },
+      data: { status: "RUNNING", attemptCount: { increment: 1 }, lockedAt: now, lockedBy: workerId, startedAt: now, lastError: null },
+    });
+    if (claim.count !== 1) continue;
+
+    const scope = await prisma.memoryScope.findUnique({
+      where: { id: candidate.memoryScopeId },
+      select: {
+        characterId: true,
+        character: {
+          select: {
+            memorySetting: {
+              select: {
+                rawMessageCleanupEnabled: true,
+                rawMessageRetentionDays: true,
+              },
+            },
+          },
+        },
+      },
+    });
+    if (!scope) {
+      await prisma.memoryJob.updateMany({
+        where: { id: candidate.id, status: "RUNNING", lockedBy: workerId },
+        data: { status: "FAILED", completedAt: now, lockedAt: null, lockedBy: null, lastError: "找不到清理任务关联的记忆范围。" },
+      });
+      return { processed: true, jobId: candidate.id, status: "FAILED", message: "找不到清理任务关联的记忆范围。" };
+    }
+
+    const currentRetentionDays = scope.character.memorySetting?.rawMessageRetentionDays;
+    const currentCutoff = scope.character.memorySetting?.rawMessageCleanupEnabled &&
+      currentRetentionDays && currentRetentionDays > 0
+      ? new Date(now.getTime() - currentRetentionDays * 24 * 60 * 60 * 1000)
+      : null;
+    if (!currentCutoff || candidate.periodEnd.getTime() > currentCutoff.getTime()) {
+      const reason = !currentCutoff
+        ? "当前角色尚未明确授权原始消息自动清理，或已选择永久保留；该旧任务已取消，未删除原始消息。"
+        : "原始消息保留期限已放宽，当前任务的截止范围比最新策略更激进；该旧任务已取消，未删除原始消息。";
+      const cancelled = await prisma.memoryJob.updateMany({
+        where: { id: candidate.id, status: "RUNNING", lockedBy: workerId },
+        data: {
+          status: "CANCELLED",
+          attemptCount: { decrement: 1 },
+          completedAt: now,
+          lockedAt: null,
+          lockedBy: null,
+          lastError: reason,
+        },
+      });
+      if (cancelled.count === 1) {
+        return { processed: true, jobId: candidate.id, status: "CANCELLED", message: reason };
+      }
+      continue;
+    }
+
+    const pendingSnapshot = await prisma.memoryJob.findFirst({
+      where: {
+        memoryScopeId: candidate.memoryScopeId,
+        type: { in: ["GENERATE_SNAPSHOT", "REGENERATE_SNAPSHOT"] },
+        status: { in: ["QUEUED", "RUNNING", "RETRY_WAIT", "FAILED"] },
+        periodStart: { lt: candidate.periodEnd },
+      },
+      select: { id: true },
+    });
+    if (pendingSnapshot) {
+      const deferred = await prisma.memoryJob.updateMany({
+        where: { id: candidate.id, status: "RUNNING", lockedBy: workerId },
+        data: {
+          status: "RETRY_WAIT",
+          // This is a dependency wait, not a failed cleanup attempt.
+          attemptCount: { decrement: 1 },
+          runAt: new Date(now.getTime() + 60_000),
+          lockedAt: null,
+          lockedBy: null,
+          completedAt: null,
+          lastError: "仍有更早的快照任务待处理，清理已延后。",
+        },
+      });
+      if (deferred.count === 1) {
+        deferredCleanupResult ??= { processed: true, jobId: candidate.id, status: "RETRY_WAIT", message: "仍有过期区间的快照任务待处理，已延后清理。" };
+      }
+      continue;
+    }
+
+    try {
+      // Keep the deletion, job completion, and audit record in one transaction.
+      // Lock/verify ownership first so a stale or displaced worker cannot delete content.
+      const deletedCount = await prisma.$transaction(async (tx) => {
+        const claim = await tx.memoryJob.updateMany({
+          where: { id: candidate.id, status: "RUNNING", lockedBy: workerId },
+          data: { lastError: null },
+        });
+        if (claim.count !== 1) {
+          throw new Error("清理任务租约已失效；拒绝删除原始消息。");
+        }
+        // Lock the current policy row so a concurrent settings change cannot
+        // revoke authorization between this check and the irreversible delete.
+        const policyRows = await tx.$queryRaw<Array<{
+          rawMessageCleanupEnabled: boolean;
+          rawMessageRetentionDays: number | null;
+        }>>`
+          SELECT "rawMessageCleanupEnabled", "rawMessageRetentionDays"
+          FROM "character_memory_settings"
+          WHERE "characterId" = ${scope.characterId}::uuid
+          FOR UPDATE
+        `;
+        const latestPolicy = policyRows[0] ?? null;
+        const latestRetentionDays = latestPolicy?.rawMessageRetentionDays;
+        const latestCutoff = latestPolicy?.rawMessageCleanupEnabled &&
+          latestRetentionDays && latestRetentionDays > 0
+          ? new Date(now.getTime() - latestRetentionDays * 24 * 60 * 60 * 1000)
+          : null;
+        if (!latestCutoff || candidate.periodEnd!.getTime() > latestCutoff.getTime()) {
+          throw new Error("CLEANUP_POLICY_CHANGED");
+        }
+
+        const deleted = await tx.message.deleteMany({
+          where: {
+            conversation: { is: { memoryScopeId: candidate.memoryScopeId } },
+            occurredAt: { lt: candidate.periodEnd! },
+          },
+        });
+        await tx.memoryJob.update({
+          where: { id: candidate.id },
+          data: { status: "SUCCEEDED", completedAt: now, lockedAt: null, lockedBy: null, lastError: null },
+        });
+        await tx.auditLog.create({
+          data: {
+            actorType: "WORKER",
+            characterId: scope.characterId,
+            action: "message.retention_cleanup",
+            entityType: "MemoryScope",
+            entityId: candidate.memoryScopeId,
+            details: { cutoff: candidate.periodEnd!.toISOString(), deletedMessages: deleted.count, jobId: candidate.id },
+          },
+        });
+        return deleted.count;
+      });
+      return { processed: true, jobId: candidate.id, status: "SUCCEEDED", message: `原始消息清理完成，删除 ${deletedCount} 条过期消息；快照与来源记录已保留。` };
+    } catch (error) {
+      if (error instanceof Error && error.message === "CLEANUP_POLICY_CHANGED") {
+        const message = "清理策略已变更或尚未授权；该任务已取消，未删除原始消息。";
+        const cancelled = await prisma.memoryJob.updateMany({
+          where: { id: candidate.id, status: "RUNNING", lockedBy: workerId },
+          data: {
+            status: "CANCELLED",
+            attemptCount: { decrement: 1 },
+            runAt: now,
+            lockedAt: null,
+            lockedBy: null,
+            lastError: message,
+            completedAt: now,
+          },
+        });
+        if (cancelled.count === 1) {
+          return { processed: true, jobId: candidate.id, status: "CANCELLED", message };
+        }
+        return { processed: false, message: "清理任务状态已变化，未删除原始消息。" };
+      }
+      const message = (error instanceof Error ? error.message : String(error)).slice(0, 2000);
+      const attemptCount = candidate.attemptCount + 1;
+      const exhausted = attemptCount >= candidate.maxAttempts;
+      const status: "FAILED" | "RETRY_WAIT" = exhausted ? "FAILED" : "RETRY_WAIT";
+      const retryDelayMs = Math.min(60 * 60 * 1000, 30_000 * (2 ** Math.max(0, attemptCount - 1)));
+      await prisma.memoryJob.updateMany({
+        where: { id: candidate.id, status: "RUNNING", lockedBy: workerId },
+        data: {
+          status,
+          runAt: exhausted ? now : new Date(now.getTime() + retryDelayMs),
+          lockedAt: null,
+          lockedBy: null,
+          lastError: exhausted ? `原始消息清理失败，已达到最大尝试次数：${message}` : message,
+          completedAt: exhausted ? now : null,
+        },
+      });
+      return {
+        processed: true,
+        jobId: candidate.id,
+        status,
+        message: exhausted
+          ? `原始消息清理失败，已达到最大尝试次数：${message}`
+          : `原始消息清理失败，将稍后重试：${message}`,
+      };
+    }
+  }
+
+  if (deferredCleanupResult) return deferredCleanupResult;
+
   const staleJobs = await prisma.memoryJob.findMany({
     where: {
-      type: "GENERATE_SNAPSHOT",
+      type: { in: ["GENERATE_SNAPSHOT", "REGENERATE_SNAPSHOT", "CLEAN_EXPIRED_MESSAGES"] },
       status: "RUNNING",
       lockedAt: { lt: staleBefore },
       ...ownership,
@@ -90,28 +316,35 @@ export async function processNextMemoryJob(
     });
   }
 
-  // Leave jobs queued until a model is configured; do not burn retry attempts for setup errors.
-  if (!isMemoryModelConfigured()) {
-    return {
-      processed: false,
-      message: "尚未配置 AI 模型。请在服务端 .env 设置 LLM_API_KEY 和 LLM_MODEL；现有任务会留在队列中。",
-    };
-  }
-
   const candidates = await prisma.memoryJob.findMany({
     where: {
-      type: "GENERATE_SNAPSHOT",
+      type: { in: ["GENERATE_SNAPSHOT", "REGENERATE_SNAPSHOT"] },
       status: { in: ["QUEUED", "RETRY_WAIT"] },
       runAt: { lte: now },
       ...ownership,
     },
     orderBy: [{ runAt: "asc" }, { periodEnd: "asc" }, { createdAt: "asc" }, { id: "asc" }],
-    take: 10,
-    select: { id: true, status: true, attemptCount: true, maxAttempts: true },
+    take: 100,
+    select: {
+      id: true,
+      type: true,
+      status: true,
+      attemptCount: true,
+      maxAttempts: true,
+      memoryScope: { select: { character: { select: { modelConfig: true } } } },
+    },
   });
 
+  const configuredCandidates = candidates.filter((candidate) => isMemoryModelConfigured(candidate.memoryScope.character.modelConfig));
+  if (configuredCandidates.length === 0 && candidates.length > 0) {
+    return {
+      processed: false,
+      message: "待处理快照关联的角色尚未配置模型 API。请打开该角色的 AI 对话 → 模型参数填写 API 地址、Key 和模型名称；任务会保留在队列中。",
+    };
+  }
+
   let claimedJobId = "";
-  for (const candidate of candidates) {
+  for (const candidate of configuredCandidates) {
     if (candidate.attemptCount >= candidate.maxAttempts) {
       await prisma.memoryJob.updateMany({
         where: { id: candidate.id, status: candidate.status },
@@ -150,6 +383,8 @@ export async function processNextMemoryJob(
       where: { id: claimedJobId },
       select: {
         id: true,
+        type: true,
+        snapshotId: true,
         memoryScopeId: true,
         idempotencyKey: true,
         periodStart: true,
@@ -166,32 +401,39 @@ export async function processNextMemoryJob(
       throw new Error("周期任务缺少有效的起止时间。");
     }
 
-    const priorSnapshot = await prisma.memorySnapshot.findFirst({
-      where: { snapshotKey: job.idempotencyKey, memoryScopeId: job.memoryScopeId },
-      orderBy: [{ version: "desc" }, { createdAt: "desc" }],
-      select: { id: true },
-    });
-    if (priorSnapshot) {
-      await prisma.memoryJob.updateMany({
-        where: { id: job.id, status: "RUNNING", lockedBy: workerId },
-        data: {
-          status: "SUCCEEDED",
-          snapshotId: priorSnapshot.id,
-          completedAt: now,
-          lockedAt: null,
-          lockedBy: null,
-          lastError: null,
-        },
-      });
-      return {
-        processed: true,
-        jobId: job.id,
-        status: "SUCCEEDED",
-        snapshotId: priorSnapshot.id,
-        message: "检测到相同周期已有快照，已复用历史结果。",
-      };
-    }
+    const isRegeneration = job.type === "REGENERATE_SNAPSHOT";
+    let logicalSnapshotKey = job.idempotencyKey;
 
+    if (isRegeneration) {
+      if (!job.snapshotId) throw new Error("AI 快照重新提炼任务缺少原始快照 ID。");
+      const regenerationTarget = await prisma.memorySnapshot.findFirst({
+        where: { id: job.snapshotId, memoryScopeId: job.memoryScopeId },
+        select: { id: true, snapshotKey: true, kind: true, periodStart: true, periodEnd: true },
+      });
+      if (!regenerationTarget || regenerationTarget.kind !== "AUTOMATIC") {
+        throw new Error("AI 快照重新提炼只能针对仍保留在数据库中的自动快照。");
+      }
+      if (
+        regenerationTarget.periodStart.getTime() !== job.periodStart.getTime() ||
+        regenerationTarget.periodEnd.getTime() !== job.periodEnd.getTime()
+      ) {
+        throw new Error("重新提炼任务的周期范围与原始快照不一致。");
+      }
+      logicalSnapshotKey = regenerationTarget.snapshotKey;
+    } else {
+      const priorSnapshot = await prisma.memorySnapshot.findFirst({
+        where: { snapshotKey: job.idempotencyKey, memoryScopeId: job.memoryScopeId },
+        orderBy: [{ version: "desc" }, { createdAt: "desc" }],
+        select: { id: true },
+      });
+      if (priorSnapshot) {
+        await prisma.memoryJob.updateMany({
+          where: { id: job.id, status: "RUNNING", lockedBy: workerId },
+          data: { status: "SUCCEEDED", snapshotId: priorSnapshot.id, completedAt: now, lockedAt: null, lockedBy: null, lastError: null },
+        });
+        return { processed: true, jobId: job.id, status: "SUCCEEDED", snapshotId: priorSnapshot.id, message: "检测到相同周期已有快照，已复用历史结果。" };
+      }
+    }
     const messageWhere = {
       conversation: { is: { memoryScopeId: job.memoryScopeId } },
       occurredAt: { gte: job.periodStart, lt: job.periodEnd },
@@ -245,7 +487,7 @@ export async function processNextMemoryJob(
           id: true,
           scopeType: true,
           characterId: true,
-          character: { select: { name: true, memorySetting: { select: { timezone: true } } } },
+          character: { select: { name: true, modelConfig: true, memorySetting: { select: { timezone: true } } } },
         },
       }),
       prisma.memorySnapshot.findFirst({
@@ -293,7 +535,15 @@ export async function processNextMemoryJob(
     }));
 
     // The model call deliberately happens outside a database transaction.
+    const chatSettings = resolveChatModelSettings(scope.character.modelConfig);
+    const apiKey = await resolveCharacterApiKey(scope.character.modelConfig, chatSettings.apiBaseUrl);
+    if (!apiKey || !chatSettings.model) {
+      throw new Error("角色尚未配置模型 API。请先在角色的 AI 对话 → 模型参数中填写 API Key 与模型名称。");
+    }
     const aiResult = await analyzeMemoryPeriod({
+      apiKey,
+      apiBaseUrl: chatSettings.apiBaseUrl,
+      model: chatSettings.model,
       periodStart: job.periodStart.toISOString(),
       periodEnd: job.periodEnd.toISOString(),
       timezone: scope.character.memorySetting?.timezone ?? "UTC",
@@ -315,32 +565,37 @@ export async function processNextMemoryJob(
         throw new Error("任务租约已失效；拒绝提交模型结果。");
       }
 
-      const racedSnapshot = await tx.memorySnapshot.findFirst({
-        where: { snapshotKey: job.idempotencyKey, memoryScopeId: job.memoryScopeId },
-        orderBy: [{ version: "desc" }, { createdAt: "desc" }],
-        select: { id: true },
-      });
-      if (racedSnapshot) {
-        await tx.memoryJob.update({
-          where: { id: job.id },
-          data: {
-            status: "SUCCEEDED",
-            snapshotId: racedSnapshot.id,
-            completedAt: now,
-            lockedAt: null,
-            lockedBy: null,
-            lastError: null,
-          },
+      if (!isRegeneration) {
+        const racedSnapshot = await tx.memorySnapshot.findFirst({
+          where: { snapshotKey: job.idempotencyKey, memoryScopeId: job.memoryScopeId },
+          orderBy: [{ version: "desc" }, { createdAt: "desc" }],
+          select: { id: true },
         });
-        return {
-          status: "SUCCEEDED" as const,
-          snapshotId: racedSnapshot.id,
-          message: "同一周期已由其他执行完成，复用已有快照。",
-        };
+        if (racedSnapshot) {
+          await tx.memoryJob.update({
+            where: { id: job.id },
+            data: { status: "SUCCEEDED", snapshotId: racedSnapshot.id, completedAt: now, lockedAt: null, lockedBy: null, lastError: null },
+          });
+          return { status: "SUCCEEDED" as const, snapshotId: racedSnapshot.id, message: "同一周期已由其他执行完成，复用已有快照。" };
+        }
       }
 
+      const latestSnapshot = await tx.memorySnapshot.findFirst({
+        where: { snapshotKey: logicalSnapshotKey, memoryScopeId: job.memoryScopeId },
+        orderBy: [{ version: "desc" }, { createdAt: "desc" }],
+        select: { version: true },
+      });
+      const nextSnapshotVersion = isRegeneration ? (latestSnapshot?.version ?? 0) + 1 : 1;
+
+      if (isRegeneration) {
+        await tx.memorySnapshot.updateMany({
+          where: { snapshotKey: logicalSnapshotKey, memoryScopeId: job.memoryScopeId, status: "CURRENT" },
+          data: { status: "SUPERSEDED" },
+        });
+      }
       const structuredContent = {
         generatedBy: "llm",
+        generationMode: isRegeneration ? "REGENERATE" : "GENERATE",
         capturedAt: now.toISOString(),
         period: {
           start: job.periodStart!.toISOString(),
@@ -365,15 +620,17 @@ export async function processNextMemoryJob(
         analysis: aiResult.analysis,
         activeMemoriesConsidered: aiMemoryContext.map((item) => item.id),
         memoryChangesApplied: [] as Array<Record<string, unknown>>,
-        note: "AI 提炼结果；每条被采纳的新长期记忆都关联至少一条本周期原始消息。",
+        note: isRegeneration
+          ? "AI 重新提炼版本；为避免历史重放改写当前长期记忆，本次提出的长期记忆变化仅供审核，不会自动应用。"
+          : "AI 提炼结果；每条被采纳的新长期记忆都关联至少一条本周期原始消息。",
       };
 
       const snapshot = await tx.memorySnapshot.create({
         data: {
-          snapshotKey: job.idempotencyKey,
+          snapshotKey: logicalSnapshotKey,
           memoryScopeId: job.memoryScopeId,
           kind: "AUTOMATIC",
-          version: 1,
+          version: nextSnapshotVersion,
           periodStart: job.periodStart!,
           periodEnd: job.periodEnd!,
           summary: aiResult.analysis.summary,
@@ -415,6 +672,10 @@ export async function processNextMemoryJob(
       );
 
       for (const change of aiResult.analysis.memoryChanges) {
+        if (isRegeneration) {
+          appliedChanges.push({ action: change.action, result: "NOT_APPLIED_REGENERATION", category: change.category, content: change.content, confidence: change.confidence, evidenceMessageIds: change.evidenceMessageIds, ...(change.relatedMemoryId ? { relatedMemoryId: change.relatedMemoryId } : {}) });
+          continue;
+        }
         if (!validConfidence(change)) continue;
         const evidence = change.evidenceMessageIds
           .map((id) => messagesById.get(id))
@@ -592,6 +853,12 @@ export async function processNextMemoryJob(
         data: { structuredContent: finalStructuredContent as never },
       });
 
+      if (isRegeneration) {
+        await tx.auditLog.create({
+          data: { actorType: "WORKER", characterId: scope.characterId, action: "snapshot.ai_regenerated", entityType: "MemorySnapshot", entityId: snapshot.id, details: { previousSnapshotId: job.snapshotId, version: nextSnapshotVersion, periodStart: job.periodStart!.toISOString(), periodEnd: job.periodEnd!.toISOString(), memoryChangesApplied: false } },
+        });
+      }
+
       await tx.memoryJob.update({
         where: { id: job.id },
         data: {
@@ -606,7 +873,9 @@ export async function processNextMemoryJob(
       return {
         status: "SUCCEEDED" as const,
         snapshotId: snapshot.id,
-        message: `AI 周期总结已生成；应用 ${appliedChanges.length} 项长期记忆变化。`,
+        message: isRegeneration
+          ? `AI 快照重新提炼完成，已创建版本 ${nextSnapshotVersion}；长期记忆变化仅供审核，未自动应用。`
+          : `AI 周期总结已生成；应用 ${appliedChanges.length} 项长期记忆变化。`
       };
     });
 

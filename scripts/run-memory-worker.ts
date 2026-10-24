@@ -20,7 +20,7 @@ try {
       const result = await processNextMemoryJob(prisma, { workerId });
       if (result.processed) {
         process.stdout.write(JSON.stringify({ at: new Date().toISOString(), ...result }) + "\n");
-      } else if (result.message.startsWith("尚未配置 AI 模型") && !modelConfigurationWarningLogged) {
+      } else if ((result.message.startsWith("尚未配置 AI 模型") || result.message.startsWith("待处理快照关联")) && !modelConfigurationWarningLogged) {
         process.stderr.write(JSON.stringify({ at: new Date().toISOString(), warning: result.message }) + "\n");
         modelConfigurationWarningLogged = true;
       }

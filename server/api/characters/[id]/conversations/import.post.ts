@@ -1,5 +1,6 @@
 import { createError, getRouterParam, readBody } from "h3";
-import { requireLocalDevOwner, requireUuid, readTrimmedString } from "../../../../utils/local-api";
+import { requireActorUserId } from "../../../../utils/auth";
+import { requireUuid, readTrimmedString } from "../../../../utils/local-api";
 import { getPrisma } from "../../../../utils/prisma";
 
 type PreparedMessage = {
@@ -10,7 +11,7 @@ type PreparedMessage = {
 };
 
 export default defineEventHandler(async (event) => {
-  const ownerId = requireLocalDevOwner(event);
+  const ownerId = await requireActorUserId(event);
   const characterId = requireUuid(getRouterParam(event, "id") ?? "", "角色");
   const body = await readBody<Record<string, unknown>>(event);
   const titleInput = readTrimmedString(body?.title, "会话标题", 255);

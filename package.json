@@ -7,7 +7,7 @@
     "node": ">=20.19.0"
   },
   "scripts": {
-    "postinstall": "nuxt prepare",
+    "postinstall": "prisma generate && nuxt prepare",
     "db:format": "prisma format",
     "db:validate": "prisma validate",
     "db:generate": "prisma generate",
@@ -19,14 +19,25 @@
     "start": "node .output/server/index.mjs",
     "preview": "nuxt preview",
     "lint": "eslint app server scripts nuxt.config.ts prisma.config.ts",
-    "typecheck": "nuxt typecheck",
+    "typecheck": "nuxt typecheck && tsc -p tsconfig.server.json --noEmit",
     "db:seed:dev": "tsx scripts/seed-dev-user.ts",
     "scheduler:run": "tsx scripts/run-memory-scheduler.ts",
     "scheduler:watch": "tsx scripts/run-memory-scheduler.ts --watch",
     "test:scheduler": "tsx scripts/test-memory-scheduler.ts",
+    "test:scheduler-db": "tsx scripts/test-memory-scheduler-db.ts",
     "test:memory-ai": "tsx scripts/test-memory-ai.ts",
     "worker:run": "tsx scripts/run-memory-worker.ts",
-    "worker:watch": "tsx scripts/run-memory-worker.ts --watch"
+    "worker:watch": "tsx scripts/run-memory-worker.ts --watch",
+    "channel:run": "tsx scripts/run-channel-adapter.ts",
+    "test:memory-retrieval": "tsx scripts/test-memory-retrieval.ts",
+    "test:chat-model-config": "tsx scripts/test-chat-model-config.ts",
+    "test:chat-reply": "tsx scripts/test-chat-reply.ts",
+    "test:chat-private-memory": "tsx scripts/test-chat-private-memory.ts",
+    "test:chat-private-memory-db": "tsx scripts/test-chat-private-memory-db.ts",
+    "test:auth": "tsx scripts/test-auth.ts",
+    "test:auth-db": "tsx scripts/test-auth-db.ts",
+    "test:channel": "tsx scripts/test-qq-adapter.ts",
+    "verify:local": "yarn run db:validate && yarn run db:generate && yarn nuxt prepare && yarn run typecheck && yarn run test:scheduler && yarn run test:scheduler-db && yarn run test:memory-ai && yarn run test:memory-retrieval && yarn run test:chat-model-config && yarn run test:chat-reply && yarn run test:chat-private-memory && yarn run test:chat-private-memory-db && yarn run test:auth && yarn run test:auth-db && yarn run lint && yarn run build"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",

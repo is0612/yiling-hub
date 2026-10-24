@@ -5,6 +5,9 @@ info:
   description: |
     多角色 AI 养成中枢的初始接口契约。
     当前定义用于前后端协作和 Mock；只有实际实现并测试后，接口才算可用。
+
+    鉴权：除 `/auth/session`、`/auth/login`、`/auth/logout` 外，所有接口都要求服务端会话 Cookie（`yiling_session`，HttpOnly、SameSite=Strict，生产环境 Secure）。未登录返回 401；浏览器跨源/跨站请求返回 403。
+    本地开发：只有当服务端处于开发模式、`YILING_LOCAL_API_ENABLED=true`、`YILING_ALLOW_DEV_OWNER_BYPASS` 未关闭、且请求通过 localhost/回环地址访问时，才会以 `DEV_OWNER_ID` 身份运行；生产构建不存在该回退。
 servers:
   - url: /api
     description: 当前部署的同源 API
@@ -23,6 +26,7 @@ paths:
     get:
       tags: [Auth]
       summary: 获取当前管理员会话状态
+      description: "匿名访问返回 200 且 mode 为 anonymous，便于前端决定是否跳转登录页；只有传入失效 Cookie 时才返回 reason=invalid_session。"
       security: []
       responses:
         '200':
@@ -35,6 +39,7 @@ paths:
     post:
       tags: [Auth]
       summary: 管理员登录
+      description: 使用用户名和密码换取服务端会话。密码使用 scrypt 校验；连续失败会按用户名与来源地址限流。成功时通过 `Set-Cookie` 下发 HttpOnly、SameSite=Strict 的会话 Cookie。
       security: []
       requestBody:
         required: true
@@ -44,7 +49,7 @@ paths:
               type: object
               required: [username, password]
               properties:
-                username: { type: string }
+                username: { type: string, maxLength: 100 }
                 password: { type: string, format: password }
       responses:
         '200':
@@ -55,18 +60,412 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SessionResponse'
+                $ref: '#/components/schemas/LoginResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
-          $ref: '#/components/responses/Unauthorized'
+          description: 用户名或密码不正确，或账号已停用
+        '429':
+          description: 登录失败次数过多，已被临时限流
   /auth/logout:
     post:
       tags: [Auth]
       summary: 退出登录
+      description: 撤销当前会话并清除 Cookie；没有会话时同样返回 204，避免失效 Cookie 让浏览器卡在已登录状态。
       responses:
         '204':
           description: 已退出并清除会话
+  /auth/register:
+    post:
+      tags: [Auth]
+      summary: 邮箱自助注册
+      description: "用邮箱创建普通用户账号并自动登录。邮箱即登录标识（同时存入 email 与 username），不发送验证邮件；新密码要求 10 至 128 个字符且同时包含字母和数字。注册默认关闭，需将 YILING_ALLOW_REGISTRATION 设为 true 才开放。"
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email, maxLength: 100 }
+                password: { type: string, format: password, minLength: 10, maxLength: 128 }
+                displayName: { type: string, maxLength: 120 }
+      responses:
+        '200':
+          description: 注册成功并设置会话 Cookie
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '400':
+          description: 邮箱格式不正确或密码不符合策略
+        '403':
+          description: 已关闭自助注册
+        '409':
+          description: 该邮箱已注册
+        '429':
+          description: 注册尝试过于频繁，已被临时限流
+  /auth/password:
+    post:
+      tags: [Auth]
+      summary: 修改管理员密码
+      description: "校验当前密码后写入新的 scrypt 哈希。成功后撤销其他所有会话，发起修改的会话保持有效。新密码要求 10 至 128 个字符，且同时包含字母和数字，不能与当前密码相同。"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currentPassword, newPassword]
+              properties:
+                currentPassword: { type: string, format: password }
+                newPassword: { type: string, format: password, minLength: 10, maxLength: 128 }
+      responses:
+        '200':
+          description: 密码已更新
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [changed, revokedSessions]
+                properties:
+                  changed: { type: boolean }
+                  revokedSessions:
+                    type: integer
+                    minimum: 0
+                    description: 本次因改密而注销的其他会话数量
+        '400':
+          description: 当前密码不正确，或新密码不符合策略（过短、过长、缺少字母或数字、与当前密码相同）
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /auth/sessions:
+    get:
+      tags: [Auth]
+      summary: 列出当前账号的有效登录会话
+      description: 只返回未撤销且未过期的会话；会话令牌哈希不会出现在响应中，设备信息由 User-Agent 派生。
+      responses:
+        '200':
+          description: 登录设备列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [mode, sessions]
+                properties:
+                  mode:
+                    type: string
+                    enum: [session, local-dev]
+                  sessions:
+                    type: array
+                    items: { $ref: '#/components/schemas/SessionSummary' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /auth/sessions/{sessionId}:
+    delete:
+      tags: [Auth]
+      summary: 撤销指定的登录会话
+      description: 只能撤销属于当前账号的会话；其他账号的会话与不存在的会话同样返回 404。撤销当前正在使用的会话时会同时清除 Cookie。
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: 撤销结果
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [revoked, currentRevoked]
+                properties:
+                  revoked: { type: boolean }
+                  currentRevoked:
+                    type: boolean
+                    description: 被撤销的是否是发起请求的会话
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /auth/sessions/revoke-others:
+    post:
+      tags: [Auth]
+      summary: 退出其他所有设备
+      description: 撤销除当前会话外的全部有效会话，当前设备保持登录。
+      responses:
+        '200':
+          description: 已撤销的其他会话数量
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [revoked]
+                properties:
+                  revoked: { type: integer, minimum: 0 }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /admin/users:
+    get:
+      tags: [Auth]
+      summary: 列出所有账号（仅管理员）
+      description: 只返回身份与活动统计（角色数、最后活跃时间），不包含任何对话或记忆内容。
+      responses:
+        '200':
+          description: 账号列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [users]
+                properties:
+                  users:
+                    type: array
+                    items: { $ref: '#/components/schemas/AdminUserSummary' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: 仅管理员可访问
+  /admin/users/{userId}:
+    patch:
+      tags: [Auth]
+      summary: 维护账号（仅管理员）
+      description: 修改显示名、启用/停用账号、或强制重置密码。不能停用自己的账号，也不能停用最后一个可用管理员。
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                displayName: { type: string, maxLength: 120 }
+                status: { type: string, enum: [ACTIVE, DISABLED] }
+                password: { type: string, format: password, minLength: 10, maxLength: 128 }
+      responses:
+        '200':
+          description: 更新成功
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [updated]
+                properties:
+                  updated: { type: boolean }
+        '400':
+          description: 无有效更新内容、密码不符合策略，或试图停用自己 / 最后一个管理员
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: 仅管理员可访问
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/channels:
+    get:
+      tags: [Auth]
+      summary: 列出渠道连接（仅管理员）
+      description: 返回平台连接与角色绑定信息；AppSecret 永不返回。
+      responses:
+        '200':
+          description: 渠道连接列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [connections]
+                properties:
+                  connections:
+                    type: array
+                    items: { $ref: '#/components/schemas/ChannelConnectionSummary' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: 仅管理员可访问
+    post:
+      tags: [Auth]
+      summary: 创建或更新 QQ 机器人连接（仅管理员）
+      description: AppSecret 使用 AES-256-GCM 加密后入库，只有渠道适配器可解密。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [appId, appSecret]
+              properties:
+                appId: { type: string, maxLength: 100 }
+                appSecret: { type: string, maxLength: 500 }
+                displayName: { type: string, maxLength: 120 }
+      responses:
+        '200':
+          description: 连接已保存
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChannelConnectionSummary'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: 仅管理员可访问
+  /admin/channels/{connectionId}:
+    delete:
+      tags: [Auth]
+      summary: 删除渠道连接（仅管理员）
+      parameters:
+        - name: connectionId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: 已删除
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: 仅管理员可访问
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/channels/{connectionId}/bindings:
+    post:
+      tags: [Auth]
+      summary: 绑定角色到渠道连接（仅管理员）
+      description: 可选 routingKey 限制到单个群 openid；不填则为该连接的默认绑定。
+      parameters:
+        - name: connectionId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [characterId]
+              properties:
+                characterId: { type: string, format: uuid }
+                routingKey: { type: string, maxLength: 255 }
+      responses:
+        '200':
+          description: 绑定结果
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: 仅管理员可访问
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/channels/{connectionId}/bindings/{bindingId}:
+    delete:
+      tags: [Auth]
+      summary: 解除角色绑定（仅管理员）
+      parameters:
+        - name: connectionId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: bindingId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: 已解绑
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: 仅管理员可访问
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /health:
+    get:
+      tags: [Auth]
+      summary: 存活探针
+      description: 只返回进程存活信息，不依赖数据库，供负载均衡与探活使用。
+      security: []
+      responses:
+        '200':
+          description: 服务存活
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, service, version, time]
+                properties:
+                  ok: { type: boolean }
+                  service: { type: string }
+                  version: { type: string }
+                  time: { type: string, format: date-time }
+  /admin/health:
+    get:
+      tags: [Auth]
+      summary: 就绪探针（仅管理员）
+      description: 返回数据库连通性与任务队列计数（queued / running / succeeded / failed）。
+      responses:
+        '200':
+          description: 健康状态
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, database, jobs, time]
+                properties:
+                  ok: { type: boolean }
+                  database: { type: string, enum: [up, down] }
+                  jobs:
+                    type: object
+                    properties:
+                      queued: { type: integer }
+                      running: { type: integer }
+                      succeeded: { type: integer }
+                      failed: { type: integer }
+                  time: { type: string, format: date-time }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: 仅管理员可访问
+  /admin/audit:
+    get:
+      tags: [Auth]
+      summary: 最近审计活动（仅管理员）
+      description: 默认返回鉴权相关审计（登录、登出、注册、改密、撤销会话）；可用 action 精确筛选。
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+        - name: action
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: 审计事件列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, action, createdAt, actor]
+                      properties:
+                        id: { type: string, format: uuid }
+                        action: { type: string }
+                        entityType: { type: string, nullable: true }
+                        entityId: { type: string, nullable: true }
+                        details: { type: object, nullable: true }
+                        createdAt: { type: string, format: date-time }
+                        actor: { type: string, nullable: true }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: 仅管理员可访问
   /characters:
     get:
       tags: [Characters]
@@ -200,6 +599,223 @@ paths:
                         items: { $ref: '#/components/schemas/MemoryScope' }
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /characters/{characterId}/chat:
+    parameters:
+      - $ref: '#/components/parameters/CharacterId'
+    get:
+      tags: [Characters]
+      operationId: getCharacterChatHistory
+      summary: 获取角色 AI 会话列表和历史消息
+      description: 本地开发功能。只返回当前角色全局记忆范围的会话，不读取其他角色或私人记忆范围的会话；会话本身仍归属角色全局范围，但每次回复可以检索当前用户自己的私人记忆。
+      parameters:
+        - name: conversationId
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+        - name: status
+          in: query
+          required: false
+          description: 只查询正常会话或归档会话，默认 ACTIVE。
+          schema: { type: string, enum: [ACTIVE, ARCHIVED], default: ACTIVE }
+        - name: q
+          in: query
+          required: false
+          description: 按会话标题或消息内容搜索，最多 120 个字符。
+          schema: { type: string, maxLength: 120 }
+      responses:
+        '200':
+          description: 会话列表、选中会话的历史消息与模型配置状态
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [character, modelConfigured, conversations, selectedConversationId, messages]
+                properties:
+                  character:
+                    type: object
+                    required: [id, name, chatModel, chatTemperature, chatMaxTokens, chatApiBaseUrl, chatApiKeyConfigured, chatApiKeySource]
+                    properties:
+                      id: { type: string, format: uuid }
+                      name: { type: string }
+                      chatModel: { type: string }
+                      chatTemperature: { type: number, minimum: 0, maximum: 2 }
+                      chatMaxTokens: { type: integer, minimum: 256, maximum: 8192 }
+                      chatApiBaseUrl: { type: string, format: uri }
+                      chatApiKeyConfigured: { type: boolean }
+                      chatApiKeySource: { type: string, enum: [character, environment, missing] }
+                  modelConfigured: { type: boolean }
+                  selectedConversationId: { type: string, format: uuid, nullable: true }
+                  conversations:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, title, messageCount]
+                      properties:
+                        id: { type: string, format: uuid }
+                        title: { type: string }
+                        lastMessageAt: { type: string, format: date-time, nullable: true }
+                        updatedAt: { type: string, format: date-time }
+                        messageCount: { type: integer }
+                  messages:
+                    type: array
+                    items: { $ref: '#/components/schemas/ChatMessage' }
+        '400':
+          description: conversationId 参数格式无效
+        '403':
+          description: 浏览器请求的 Origin / Sec-Fetch-Site 与当前主机不一致，或未登录
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [Characters]
+      operationId: sendCharacterChatMessage
+      summary: 向 AI 角色发送消息并保存对话
+      description: 本地开发功能。按当前消息检索匹配的角色全局长期记忆和快照，并合并当前开发用户自己的私人记忆范围；其他人的私人记忆、未验证外部身份的范围和未知范围类型一律不参与检索。模型返回的来源 ID 会通过候选白名单过滤。推荐在网页的角色模型参数中配置 API Base URL、API Key 和模型名称；服务端环境变量可作为默认回退配置。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatMessageInput'
+      responses:
+        '201':
+          description: 已保存用户消息、模型回复和来源引用
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [conversationId, title, userMessage, assistantMessage, model, retrieval]
+                properties:
+                  conversationId: { type: string, format: uuid }
+                  title: { type: string }
+                  userMessage: { $ref: '#/components/schemas/ChatMessage' }
+                  assistantMessage: { $ref: '#/components/schemas/ChatMessage' }
+                  model:
+                    type: object
+                    properties:
+                      name: { type: string }
+                      provider: { type: string }
+                      promptTemplateVersion: { type: string }
+                  retrieval:
+                    type: object
+                    properties:
+                      memoriesAvailable: { type: integer }
+                      snapshotsAvailable: { type: integer }
+                      privateScopeActive:
+                        type: boolean
+                        description: 当前开发用户在这个角色下已有可读的私人记忆范围时为 true。
+        '400':
+          description: 消息格式无效
+        '403':
+          description: 浏览器请求的 Origin / Sec-Fetch-Site 与当前主机不一致，或未登录
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '502':
+          description: 模型调用失败或返回格式无效
+        '503':
+          description: 模型尚未配置
+  /characters/{characterId}/chat/test-connection:
+    parameters:
+      - $ref: '#/components/parameters/CharacterId'
+    post:
+      tags: [Characters]
+      operationId: testCharacterChatApiConnection
+      summary: 测试角色已保存的模型 API
+      description: 本地开发功能。使用角色保存的 API Base URL、已加密 API Key 与模型名称发起一次轻量请求；不保存对话消息。响应不会包含 API Key。
+      responses:
+        '200':
+          description: 连通性测试结果
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, message]
+                properties:
+                  ok: { type: boolean }
+                  message: { type: string }
+                  model: { type: string }
+                  provider: { type: string }
+                  elapsedMs: { type: integer, minimum: 0 }
+        '403':
+          description: 浏览器请求的 Origin / Sec-Fetch-Site 与当前主机不一致，或未登录
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /characters/{characterId}/chat/{conversationId}:
+    parameters:
+      - $ref: '#/components/parameters/CharacterId'
+      - name: conversationId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [Characters]
+      operationId: exportCharacterChatTranscript
+      summary: 分页读取完整角色会话及验证过的来源引用
+      description: 本地开发功能。支持读取正常或归档会话，按消息发生时间正序分页；页面可基于该接口导出完整 Markdown 对话。
+      parameters:
+        - name: page
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: pageSize
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 500, default: 200 }
+      responses:
+        '200':
+          description: 会话分页消息、总数与已保存的记忆来源
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [conversationId, title, status, page, pageSize, total, messages]
+                properties:
+                  conversationId: { type: string, format: uuid }
+                  title: { type: string }
+                  status: { type: string, enum: [ACTIVE, ARCHIVED] }
+                  page: { type: integer }
+                  pageSize: { type: integer }
+                  total: { type: integer }
+                  messages:
+                    type: array
+                    items: { $ref: '#/components/schemas/ChatMessage' }
+        '400':
+          description: 分页参数无效
+        '403':
+          description: 浏览器请求的 Origin / Sec-Fetch-Site 与当前主机不一致，或未登录
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Characters]
+      operationId: setCharacterChatConversationStatus
+      summary: 归档或恢复角色会话
+      description: 本地开发功能。归档只改变会话状态，不删除对话消息或模型来源记录，并写入审计日志。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, enum: [ACTIVE, ARCHIVED] }
+      responses:
+        '200':
+          description: 会话状态已更新
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, status, updatedAt]
+                properties:
+                  id: { type: string, format: uuid }
+                  status: { type: string, enum: [ACTIVE, ARCHIVED] }
+                  updatedAt: { type: string, format: date-time }
+        '400':
+          description: status 参数无效
+        '403':
+          description: 浏览器请求的 Origin / Sec-Fetch-Site 与当前主机不一致，或未登录
+        '404':
+          $ref: '#/components/responses/NotFound'
   /characters/{characterId}/timeline:
     parameters:
       - $ref: '#/components/parameters/CharacterId'
@@ -208,7 +824,6 @@ paths:
       operationId: getCharacterMemoryTimeline
       summary: 获取角色的已保存记忆时间线
       description: 本地开发过渡接口。返回数据库中已保存的消息、长期记忆和快照；本机可手动录入记忆与纯文本对话。外部渠道接入、事件自动提炼和模型总结尚未接入。
-      security: []
       responses:
         '200':
           description: 按时间倒序排列的真实时间线记录
@@ -298,7 +913,6 @@ paths:
       operationId: importCharacterTranscript
       summary: 在本地开发环境手动录入纯文本对话
       description: 仅限 localhost 的开发过渡接口。未提供 occurredAt 的消息会用导入时间附近的毫秒偏移保留输入顺序，不代表原始消息时间；不会调用模型。
-      security: []
       requestBody:
         required: true
         content:
@@ -447,8 +1061,7 @@ paths:
       tags: [Memories]
       operationId: createCharacterMemory
       summary: 手动创建长期记忆（本地开发）
-      description: 仅限 localhost 的开发过渡接口；创建的条目默认 ACTIVE，并立即显示在角色时间线中。
-      security: []
+      description: 仅限 localhost 的开发过渡接口；创建的条目默认 ACTIVE，并立即显示在角色时间线中。scope 为 character 时写入角色全局记忆范围，为该角色所有对话共享；为 private 时写入当前开发用户的私人记忆范围，只在该用户与这个角色对话时参与检索。
       requestBody:
         required: true
         content:
@@ -459,7 +1072,7 @@ paths:
               properties:
                 content: { type: string, minLength: 1 }
                 category: { type: string, enum: [FACT, PREFERENCE, RELATIONSHIP, COMMITMENT, GOAL, EVENT, SUMMARY, OTHER] }
-                scopeId: { type: string, format: uuid }
+                scope: { type: string, enum: [character, private], default: character }
       responses:
         '201':
           description: 已创建
@@ -488,7 +1101,6 @@ paths:
       operationId: moveMemoryToTrash
       summary: 将长期记忆移入回收站（本地开发）
       description: 保留移入前的状态与时间戳；已有快照保持不变。
-      security: []
       responses:
         '200':
           description: 已移入回收站
@@ -519,7 +1131,6 @@ paths:
       operationId: restoreMemoryFromTrash
       summary: 从回收站恢复长期记忆（本地开发）
       description: 恢复到移入回收站之前的记忆状态。
-      security: []
       responses:
         '200':
           description: 已恢复
@@ -550,7 +1161,6 @@ paths:
       operationId: getMemoryItem
       summary: 获取长期记忆详情（本地开发）
       description: 仅限 localhost 的开发过渡接口，且只允许读取当前本地开发用户拥有角色下的记忆。
-      security: []
       responses:
         '200':
           description: 记忆详情
@@ -633,7 +1243,6 @@ paths:
       operationId: permanentlyDeleteTrashedMemory
       summary: 永久删除回收站中的当前记忆条目（本地开发）
       description: 仅可删除已在回收站的条目。不会改写快照；历史快照中的生成时内容副本与来源记录仍保留，因此这不是对所有历史副本的内容擦除。
-      security: []
       responses:
         '200':
           description: 当前长期记忆条目已永久删除，历史快照被保留
@@ -660,7 +1269,6 @@ paths:
       tags: [Memories]
       operationId: listCharacterMemoryTrash
       summary: 获取角色记忆回收站（本地开发）
-      security: []
       responses:
         '200':
           description: 回收站条目列表
@@ -722,37 +1330,58 @@ paths:
           $ref: '#/components/responses/Unauthorized'
     post:
       tags: [Snapshots]
-      summary: 请求生成手动快照
+      summary: 生成手动快照或排入自动 AI 快照重新提炼
       requestBody:
-        required: true
+        required: false
         content:
           application/json:
             schema:
               type: object
-              required: [scopeId, periodStart, periodEnd]
               properties:
-                scopeId: { type: string, format: uuid }
-                periodStart: { type: string, format: date-time }
-                periodEnd: { type: string, format: date-time }
+                snapshotId:
+                  type: string
+                  format: uuid
+                  description: 可选已有快照 ID。提供后，普通模式会基于该快照创建手动版本；mode=ai 时针对自动快照排入 AI 重新提炼任务。
+                mode:
+                  type: string
+                  enum: [ai]
+                  description: 仅设置为 ai 时调用模型并排入 REGENERATE_SNAPSHOT 任务；模型未配置时返回 503。
+              additionalProperties: false
       responses:
-        '202':
-          description: 快照任务已排队，自动计划不应被重置
+        '200':
+          description: 手动快照已保存或手动版本已创建
           content:
             application/json:
               schema:
-                allOf:
-                  - $ref: '#/components/schemas/ApiResponse'
-                  - type: object
-                    properties:
-                      data:
-                        type: object
-                        properties:
-                          taskId: { type: string, format: uuid }
-                          status: { type: string, enum: [queued] }
+                type: object
+                required: [id, version]
+                properties:
+                  id: { type: string, format: uuid }
+                  version: { type: integer }
+        '202':
+          description: AI 重新提炼任务已排队
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, jobId, status, snapshotId, queued, duplicate]
+                properties:
+                  id: { type: string, format: uuid }
+                  jobId: { type: string, format: uuid }
+                  status: { type: string, enum: [QUEUED, RUNNING, RETRY_WAIT] }
+                  snapshotId: { type: string, format: uuid }
+                  queued: { type: boolean }
+                  duplicate: { type: boolean }
         '400':
           $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: 该接口仅限本地开发环境
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 该快照不能以当前模式重新生成
+        '503':
+          description: 模型未配置
   /snapshots/{snapshotId}:
     parameters:
       - name: snapshotId
@@ -872,7 +1501,6 @@ paths:
       operationId: listMemoryJobs
       summary: 查询当前本地开发用户的持久化后台任务
       description: 本地开发过渡接口；仅返回当前本地开发用户拥有的角色任务，最多返回最近 100 条。
-      security: []
       parameters:
         - name: status
           in: query
@@ -922,8 +1550,7 @@ paths:
       tags: [Tasks]
       operationId: enqueueDueMemoryJobs
       summary: 扫描到期周期并排入持久化任务队列（本地开发）
-      description: 处理到期的周期边界并使用幂等键排队；此操作不执行快照生成，实际 Worker 尚未接入。
-      security: []
+      description: 处理到期的周期边界并使用幂等键将任务写入持久化队列。真实模型调用由独立 Worker 完成。
       responses:
         '200':
           description: 本次扫描统计
@@ -947,8 +1574,7 @@ paths:
       tags: [Tasks]
       operationId: runOneMemoryWorkerJob
       summary: 由本地开发界面执行一条周期快照任务（本地开发）
-      description: 手动触发单次 Worker 处理。当前仅消费 GENERATE_SNAPSHOT 任务；服务端配置 LLM_BASE_URL、LLM_API_KEY 与 LLM_MODEL 后，会调用 OpenAI-compatible Chat Completions 生成周期总结和有原始消息证据的长期记忆变化。未配置模型时任务留在队列；手动快照仍不调用模型。此接口仅限本地开发环境。
-      security: []
+      description: 手动触发一次 Worker 处理。当前消费 GENERATE_SNAPSHOT 与 REGENERATE_SNAPSHOT 任务；配置 LLM_BASE_URL、LLM_API_KEY 与 LLM_MODEL 后调用 OpenAI-compatible Chat Completions。AI 重新提炼会在同一逻辑快照下创建新版本；提议的长期记忆变化只供审核，不会重放应用到当前记忆。未配置模型时任务留在队列。此接口仅限本地开发环境。
       responses:
         '200':
           description: 本次处理结果；processed=false 表示当前没有可执行的任务
@@ -992,23 +1618,61 @@ paths:
   /tasks/{taskId}/retry:
     post:
       tags: [Tasks]
-      summary: 重新排队失败任务
+      operationId: requeueSnapshotTask
+      summary: 手动重新排队快照任务（本地开发）
+      description: 仅支持 GENERATE_SNAPSHOT / REGENERATE_SNAPSHOT 类型，且任务当前状态为 FAILED、RETRY_WAIT 或 CANCELLED。会将尝试计数重置为 0，并写入审计日志。
       parameters:
         - name: taskId
           in: path
           required: true
           schema: { type: string, format: uuid }
       responses:
-        '202':
-          description: 重试任务已排队
+        '200':
+          description: 任务已重新排队
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ApiResponse'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
+                type: object
+                required: [id, status, runAt]
+                properties:
+                  id: { type: string, format: uuid }
+                  status: { type: string, enum: [QUEUED] }
+                  runAt: { type: string, format: date-time }
+        '403':
+          description: 该接口仅限本地开发环境
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          description: 任务类型或当前状态不允许重新排队
+  /tasks/{taskId}/cancel:
+    post:
+      tags: [Tasks]
+      operationId: cancelQueuedSnapshotTask
+      summary: 取消等待中的任务（本地开发）
+      description: 仅支持 QUEUED 或 RETRY_WAIT 状态。RUNNING 任务不能被强制取消，以避免与正在进行的 Worker 写事务产生竞态；取消动作写入审计日志。
+      parameters:
+        - name: taskId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: 任务已取消
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, status, completedAt]
+                properties:
+                  id: { type: string, format: uuid }
+                  status: { type: string, enum: [CANCELLED] }
+                  completedAt: { type: string, format: date-time }
+        '403':
+          description: 该接口仅限本地开发环境
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 任务状态不允许取消
   /channels:
     get:
       tags: [Channels]
@@ -1042,7 +1706,8 @@ components:
     sessionCookie:
       type: apiKey
       in: cookie
-      name: __Host-yiling_session
+      name: yiling_session
+      description: 登录成功后由服务端下发的 HttpOnly、SameSite=Strict 会话 Cookie。生产环境（HTTPS）额外带 Secure。
   parameters:
     CharacterId:
       name: characterId
@@ -1108,15 +1773,97 @@ components:
           type: object
           additionalProperties: true
     SessionResponse:
-      allOf:
-        - $ref: '#/components/schemas/ApiResponse'
-        - type: object
+      type: object
+      required: [mode, user]
+      properties:
+        mode:
+          type: string
+          enum: [session, local-dev, anonymous]
+          description: session=有效登录会话；local-dev=仅本地开发且显式允许的开发用户回退；anonymous=未登录。
+        reason:
+          type: string
+          nullable: true
+          enum: [missing_session, invalid_session, disabled_user, null]
+        user:
+          type: object
+          nullable: true
+          required: [id, username, displayName]
           properties:
-            data:
-              type: object
-              properties:
-                authenticated: { type: boolean }
-                username: { type: string, nullable: true }
+            id: { type: string, format: uuid }
+            username: { type: string }
+            displayName: { type: string, nullable: true }
+            role:
+              type: string
+              enum: [ADMIN, USER]
+              description: ADMIN=管理员；USER=普通用户。local-dev 模式也返回 ADMIN。
+    SessionSummary:
+      type: object
+      required: [id, current, createdAt, lastUsedAt, expiresAt, device]
+      properties:
+        id: { type: string, format: uuid }
+        current:
+          type: boolean
+          description: 是否是发起本次请求的会话
+        createdAt: { type: string, format: date-time }
+        lastUsedAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+        device:
+          type: object
+          required: [label, kind]
+          properties:
+            label: { type: string, description: 由 User-Agent 派生的可读设备名，例如 Windows · Chrome }
+            kind:
+              type: string
+              enum: [desktop, mobile, tablet, unknown]
+    AdminUserSummary:
+      type: object
+      required: [id, username, email, displayName, role, status, createdAt, characterCount, lastActiveAt]
+      properties:
+        id: { type: string, format: uuid }
+        username: { type: string }
+        email: { type: string, nullable: true }
+        displayName: { type: string, nullable: true }
+        role: { type: string, enum: [ADMIN, USER] }
+        status: { type: string, enum: [ACTIVE, DISABLED] }
+        createdAt: { type: string, format: date-time }
+        characterCount: { type: integer, minimum: 0 }
+        lastActiveAt: { type: string, format: date-time, nullable: true }
+    ChannelConnectionSummary:
+      type: object
+      required: [id, platform, displayName, appId, status, lastEventAt, createdAt, bindings]
+      properties:
+        id: { type: string, format: uuid }
+        platform: { type: string }
+        displayName: { type: string }
+        appId: { type: string, nullable: true }
+        status: { type: string, enum: [CONNECTED, DISCONNECTED, ERROR, DISABLED] }
+        lastEventAt: { type: string, format: date-time, nullable: true }
+        createdAt: { type: string, format: date-time }
+        bindings:
+          type: array
+          items:
+            type: object
+            required: [id, characterId, characterName, routingKey]
+            properties:
+              id: { type: string, format: uuid }
+              characterId: { type: string, format: uuid }
+              characterName: { type: string }
+              routingKey: { type: string, nullable: true }
+    LoginResponse:
+      type: object
+      required: [user, expiresAt]
+      properties:
+        user:
+          type: object
+          required: [id, username, displayName, role]
+          properties:
+            id: { type: string, format: uuid }
+            username: { type: string }
+            displayName: { type: string, nullable: true }
+            role:
+              type: string
+              enum: [ADMIN, USER]
+        expiresAt: { type: string, format: date-time }
     MemoryScope:
       type: object
       required: [id, characterId, scopeType, scopeKey, createdAt]
@@ -1128,6 +1875,46 @@ components:
         userId: { type: string, format: uuid, nullable: true }
         externalIdentityId: { type: string, format: uuid, nullable: true }
         createdAt: { type: string, format: date-time }
+    ChatMessageInput:
+      type: object
+      required: [message]
+      properties:
+        conversationId: { type: string, format: uuid }
+        message: { type: string, minLength: 1, maxLength: 8000 }
+    ChatMessage:
+      type: object
+      required: [id, role, content, occurredAt, sources]
+      properties:
+        id: { type: string, format: uuid }
+        role: { type: string, enum: [USER, ASSISTANT] }
+        content: { type: string }
+        occurredAt: { type: string, format: date-time }
+        sources:
+          type: object
+          required: [memories, snapshots]
+          properties:
+            memories:
+              type: array
+              items:
+                type: object
+                required: [id, category, content, scope]
+                properties:
+                  id: { type: string, format: uuid }
+                  category: { type: string }
+                  content: { type: string }
+                  scope: { type: string, enum: [character, private] }
+            snapshots:
+              type: array
+              items:
+                type: object
+                required: [id, summary, periodStart, periodEnd, version, scope]
+                properties:
+                  id: { type: string, format: uuid }
+                  summary: { type: string }
+                  periodStart: { type: string, format: date-time }
+                  periodEnd: { type: string, format: date-time }
+                  version: { type: integer }
+                  scope: { type: string, enum: [character, private] }
     ConversationInput:
       type: object
       required: [memoryScopeId]
@@ -1200,7 +1987,7 @@ components:
         status: { type: string, enum: [active, paused, archived] }
     CharacterPatch:
       type: object
-      description: 更新角色时的部分字段；所有字段均为可选。
+      description: 更新角色时的部分字段；所有字段均为可选。API Key 仅可写入，服务端会加密保存且不会回传。
       properties:
         name: { type: string, minLength: 1, maxLength: 100 }
         avatar: { type: string, nullable: true }
@@ -1209,6 +1996,12 @@ components:
           type: object
           additionalProperties: true
         status: { type: string, enum: [active, paused, archived] }
+        chatApiBaseUrl: { type: string, maxLength: 500 }
+        chatApiKey: { type: string, maxLength: 8192, writeOnly: true }
+        clearApiKey: { type: boolean }
+        chatModel: { type: string, maxLength: 120 }
+        chatTemperature: { type: number, minimum: 0, maximum: 2 }
+        chatMaxTokens: { type: integer, minimum: 256, maximum: 8192 }
     Character:
       allOf:
         - $ref: '#/components/schemas/CharacterInput'
@@ -1260,14 +2053,43 @@ components:
         createdAt: { type: string, format: date-time }
     MemorySettings:
       type: object
-      required: [snapshotIntervalDays, timezone, autoSnapshotEnabled]
+      required: [snapshotIntervalDays, activeSnapshotIntervalDays, timezone, autoSnapshotEnabled, rawMessageCleanupEnabled]
       properties:
-        snapshotIntervalDays: { type: integer, minimum: 1, maximum: 365, default: 8 }
+        snapshotIntervalDays:
+          type: integer
+          minimum: 1
+          maximum: 365
+          default: 8
+          description: 当前表单选择的间隔；若存在待生效值则返回待生效值，否则返回当前生效值
+        activeSnapshotIntervalDays:
+          type: integer
+          minimum: 1
+          maximum: 365
+          readOnly: true
+          description: 当前周期实际使用的快照间隔
+        pendingSnapshotIntervalDays:
+          type: integer
+          minimum: 1
+          maximum: 365
+          nullable: true
+          description: 下一周期边界生效的快照间隔；立即重算策略下为 null
         timezone: { type: string, example: Asia/Shanghai }
         anchorAt: { type: string, format: date-time, nullable: true }
         nextSnapshotAt: { type: string, format: date-time, nullable: true, readOnly: true }
-        rawMessageRetentionDays: { type: integer, minimum: 1, nullable: true }
+        rawMessageRetentionDays:
+          type: integer
+          minimum: 0
+          nullable: true
+          description: 0 或 null 表示永久保留；期限本身不会自动启用清理
+        rawMessageCleanupEnabled:
+          type: boolean
+          default: false
+          description: 是否允许后台清理超过保留期限的原始消息
         autoSnapshotEnabled: { type: boolean, default: true }
+        changePolicy:
+          type: string
+          enum: [NEXT_CYCLE, IMMEDIATE_RECALC]
+          default: NEXT_CYCLE
     MemoryJob:
       type: object
       required: [id, type, status, attemptCount, createdAt]

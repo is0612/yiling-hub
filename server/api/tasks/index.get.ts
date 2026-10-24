@@ -1,12 +1,12 @@
 import { createError, getQuery } from "h3";
-import { requireLocalDevOwner } from "../../utils/local-api";
+import { requireActorUserId } from "../../utils/auth";
 import { getPrisma } from "../../utils/prisma";
 
 const statuses = ["QUEUED", "RUNNING", "SUCCEEDED", "FAILED", "SKIPPED", "RETRY_WAIT", "CANCELLED"] as const;
 type JobStatus = (typeof statuses)[number];
 
 export default defineEventHandler(async (event) => {
-  const ownerId = requireLocalDevOwner(event);
+  const ownerId = await requireActorUserId(event);
   const query = getQuery(event);
   const statusValue = typeof query.status === "string" ? query.status.toUpperCase() : "";
   if (statusValue && !(statuses as readonly string[]).includes(statusValue)) {
@@ -22,7 +22,7 @@ export default defineEventHandler(async (event) => {
     memoryScope: { is: { character: { is: { ownerId } } } },
     ...(statusValue ? { status: statusValue as JobStatus } : {}),
   };
-  const [jobs, total] = await Promise.all([
+  const [jobs, total, statusGroups] = await Promise.all([
     prisma.memoryJob.findMany({
       where,
       orderBy: [{ createdAt: "desc" }, { id: "desc" }],
@@ -41,11 +41,46 @@ export default defineEventHandler(async (event) => {
         completedAt: true,
         createdAt: true,
         updatedAt: true,
-        memoryScope: { select: { character: { select: { id: true, name: true } } } },
+        memoryScope: { select: { id: true, character: { select: { id: true, name: true } } } },
       },
     }),
     prisma.memoryJob.count({ where }),
+    prisma.memoryJob.groupBy({ by: ["status"], where: { memoryScope: { is: { character: { is: { ownerId } } } } }, _count: { _all: true } }),
   ]);
+
+  const cleanupJobs = jobs.filter((job) => job.type === "CLEAN_EXPIRED_MESSAGES");
+  const cleanupJobIds = new Set(cleanupJobs.map((job) => job.id));
+  const cleanupAudits = cleanupJobs.length > 0
+    ? await prisma.auditLog.findMany({
+      where: {
+        action: "message.retention_cleanup",
+        entityType: "MemoryScope",
+        OR: cleanupJobs.map((job) => ({
+          entityId: job.memoryScope.id,
+          details: { path: ["jobId"], equals: job.id },
+        })),
+      },
+      orderBy: { createdAt: "desc" },
+      select: { details: true, createdAt: true },
+    })
+    : [];
+  const cleanupResultByJobId = new Map<string, {
+    deletedMessageCount: number | null;
+    cutoff: string | null;
+    recordedAt: string;
+  }>();
+  for (const audit of cleanupAudits) {
+    const details = audit.details && typeof audit.details === "object" && !Array.isArray(audit.details)
+      ? audit.details as Record<string, unknown>
+      : null;
+    const jobId = typeof details?.jobId === "string" ? details.jobId : null;
+    if (!jobId || !cleanupJobIds.has(jobId) || cleanupResultByJobId.has(jobId)) continue;
+    cleanupResultByJobId.set(jobId, {
+      deletedMessageCount: typeof details?.deletedMessages === "number" ? details.deletedMessages : null,
+      cutoff: typeof details?.cutoff === "string" ? details.cutoff : null,
+      recordedAt: audit.createdAt.toISOString(),
+    });
+  }
 
   return {
     items: jobs.map((job) => ({
@@ -64,7 +99,17 @@ export default defineEventHandler(async (event) => {
       updatedAt: job.updatedAt.toISOString(),
       characterId: job.memoryScope.character.id,
       characterName: job.memoryScope.character.name,
+      cleanupResult: cleanupResultByJobId.get(job.id) ?? null,
     })),
     total,
+    statusCounts: {
+      QUEUED: statusGroups.find((group) => group.status === "QUEUED")?._count._all ?? 0,
+      RUNNING: statusGroups.find((group) => group.status === "RUNNING")?._count._all ?? 0,
+      SUCCEEDED: statusGroups.find((group) => group.status === "SUCCEEDED")?._count._all ?? 0,
+      FAILED: statusGroups.find((group) => group.status === "FAILED")?._count._all ?? 0,
+      RETRY_WAIT: statusGroups.find((group) => group.status === "RETRY_WAIT")?._count._all ?? 0,
+      SKIPPED: statusGroups.find((group) => group.status === "SKIPPED")?._count._all ?? 0,
+      CANCELLED: statusGroups.find((group) => group.status === "CANCELLED")?._count._all ?? 0,
+    },
   };
 });

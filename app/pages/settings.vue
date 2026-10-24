@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Bell, Check, Coin, Key, Monitor, Refresh, Lock } from "@element-plus/icons-vue";
+import { Bell, Check, Coin, Monitor, Refresh } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
 
 const instanceName = ref("羚枢 · 本地工作空间");
@@ -13,7 +13,7 @@ function saveSettings() {
 
 <template>
   <div class="page-wrap">
-    <PageHeader eyebrow="系统管理 / 系统设置" title="系统设置" description="配置工作空间的默认行为。公开部署前必须补齐管理员登录、服务端鉴权和密钥管理。">
+    <PageHeader eyebrow="系统管理 / 系统设置" title="系统设置" description="配置工作空间的默认行为，并管理管理员密码与登录设备。">
       <template #actions><DemoTag /></template>
     </PageHeader>
     <div class="settings-grid">
@@ -27,14 +27,16 @@ function saveSettings() {
           </el-form>
           <el-divider />
           <div class="toggle-row"><div><strong>演示通知</strong><p class="form-help">在演示操作完成时显示提示消息。</p></div><el-switch v-model="enableDemoNotifications" /></div>
-        </section>
-        <section class="surface form-section" style="margin-top:16px">
-          <div class="form-title"><el-icon class="setting-icon"><Lock /></el-icon>管理员与安全</div>
-          <div class="security-row"><div class="security-symbol"><el-icon><Key /></el-icon></div><div class="character-info"><strong>管理员登录</strong><p class="form-help">当前未实现安全登录会话和服务端授权校验。</p></div><el-tag type="warning" effect="light">尚未接入</el-tag></div>
-          <div class="security-row"><div class="security-symbol"><el-icon><Coin /></el-icon></div><div class="character-info"><strong>数据库连接</strong><p class="form-help">PostgreSQL 与 Prisma 已有项目配置，尚未接入本页的实时状态检测。</p></div><el-tag type="info" effect="light">未验证</el-tag></div>
-          <div class="security-row"><div class="security-symbol"><el-icon><Bell /></el-icon></div><div class="character-info"><strong>后台任务告警</strong><p class="form-help">真实告警与日志查询尚未接入。</p></div><el-tag type="info" effect="light">规划中</el-tag></div>
-          <div class="info-callout" style="margin-top:17px"><el-icon><Lock /></el-icon><span>不要将数据库密码、模型 API Key 或渠道 Token 放入前端配置。公开部署前必须完成鉴权和权限校验。</span></div>
           <div class="form-actions"><el-button @click="ElMessage.info('演示设置已刷新。')"><el-icon><Refresh /></el-icon>恢复显示</el-button><el-button type="primary" @click="saveSettings"><el-icon><Check /></el-icon>保存设置</el-button></div>
+        </section>
+
+        <AccountSecurityPanel style="margin-top:16px" />
+
+        <section class="surface form-section" style="margin-top:16px">
+          <div class="form-title"><el-icon class="setting-icon"><Coin /></el-icon>运行状态</div>
+          <div class="security-row"><div class="security-symbol"><el-icon><Coin /></el-icon></div><div class="character-info"><strong>数据库连接</strong><p class="form-help">PostgreSQL 与 Prisma 已在项目内配置，本页尚未接入实时连接状态检测。</p></div><el-tag type="info" effect="light">未接入检测</el-tag></div>
+          <div class="security-row"><div class="security-symbol"><el-icon><Bell /></el-icon></div><div class="character-info"><strong>后台任务告警</strong><p class="form-help">任务监控页可查看任务状态，邮件或 Webhook 告警尚未接入。</p></div><el-tag type="info" effect="light">规划中</el-tag></div>
+          <div class="info-callout" style="margin-top:17px"><el-icon><Monitor /></el-icon><span>不要将数据库密码、模型 API Key 或渠道 Token 放入前端配置；模型 API Key 在角色设置页加密保存。</span></div>
         </section>
       </div>
       <aside class="surface panel">
@@ -45,7 +47,7 @@ function saveSettings() {
         <div class="metric-row"><span>打包工具</span><span class="metric-value">Vite（Nuxt 默认）</span></div>
         <div class="metric-row"><span>数据库</span><span class="metric-value">PostgreSQL</span></div>
         <div class="metric-row"><span>数据访问</span><span class="metric-value">Prisma ORM 7</span></div>
-        <div class="info-callout" style="margin-top:18px"><el-icon><Monitor /></el-icon><span>当前页面不代表数据库连接、身份认证或后台任务已经可用。</span></div>
+        <div class="info-callout" style="margin-top:18px"><el-icon><Monitor /></el-icon><span>管理员登录与密码管理已接入真实数据库；数据库连接检测与后台告警仍是规划项。</span></div>
       </aside>
     </div>
   </div>

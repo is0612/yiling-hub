@@ -1,5 +1,6 @@
 import { createError, getRouterParam, readBody } from "h3";
-import { requireLocalDevOwner, requireUuid, readTrimmedString } from "../../utils/local-api";
+import { requireActorUserId } from "../../utils/auth";
+import { requireUuid, readTrimmedString } from "../../utils/local-api";
 import { getPrisma } from "../../utils/prisma";
 
 const memoryCategories = [
@@ -17,7 +18,7 @@ type MemoryCategory = (typeof memoryCategories)[number];
 type MemoryStatus = (typeof memoryStatuses)[number];
 
 export default defineEventHandler(async (event) => {
-  const ownerId = requireLocalDevOwner(event);
+  const ownerId = await requireActorUserId(event);
   const memoryId = requireUuid(getRouterParam(event, "id") ?? "", "记忆");
   const body = await readBody<Record<string, unknown>>(event);
   const data: { content?: string; category?: MemoryCategory; status?: MemoryStatus } = {};

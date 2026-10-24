@@ -15,6 +15,14 @@ export type MemorySnapshotDto = {
   generatedBy?: string;
   model?: { name?: string; provider?: string; promptTemplateVersion?: string };
   analysis?: SnapshotAnalysis;
+  sourceMessages: Array<{
+    id: string;
+    role: string;
+    eventType: string;
+    content: string;
+    occurredAt: string;
+    conversationTitle: string | null;
+  }>;
 };
 
 type SnapshotRecord = {
@@ -28,7 +36,18 @@ type SnapshotRecord = {
   structuredContent: unknown;
   status: string;
   createdAt: Date;
-  sources: Array<{ sourceType: string }>;
+  sources: Array<{
+    sourceType: string;
+    sourceRef?: string;
+    message?: {
+      id: string;
+      role: string;
+      eventType: string;
+      content: string;
+      occurredAt: Date;
+      conversation: { title: string | null };
+    } | null;
+  }>;
 };
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -202,6 +221,16 @@ export function toMemorySnapshotDtos(
         ...(generatedBy ? { generatedBy } : {}),
         ...(model ? { model } : {}),
         ...(analysis ? { analysis } : {}),
+        sourceMessages: record.sources
+          .filter((source) => source.sourceType === "MESSAGE" && source.message)
+          .map((source) => ({
+            id: source.message!.id,
+            role: source.message!.role,
+            eventType: source.message!.eventType,
+            content: source.message!.content,
+            occurredAt: source.message!.occurredAt.toISOString(),
+            conversationTitle: source.message!.conversation.title,
+          })),
       };
     });
 }

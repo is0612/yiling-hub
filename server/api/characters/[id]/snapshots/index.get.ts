@@ -1,10 +1,11 @@
 import { createError, getRouterParam } from "h3";
-import { requireLocalDevOwner, requireUuid } from "../../../../utils/local-api";
+import { requireActorUserId } from "../../../../utils/auth";
+import { requireUuid } from "../../../../utils/local-api";
 import { getPrisma } from "../../../../utils/prisma";
 import { toMemorySnapshotDtos } from "../../../../utils/memory-snapshot-dto";
 
 export default defineEventHandler(async (event) => {
-  const ownerId = requireLocalDevOwner(event);
+  const ownerId = await requireActorUserId(event);
   const characterId = requireUuid(getRouterParam(event, "id") ?? "", "角色");
   const prisma = getPrisma();
 
@@ -18,7 +19,24 @@ export default defineEventHandler(async (event) => {
         select: {
           snapshots: {
             orderBy: [{ createdAt: "desc" }, { version: "desc" }],
-            include: { sources: { select: { sourceType: true } } },
+            include: {
+              sources: {
+                select: {
+                  sourceType: true,
+                  sourceRef: true,
+                  message: {
+                    select: {
+                      id: true,
+                      role: true,
+                      eventType: true,
+                      content: true,
+                      occurredAt: true,
+                      conversation: { select: { title: true } },
+                    },
+                  },
+                },
+              },
+            },
           },
         },
       },

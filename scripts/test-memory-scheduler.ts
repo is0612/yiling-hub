@@ -34,6 +34,56 @@ assert.equal(missedCycles.periods.length, 3, "Overdue cycles should be backfille
 assert.equal(missedCycles.periods[2]?.periodEnd.toISOString(), "2026-10-17T00:00:00.000Z");
 assert.equal(missedCycles.nextSnapshotAt?.toISOString(), "2026-10-25T00:00:00.000Z");
 
+const pendingIntervalBeforeBoundary = buildDueMemoryPeriods({
+  memoryScopeId: "scope-1",
+  nextSnapshotAt: anchorEnd,
+  intervalDays: 8,
+  pendingIntervalDays: 3,
+  now: new Date("2026-09-30T23:59:59.999Z"),
+});
+assert.equal(pendingIntervalBeforeBoundary.periods.length, 0, "A pending interval must not advance before the current boundary.");
+assert.equal(pendingIntervalBeforeBoundary.nextSnapshotAt?.toISOString(), anchorEnd.toISOString());
+
+const pendingIntervalAtBoundary = buildDueMemoryPeriods({
+  memoryScopeId: "scope-1",
+  nextSnapshotAt: anchorEnd,
+  intervalDays: 8,
+  pendingIntervalDays: 3,
+  now: anchorEnd,
+});
+assert.equal(pendingIntervalAtBoundary.periods.length, 1, "The in-flight period must close using the active interval.");
+assert.equal(pendingIntervalAtBoundary.periods[0]?.periodStart.toISOString(), "2026-09-23T00:00:00.000Z");
+assert.equal(pendingIntervalAtBoundary.periods[0]?.periodEnd.toISOString(), "2026-10-01T00:00:00.000Z");
+assert.equal(pendingIntervalAtBoundary.nextSnapshotAt?.toISOString(), "2026-10-04T00:00:00.000Z", "The next boundary should advance using the pending 3-day interval.");
+
+const pendingIntervalBackfill = buildDueMemoryPeriods({
+  memoryScopeId: "scope-1",
+  nextSnapshotAt: anchorEnd,
+  intervalDays: 8,
+  pendingIntervalDays: 3,
+  now: new Date("2026-10-10T00:00:00.000Z"),
+});
+assert.deepEqual(
+  pendingIntervalBackfill.periods.map((period) => [period.periodStart.toISOString(), period.periodEnd.toISOString()]),
+  [
+    ["2026-09-23T00:00:00.000Z", "2026-10-01T00:00:00.000Z"],
+    ["2026-10-01T00:00:00.000Z", "2026-10-04T00:00:00.000Z"],
+    ["2026-10-04T00:00:00.000Z", "2026-10-07T00:00:00.000Z"],
+    ["2026-10-07T00:00:00.000Z", "2026-10-10T00:00:00.000Z"],
+  ],
+  "Missed periods after the pending boundary must use the new interval.",
+);
+assert.equal(pendingIntervalBackfill.nextSnapshotAt?.toISOString(), "2026-10-13T00:00:00.000Z");
+
+const invalidPendingInterval = buildDueMemoryPeriods({
+  memoryScopeId: "scope-1",
+  nextSnapshotAt: anchorEnd,
+  intervalDays: 8,
+  pendingIntervalDays: 0,
+  now: anchorEnd,
+});
+assert.equal(invalidPendingInterval.periods.length, 0, "Invalid pending intervals must not produce snapshot jobs.");
+
 const cappedBackfill = buildDueMemoryPeriods({
   memoryScopeId: "scope-1",
   nextSnapshotAt: anchorEnd,
@@ -61,4 +111,4 @@ const invalidInterval = buildDueMemoryPeriods({
 });
 assert.equal(invalidInterval.periods.length, 0);
 
-console.log("Memory scheduler unit tests passed: exact boundary, no early scheduling, backfill, idempotency keys, capped backlog, and invalid interval.");
+console.log("Memory scheduler unit tests passed: exact boundary, deferred interval changes, no early scheduling, mixed-interval backfill, idempotency keys, capped backlog, and invalid intervals.");

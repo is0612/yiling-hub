@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { Refresh, Search, Warning, MagicStick, Files, Cpu } from "@element-plus/icons-vue";
-import { ElMessage } from "element-plus";
+import { ElMessage, ElMessageBox } from "element-plus";
 
 type MemoryTask = {
   id: string;
@@ -18,12 +18,17 @@ type MemoryTask = {
   updatedAt: string;
   characterId: string;
   characterName: string;
+  cleanupResult: { deletedMessageCount: number | null; cutoff: string | null; recordedAt: string } | null;
 };
-type TaskListResponse = { items: MemoryTask[]; total: number };
+type TaskListResponse = {
+  items: MemoryTask[];
+  total: number;
+  statusCounts: Record<MemoryTask["status"], number>;
+};
 type WorkerResult = {
   processed: boolean;
   jobId?: string;
-  status?: "SUCCEEDED" | "SKIPPED" | "RETRY_WAIT" | "FAILED";
+  status?: "SUCCEEDED" | "SKIPPED" | "RETRY_WAIT" | "FAILED" | "CANCELLED";
   snapshotId?: string;
   message: string;
 };
@@ -39,6 +44,9 @@ type SchedulerReport = {
 
 const tasks = ref<MemoryTask[]>([]);
 const totalTasks = ref(0);
+const statusCounts = ref<Record<MemoryTask["status"], number>>({
+  QUEUED: 0, RUNNING: 0, SUCCEEDED: 0, FAILED: 0, SKIPPED: 0, RETRY_WAIT: 0, CANCELLED: 0,
+});
 const query = ref("");
 const statusFilter = ref("ALL");
 const loading = ref(false);
@@ -47,6 +55,7 @@ const workerRunning = ref(false);
 const loadError = ref("");
 const detailsOpen = ref(false);
 const selectedTask = ref<MemoryTask | null>(null);
+const taskActionLoading = ref(false);
 
 const statuses = [
   { label: "全部状态", value: "ALL" },
@@ -59,10 +68,10 @@ const statuses = [
   { label: "已取消", value: "CANCELLED" },
 ];
 
-const queuedCount = computed(() => tasks.value.filter((task) => task.status === "QUEUED").length);
-const runningCount = computed(() => tasks.value.filter((task) => task.status === "RUNNING").length);
-const succeededCount = computed(() => tasks.value.filter((task) => task.status === "SUCCEEDED").length);
-const failedCount = computed(() => tasks.value.filter((task) => task.status === "FAILED" || task.status === "RETRY_WAIT").length);
+const queuedCount = computed(() => statusCounts.value.QUEUED);
+const runningCount = computed(() => statusCounts.value.RUNNING);
+const succeededCount = computed(() => statusCounts.value.SUCCEEDED);
+const failedCount = computed(() => statusCounts.value.FAILED + statusCounts.value.RETRY_WAIT);
 
 const filtered = computed(() => tasks.value.filter((task) => {
   const text = [task.id, task.characterName, task.characterId, taskTypeText(task.type)].join(" ").toLowerCase();
@@ -110,8 +119,28 @@ function formatDate(value: string | null) {
 }
 
 function periodText(task: MemoryTask) {
+  if (task.type === "CLEAN_EXPIRED_MESSAGES") {
+    return task.periodEnd ? `清理 ${formatDate(task.periodEnd)} 之前的原始消息` : "未指定清理截止时间";
+  }
   if (!task.periodStart || !task.periodEnd) return "未指定周期范围";
   return `${formatDate(task.periodStart)} — ${formatDate(task.periodEnd)}`;
+}
+
+function taskIssueTitle(task: MemoryTask) {
+  if (task.status === "SKIPPED") return "跳过原因";
+  if (task.status === "RETRY_WAIT") return "最近失败原因";
+  if (task.status === "FAILED") return "失败原因";
+  return "任务信息";
+}
+
+function taskStatusHint(task: MemoryTask) {
+  if (task.status === "QUEUED") return "任务已进入持久化队列，等待 Worker 执行。";
+  if (task.status === "RUNNING") return "Worker 正在执行该任务。";
+  if (task.status === "SUCCEEDED") return "任务已完成，没有记录错误。";
+  if (task.status === "SKIPPED") return "该任务没有需要处理的活动，已按规则跳过。";
+  if (task.status === "RETRY_WAIT") return "任务执行未成功，系统会在计划时间再次尝试。";
+  if (task.status === "CANCELLED") return "任务已取消，历史记录与审计信息会保留。";
+  return "该任务已失败，请查看失败原因并在必要时重新入队。";
 }
 
 async function loadTasks() {
@@ -121,9 +150,11 @@ async function loadTasks() {
     const result = await $fetch<TaskListResponse>("/api/tasks?limit=100");
     tasks.value = result.items;
     totalTasks.value = result.total;
+    statusCounts.value = result.statusCounts;
   } catch (error) {
     tasks.value = [];
     totalTasks.value = 0;
+    statusCounts.value = { QUEUED: 0, RUNNING: 0, SUCCEEDED: 0, FAILED: 0, SKIPPED: 0, RETRY_WAIT: 0, CANCELLED: 0 };
     loadError.value = error && typeof error === "object" && "statusMessage" in error
       ? String(error.statusMessage)
       : error instanceof Error ? error.message : "任务列表读取失败。";
@@ -163,9 +194,11 @@ async function runWorker() {
     if (!result.processed) {
       ElMessage.info(result.message);
     } else if (result.status === "SUCCEEDED") {
-      ElMessage.success("已执行一条任务并生成规则版结构化快照（未调用大模型）。");
+      ElMessage.success(result.message || "任务执行完成。");
     } else if (result.status === "SKIPPED") {
-      ElMessage.info("该周期没有已保存活动，任务已跳过。");
+      ElMessage.info(result.message || "该周期没有已保存活动，任务已跳过。");
+    } else if (result.status === "CANCELLED") {
+      ElMessage.info(result.message || "任务已取消。");
     } else {
       ElMessage.warning(result.message);
     }
@@ -184,12 +217,70 @@ function openDetails(task: MemoryTask) {
   detailsOpen.value = true;
 }
 
+function getErrorMessage(error: unknown, fallback: string) {
+  return error && typeof error === "object" && "statusMessage" in error
+    ? String(error.statusMessage)
+    : error instanceof Error ? error.message : fallback;
+}
+
+async function retrySelectedTask() {
+  const task = selectedTask.value;
+  if (!task || taskActionLoading.value) return;
+  try {
+    await ElMessageBox.confirm(
+      "系统会清除本次任务的错误状态和尝试计数，并立即重新排队。历史审计记录会保留。",
+      "重新入队任务",
+      { confirmButtonText: "重新入队", cancelButtonText: "取消", type: "warning" },
+    );
+  } catch {
+    return;
+  }
+
+  taskActionLoading.value = true;
+  try {
+    await $fetch(`/api/tasks/${encodeURIComponent(task.id)}/retry`, { method: "POST" });
+    await loadTasks();
+    selectedTask.value = tasks.value.find((item) => item.id === task.id) ?? null;
+    ElMessage.success("任务已重新排队。");
+  } catch (error) {
+    ElMessage.error(getErrorMessage(error, "任务重新入队失败。"));
+  } finally {
+    taskActionLoading.value = false;
+  }
+}
+
+async function cancelSelectedTask() {
+  const task = selectedTask.value;
+  if (!task || taskActionLoading.value) return;
+  try {
+    await ElMessageBox.confirm(
+      "这会取消尚未开始执行的任务。运行中的任务不能被强制终止，已完成的历史记录不会删除。",
+      "取消任务",
+      { confirmButtonText: "确认取消", cancelButtonText: "保留任务", type: "warning" },
+    );
+  } catch {
+    return;
+  }
+
+  taskActionLoading.value = true;
+  try {
+    await $fetch(`/api/tasks/${encodeURIComponent(task.id)}/cancel`, { method: "POST" });
+    await loadTasks();
+    selectedTask.value = tasks.value.find((item) => item.id === task.id) ?? null;
+    ElMessage.success("任务已取消，审计记录已保留。");
+  } catch (error) {
+    ElMessage.error(getErrorMessage(error, "取消任务失败。"));
+  } finally {
+    taskActionLoading.value = false;
+  }
+}
+
 onMounted(() => void loadTasks());
 </script>
 
 <template>
   <div class="page-wrap">
-    <PageHeader eyebrow="系统管理 / 任务监控" title="后台任务" description="这里显示数据库中的持久化任务，并可手动扫描已到期的记忆周期。任务入队与快照执行是两个阶段；当前尚未接入实际 Worker。">
+    <PageHeader eyebrow="系统管理 / 任务监控" title="后台任务" description="查看持久化任务、扫描到期周期、手动运行 Worker，并管理失败、待重试和等待执行的任务。">
       <template #actions>
         <el-button :loading="loading" @click="loadTasks"><el-icon><Refresh /></el-icon>刷新列表</el-button>
         <el-button :loading="workerRunning" @click="runWorker"><el-icon><Cpu /></el-icon>运行一次 Worker</el-button>
@@ -223,6 +314,15 @@ onMounted(() => void loadTasks());
         <el-table-column label="状态" width="125">
           <template #default="{ row }"><el-tag :type="tone(row.status)" effect="light" round>{{ statusText(row.status) }}</el-tag></template>
         </el-table-column>
+        <el-table-column label="执行结果" min-width="135">
+          <template #default="{ row }">
+            <span v-if="row.type === 'CLEAN_EXPIRED_MESSAGES' && row.cleanupResult">
+              已删除 {{ row.cleanupResult.deletedMessageCount ?? '未知' }} 条
+            </span>
+            <span v-else-if="row.type === 'CLEAN_EXPIRED_MESSAGES' && row.status === 'SUCCEEDED'">审计记录暂不可用</span>
+            <span v-else>—</span>
+          </template>
+        </el-table-column>
         <el-table-column label="尝试次数" width="105" align="center">
           <template #default="{ row }">{{ row.attemptCount }} / {{ row.maxAttempts }}</template>
         </el-table-column>
@@ -238,7 +338,7 @@ onMounted(() => void loadTasks());
 
     <div class="info-callout" style="margin-top:18px">
       <el-icon><Warning /></el-icon>
-      <span>当前已接入真实任务队列和周期扫描。排队中的任务还不会自动生成快照；当前 Worker 可执行周期快照任务并保存规则版结构化快照；模型总结、更多任务类型和任务取消仍待后续阶段接入。</span>
+      <span>任务由独立 Worker 消费。周期生成与 AI 重新提炼会调用服务端配置的模型；过期消息清理任务也可在失败后手动重新入队。重新入队与清理结果均会保留审计记录。</span>
     </div>
 
     <el-dialog v-model="detailsOpen" title="任务详情" width="min(620px, 94vw)">
@@ -250,11 +350,28 @@ onMounted(() => void loadTasks());
         <div class="detail-row"><span>处理周期</span><strong>{{ periodText(selectedTask) }}</strong></div>
         <div class="detail-row"><span>尝试次数</span><strong>{{ selectedTask.attemptCount }} / {{ selectedTask.maxAttempts }}</strong></div>
         <div class="detail-row"><span>计划执行时间</span><strong>{{ formatDate(selectedTask.runAt) }}</strong></div>
+        <div class="detail-row"><span>开始时间</span><strong>{{ formatDate(selectedTask.startedAt) }}</strong></div>
+        <div class="detail-row"><span>完成时间</span><strong>{{ formatDate(selectedTask.completedAt) }}</strong></div>
         <div class="detail-row"><span>创建时间</span><strong>{{ formatDate(selectedTask.createdAt) }}</strong></div>
-        <div v-if="selectedTask.lastError" class="task-error"><strong>最近错误</strong><p>{{ selectedTask.lastError }}</p></div>
-        <div v-else class="info-callout" style="margin-top:14px"><el-icon><Files /></el-icon><span>当前为持久化排队记录；还没有 Worker 执行日志。</span></div>
+        <template v-if="selectedTask.type === 'CLEAN_EXPIRED_MESSAGES'">
+          <div class="detail-row"><span>清理结果</span><strong>{{ selectedTask.cleanupResult ? `已删除 ${selectedTask.cleanupResult.deletedMessageCount ?? "未知"} 条原始消息` : selectedTask.status === 'SUCCEEDED' ? "未找到对应审计记录" : "尚无成功清理记录" }}</strong></div>
+          <div v-if="selectedTask.cleanupResult?.cutoff" class="detail-row"><span>清理截止时间</span><strong>{{ formatDate(selectedTask.cleanupResult.cutoff) }} 之前</strong></div>
+          <div v-if="selectedTask.cleanupResult" class="detail-row"><span>审计记录时间</span><strong>{{ formatDate(selectedTask.cleanupResult.recordedAt) }}</strong></div>
+        </template>
+        <div v-if="selectedTask.lastError" class="task-error">
+          <strong>{{ taskIssueTitle(selectedTask) }}</strong>
+          <p>{{ selectedTask.lastError }}</p>
+        </div>
+        <div v-else class="info-callout" style="margin-top:14px">
+          <el-icon><Files /></el-icon>
+          <span>{{ taskStatusHint(selectedTask) }}</span>
+        </div>
       </template>
-      <template #footer><el-button @click="detailsOpen = false">关闭</el-button></template>
+      <template #footer>
+        <el-button v-if="selectedTask && ['FAILED', 'RETRY_WAIT', 'CANCELLED'].includes(selectedTask.status) && ['GENERATE_SNAPSHOT', 'REGENERATE_SNAPSHOT', 'CLEAN_EXPIRED_MESSAGES'].includes(selectedTask.type)" :loading="taskActionLoading" @click="retrySelectedTask"><el-icon><Refresh /></el-icon>重新入队</el-button>
+        <el-button v-if="selectedTask && ['QUEUED', 'RETRY_WAIT'].includes(selectedTask.status)" :loading="taskActionLoading" @click="cancelSelectedTask"><el-icon><Warning /></el-icon>取消任务</el-button>
+        <el-button @click="detailsOpen = false">关闭</el-button>
+      </template>
     </el-dialog>
   </div>
 </template>

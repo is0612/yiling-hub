@@ -19,7 +19,7 @@ on:
       - "README.md"
       - ".github/workflows/phase-0-validation.yml"
   push:
-    branches: [main]
+    branches: [main, docs/project-blueprint]
     paths:
       - "app/**"
       - "server/**"
@@ -95,8 +95,32 @@ jobs:
       - name: 周期记忆调度单元测试
         run: yarn run test:scheduler
 
+      - name: 数据库调度器并发与幂等集成测试
+        run: yarn run test:scheduler-db
+
       - name: AI 记忆来源与输出校验测试
         run: yarn run test:memory-ai
+
+      - name: 对话记忆检索测试
+        run: yarn run test:memory-retrieval
+
+      - name: 角色模型参数校验测试
+        run: yarn run test:chat-model-config
+
+      - name: 对话模型提示词凭据隔离测试
+        run: yarn run test:chat-reply
+
+      - name: 私人记忆范围隔离测试
+        run: yarn run test:chat-private-memory
+
+      - name: 私人记忆范围数据库隔离测试
+        run: yarn run test:chat-private-memory-db
+
+      - name: 管理员登录与会话鉴权单元测试
+        run: yarn run test:auth
+
+      - name: 会话与登录限流数据库集成测试
+        run: yarn run test:auth-db
 
       - name: ESLint 检查
         run: yarn run lint
@@ -112,6 +136,7 @@ jobs:
         env:
           NODE_ENV: development
           YILING_LOCAL_API_ENABLED: "true"
+          YILING_ALLOW_REGISTRATION: "true"
           DEV_OWNER_ID: 00000000-0000-4000-8000-000000000001
           DEV_OWNER_USERNAME: ci-local
           DEV_OWNER_PASSWORD: CI_smoke_test_password_123
@@ -135,7 +160,7 @@ jobs:
           yarn run dev --host 127.0.0.1 --port 3000 > /tmp/yiling-nuxt.log 2>&1 &
           server_pid=$!
           trap 'status=$?; kill "$server_pid" "$mock_pid" 2>/dev/null || true; if [ "$status" -ne 0 ]; then cat /tmp/yiling-nuxt.log; cat /tmp/yiling-llm.log; fi; exit "$status"' EXIT
-          node scripts/smoke-test-local-api.mjs
+          yarn tsx scripts/smoke-test-local-api.mjs
 
       - name: Nuxt 生产构建
         run: yarn run build

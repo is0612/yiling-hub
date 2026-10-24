@@ -67,6 +67,8 @@ button, input, textarea, select { font: inherit; }
 .admin-name { color:#4d5872; font-size:11px; font-weight:750; }
 .admin-note { margin-top:3px; color:#9ba3b5; font-size:10px; }
 .sidebar-version { display:flex; justify-content:space-between; padding:10px 10px 0; color:#abb2c1; font-size:9px; }
+.sidebar-logout { margin:6px 8px 0; color:#7b859c; font-size:10px; font-weight:650; }
+.sidebar-logout:hover { color:#5c4ed6; }
 .app-main { min-width:0; grid-column:2; }
 .topbar {
   position:sticky; top:0; z-index:20; display:flex; min-height:72px; align-items:center; justify-content:space-between; gap:20px;
