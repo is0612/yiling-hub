@@ -30,8 +30,9 @@ export default defineEventHandler(async (event) => {
   if (typeof body.timezone !== "string" || body.timezone.length > 100) {
     throw createError({ statusCode: 400, statusMessage: "请选择有效的时区。" });
   }
+  const timezone = body.timezone;
   try {
-    new Intl.DateTimeFormat("en-US", { timeZone: body.timezone });
+    new Intl.DateTimeFormat("en-US", { timeZone: timezone });
   } catch {
     throw createError({ statusCode: 400, statusMessage: "不支持该时区。" });
   }
@@ -39,6 +40,7 @@ export default defineEventHandler(async (event) => {
   if (typeof body.autoSnapshotEnabled !== "boolean") {
     throw createError({ statusCode: 400, statusMessage: "自动归档开关无效。" });
   }
+  const autoSnapshotEnabled = body.autoSnapshotEnabled;
 
   if (body.changePolicy !== "NEXT_CYCLE" && body.changePolicy !== "IMMEDIATE_RECALC") {
     throw createError({ statusCode: 400, statusMessage: "无效的设置生效策略。" });
@@ -71,7 +73,7 @@ export default defineEventHandler(async (event) => {
       create: {
         characterId,
         snapshotIntervalDays: 8,
-        timezone: body.timezone,
+        timezone,
         anchorAt: rawAnchor,
         nextSnapshotAt: null,
         autoSnapshotEnabled: false,
@@ -87,7 +89,7 @@ export default defineEventHandler(async (event) => {
     // formatting a saved timestamp, but treat an actual anchor or timezone edit
     // as an explicit rebase of the cycle schedule.
     const anchorChanged =
-      existing.timezone !== body.timezone ||
+      existing.timezone !== timezone ||
       Math.floor(existing.anchorAt.getTime() / 1000) !== Math.floor(rawAnchor.getTime() / 1000);
     const savedAnchorAt = anchorChanged ? rawAnchor : existing.anchorAt;
 
@@ -95,7 +97,7 @@ export default defineEventHandler(async (event) => {
     let pendingIntervalDays: number | null = null;
     let nextSnapshotAt: Date | null;
 
-    if (!body.autoSnapshotEnabled) {
+    if (!autoSnapshotEnabled) {
       activeIntervalDays = interval;
       nextSnapshotAt = null;
     } else if (
@@ -118,10 +120,10 @@ export default defineEventHandler(async (event) => {
       data: {
         snapshotIntervalDays: activeIntervalDays,
         pendingSnapshotIntervalDays: pendingIntervalDays,
-        timezone: body.timezone,
+        timezone,
         anchorAt: savedAnchorAt,
         nextSnapshotAt,
-        autoSnapshotEnabled: body.autoSnapshotEnabled,
+        autoSnapshotEnabled,
         changePolicy,
         rawMessageRetentionDays: rawRetention === 0 ? null : rawRetention,
         rawMessageCleanupEnabled,
