@@ -126,29 +126,40 @@ export async function processNextMemoryJob(
     }
 
     try {
-      const deleted = await prisma.message.deleteMany({
-        where: {
-          conversation: { is: { memoryScopeId: candidate.memoryScopeId } },
-          occurredAt: { lt: candidate.periodEnd },
-        },
-      });
-      await prisma.$transaction([
-        prisma.memoryJob.update({
+      // Keep the deletion, job completion, and audit record in one transaction.
+      // Lock/verify ownership first so a stale or displaced worker cannot delete content.
+      const deletedCount = await prisma.$transaction(async (tx) => {
+        const claim = await tx.memoryJob.updateMany({
+          where: { id: candidate.id, status: "RUNNING", lockedBy: workerId },
+          data: { lastError: null },
+        });
+        if (claim.count !== 1) {
+          throw new Error("清理任务租约已失效；拒绝删除原始消息。");
+        }
+
+        const deleted = await tx.message.deleteMany({
+          where: {
+            conversation: { is: { memoryScopeId: candidate.memoryScopeId } },
+            occurredAt: { lt: candidate.periodEnd! },
+          },
+        });
+        await tx.memoryJob.update({
           where: { id: candidate.id },
           data: { status: "SUCCEEDED", completedAt: now, lockedAt: null, lockedBy: null, lastError: null },
-        }),
-        prisma.auditLog.create({
+        });
+        await tx.auditLog.create({
           data: {
             actorType: "WORKER",
             characterId: scope.characterId,
             action: "message.retention_cleanup",
             entityType: "MemoryScope",
             entityId: candidate.memoryScopeId,
-            details: { cutoff: candidate.periodEnd.toISOString(), deletedMessages: deleted.count, jobId: candidate.id },
+            details: { cutoff: candidate.periodEnd!.toISOString(), deletedMessages: deleted.count, jobId: candidate.id },
           },
-        }),
-      ]);
-      return { processed: true, jobId: candidate.id, status: "SUCCEEDED", message: `原始消息清理完成，删除 ${deleted.count} 条过期消息；快照与来源记录已保留。` };
+        });
+        return deleted.count;
+      });
+      return { processed: true, jobId: candidate.id, status: "SUCCEEDED", message: `原始消息清理完成，删除 ${deletedCount} 条过期消息；快照与来源记录已保留。` };
     } catch (error) {
       const message = (error instanceof Error ? error.message : String(error)).slice(0, 2000);
       await prisma.memoryJob.updateMany({
