@@ -1,0 +1,174 @@
+# bili-desk 迁移进 yiling-hub 方案
+
+> 目标：把 bili-desk（AI 角色刷 B站 的后台）的**全部能力**搬进 yiling-hub，之后删除 bili-desk。
+> 定位：yiling-hub 是「基于记忆的多角色 AI 后台」，B站是其第三个渠道（QQ 已实现、微信规划中）。
+> 核心价值：**让 B站 AI 角色读/写 yiling-hub 的记忆系统（长期记忆 + 快照 + 会话），不再用 bili-desk
+> 的 human-world.md / seen.md 这些文件级朴素记忆。**
+
+## 1. 现状盘点（bili-desk 有什么）
+
+bili-desk（`D:/AI/bili-desk`）分两层能力：
+
+| 层 | 模块 | 文件 | 搬迁去向 |
+| --- | --- | --- | --- |
+| 通用控制台 | 命令目录（8 组，bili-cli 命令 + 参数 + 写操作标记） | `backend/app/catalog.py` | 迁移为 TS 常量 `catalog.ts` |
+| 通用控制台 | bili CLI 执行器（跨进程调用） | `backend/app/runner.py` + `subproc.py` + `netenv.py` | 迁移为 `runner.ts`（Node `child_process`） |
+| 通用控制台 | 扫码登录 | `main.py /api/login` + `media.py` 二维码 | 迁移为 B站渠道登录接口 |
+| 通用控制台 | 数据目录/备份/换人 | `profile.py` + `paths.py` | 复用 yiling-hub 的备份机制（PostgreSQL dump） |
+| 通用控制台 | 图片代理（封面/本地图/远程图） | `media.py` | 迁移为只读代理接口 |
+| 自动值班 | 值班章程（步骤 + 规矩） | `duty/duty.md` | 迁移为提示词模板 `duty-prompt.ts` |
+| 自动值班 | 谷时调度器 | `agent.py scheduler_loop` | 迁移为记忆 Worker 式调度 |
+| 自动值班 | 判重表（seen.md） | `agent.py seen()` | 迁移为数据库表 `BiliSeenVideo` |
+| 自动值班 | 人格札记（human-world.md） | `agent.py journal_*` | **替换为长期记忆 + 快照** |
+| 自动值班 | 报告（out/<date>.md） | `agent.py report()` | 迁移为数据库表 `BiliRoundReport` |
+| 自动值班 | 人设（AGENTS.md） | `settings.py` | **替换为角色 basePrompt** |
+
+## 2. 核心思路：换大脑，留手
+
+bili-desk 的「大脑」是 headless dsh 会话，读 AGENTS.md（人设）+ duty.md（章程）+ human-world.md
+（札记）+ seen.md（判重），用 bili 命令刷视频。这套「大脑」与 yiling-hub 高度重叠，且 yiling-hub
+更强（版本化、来源追溯、身份隔离、审计）。
+
+**决策：**
+
+- **留** bili-desk 的「手」：bili CLI 执行器 + 命令目录 + 值班章程（这些是 B站 专属的，yiling-hub 没有）。
+- **换** bili-desk 的「大脑/记忆/闹钟」：
+  - AGENTS.md 人设 → 角色 `basePrompt`
+  - human-world.md 札记 → 长期记忆 + 周期快照
+  - seen.md 判重 → `BiliSeenVideo` 表
+  - out/ 报告 → `BiliRoundReport` 表
+  - headless dsh 会话 → yiling-hub 的模型调用（`chat-reply` + 角色模型配置）
+  - APScheduler → yiling-hub 的持久化调度（复用 memory-scheduler / memory-worker 模式）
+
+## 3. 落地结构
+
+`server/utils/channel-adapter/` 下新增 `bili/` 子目录（与 `qq.ts` 并列）：
+
+```
+channel-adapter/
+  qq.ts                      # 已有
+  bili/
+    types.ts                 # BILI_PLATFORM="bili"、消息/事件/读取函数
+    catalog.ts               # 命令目录（从 catalog.py 迁移，8 组命令）
+    runner.ts                # runBili(argv)：跨进程调 bili CLI
+    duty-prompt.ts           # 值班章程提示词模板（从 duty.md 迁移）
+    duty-pipeline.ts         # 主动值班流水线（刷一轮）
+    duty-scheduler.ts        # 谷时窗口调度（复用 MemoryJob 队列模式）
+    serve.ts                 # createBiliMessageHandler：被动回复 → 通用 pipeline
+    configure.ts             # loadBiliConnections（复用 loadQqConnections 模式）
+```
+
+新增脚本（对齐现有 `channel:run`）：
+
+- `yarn bili:run` → `scripts/run-bili-adapter.ts`（长驻：调度 + 被动回复）
+- `yarn bili:scheduler:run` / `--watch`
+- `yarn bili:worker:run` / `--watch`（如果值班任务走独立 Worker）
+
+## 4. 数据模型改动（Prisma）
+
+复用已有 `PlatformConnection`（platform="bili"）与 `CharacterChannelBinding`。B站连接配置
+（数据目录、bili 可执行文件路径、perDay/keywords/zone 等值班设置）写入 `metadata` JSON，
+B站凭证沿用 `%APPDATA%\bili-cli\credential.json`（不随代码走）。
+
+新增两张 B站专属表：
+
+```prisma
+model BiliRoundReport {
+  id          String   @id @default(uuid()) @db.Uuid
+  bindingId   String   @db.Uuid
+  day         String   @db.VarChar(10)
+  roundIndex  Int
+  pickedCount Int      @default(0)
+  content     String   @db.Text
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  binding     CharacterChannelBinding @relation(fields: [bindingId], references: [id], onDelete: Cascade)
+  @@unique([bindingId, day, roundIndex])
+  @@map("bili_round_reports")
+}
+
+model BiliSeenVideo {
+  id        String   @id @default(uuid()) @db.Uuid
+  bindingId String   @db.Uuid
+  bvid      String   @db.VarChar(32)
+  title     String?  @db.VarChar(255)
+  author    String?  @db.VarChar(120)
+  result    String   @db.VarChar(20)
+  reason    String?  @db.Text
+  seenAt    DateTime @default(now()) @db.Timestamptz(6)
+  binding   CharacterChannelBinding @relation(fields: [bindingId], references: [id], onDelete: Cascade)
+  @@unique([bindingId, bvid])
+  @@index([bindingId, seenAt])
+  @@map("bili_seen_videos")
+}
+```
+
+## 5. 两条流水线
+
+### 5.1 主动值班（核心新增）
+
+谷时窗口触发 → 「刷一轮」：
+
+1. 读判重表（`BiliSeenVideo`，7 天内看过的不再挑）。
+2. 找候选：`bili feed recommend` / `bili hot rank` / `bili search video`（≤25 条）。
+3. 看懂候选：`bili video watch --comments --frames`。
+4. 判断：结合角色 `basePrompt` + 检索到的长期记忆/快照，决定是否值得。
+5. 收尾：
+   - 报告写 `BiliRoundReport`（`### BV号` 段落）。
+   - 判重写 `BiliSeenVideo`。
+   - 私信主人：`bili dm send owner --file <tmp>`。
+   - 公开评论（仅开启）：`bili comment post --file <tmp>`。
+   - **人格札记 → 追加为角色长期记忆**（这就是"B站 AI 有记忆"的落点）。
+6. 所有动作持久化 + 审计。
+
+### 5.2 被动回复（复用通用 pipeline）
+
+私信/评论/@ 事件 → `createBiliMessageHandler` → `routeEventToBinding` → 复用
+`handleChannelMessage`（去重 → 绑角色 → 记忆检索 → 模型回复 → 持久化 → 回发）。
+与 QQ 差异仅在事件类型与 `sendReply`（调 `bili dm send` / `bili comment post`）。
+
+## 6. 值班实现方式（关键决策）
+
+- **A. 工具循环（tool-calling）**：提示词注入 bili 命令目录，模型在循环里自主决定调哪个 bili 命令、
+  解析返回、再决定下一步。忠实还原 bili-desk 的「headless dsh 自主刷」，最灵活。
+- **B. 脚本化流程**：把「刷一轮」固定为步骤，只在「判断值不值得」时调模型。更可控、省 token。
+
+**建议：先 B 后 A。** Phase 1 用 B 跑通端到端（风险低、可验收），Phase 2 升级到 A。
+
+## 7. 分阶段计划
+
+| 阶段 | 内容 | 验收 |
+| --- | --- | --- |
+| M1 | `runner.ts` + `catalog.ts`：Node 调 bili CLI（只读命令先行） | `yarn test:bili-runner` |
+| M2 | Prisma 迁移（BiliRoundReport / BiliSeenVideo）+ 连接配置读写 | `yarn test:bili-db` |
+| M3 | 主动值班流水线（脚本化）+ 谷时调度（Scheduler/Worker） | 端到端刷一轮，报告/判重/记忆入库 |
+| M4 | 被动回复（私信/评论 → 通用 pipeline） | `yarn test:bili-channel` |
+| M5 | 工具循环升级（可选）+ 前端「渠道管理 → B站」+ 值班面板 | 全流程可验收 |
+| M6 | 迁移 bili-desk 的 data/（config/seen/out/workspace）→ yiling-hub 数据库；**删除 bili-desk** | 数据不丢，旧项目下线 |
+
+## 8. 迁移数据（删除 bili-desk 前必做）
+
+bili-desk 的 `data/`（config.json / seen.md / out/ / workspace/AGENTS.md / human-world.md）里
+是你已经积累的 AI 人格和历史。删除前需迁移：
+
+- `workspace/AGENTS.md` → 对应角色的 `basePrompt`。
+- `human-world.md` 札记 → 长期记忆条目（标注迁移来源）。
+- `seen.md` 判重表 → `BiliSeenVideo`。
+- `out/*.md` 报告 → `BiliRoundReport`（或归档为文件保留）。
+- `config.json` 值班设置 → 连接的 `metadata`。
+
+迁移脚本放在 `scripts/import-bili-desk.ts`，先 dry-run 预览再执行。
+
+## 9. 风险与约束
+
+- **bili CLI 依赖**：需本机装 bili-cli 与凭证；Node 调 bili 是跨进程调用，Windows 需隐藏控制台窗口
+  （对应 bili-desk 的 `CREATE_NO_WINDOW` / `SW_HIDE`）。
+- **中文路径 / libcurl 证书**：需设 `CURL_CA_BUNDLE`（bili-desk README 已注明）。
+- **合规与风控**：写操作默认 `--dry-run`，评论/私信限流，`risk_control`/`captcha_required` 立即停手。
+- **安全**：B站凭证不随代码走、不入 Git；写接口走服务端鉴权（`requireAdminActor`）。
+- **范围**：一次只做用户要求的一个阶段（CLAUDE.md 第 12 条），不擅自扩大。
+
+## 10. 待确认
+
+- [ ] 值班实现：先脚本化（B）还是直接工具循环（A）？建议先 B。
+- [ ] 迁移 bili-desk 现有 `data/` 里的历史（人设/札记/判重/报告），还是从零开始？
+- [ ] 值班任务是否复用现有 `MemoryJob` 队列，还是新增独立的 `BiliJob` 队列？
