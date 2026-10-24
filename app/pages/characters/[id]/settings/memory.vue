@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ArrowLeft, Calendar, InfoFilled, RefreshLeft, Lock, Select } from "@element-plus/icons-vue";
-import { ElMessage } from "element-plus";
+import { ElMessage, ElMessageBox } from "element-plus";
 import { initialCharacters, type Character } from "~/utils/mock-data";
 
 type MemorySettings = {
@@ -21,6 +21,7 @@ const interval = ref(8);
 const timezone = ref("Asia/Shanghai");
 const anchor = ref("2026-10-21T09:00:00");
 const retention = ref(0);
+const savedRetention = ref(0);
 const autoSnapshot = ref(false);
 const nextSnapshotAt = ref<string | null>(null);
 const effectivePolicy = ref("下一个周期生效");
@@ -75,6 +76,7 @@ async function loadSettings() {
     timezone.value = settings.timezone;
     anchor.value = formatAnchor(settings.anchorAt, settings.timezone);
     retention.value = settings.rawMessageRetentionDays;
+    savedRetention.value = settings.rawMessageRetentionDays;
     autoSnapshot.value = settings.autoSnapshotEnabled;
     nextSnapshotAt.value = settings.nextSnapshotAt;
     effectivePolicy.value = settings.changePolicy === "IMMEDIATE_RECALC" ? "立即重算" : "下一个周期生效";
@@ -89,6 +91,30 @@ async function loadSettings() {
 }
 
 async function saveSettings() {
+  const previousRetention = savedRetention.value;
+  const nextRetention = Number(retention.value);
+  const retentionBecomesMoreDestructive = nextRetention > 0 &&
+    (previousRetention === 0 || nextRetention < previousRetention);
+  if (retentionBecomesMoreDestructive) {
+    const archiveWarning = autoSnapshot.value
+      ? ""
+      : "\n\n注意：当前自动归档处于关闭状态，历史原文可能没有对应的周期快照。";
+    try {
+      await ElMessageBox.confirm(
+        `此设置会允许系统在下一次调度后排队删除超过 ${nextRetention} 天的原始消息。原文删除不可恢复；已有快照、长期记忆和来源追溯记录会保留。${archiveWarning}\n\n确认启用该保留期限吗？`,
+        "确认原始消息自动清理",
+        {
+          confirmButtonText: "确认并保存",
+          cancelButtonText: "返回检查",
+          type: "warning",
+          distinguishCancelAndClose: true,
+        },
+      );
+    } catch {
+      return;
+    }
+  }
+
   saving.value = true;
   try {
     const anchorAt = zonedInputToIso(anchor.value, timezone.value);
