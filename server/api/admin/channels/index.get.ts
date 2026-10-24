@@ -15,6 +15,7 @@ export default defineEventHandler(async (event) => {
       status: true,
       lastEventAt: true,
       createdAt: true,
+      metadata: true,
       characterBindings: {
         where: { status: "ACTIVE" },
         select: { id: true, characterId: true, routingKey: true, character: { select: { name: true } } },
@@ -31,6 +32,7 @@ export default defineEventHandler(async (event) => {
       status: connection.status,
       lastEventAt: connection.lastEventAt?.toISOString() ?? null,
       createdAt: connection.createdAt.toISOString(),
+      metadata: connection.metadata,
       bindings: connection.characterBindings.map((binding) => ({
         id: binding.id,
         characterId: binding.characterId,

@@ -201,6 +201,8 @@ model CharacterChannelBinding {
   character    Character       @relation(fields: [characterId], references: [id], onDelete: Cascade)
   connection   PlatformConnection @relation(fields: [connectionId], references: [id], onDelete: Restrict)
   conversations Conversation[]
+  biliRoundReports BiliRoundReport[]
+  biliSeenVideos   BiliSeenVideo[]
 
   @@unique([characterId, connectionId])
   @@index([status])
@@ -462,4 +464,39 @@ model LoginAttempt {
   @@index([username, createdAt])
   @@index([ipHash, createdAt])
   @@map("login_attempts")
+}
+
+/// B站值班：每一轮"刷B站"的报告。替代 bili-desk 的 out/<date>.md 文件级报告。
+/// 报告正文用 `### BV号` 段落标记"挑中的"视频，宿主按段落数统计本轮挑了几条。
+model BiliRoundReport {
+  id          String   @id @default(uuid()) @db.Uuid
+  bindingId   String   @db.Uuid
+  day         String   @db.VarChar(10)
+  roundIndex  Int      @default(1)
+  pickedCount Int      @default(0)
+  content     String   @db.Text
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  binding     CharacterChannelBinding @relation(fields: [bindingId], references: [id], onDelete: Cascade)
+
+  @@unique([bindingId, day, roundIndex])
+  @@index([bindingId, createdAt])
+  @@map("bili_round_reports")
+}
+
+/// B站值班判重表：替代 bili-desk 的 seen.md，记录看过的每一条视频（挑中/跳过都算）。
+/// 最近 7 天看过的 BV 不再重复挑，用 bvid 唯一约束保证幂等。
+model BiliSeenVideo {
+  id        String   @id @default(uuid()) @db.Uuid
+  bindingId String   @db.Uuid
+  bvid      String   @db.VarChar(32)
+  title     String?  @db.VarChar(255)
+  author    String?  @db.VarChar(120)
+  result    String   @db.VarChar(20)
+  reason    String?  @db.Text
+  seenAt    DateTime @default(now()) @db.Timestamptz(6)
+  binding   CharacterChannelBinding @relation(fields: [bindingId], references: [id], onDelete: Cascade)
+
+  @@unique([bindingId, bvid])
+  @@index([bindingId, seenAt])
+  @@map("bili_seen_videos")
 }

@@ -1,18 +1,45 @@
 <script setup lang="ts">
-import { ChatDotRound, Delete, Link, Plus, Refresh } from "@element-plus/icons-vue";
+import { ChatDotRound, Delete, Link, Plus, Refresh, VideoPlay } from "@element-plus/icons-vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 
 type ChannelBinding = { id: string; characterId: string; characterName: string; routingKey: string | null };
 type ChannelConnection = {
   id: string; platform: string; displayName: string; appId: string | null; status: string;
-  lastEventAt: string | null; createdAt: string; bindings: ChannelBinding[];
+  lastEventAt: string | null; createdAt: string; metadata: Record<string, unknown> | null;
+  bindings: ChannelBinding[];
 };
 
 const connections = ref<ChannelConnection[]>([]);
 const loading = ref(false);
 const saving = ref(false);
 const createVisible = ref(false);
+const createPlatform = ref<"qq" | "qq-onebot" | "bili">("qq");
+
 const createForm = reactive({ appId: "", appSecret: "", displayName: "" });
+const onebotForm = reactive({
+  qqNumber: "",
+  wsUrl: "",
+  httpUrl: "",
+  accessToken: "",
+  httpToken: "",
+  replyOnlyWhenMentioned: false,
+});
+const biliForm = reactive({
+  dataHome: "",
+  biliBin: "",
+  perDay: 5,
+  peakValley: true,
+  noon: true,
+  night: true,
+  keywordsText: "",
+  zone: "all",
+  dmMode: "only",
+  autoComment: false,
+  commentPerRound: 1,
+  mentionName: "",
+});
+
+const ZONES = ["all", "anime", "music", "dance", "game", "knowledge", "tech", "sports", "car", "life", "food", "animal", "kichiku", "fashion", "ent", "film", "original", "rookie"];
 
 const bindVisible = ref(false);
 const bindTarget = ref<ChannelConnection | null>(null);
@@ -36,6 +63,13 @@ const statusMap: Record<string, { label: string; type: "success" | "warning" | "
   DISABLED: { label: "已停用", type: "info" },
 };
 
+function platformLabel(platform: string) {
+  if (platform === "bili") return "B站";
+  if (platform === "qq") return "QQ";
+  if (platform === "qq-onebot") return "QQ 小号";
+  return platform;
+}
+
 function formatDateTime(value: string | null) {
   if (!value) return "从未";
   const date = new Date(value);
@@ -58,20 +92,70 @@ async function loadConnections() {
 
 async function submitCreate() {
   if (saving.value) return;
-  if (!createForm.appId.trim() || !createForm.appSecret.trim()) {
-    ElMessage.warning("请填写 AppID 和 AppSecret。");
-    return;
+  if (createPlatform.value === "qq") {
+    if (!createForm.appId.trim() || !createForm.appSecret.trim()) {
+      ElMessage.warning("请填写 AppID 和 AppSecret。");
+      return;
+    }
+  } else if (createPlatform.value === "qq-onebot") {
+    if (!onebotForm.qqNumber.trim()) {
+      ElMessage.warning("请填写 QQ 号。");
+      return;
+    }
   }
   saving.value = true;
   try {
-    await $fetch("/api/admin/channels", {
-      method: "POST",
-      body: { appId: createForm.appId.trim(), appSecret: createForm.appSecret, displayName: createForm.displayName.trim() },
-    });
-    ElMessage.success("渠道连接已保存，运行 `yarn channel:run` 即可接入。");
+    const body = createPlatform.value === "qq"
+      ? { platform: "qq", appId: createForm.appId.trim(), appSecret: createForm.appSecret, displayName: createForm.displayName.trim() }
+      : createPlatform.value === "qq-onebot"
+        ? {
+            platform: "qq-onebot",
+            qqNumber: onebotForm.qqNumber.trim(),
+            wsUrl: onebotForm.wsUrl.trim(),
+            httpUrl: onebotForm.httpUrl.trim(),
+            accessToken: onebotForm.accessToken,
+            httpToken: onebotForm.httpToken,
+            replyOnlyWhenMentioned: onebotForm.replyOnlyWhenMentioned,
+            displayName: createForm.displayName.trim(),
+          }
+        : {
+            platform: "bili",
+            displayName: createForm.displayName.trim(),
+            dataHome: biliForm.dataHome.trim(),
+            biliBin: biliForm.biliBin.trim(),
+            duty: {
+              perDay: biliForm.perDay,
+              peakValley: biliForm.peakValley,
+              noon: biliForm.noon,
+              night: biliForm.night,
+              keywords: biliForm.keywordsText.split(/[,，\n]/).map((k) => k.trim()).filter(Boolean),
+              zone: biliForm.zone,
+              dmMode: biliForm.dmMode,
+              autoComment: biliForm.autoComment,
+              commentPerRound: biliForm.commentPerRound,
+              mentionName: biliForm.mentionName.trim(),
+            },
+          };
+    await $fetch("/api/admin/channels", { method: "POST", body });
+    ElMessage.success(
+      createPlatform.value === "qq"
+        ? "QQ 渠道已保存，运行 `yarn channel:run` 接入。"
+        : createPlatform.value === "qq-onebot"
+          ? "QQ 小号渠道已保存，运行 `yarn onebot:run` 接入。"
+          : "B站渠道已保存，运行 `yarn bili:run` 接入。",
+    );
     createForm.appId = "";
     createForm.appSecret = "";
     createForm.displayName = "";
+    onebotForm.qqNumber = "";
+    onebotForm.wsUrl = "";
+    onebotForm.httpUrl = "";
+    onebotForm.accessToken = "";
+    onebotForm.httpToken = "";
+    onebotForm.replyOnlyWhenMentioned = false;
+    biliForm.dataHome = "";
+    biliForm.biliBin = "";
+    biliForm.keywordsText = "";
     createVisible.value = false;
     await loadConnections();
   } catch (error) {
@@ -150,7 +234,7 @@ onMounted(loadConnections);
     <PageHeader
       eyebrow="系统管理 / 渠道管理"
       title="渠道接入"
-      description="把角色接到 QQ 官方机器人，群聊 @ 机器人或私聊即可对话。连接保存后运行 `yarn channel:run` 启动适配器。"
+      description="把角色接到 QQ 官方机器人、QQ 小号（OneBot）或 B站。QQ 机器人走群聊 @/私聊对话；QQ 小号走 OneBot 协议挂个人号；B站 走自动值班刷视频 + 私信/评论回复。"
     >
       <template #actions>
         <el-button
@@ -163,7 +247,7 @@ onMounted(loadConnections);
           type="primary"
           @click="createVisible = true"
         >
-          <el-icon><Plus /></el-icon>添加 QQ 机器人
+          <el-icon><Plus /></el-icon>添加渠道
         </el-button>
       </template>
     </PageHeader>
@@ -173,7 +257,7 @@ onMounted(loadConnections);
       style="margin-bottom:20px"
     >
       <el-icon><ChatDotRound /></el-icon>
-      <span>AppSecret 会加密保存在数据库，只有渠道适配器能解密。AppID / AppSecret 在 QQ 开放平台创建机器人后获取。</span>
+      <span>QQ 的 AppSecret 会加密保存在数据库；QQ 小号的 OneBot 连接凭据（WS/HTTP Token）同样加密入库；B站 的登录凭证沿用 bili-cli 本机的 credential.json，不随代码走。连接保存后运行对应适配器脚本。</span>
     </div>
 
     <div
@@ -184,7 +268,7 @@ onMounted(loadConnections);
         v-if="!connections.length"
         class="channel-empty"
       >
-        还没有渠道连接，点击右上角「添加 QQ 机器人」开始。
+        还没有渠道连接，点击右上角「添加渠道」开始。
       </div>
       <article
         v-for="connection in connections"
@@ -192,15 +276,21 @@ onMounted(loadConnections);
         class="surface channel-card"
       >
         <div class="channel-head">
-          <div class="channel-icon">
-            <el-icon><ChatDotRound /></el-icon>
+          <div
+            class="channel-icon"
+            :class="{ 'channel-icon-bili': connection.platform === 'bili' }"
+          >
+            <el-icon>
+              <VideoPlay v-if="connection.platform === 'bili'" />
+              <ChatDotRound v-else />
+            </el-icon>
           </div>
           <div class="character-info">
             <h2 class="character-name">
               {{ connection.displayName }}
             </h2>
             <p class="character-alias">
-              {{ connection.appId }}
+              {{ platformLabel(connection.platform) }} · {{ connection.appId }}
             </p>
           </div>
           <el-tag
@@ -275,10 +365,28 @@ onMounted(loadConnections);
 
     <el-dialog
       v-model="createVisible"
-      title="添加 QQ 机器人"
-      width="440px"
+      title="添加渠道"
+      width="500px"
     >
-      <el-form label-position="top">
+      <el-radio-group
+        v-model="createPlatform"
+        style="margin-bottom:16px"
+      >
+        <el-radio-button value="qq">
+          QQ 机器人
+        </el-radio-button>
+        <el-radio-button value="qq-onebot">
+          QQ 小号
+        </el-radio-button>
+        <el-radio-button value="bili">
+          B站 值班
+        </el-radio-button>
+      </el-radio-group>
+
+      <el-form
+        v-if="createPlatform === 'qq'"
+        label-position="top"
+      >
         <el-form-item label="AppID">
           <el-input
             v-model="createForm.appId"
@@ -298,6 +406,135 @@ onMounted(loadConnections);
             v-model="createForm.displayName"
             placeholder="例如：我的 QQ 机器人"
           />
+        </el-form-item>
+      </el-form>
+
+      <el-form
+        v-else-if="createPlatform === 'qq-onebot'"
+        label-position="top"
+      >
+        <el-form-item label="QQ 号（必填）">
+          <el-input
+            v-model="onebotForm.qqNumber"
+            placeholder="例如：123456789"
+          />
+        </el-form-item>
+        <el-form-item label="OneBot WebSocket 地址（可选）">
+          <el-input
+            v-model="onebotForm.wsUrl"
+            placeholder="默认 ws://127.0.0.1:3001"
+          />
+        </el-form-item>
+        <el-form-item label="OneBot HTTP API 地址（可选）">
+          <el-input
+            v-model="onebotForm.httpUrl"
+            placeholder="默认 http://127.0.0.1:3000"
+          />
+        </el-form-item>
+        <el-form-item label="WS Token（可选）">
+          <el-input
+            v-model="onebotForm.accessToken"
+            type="password"
+            show-password
+            placeholder="SnowLuma 的 WS token"
+          />
+        </el-form-item>
+        <el-form-item label="HTTP Token（可选）">
+          <el-input
+            v-model="onebotForm.httpToken"
+            type="password"
+            show-password
+            placeholder="SnowLuma 的 HTTP token（与 WS token 不同）"
+          />
+        </el-form-item>
+        <el-form-item label="显示名（可选）">
+          <el-input
+            v-model="createForm.displayName"
+            placeholder="例如：我的 QQ 小号"
+          />
+        </el-form-item>
+        <el-form-item>
+          <el-checkbox v-model="onebotForm.replyOnlyWhenMentioned">
+            群聊中仅在被 @ 时才回复
+          </el-checkbox>
+        </el-form-item>
+      </el-form>
+
+      <el-form
+        v-else
+        label-position="top"
+      >
+        <el-form-item label="显示名（可选）">
+          <el-input
+            v-model="createForm.displayName"
+            placeholder="例如：我的 B站 账号"
+          />
+        </el-form-item>
+        <el-form-item label="数据目录（可选，对应 bili-desk 的 DATA_HOME）">
+          <el-input
+            v-model="biliForm.dataHome"
+            placeholder="留空则用 bili-cli 默认目录"
+          />
+        </el-form-item>
+        <el-form-item label="bili 可执行文件路径（可选）">
+          <el-input
+            v-model="biliForm.biliBin"
+            placeholder="留空则从 BILI_BIN 或 PATH 里找"
+          />
+        </el-form-item>
+        <el-form-item label="每天挑几条（0-50）">
+          <el-input-number
+            v-model="biliForm.perDay"
+            :min="0"
+            :max="50"
+          />
+        </el-form-item>
+        <el-form-item label="谷时窗口">
+          <el-checkbox v-model="biliForm.peakValley">
+            只在谷时窗口刷
+          </el-checkbox>
+          <div style="display:flex;gap:16px;margin-top:8px">
+            <el-checkbox v-model="biliForm.noon">
+              中午 12-14 点
+            </el-checkbox>
+            <el-checkbox v-model="biliForm.night">
+              夜间 18-次日 9 点
+            </el-checkbox>
+          </div>
+        </el-form-item>
+        <el-form-item label="关注关键词（每行一个，可留空）">
+          <el-input
+            v-model="biliForm.keywordsText"
+            type="textarea"
+            :rows="2"
+            placeholder="例如：DeepSeek&#10;AI 绘画"
+          />
+        </el-form-item>
+        <el-form-item label="热门分区">
+          <el-select
+            v-model="biliForm.zone"
+            style="width:100%"
+          >
+            <el-option
+              v-for="zone in ZONES"
+              :key="zone"
+              :label="zone === 'all' ? '全站' : zone"
+              :value="zone"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="私信投递">
+          <el-radio-group v-model="biliForm.dmMode">
+            <el-radio-button value="only">
+              只私信
+            </el-radio-button>
+            <el-radio-button value="both">
+              私信 + 评论
+            </el-radio-button>
+            <el-radio-button value="off">
+              都不发
+            </el-radio-button>
+          </el-radio-group>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -362,6 +599,7 @@ onMounted(loadConnections);
 .channel-card{padding:20px}
 .channel-head{display:flex;align-items:flex-start;gap:11px;min-height:52px}
 .channel-icon{display:flex;width:42px;height:42px;flex:0 0 auto;align-items:center;justify-content:center;border-radius:13px;background:#f0eeff;color:#786be4;font-size:19px}
+.channel-icon-bili{background:#fff0f5;color:#d94a76}
 .channel-empty{grid-column:1/-1;padding:40px 0;color:#a3aabb;font-size:12px;text-align:center}
 .binding-title{display:flex;align-items:center;justify-content:space-between;margin:16px 0 6px;color:#8b96ab;font-size:11px;font-weight:700}
 .binding-empty{padding:10px 0;color:#b4bbc8;font-size:11px}

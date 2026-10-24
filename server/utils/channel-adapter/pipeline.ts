@@ -2,8 +2,8 @@ import { generateConversationReply, type ConversationContextMessage } from "../c
 import { resolveChatModelSettings } from "../chat-model-config";
 import { resolveCharacterApiKey } from "../credential-encryption";
 import { rankMemoryCandidates, rankSnapshotCandidates } from "../memory-retrieval";
+import { ensureExternalIdentityScope } from "../identity-scope";
 import { getPrisma } from "../prisma";
-import type { QqMessageEventType } from "./types";
 
 export type ChannelReplySender = (text: string) => Promise<void>;
 
@@ -11,11 +11,16 @@ export type ChannelMessageInput = {
   platform: string;
   characterId: string;
   bindingId: string;
-  eventType: QqMessageEventType;
-  /** Stable key for the QQ conversation: "g:<group_openid>" or "c:<user_openid>". */
+  /** Platform-specific message event type (e.g. QQ group message, bili dm). */
+  eventType: string;
+  /** Stable key for the conversation: "g:<group_openid>", "c:<user_openid>", "dm:<id>", etc. */
   externalConversationId: string;
   externalMessageId: string;
   authorOpenId: string;
+  /** Stable per-platform author id (bili uid / qq openid). Used to upsert ExternalIdentity. */
+  authorPlatformUid?: string;
+  /** Optional author display name for identity metadata. */
+  authorDisplayName?: string;
   content: string;
   sendReply: ChannelReplySender;
 };
@@ -42,6 +47,33 @@ export async function handleChannelMessage(input: ChannelMessageInput): Promise<
     select: { id: true },
   });
   if (duplicate) return { status: "duplicate" };
+
+  // Upsert the external identity for this platform author, so cross-platform identity
+  // management can later verify and link it. Defaults to UNVERIFIED; never auto-merge.
+  const platformUid = (input.authorPlatformUid || input.authorOpenId || "").trim();
+  let externalIdentityId: string | null = null;
+  let identityScopeId: string | null = null;
+  if (platformUid) {
+    const identity = await prisma.externalIdentity.upsert({
+      where: { platform_platformUid: { platform: input.platform, platformUid } },
+      create: {
+        platform: input.platform,
+        platformUid,
+        displayName: input.authorDisplayName?.slice(0, 255) || null,
+        status: "UNVERIFIED",
+      },
+      update: {
+        ...(input.authorDisplayName ? { displayName: input.authorDisplayName.slice(0, 255) } : {}),
+      },
+      select: { id: true },
+    });
+    externalIdentityId = identity.id;
+    // Establish the identity's dedicated memory scope so its private memory can be
+    // isolated per platform (and later linked via admin verification). Best-effort:
+    // a scope that already exists is reused; failure must not block the message.
+    const scope = await ensureExternalIdentityScope(input.characterId, input.platform, platformUid, externalIdentityId).catch(() => null);
+    identityScopeId = scope?.scopeId ?? null;
+  }
 
   const character = await prisma.character.findUnique({
     where: { id: input.characterId },
@@ -93,11 +125,16 @@ export async function handleChannelMessage(input: ChannelMessageInput): Promise<
     ...recentMessages.filter((item) => item.role === "USER").slice(-2).map((item) => item.content),
   ].join("\n");
 
+  // Retrieval scope: character-global (shared persona) plus the author's own identity scope
+  // (per-platform private memory). The identity scope is only this identity's, so it never
+  // leaks another external user's private memory.
+  const readableScopeIds = identityScopeId ? [globalScope.id, identityScopeId] : [globalScope.id];
+
   const memoryCandidates = await prisma.memoryItem.findMany({
-    where: { memoryScopeId: globalScope.id, status: "ACTIVE", deletedAt: null },
+    where: { memoryScopeId: { in: readableScopeIds }, status: "ACTIVE", deletedAt: null },
     orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
     take: 300,
-    select: { id: true, category: true, content: true, confidence: true, updatedAt: true, createdAt: true },
+    select: { id: true, category: true, content: true, confidence: true, updatedAt: true, createdAt: true, memoryScopeId: true },
   });
   const memories = rankMemoryCandidates(retrievalQuery, memoryCandidates, 8).map((memory) => ({
     id: memory.id,
@@ -105,14 +142,14 @@ export async function handleChannelMessage(input: ChannelMessageInput): Promise<
     content: memory.content.slice(0, 1200),
     confidence: memory.confidence,
     relevanceScore: memory.relevanceScore,
-    scope: "character" as const,
+    scope: memory.memoryScopeId === globalScope.id ? ("character" as const) : ("private" as const),
   }));
 
   const snapshotCandidates = await prisma.memorySnapshot.findMany({
-    where: { memoryScopeId: globalScope.id, status: "CURRENT" },
+    where: { memoryScopeId: { in: readableScopeIds }, status: "CURRENT" },
     orderBy: [{ createdAt: "desc" }, { version: "desc" }],
     take: 80,
-    select: { id: true, summary: true, periodStart: true, periodEnd: true, version: true, createdAt: true },
+    select: { id: true, summary: true, periodStart: true, periodEnd: true, version: true, createdAt: true, memoryScopeId: true },
   });
   const snapshots = rankSnapshotCandidates(retrievalQuery, snapshotCandidates, 4).map((snapshot) => ({
     id: snapshot.id,
@@ -121,7 +158,7 @@ export async function handleChannelMessage(input: ChannelMessageInput): Promise<
     periodEnd: snapshot.periodEnd.toISOString(),
     version: snapshot.version,
     relevanceScore: snapshot.relevanceScore,
-    scope: "character" as const,
+    scope: snapshot.memoryScopeId === globalScope.id ? ("character" as const) : ("private" as const),
   }));
 
   let generated;
@@ -151,7 +188,10 @@ export async function handleChannelMessage(input: ChannelMessageInput): Promise<
     const conversation = existingConversation ?? await tx.conversation.create({
       data: {
         characterId: input.characterId,
-        memoryScopeId: globalScope.id,
+        // The conversation belongs to the identity's own scope when an external author is
+        // known, otherwise to the character-global scope. This keeps per-platform private
+        // memory and its conversation together.
+        memoryScopeId: identityScopeId ?? globalScope.id,
         channelBindingId: input.bindingId,
         externalConversationId: input.externalConversationId,
         title,

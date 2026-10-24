@@ -29,6 +29,9 @@
     "worker:run": "tsx scripts/run-memory-worker.ts",
     "worker:watch": "tsx scripts/run-memory-worker.ts --watch",
     "channel:run": "tsx scripts/run-channel-adapter.ts",
+    "onebot:run": "tsx scripts/run-onebot-adapter.ts",
+    "bili:run": "tsx scripts/run-bili-adapter.ts",
+    "bili:import": "tsx scripts/import-bili-desk.ts",
     "test:memory-retrieval": "tsx scripts/test-memory-retrieval.ts",
     "test:chat-model-config": "tsx scripts/test-chat-model-config.ts",
     "test:chat-reply": "tsx scripts/test-chat-reply.ts",
@@ -37,6 +40,11 @@
     "test:auth": "tsx scripts/test-auth.ts",
     "test:auth-db": "tsx scripts/test-auth-db.ts",
     "test:channel": "tsx scripts/test-qq-adapter.ts",
+    "test:onebot": "tsx scripts/test-onebot-adapter.ts",
+    "test:bili-runner": "tsx scripts/test-bili-runner.ts",
+    "test:bili-db": "tsx scripts/test-bili-db.ts",
+    "test:bili-duty": "tsx scripts/test-bili-duty.ts",
+    "test:identity": "tsx scripts/test-identity.ts",
     "verify:local": "yarn run db:validate && yarn run db:generate && yarn nuxt prepare && yarn run typecheck && yarn run test:scheduler && yarn run test:scheduler-db && yarn run test:memory-ai && yarn run test:memory-retrieval && yarn run test:chat-model-config && yarn run test:chat-reply && yarn run test:chat-private-memory && yarn run test:chat-private-memory-db && yarn run test:auth && yarn run test:auth-db && yarn run lint && yarn run build"
   },
   "dependencies": {

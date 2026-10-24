@@ -30,6 +30,9 @@ Thumbs.db
 !.vscode/extensions.json
 .idea/
 
+# WorkBuddy workspace memory (agent-local notes, not project source)
+.workbuddy/
+
 # Prisma local artifacts (keep schema, generated migration SQL, and migrations tracked)
 prisma/*.db
 prisma/*.db-journal
