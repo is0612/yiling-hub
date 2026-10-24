@@ -125,7 +125,7 @@ yarn run dev
 yarn verify:local
 ```
 
-该命令会校验 Prisma Schema、重新生成 Prisma Client、准备 Nuxt 类型信息，并依次运行 TypeScript 检查、周期调度单元测试、PostgreSQL 调度与清理集成测试、AI 来源校验、记忆检索测试、角色模型参数测试、ESLint 和生产构建。
+该命令会校验 Prisma Schema、重新生成 Prisma Client、准备 Nuxt 类型信息，并依次运行 TypeScript 检查、周期调度单元测试、PostgreSQL 调度与清理集成测试、AI 来源校验、记忆检索测试、角色模型参数测试、聊天提示词凭据隔离测试、ESLint 和生产构建。
 
 运行前请先启动 PostgreSQL，并确认 `.env` 中的 `DATABASE_URL` 指向本机开发/测试数据库，且已应用仓库迁移。数据库集成测试会创建并清理临时数据；不要将该命令指向包含重要数据的数据库。该命令不会自动重置数据库，也不会启动 Nuxt 服务或模拟模型服务。
 
