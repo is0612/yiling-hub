@@ -38,8 +38,8 @@ type SnapshotRecord = {
   createdAt: Date;
   sources: Array<{
     sourceType: string;
-    sourceRef: string;
-    message: {
+    sourceRef?: string;
+    message?: {
       id: string;
       role: string;
       eventType: string;
