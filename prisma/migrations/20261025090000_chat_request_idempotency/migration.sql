@@ -8,7 +8,7 @@ CREATE TABLE "chat_requests" (
   "response" JSONB,
   "lastError" VARCHAR(700),
   "createdAt" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  "updatedAt" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "updatedAt" TIMESTAMPTZ(6) NOT NULL,
   CONSTRAINT "chat_requests_pkey" PRIMARY KEY ("id")
 );
 
