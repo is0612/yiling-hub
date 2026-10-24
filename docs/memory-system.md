@@ -91,7 +91,7 @@
 
 - 自动 AI 快照可以提交 `REGENERATE_SNAPSHOT` 任务；Worker 在同一 `snapshotKey` 下创建递增版本、将旧的当前版本标记为 `SUPERSEDED`，并保存审计日志。
 - 为避免历史周期重放覆盖当前状态，重新提炼提出的长期记忆变化会写入新快照供审核，但不会自动修改当前 `MemoryItem`。
-- 后台任务可取消 `QUEUED`/`RETRY_WAIT` 状态的任务；支持的快照任务可从 `FAILED`、`RETRY_WAIT` 或 `CANCELLED` 手动重新入队。`RUNNING` 任务不支持强制取消。
+- 后台任务可取消 `QUEUED`/`RETRY_WAIT` 状态的任务；周期快照生成、快照重新提炼和原始消息清理任务可从 `FAILED`、`RETRY_WAIT` 或 `CANCELLED` 手动重新入队。`RUNNING` 任务不支持强制取消。
 
 ## 8.2 原始消息保留期限与安全清理
 
