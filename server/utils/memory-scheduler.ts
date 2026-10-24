@@ -116,8 +116,13 @@ export async function enqueueDueMemorySnapshots(
     // Queue retention cleanup independently from automatic snapshot generation.
     // Do not queue a cleanup while an older snapshot period is still pending.
     const retentionDays = setting.rawMessageRetentionDays;
-    if (retentionDays && retentionDays > 0) {
-      const cutoff = addDays(now, -retentionDays);
+    const cutoff = retentionDays && retentionDays > 0 ? addDays(now, -retentionDays) : null;
+    const hasUnqueuedExpiredSnapshotPeriods = Boolean(
+      setting.autoSnapshotEnabled &&
+      cutoff &&
+      (setting.nextSnapshotAt ?? addDays(setting.anchorAt, setting.snapshotIntervalDays)).getTime() < cutoff.getTime()
+    );
+    if (cutoff && !hasUnqueuedExpiredSnapshotPeriods) {
       for (const scope of setting.character.memoryScopes) {
         const pendingSnapshot = await prisma.memoryJob.findFirst({
           where: {
