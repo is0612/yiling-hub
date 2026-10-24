@@ -62,40 +62,77 @@ export default defineEventHandler(async (event) => {
     throw createError({ statusCode: 400, statusMessage: "周期启用锚点无效。" });
   }
 
-  let nextSnapshotAt: Date | null = null;
-  if (body.autoSnapshotEnabled) {
-    // Preserve the first cycle boundary. The scheduler uses it to backfill
-    // missed cycles after downtime instead of silently jumping to the future.
-    nextSnapshotAt = addDays(rawAnchor, interval);
-  }
+  const settings = await prisma.$transaction(async (tx) => {
+    // Ensure a row exists, then lock it before deciding whether an interval change
+    // should be immediate or deferred. This serializes settings changes with the
+    // scheduler's compare-and-set cursor advance.
+    await tx.characterMemorySetting.upsert({
+      where: { characterId },
+      create: {
+        characterId,
+        snapshotIntervalDays: 8,
+        timezone: body.timezone,
+        anchorAt: rawAnchor,
+        nextSnapshotAt: null,
+        autoSnapshotEnabled: false,
+        rawMessageRetentionDays: null,
+        rawMessageCleanupEnabled: false,
+      },
+      update: {},
+    });
+    await tx.$queryRaw<Array<{ characterId: string }>>`SELECT "characterId" FROM "character_memory_settings" WHERE "characterId" = ${characterId}::uuid FOR UPDATE`;
+    const existing = await tx.characterMemorySetting.findUniqueOrThrow({ where: { characterId } });
 
-  const settings = await prisma.characterMemorySetting.upsert({
-    where: { characterId },
-    create: {
-      characterId,
-      snapshotIntervalDays: interval,
-      timezone: body.timezone,
-      anchorAt: rawAnchor,
-      nextSnapshotAt,
-      autoSnapshotEnabled: body.autoSnapshotEnabled,
-      changePolicy,
-      rawMessageRetentionDays: rawRetention === 0 ? null : rawRetention,
-      rawMessageCleanupEnabled,
-    },
-    update: {
-      snapshotIntervalDays: interval,
-      timezone: body.timezone,
-      anchorAt: rawAnchor,
-      nextSnapshotAt,
-      autoSnapshotEnabled: body.autoSnapshotEnabled,
-      changePolicy,
-      rawMessageRetentionDays: rawRetention === 0 ? null : rawRetention,
-      rawMessageCleanupEnabled,
-    },
+    // The UI exposes second-level precision. Ignore sub-second differences from
+    // formatting a saved timestamp, but treat an actual anchor or timezone edit
+    // as an explicit rebase of the cycle schedule.
+    const anchorChanged =
+      existing.timezone !== body.timezone ||
+      Math.floor(existing.anchorAt.getTime() / 1000) !== Math.floor(rawAnchor.getTime() / 1000);
+    const savedAnchorAt = anchorChanged ? rawAnchor : existing.anchorAt;
+
+    let activeIntervalDays: number;
+    let pendingIntervalDays: number | null = null;
+    let nextSnapshotAt: Date | null;
+
+    if (!body.autoSnapshotEnabled) {
+      activeIntervalDays = interval;
+      nextSnapshotAt = null;
+    } else if (
+      !existing.autoSnapshotEnabled ||
+      anchorChanged ||
+      changePolicy === "IMMEDIATE_RECALC"
+    ) {
+      activeIntervalDays = interval;
+      nextSnapshotAt = addDays(savedAnchorAt, interval);
+    } else {
+      // NEXT_CYCLE keeps the in-flight period's original interval and boundary.
+      // Choosing the active interval again cancels an existing pending change.
+      activeIntervalDays = existing.snapshotIntervalDays;
+      pendingIntervalDays = interval === activeIntervalDays ? null : interval;
+      nextSnapshotAt = existing.nextSnapshotAt ?? addDays(existing.anchorAt, existing.snapshotIntervalDays);
+    }
+
+    return tx.characterMemorySetting.update({
+      where: { characterId },
+      data: {
+        snapshotIntervalDays: activeIntervalDays,
+        pendingSnapshotIntervalDays: pendingIntervalDays,
+        timezone: body.timezone,
+        anchorAt: savedAnchorAt,
+        nextSnapshotAt,
+        autoSnapshotEnabled: body.autoSnapshotEnabled,
+        changePolicy,
+        rawMessageRetentionDays: rawRetention === 0 ? null : rawRetention,
+        rawMessageCleanupEnabled,
+      },
+    });
   });
 
   return {
-    snapshotIntervalDays: settings.snapshotIntervalDays,
+    snapshotIntervalDays: settings.pendingSnapshotIntervalDays ?? settings.snapshotIntervalDays,
+    activeSnapshotIntervalDays: settings.snapshotIntervalDays,
+    pendingSnapshotIntervalDays: settings.pendingSnapshotIntervalDays,
     timezone: settings.timezone,
     anchorAt: settings.anchorAt.toISOString(),
     rawMessageRetentionDays: settings.rawMessageRetentionDays ?? 0,
