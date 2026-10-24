@@ -22,6 +22,7 @@ const timezone = ref("Asia/Shanghai");
 const anchor = ref("2026-10-21T09:00:00");
 const retention = ref(90);
 const autoSnapshot = ref(false);
+const nextSnapshotAt = ref<string | null>(null);
 const effectivePolicy = ref("下一个周期生效");
 const loading = ref(false);
 const saving = ref(false);
@@ -75,6 +76,7 @@ async function loadSettings() {
     anchor.value = formatAnchor(settings.anchorAt, settings.timezone);
     retention.value = settings.rawMessageRetentionDays;
     autoSnapshot.value = settings.autoSnapshotEnabled;
+    nextSnapshotAt.value = settings.nextSnapshotAt;
     effectivePolicy.value = settings.changePolicy === "IMMEDIATE_RECALC" ? "立即重算" : "下一个周期生效";
   } catch (error) {
     const message = error && typeof error === "object" && "statusMessage" in error
@@ -102,6 +104,8 @@ async function saveSettings() {
       },
     });
     interval.value = saved.snapshotIntervalDays;
+    nextSnapshotAt.value = saved.nextSnapshotAt;
+    autoSnapshot.value = saved.autoSnapshotEnabled;
     anchor.value = formatAnchor(saved.anchorAt, saved.timezone);
     effectivePolicy.value = saved.changePolicy === "IMMEDIATE_RECALC" ? "立即重算" : "下一个周期生效";
     ElMessage.success("记忆周期设置已保存到本地数据库。");
@@ -122,9 +126,38 @@ function resetSettings() {
   anchor.value = formatAnchor(now.toISOString(), timezone.value);
   retention.value = 90;
   autoSnapshot.value = false;
+  nextSnapshotAt.value = null;
   effectivePolicy.value = "下一个周期生效";
   ElMessage.info("已将表单恢复为默认值；点击“保存设置”后才会写入数据库。");
 }
+
+const nextSnapshotPreview = computed(() => {
+  if (!autoSnapshot.value) return "未启用";
+  try {
+    const firstBoundary = zonedInputToIso(anchor.value, timezone.value);
+    const next = new Date(new Date(firstBoundary).getTime() + safeInterval.value * 24 * 60 * 60 * 1000);
+    return new Intl.DateTimeFormat("zh-CN", {
+      timeZone: timezone.value,
+      year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit",
+    }).format(next);
+  } catch {
+    return "保存后计算";
+  }
+});
+
+const savedNextSnapshotLabel = computed(() => {
+  if (!nextSnapshotAt.value) return "尚未安排";
+  try {
+    return new Intl.DateTimeFormat("zh-CN", {
+      timeZone: timezone.value,
+      year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit",
+    }).format(new Date(nextSnapshotAt.value));
+  } catch {
+    return nextSnapshotAt.value;
+  }
+});
 
 onMounted(() => void loadSettings());
 watch(id, () => void loadSettings());
@@ -132,7 +165,7 @@ watch(id, () => void loadSettings());
 
 <template>
   <div class="page-wrap">
-    <PageHeader :eyebrow="'角色管理 / ' + character.name + ' / 记忆设置'" title="记忆周期设置" description="控制角色多久归档一次阶段记忆。设置会保存到 PostgreSQL；真正的定时执行器将在后续 Worker 阶段接入。">
+    <PageHeader :eyebrow="'角色管理 / ' + character.name + ' / 记忆设置'" title="记忆周期设置" description="控制角色多久归档一次阶段记忆。设置保存到 PostgreSQL，由 Scheduler 生成到期任务，再由 Worker 调用角色模型完成 AI 提炼。">
       <template #actions><el-button @click="navigateTo('/characters/' + character.id)"><el-icon><ArrowLeft /></el-icon>返回驾驶舱</el-button></template>
     </PageHeader>
 
@@ -174,11 +207,13 @@ watch(id, () => void loadSettings());
           <div class="metric-row"><span>归档间隔</span><span class="metric-value">{{ safeInterval }} 天</span></div>
           <div class="metric-row"><span>执行状态</span><span class="pill" :class="autoSnapshot ? 'pill-green' : 'pill-gray'">{{ autoSnapshot ? '自动归档开启' : '自动归档已暂停' }}</span></div>
           <div class="metric-row"><span>生效策略</span><span class="metric-value">{{ effectivePolicy }}</span></div>
-          <div class="info-callout" style="margin-top:15px"><el-icon><InfoFilled /></el-icon><span>设置已持久化，但该时间目前只是计划预览；后台调度、任务补处理将在后续 Worker 阶段实现。</span></div>
+          <div class="metric-row"><span>下次归档（按当前表单）</span><span class="metric-value">{{ nextSnapshotPreview }}</span></div>
+          <div class="metric-row"><span>数据库中的计划时间</span><span class="metric-value">{{ savedNextSnapshotLabel }}</span></div>
+          <div class="info-callout" style="margin-top:15px"><el-icon><InfoFilled /></el-icon><span>计划时间以角色时区计算。要自动执行，请保持 Scheduler 与 Worker 进程运行；如果没有配置角色模型 API，任务会保留在队列中，不会消耗掉。</span></div>
         </section>
       </aside>
     </div>
-    <p class="footer-note">记忆周期、时区、锚点与原始消息保留期限已写入数据库；自动执行与消息清理仍未接入 Worker。</p>
+    <p class="footer-note">记忆周期、时区、锚点与原始消息保留期限已写入数据库。周期快照由 Scheduler 排队、Worker 执行；原始消息自动清理尚未接入。</p>
   </div>
 </template>
 
