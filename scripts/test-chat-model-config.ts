@@ -6,7 +6,7 @@ import {
   resolveChatModelSettings,
   validateChatApiBaseUrl,
 } from "../server/utils/chat-model-config";
-import { decryptApiKeyWithKey, encryptApiKeyWithKey } from "../server/utils/credential-encryption";
+import { decryptApiKeyWithKey, encryptApiKeyWithKey, resolveCharacterApiKey } from "../server/utils/credential-encryption";
 
 const defaults = resolveChatModelSettings({}, "ci-default-model");
 assert.equal(defaults.model, "ci-default-model");
@@ -74,4 +74,26 @@ assert.match(encryptedKey, /^v1\./);
 assert.equal(decryptApiKeyWithKey(encryptedKey, encryptionKey), plaintextKey);
 assert.throws(() => decryptApiKeyWithKey(encryptedKey, randomBytes(32)), /Unsupported state|authenticate|unable to authenticate/i);
 
-console.log("Chat API settings tests passed: browser config validation, URL safety, encryption round-trip, per-character defaults, and malformed input boundaries.");
+const previousApiKey = process.env.LLM_API_KEY;
+const previousBaseUrl = process.env.LLM_BASE_URL;
+try {
+  process.env.LLM_API_KEY = "global-fallback-test-key";
+  process.env.LLM_BASE_URL = "https://api.example.com/v1/";
+  assert.equal(
+    await resolveCharacterApiKey({}, "https://api.example.com/v1"),
+    "global-fallback-test-key",
+    "The global key should be usable with the configured global provider URL.",
+  );
+  assert.equal(
+    await resolveCharacterApiKey({}, "https://other-provider.example/v1"),
+    "",
+    "The global key must never be sent to a character-specific provider URL.",
+  );
+} finally {
+  if (previousApiKey === undefined) delete process.env.LLM_API_KEY;
+  else process.env.LLM_API_KEY = previousApiKey;
+  if (previousBaseUrl === undefined) delete process.env.LLM_BASE_URL;
+  else process.env.LLM_BASE_URL = previousBaseUrl;
+}
+
+console.log("Chat API settings tests passed: URL safety, encryption round-trip, per-character key isolation, defaults, and malformed input boundaries.");
