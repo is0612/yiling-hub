@@ -213,7 +213,7 @@ export default defineEventHandler(async (event) => {
   const assistantAt = new Date(now.getTime() + 1);
   const proposedTitle = message.slice(0, 80);
   const title = existingConversation?.title || proposedTitle;
-  const saved = await prisma.$transaction(async (tx) => {
+  const response = await prisma.$transaction(async (tx) => {
     const conversation = existingConversation ?? await tx.conversation.create({
       data: { characterId, memoryScopeId, title, status: "ACTIVE", metadata: { createdFrom: "yiling-chat-ui" } },
       select: { id: true, title: true },
@@ -248,19 +248,27 @@ export default defineEventHandler(async (event) => {
       select: { id: true, role: true, content: true, occurredAt: true },
     });
     await tx.conversation.update({ where: { id: conversation.id }, data: { lastMessageAt: assistantAt } });
-    return { conversationId: conversation.id, title: conversation.title || title, userMessage, assistantMessage };
-  });
 
-  const response = {
-    ...saved,
-    userMessage: { ...saved.userMessage, sources: { memories: [], snapshots: [] } },
-    assistantMessage: { ...saved.assistantMessage, sources: usedSources },
-    model: { name: generated.model, provider: generated.provider, promptTemplateVersion: generated.promptTemplateVersion },
-    retrieval: { memoriesAvailable: memories.length, snapshotsAvailable: snapshots.length, privateScopeActive },
-  };
-  await prisma.chatRequest.update({
-    where: { id: chatRequest.id },
-    data: { status: "COMPLETED", conversationId: saved.conversationId, response, lastError: null },
+    const saved = {
+      conversationId: conversation.id,
+      title: conversation.title || title,
+      userMessage,
+      assistantMessage,
+    };
+    const result = {
+      ...saved,
+      userMessage: { ...saved.userMessage, sources: { memories: [], snapshots: [] } },
+      assistantMessage: { ...saved.assistantMessage, sources: usedSources },
+      model: { name: generated.model, provider: generated.provider, promptTemplateVersion: generated.promptTemplateVersion },
+      retrieval: { memoriesAvailable: memories.length, snapshotsAvailable: snapshots.length, privateScopeActive },
+    };
+    // Commit messages and the replayable response atomically. A database failure must not
+    // leave saved messages behind while the request is marked FAILED and retried.
+    await tx.chatRequest.update({
+      where: { id: chatRequest.id },
+      data: { status: "COMPLETED", conversationId: saved.conversationId, response: result, lastError: null },
+    });
+    return result;
   });
   setResponseStatus(event, 201);
   return response;
