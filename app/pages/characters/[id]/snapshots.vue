@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ArrowLeft, Calendar, Files, Refresh, Search, MagicStick } from "@element-plus/icons-vue";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { initialCharacters, type Character, type Snapshot } from "~/utils/mock-data";
+import { initialCharacters, type Character, type Snapshot, type SnapshotSourceMessage } from "~/utils/mock-data";
 
 const route = useRoute();
 const id = computed(() => String(route.params.id || ""));
@@ -54,7 +54,28 @@ function errorMessage(error: unknown) {
     : "操作失败，请检查数据库连接。";
 }
 function evidenceLabel(ids: string[]) {
-  return ids.map((sourceId) => sourceId.slice(0, 8)).join("、");
+  return ids.map((sourceId) => {
+    const source = detail.value?.sourceMessages?.find((message) => message.id === sourceId);
+    return source ? source.id.slice(0, 8) + "（可在下方来源消息中查看）" : sourceId.slice(0, 8);
+  }).join("、");
+}
+function sourceRoleLabel(source: SnapshotSourceMessage) {
+  if (source.eventType !== "message") return "平台事件";
+  return source.role === "USER" ? "用户" : source.role === "ASSISTANT" ? "角色" : source.role === "TOOL" ? "工具" : "系统";
+}
+function sourceTime(source: SnapshotSourceMessage) {
+  const date = new Date(source.occurredAt);
+  return Number.isFinite(date.getTime())
+    ? new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium", timeStyle: "short" }).format(date)
+    : source.occurredAt;
+}
+function showSourceMessage(source: SnapshotSourceMessage) {
+  const title = sourceRoleLabel(source) + " · " + sourceTime(source);
+  return ElMessageBox.alert(
+    source.content,
+    title,
+    { confirmButtonText: "关闭", type: "info", customClass: "source-message-dialog" },
+  );
 }
 function memoryChangeLabel(action: string, result: string) {
   const actionLabel = action === "ADD" ? "新增" : action === "UPDATE" ? "更新" : action === "INVALIDATE" ? "标记失效" : action;
@@ -193,6 +214,28 @@ watch(id, () => {
           <div class="metric-row"><span>生成时间</span><span class="metric-value">{{ detail.date }}</span></div>
           <div class="metric-row"><span>来源消息</span><span class="metric-value">{{ detail.messages }} 条</span></div>
           <div class="metric-row"><span>提炼事件</span><span class="metric-value">{{ detail.events }} 项</span></div>
+          <section class="source-section">
+            <div class="analysis-heading">
+              <div>
+                <div class="eyebrow">SOURCE TRACEABILITY</div>
+                <h3 class="source-title">来源消息与原文</h3>
+              </div>
+              <span class="pill pill-blue">{{ detail.sourceMessages?.length || 0 }} 条</span>
+            </div>
+            <p class="source-hint">以下是实际关联到这份快照的原始消息。AI 分析条目中的来源消息编号可与这里的记录对应。</p>
+            <div v-if="detail.sourceMessages?.length" class="source-list">
+              <article v-for="source in detail.sourceMessages" :key="source.id" class="source-item">
+                <div class="source-item-top">
+                  <span class="pill" :class="source.role === 'USER' ? 'pill-green' : source.role === 'ASSISTANT' ? 'pill-blue' : 'pill-gray'">{{ sourceRoleLabel(source) }}</span>
+                  <span class="source-time">{{ sourceTime(source) }}</span>
+                </div>
+                <div class="source-conversation">{{ source.conversationTitle || "未命名会话" }} · #{{ source.id.slice(0, 8) }}</div>
+                <p class="source-preview">{{ source.content }}</p>
+                <el-button link type="primary" size="small" @click="showSourceMessage(source)">查看完整原文</el-button>
+              </article>
+            </div>
+            <div v-else class="empty-state source-empty">这份快照没有关联到可查看的原始消息。可能是旧版本、纯记忆归档，或来源消息已被清理。</div>
+          </section>
           <div v-if="detail.analysis" class="analysis-sections">
             <div class="analysis-heading">
               <div class="eyebrow">AI 提炼结果</div>
@@ -266,5 +309,15 @@ watch(id, () => {
 .analysis-item{padding:10px 11px;margin-top:7px;background:#f8f9fd;border:1px solid #edf0f7;border-radius:9px}
 .analysis-item strong{color:#566184;font-size:11px}.analysis-item p{margin:5px 0 0;color:#68758e;font-size:12px;line-height:1.8;white-space:pre-wrap;overflow-wrap:anywhere}
 .analysis-item small{display:block;margin-top:7px;color:#9ba4b6;font-size:10px}.analysis-block ul{padding-left:18px;color:#68758e;font-size:12px;line-height:1.9}
+.source-section{margin-top:22px;padding-top:18px;border-top:1px solid #edf0f6}
+.source-title{margin:5px 0 0;color:#47526d;font-size:13px;font-weight:750}
+.source-hint{margin:10px 0;color:#8792a8;font-size:11px;line-height:1.8}
+.source-list{display:flex;flex-direction:column;gap:9px}
+.source-item{padding:11px;border:1px solid #e8edf6;border-radius:10px;background:#fbfcff}
+.source-item-top{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.source-time,.source-conversation{color:#929db2;font-size:10px}
+.source-conversation{margin-top:8px}
+.source-preview{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;margin:7px 0;color:#5f6c85;font-size:11px;line-height:1.8;white-space:pre-wrap;overflow-wrap:anywhere}
+.source-empty{margin-top:10px}
 @media(max-width:850px){.snapshot-grid{grid-template-columns:1fr}.stat-grid[style]{grid-template-columns:1fr!important}}
 </style>

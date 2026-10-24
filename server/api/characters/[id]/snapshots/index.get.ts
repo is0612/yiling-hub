@@ -18,7 +18,24 @@ export default defineEventHandler(async (event) => {
         select: {
           snapshots: {
             orderBy: [{ createdAt: "desc" }, { version: "desc" }],
-            include: { sources: { select: { sourceType: true } } },
+            include: {
+              sources: {
+                select: {
+                  sourceType: true,
+                  sourceRef: true,
+                  message: {
+                    select: {
+                      id: true,
+                      role: true,
+                      eventType: true,
+                      content: true,
+                      occurredAt: true,
+                      conversation: { select: { title: true } },
+                    },
+                  },
+                },
+              },
+            },
           },
         },
       },
