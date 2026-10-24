@@ -198,10 +198,18 @@ export async function processNextMemoryJob(
         if (claim.count !== 1) {
           throw new Error("清理任务租约已失效；拒绝删除原始消息。");
         }
-        const latestPolicy = await tx.characterMemorySetting.findUnique({
-          where: { characterId: scope.characterId },
-          select: { rawMessageCleanupEnabled: true, rawMessageRetentionDays: true },
-        });
+        // Lock the current policy row so a concurrent settings change cannot
+        // revoke authorization between this check and the irreversible delete.
+        const policyRows = await tx.$queryRaw<Array<{
+          rawMessageCleanupEnabled: boolean;
+          rawMessageRetentionDays: number | null;
+        }>>`
+          SELECT "rawMessageCleanupEnabled", "rawMessageRetentionDays"
+          FROM "character_memory_settings"
+          WHERE "characterId" = ${scope.characterId}::uuid
+          FOR UPDATE
+        `;
+        const latestPolicy = policyRows[0] ?? null;
         const latestRetentionDays = latestPolicy?.rawMessageRetentionDays;
         const latestCutoff = latestPolicy?.rawMessageCleanupEnabled &&
           latestRetentionDays && latestRetentionDays > 0
