@@ -72,6 +72,13 @@ Worker 配置模型后会调用 LLM 对周期对话进行结构化总结，验�
 - 验证命令：`yarn test:channel`（端到端：事件接入、凭据解密、绑定路由、记忆检索、模型回复、持久化、回发与幂等去重）。
 - 已知限制：v1 只检索角色全局记忆，尚未按外部用户隔离私人记忆；断线重连与主动消息仍需后续完善。
 
+### 部署、备份与健康检查（Phase 6）
+
+- 备份：双击 `scripts/backup-db.bat`（或 `.\scripts\backup-db.ps1`），在 `backups/` 生成带时间戳的 `.dump`；脚本会自动定位 `docker.exe`，不依赖 PATH。
+- 恢复：把 `.dump` 拖到 `scripts/restore-db.bat` 上（或 `.\scripts\restore-db.ps1 -BackupFile ... -ConfirmOverwrite`）。备份/恢复已做过真实数据演练（恢复到临时库并逐表核对一致）。
+- 健康检查：`GET /api/health`（存活，无需登录）、`GET /api/admin/health`（仅管理员：数据库连通性 + 任务队列计数）。
+- HTTPS、反向代理、监控告警、日志轮转、数据删除策略与扩展说明见 `docs/deployment.md`。
+
 ## 从哪里开始
 
 - [产品与技术开发方案 V1.2](docs/product-and-technical-plan.md)

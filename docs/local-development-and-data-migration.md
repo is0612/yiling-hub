@@ -2,7 +2,7 @@
 
 本文说明如何在本地开发 Yiling Hub、备份 PostgreSQL 数据，并将项目迁移到新电脑。脚本面向 Windows PowerShell；其他系统可按同样原则实现对应脚本。
 
-> 当前实现状态：Nuxt 管理后台已经接入 PostgreSQL，角色 CRUD、记忆设置、会话录入/对话、快照版本、AI 记忆提炼、长期记忆、持久化任务队列、Scheduler/Worker、原始消息保留清理与审计、管理员登录与服务端会话、多用户（管理员 + 邮箱注册用户）与账号管理均已有实现和自动化验收。真实外部聊天渠道适配器、生产部署安全与 Windows 备份/恢复的真实数据演练仍待完成。
+> 当前实现状态：Nuxt 管理后台已经接入 PostgreSQL，角色 CRUD、记忆设置、会话录入/对话、快照版本、AI 记忆提炼、长期记忆、持久化任务队列、Scheduler/Worker、原始消息保留清理与审计、管理员登录与服务端会话、多用户（管理员 + 邮箱注册用户）与账号管理、QQ 官方机器人渠道适配器、以及 Windows 备份/恢复的**真实数据演练**均已有实现和验收。生产部署安全（HTTPS、反向代理、监控告警）见 `docs/deployment.md`，仍需在真实服务器上演练。
 
 ## 1. 文件职责
 
@@ -62,13 +62,15 @@ PostgreSQL 的运行数据存放在 Docker named volume `yiling_postgres_data`�
 
 ## 4. 备份数据库
 
-从仓库根目录运行：
+从仓库根目录运行（或直接双击 `scripts\backup-db.bat`）：
 
 ```powershell
 .\scripts\backup-db.ps1
 ```
 
 脚本会启动数据库容器（如果尚未运行），并在 `backups/` 生成带时间戳的 `.dump` 文件。
+
+> 注意：脚本会自动定位 `docker.exe`（先查 PATH，再回退到 Docker Desktop 的默认安装路径），因此即使 `docker` 不在 PATH 中也能运行。2026-10-25 已在本机完成一次真实演练：备份生成、恢复到临时库、并逐表核对 18 张表的行数与源库完全一致后清理。
 
 备份文件可能包含私人聊天与角色记忆，必须视为敏感数据：
 - 不要提交到 Git。
@@ -81,7 +83,7 @@ PostgreSQL 的运行数据存放在 Docker named volume `yiling_postgres_data`�
 
 > 警告：恢复脚本会清理目标数据库中的既有对象并恢复备份内容。先确认目标数据库正确，并确保已备份目标数据库中需要保留的数据。
 
-运行：
+运行（或把 `.dump` 文件拖到 `scripts\restore-db.bat` 上）：
 
 ```powershell
 .\scripts\restore-db.ps1 -BackupFile ".\backups\yiling-hub-YYYYMMDD-HHMMSS.dump" -ConfirmOverwrite
