@@ -80,6 +80,7 @@ export async function processNextMemoryJob(
     take: 20,
     select: { id: true, status: true, memoryScopeId: true, periodEnd: true },
   });
+  let deferredCleanupResult: MemoryWorkerResult | null = null;
   for (const candidate of cleanupCandidates) {
     if (!candidate.periodEnd) {
       await prisma.memoryJob.updateMany({
@@ -108,7 +109,8 @@ export async function processNextMemoryJob(
         where: { id: candidate.id, status: "RUNNING", lockedBy: workerId },
         data: { status: "RETRY_WAIT", runAt: new Date(now.getTime() + 60_000), lockedAt: null, lockedBy: null, lastError: "仍有更早的快照任务待处理，清理已延后。" },
       });
-      return { processed: true, jobId: candidate.id, status: "RETRY_WAIT", message: "仍有过期区间的快照任务待处理，已延后清理。" };
+      deferredCleanupResult ??= { processed: true, jobId: candidate.id, status: "RETRY_WAIT", message: "仍有过期区间的快照任务待处理，已延后清理。" };
+      continue;
     }
 
     const scope = await prisma.memoryScope.findUnique({
@@ -156,6 +158,8 @@ export async function processNextMemoryJob(
       return { processed: true, jobId: candidate.id, status: "RETRY_WAIT", message: `原始消息清理失败，将稍后重试：${message}` };
     }
   }
+
+  if (deferredCleanupResult) return deferredCleanupResult;
 
   const staleJobs = await prisma.memoryJob.findMany({
     where: {
