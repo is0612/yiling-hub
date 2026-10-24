@@ -8,10 +8,12 @@ function normalizeComparable(value: string): string {
 }
 
 const ENGLISH_STOPWORDS = new Set([
-  "a", "an", "and", "are", "as", "at", "about", "be", "been", "but", "by", "can", "did",
-  "do", "for", "from", "how", "i", "in", "is", "it", "me", "my", "of", "on",
-  "or", "our", "the", "their", "them", "they", "this", "that", "to", "was",
-  "we", "what", "when", "where", "which", "who", "why", "with", "you", "your",
+  "a", "an", "and", "are", "as", "at", "about", "be", "been", "before", "but", "by", "can", "did",
+  "discuss", "discussed", "do", "earlier", "for", "from", "how", "i", "in", "is", "it", "like",
+  "liked", "likes", "love", "loved", "loves", "me", "my", "of", "on", "or", "our", "please",
+  "previously", "remember", "remembered", "talk", "talked", "tell", "the", "their", "them", "they",
+  "this", "that", "to", "told", "was", "we", "what", "when", "where", "which", "who", "why", "with",
+  "you", "your",
 ]);
 
 // These are query-intent words, not usually the topic the user wants to retrieve.
@@ -78,7 +80,7 @@ export function extractRetrievalTerms(query: string): string[] {
     }
   }
 
-  // Prefer broad coverage over letting a very long message fill the list with its first words.
+  // Bound term extraction so unusually long messages cannot trigger unbounded scoring work.
   return [...terms].slice(0, 160);
 }
 
