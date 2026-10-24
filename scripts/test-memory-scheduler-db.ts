@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "../src/generated/prisma/client";
 import { enqueueDueMemorySnapshots } from "../server/utils/memory-scheduler";
+import { processNextMemoryJob } from "../server/utils/memory-worker";
 
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) throw new Error("缺少 DATABASE_URL，数据库集成测试无法运行。");
@@ -33,7 +34,11 @@ try {
       ownerId,
       name: "调度器集成测试角色",
       basePrompt: "仅用于自动化测试。",
-      modelConfig: {},
+      modelConfig: {
+        chatModel: "integration-test-model",
+        chatApiBaseUrl: "http://127.0.0.1:4010/v1",
+        chatApiKeyEncrypted: "v1.integration-test-placeholder",
+      },
     },
   });
   await prisma.memoryScope.create({
@@ -95,7 +100,39 @@ try {
   assert.equal(repeatedRun.jobsQueued, 0, "A repeated scheduler pass must not enqueue duplicates.");
   assert.equal(jobsAfterRepeatedRun, 3, "A repeated scheduler pass must preserve the one-job-per-period invariant.");
 
-  console.log("Memory scheduler DB integration passed: concurrent scheduling, overdue backfill, cursor advancement, and repeat-run idempotency.");
+  // Simulate a retry/replay after the snapshot was committed but before the job was marked complete.
+  const firstJob = jobs[0]!;
+  const existingSnapshot = await prisma.memorySnapshot.create({
+    data: {
+      snapshotKey: firstJob.idempotencyKey,
+      memoryScopeId: scopeId,
+      kind: "AUTOMATIC",
+      version: 1,
+      periodStart: firstJob.periodStart,
+      periodEnd: firstJob.periodEnd,
+      summary: "集成测试中预先保存的快照",
+      structuredContent: {},
+      status: "CURRENT",
+    },
+    select: { id: true },
+  });
+  const workerResult = await processNextMemoryJob(prisma, {
+    now,
+    workerId: `integration-worker-${suffix}`,
+  });
+  assert.equal(workerResult.processed, true, "Worker should claim the queued replay job.");
+  assert.equal(workerResult.status, "SUCCEEDED", "Worker should mark a replay as successful when its snapshot already exists.");
+  assert.equal(
+    workerResult.snapshotId,
+    existingSnapshot.id,
+    "Worker should reuse the existing snapshot rather than creating a second copy.",
+  );
+  const snapshotCount = await prisma.memorySnapshot.count({
+    where: { memoryScopeId: scopeId, snapshotKey: firstJob.idempotencyKey },
+  });
+  assert.equal(snapshotCount, 1, "Worker replay must not create a duplicate snapshot.");
+
+  console.log("Memory DB integration passed: concurrent scheduling, overdue backfill, cursor advancement, repeat-run idempotency, and worker replay reuse.");
 } finally {
   await prisma.characterMemorySetting.deleteMany({ where: { characterId } });
   await prisma.memoryScope.deleteMany({ where: { id: scopeId } });
