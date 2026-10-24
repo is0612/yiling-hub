@@ -136,6 +136,7 @@ jobs:
         env:
           NODE_ENV: development
           YILING_LOCAL_API_ENABLED: "true"
+          YILING_ALLOW_REGISTRATION: "true"
           DEV_OWNER_ID: 00000000-0000-4000-8000-000000000001
           DEV_OWNER_USERNAME: ci-local
           DEV_OWNER_PASSWORD: CI_smoke_test_password_123

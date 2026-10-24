@@ -302,6 +302,14 @@ export function canAdminister(role: UserRoleValue | null | undefined): boolean {
   return role === "ADMIN";
 }
 
+/**
+ * Self-registration is opt-in: it stays closed until the operator explicitly enables it on the
+ * deployed server, so a local instance or an accidentally exposed one does not accept strangers.
+ */
+export function isRegistrationEnabled(): boolean {
+  return process.env.YILING_ALLOW_REGISTRATION === "true";
+}
+
 export async function requireAdminActor(event: H3Event): Promise<Extract<ActorContext, { mode: "session" | "local-dev" }>> {
   const actor = await requireActor(event);
   if (actor.user.role !== "ADMIN") {

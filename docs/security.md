@@ -16,7 +16,7 @@
 - **密码修改**（`POST /api/auth/password`）：校验当前密码后写入新的 scrypt 哈希。新密码要求 10–128 个字符、同时包含字母和数字、且不能与当前密码相同；**策略只约束新密码**，不会让旧密码失效的账号被锁在门外。修改成功后撤销该账号其他所有会话，发起修改的会话保持有效。
 - **会话管理**（`GET /api/auth/sessions`、`DELETE /api/auth/sessions/{id}`、`POST /api/auth/sessions/revoke-others`）：设备列表只返回会话 id、时间戳和由 User-Agent 派生的设备名，**不返回令牌哈希**。撤销只能作用于当前账号的会话，越权 id 与不存在的 id 同样返回 404，避免通过错误差异探测其他账号是否存在会话。撤销当前会话会同时清除 Cookie。
 - **登录审计**：改密与撤销会话写入 `audit_logs`（`auth.password_changed`、`auth.session_revoked`、`auth.sessions_revoked`）。
-- **邮箱自助注册**（`POST /api/auth/register`）：邮箱即登录标识，存入 `email`（唯一）与 `username`。**默认不发送验证邮件**（本部署无 SMTP）；注册 IP 只存哈希（`registrationIpHash`），注册按邮箱/IP 复用登录限流。可用 `YILING_ALLOW_REGISTRATION=false` 关闭注册。
+- **邮箱自助注册**（`POST /api/auth/register`）：邮箱即登录标识，存入 `email`（唯一）与 `username`。**默认关闭**，需显式设置 `YILING_ALLOW_REGISTRATION=true` 才开放（建议部署到服务器后按需开启）。**不发送验证邮件**（本部署无 SMTP）；注册 IP 只存哈希（`registrationIpHash`），注册按邮箱/IP 复用登录限流。
 - **账号分层**：`User.role` 只有 `ADMIN` / `USER` 两档，普通用户创建时默认 `USER`。业务接口一律按会话里的 `userId`（`ownerId`）过滤，因此每个用户天然只能读写自己的角色与记忆；管理员接口（`/api/admin/users`）仅管理员可访问，且只返回账号身份与统计、**不返回任何对话或记忆内容**。停用账号会立即使其会话失效。
 - **管理员护栏**：管理员不能停用自己的账号，也不能停用最后一个可用的管理员。
 

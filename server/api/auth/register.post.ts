@@ -8,6 +8,7 @@ import {
   hashClientAddress,
   hashPassword,
   isLoginThrottled,
+  isRegistrationEnabled,
   passwordPolicyMessage,
   readPasswordField,
   recordLoginAttempt,
@@ -28,13 +29,14 @@ function normalizeEmail(value: unknown): string {
 }
 
 /**
- * Open self-registration. The email address is the account identifier: it is stored both in the
- * `email` column and (as the login handle) in `username`, so the existing login endpoint accepts it
- * with no change. No verification email is sent — this deployment has no SMTP by design; a verify
- * step can be added later behind an opt-in flag.
+ * Self-registration, enabled only when the operator opts in (YILING_ALLOW_REGISTRATION=true). The
+ * email address is the account identifier: it is stored both in the `email` column and (as the
+ * login handle) in `username`, so the existing login endpoint accepts it with no change. No
+ * verification email is sent — this deployment has no SMTP by design; a verify step can be added
+ * later behind another opt-in flag.
  */
 export default defineEventHandler(async (event) => {
-  if (process.env.YILING_ALLOW_REGISTRATION === "false") {
+  if (!isRegistrationEnabled()) {
     throw createError({ statusCode: 403, statusMessage: "当前未开放自助注册。" });
   }
 

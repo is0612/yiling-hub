@@ -79,7 +79,7 @@ paths:
     post:
       tags: [Auth]
       summary: 邮箱自助注册
-      description: "用邮箱创建普通用户账号并自动登录。邮箱即登录标识（同时存入 email 与 username），不发送验证邮件；新密码要求 10 至 128 个字符且同时包含字母和数字。可通过 YILING_ALLOW_REGISTRATION=false 关闭。"
+      description: "用邮箱创建普通用户账号并自动登录。邮箱即登录标识（同时存入 email 与 username），不发送验证邮件；新密码要求 10 至 128 个字符且同时包含字母和数字。注册默认关闭，需将 YILING_ALLOW_REGISTRATION 设为 true 才开放。"
       security: []
       requestBody:
         required: true

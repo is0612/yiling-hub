@@ -11,6 +11,7 @@ import {
   hashPassword,
   hashSessionToken,
   isLoginThrottled,
+  isRegistrationEnabled,
   passwordPolicyMessage,
   readPasswordField,
   resolveActor,
@@ -188,4 +189,18 @@ assert.equal(canAdminister("USER"), false);
 assert.equal(canAdminister(null), false, "An absent role must never grant administration.");
 assert.equal(canAdminister(undefined), false);
 
-console.log("Auth unit tests passed: scrypt hashing and seed compatibility, token hashing, cookie attributes, TTL bounds, same-origin/CSRF matrix, actor fallback refusal, login throttling thresholds, password policy, device-label derivation, and the administrator gate.");
+// 12. Self-registration is opt-in: closed by default, only "true" opens it.
+const originalRegistration = process.env.YILING_ALLOW_REGISTRATION;
+try {
+  delete process.env.YILING_ALLOW_REGISTRATION;
+  assert.equal(isRegistrationEnabled(), false, "An unset flag must keep registration closed.");
+  process.env.YILING_ALLOW_REGISTRATION = "false";
+  assert.equal(isRegistrationEnabled(), false);
+  process.env.YILING_ALLOW_REGISTRATION = "true";
+  assert.equal(isRegistrationEnabled(), true, "Only an explicit true may open registration.");
+} finally {
+  if (originalRegistration === undefined) delete process.env.YILING_ALLOW_REGISTRATION;
+  else process.env.YILING_ALLOW_REGISTRATION = originalRegistration;
+}
+
+console.log("Auth unit tests passed: scrypt hashing and seed compatibility, token hashing, cookie attributes, TTL bounds, same-origin/CSRF matrix, actor fallback refusal, login throttling thresholds, password policy, device-label derivation, the administrator gate, and opt-in registration.");
