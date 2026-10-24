@@ -78,7 +78,7 @@ export async function processNextMemoryJob(
     },
     orderBy: [{ runAt: "asc" }, { createdAt: "asc" }, { id: "asc" }],
     take: 20,
-    select: { id: true, status: true, memoryScopeId: true, periodEnd: true },
+    select: { id: true, status: true, memoryScopeId: true, periodEnd: true, attemptCount: true, maxAttempts: true },
   });
   let deferredCleanupResult: MemoryWorkerResult | null = null;
   for (const candidate of cleanupCandidates) {
@@ -86,6 +86,19 @@ export async function processNextMemoryJob(
       await prisma.memoryJob.updateMany({
         where: { id: candidate.id, status: candidate.status },
         data: { status: "FAILED", completedAt: now, lastError: "原始消息清理任务缺少截止时间。" },
+      });
+      continue;
+    }
+    if (candidate.attemptCount >= candidate.maxAttempts) {
+      await prisma.memoryJob.updateMany({
+        where: { id: candidate.id, status: candidate.status },
+        data: {
+          status: "FAILED",
+          completedAt: now,
+          lockedAt: null,
+          lockedBy: null,
+          lastError: "任务已达到最大尝试次数。",
+        },
       });
       continue;
     }
@@ -105,11 +118,22 @@ export async function processNextMemoryJob(
       select: { id: true },
     });
     if (pendingSnapshot) {
-      await prisma.memoryJob.updateMany({
+      const deferred = await prisma.memoryJob.updateMany({
         where: { id: candidate.id, status: "RUNNING", lockedBy: workerId },
-        data: { status: "RETRY_WAIT", runAt: new Date(now.getTime() + 60_000), lockedAt: null, lockedBy: null, lastError: "仍有更早的快照任务待处理，清理已延后。" },
+        data: {
+          status: "RETRY_WAIT",
+          // This is a dependency wait, not a failed cleanup attempt.
+          attemptCount: { decrement: 1 },
+          runAt: new Date(now.getTime() + 60_000),
+          lockedAt: null,
+          lockedBy: null,
+          completedAt: null,
+          lastError: "仍有更早的快照任务待处理，清理已延后。",
+        },
       });
-      deferredCleanupResult ??= { processed: true, jobId: candidate.id, status: "RETRY_WAIT", message: "仍有过期区间的快照任务待处理，已延后清理。" };
+      if (deferred.count === 1) {
+        deferredCleanupResult ??= { processed: true, jobId: candidate.id, status: "RETRY_WAIT", message: "仍有过期区间的快照任务待处理，已延后清理。" };
+      }
       continue;
     }
 
@@ -162,11 +186,29 @@ export async function processNextMemoryJob(
       return { processed: true, jobId: candidate.id, status: "SUCCEEDED", message: `原始消息清理完成，删除 ${deletedCount} 条过期消息；快照与来源记录已保留。` };
     } catch (error) {
       const message = (error instanceof Error ? error.message : String(error)).slice(0, 2000);
+      const attemptCount = candidate.attemptCount + 1;
+      const exhausted = attemptCount >= candidate.maxAttempts;
+      const status: "FAILED" | "RETRY_WAIT" = exhausted ? "FAILED" : "RETRY_WAIT";
+      const retryDelayMs = Math.min(60 * 60 * 1000, 30_000 * (2 ** Math.max(0, attemptCount - 1)));
       await prisma.memoryJob.updateMany({
         where: { id: candidate.id, status: "RUNNING", lockedBy: workerId },
-        data: { status: "RETRY_WAIT", runAt: new Date(now.getTime() + 60_000), lockedAt: null, lockedBy: null, lastError: message },
+        data: {
+          status,
+          runAt: exhausted ? now : new Date(now.getTime() + retryDelayMs),
+          lockedAt: null,
+          lockedBy: null,
+          lastError: exhausted ? `原始消息清理失败，已达到最大尝试次数：${message}` : message,
+          completedAt: exhausted ? now : null,
+        },
       });
-      return { processed: true, jobId: candidate.id, status: "RETRY_WAIT", message: `原始消息清理失败，将稍后重试：${message}` };
+      return {
+        processed: true,
+        jobId: candidate.id,
+        status,
+        message: exhausted
+          ? `原始消息清理失败，已达到最大尝试次数：${message}`
+          : `原始消息清理失败，将稍后重试：${message}`,
+      };
     }
   }
 
