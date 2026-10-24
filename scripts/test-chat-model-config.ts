@@ -64,11 +64,11 @@ assert.throws(() => validateChatApiBaseUrl("https://10.0.0.8/v1"), /私有网络
 assert.throws(() => validateChatApiBaseUrl("https://172.16.0.1/v1"), /私有网络/);
 assert.throws(() => validateChatApiBaseUrl("https://192.168.1.10/v1"), /私有网络/);
 assert.throws(() => validateChatApiBaseUrl("https://169.254.169.254/latest/meta-data"), /私有网络/);
-assert.throws(() => validateChatApiBaseUrl("https://service.internal/v1"), /本机地址/);
 assert.throws(() => validateChatApiBaseUrl("https://[fd00::1]/v1"), /私有网络/);
 const originalNodeEnv = process.env.NODE_ENV;
 try {
   process.env.NODE_ENV = "production";
+  assert.throws(() => validateChatApiBaseUrl("https://service.internal/v1"), /本机地址/);
   assert.throws(() => validateChatApiBaseUrl("http://127.0.0.1:4010/v1"), /本机地址/);
   assert.throws(() => validateChatApiBaseUrl("https://127.0.0.2/v1"), /本机地址/);
   assert.throws(() => validateChatApiBaseUrl("https://service.localhost/v1"), /本机地址/);
