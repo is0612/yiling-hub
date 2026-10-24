@@ -161,6 +161,40 @@ try {
   });
   assert.equal(snapshotCount, 1, "Worker replay must not create a duplicate snapshot.");
 
+  await prisma.characterMemorySetting.update({
+    where: { characterId },
+    data: { pendingSnapshotIntervalDays: 3 },
+  });
+  const beforeIntervalBoundary = await enqueueDueMemorySnapshots(prisma, { now });
+  assert.equal(beforeIntervalBoundary.jobsQueued, 0, "A pending interval must not create a new snapshot before the existing boundary.");
+  const settingBeforeIntervalBoundary = await prisma.characterMemorySetting.findUniqueOrThrow({
+    where: { characterId },
+    select: { snapshotIntervalDays: true, pendingSnapshotIntervalDays: true, nextSnapshotAt: true },
+  });
+  assert.equal(settingBeforeIntervalBoundary.snapshotIntervalDays, 8, "The active interval must remain unchanged before the boundary.");
+  assert.equal(settingBeforeIntervalBoundary.pendingSnapshotIntervalDays, 3, "The new interval should remain pending before the boundary.");
+  assert.equal(settingBeforeIntervalBoundary.nextSnapshotAt?.toISOString(), expectedNextSnapshotAt.toISOString(), "The current cycle boundary must be preserved.");
+
+  const intervalBoundaryRun = await enqueueDueMemorySnapshots(prisma, { now: expectedNextSnapshotAt });
+  assert.equal(intervalBoundaryRun.jobsQueued, 1, "Exactly the period ending at the preserved boundary should be queued.");
+  const boundaryJob = await prisma.memoryJob.findFirstOrThrow({
+    where: {
+      memoryScopeId: scopeId,
+      type: "GENERATE_SNAPSHOT",
+      periodEnd: expectedNextSnapshotAt,
+    },
+    select: { periodStart: true, periodEnd: true },
+  });
+  assert.equal(boundaryJob.periodStart.toISOString(), "2026-10-17T00:00:00.000Z", "The last current-cycle period must use the old 8-day interval.");
+  assert.equal(boundaryJob.periodEnd.toISOString(), expectedNextSnapshotAt.toISOString());
+  const settingAfterIntervalBoundary = await prisma.characterMemorySetting.findUniqueOrThrow({
+    where: { characterId },
+    select: { snapshotIntervalDays: true, pendingSnapshotIntervalDays: true, nextSnapshotAt: true },
+  });
+  assert.equal(settingAfterIntervalBoundary.snapshotIntervalDays, 3, "The pending interval should become active when the current boundary is crossed.");
+  assert.equal(settingAfterIntervalBoundary.pendingSnapshotIntervalDays, null, "The pending interval should clear after application.");
+  assert.equal(settingAfterIntervalBoundary.nextSnapshotAt?.toISOString(), "2026-10-28T00:00:00.000Z", "The next interval should advance by three days.");
+
   // Retention cleanup must delete expired raw messages but preserve snapshot/source/memory records.
   await prisma.memoryScope.create({
     data: {
