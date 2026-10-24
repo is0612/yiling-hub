@@ -232,6 +232,16 @@ try {
     },
     select: { id: true },
   });
+  const cutoffBoundaryMessage = await prisma.message.create({
+    data: {
+      conversationId,
+      role: "USER",
+      eventType: "message",
+      content: "截止时间上的消息应当保留。",
+      occurredAt: new Date("2026-09-24T12:00:00.000Z"),
+    },
+    select: { id: true },
+  });
   const retentionSnapshot = await prisma.memorySnapshot.create({
     data: {
       snapshotKey: `retention-test:${suffix}`,
@@ -306,6 +316,7 @@ try {
   assert.equal(cleanupResult.status, "SUCCEEDED", "Retention cleanup should complete successfully.");
   assert.equal(await prisma.message.count({ where: { id: expiredMessage.id } }), 0, "Expired raw message must be deleted.");
   assert.equal(await prisma.message.count({ where: { id: retainedMessage.id } }), 1, "Message newer than cutoff must remain.");
+  assert.equal(await prisma.message.count({ where: { id: cutoffBoundaryMessage.id } }), 1, "A message exactly at the cutoff must remain because cleanup only deletes earlier messages.");
   assert.equal(await prisma.memorySnapshot.count({ where: { id: retentionSnapshot.id } }), 1, "Snapshot must survive raw message cleanup.");
   const preservedSource = await prisma.memorySnapshotSource.findUniqueOrThrow({ where: { id: sourceRecord.id } });
   assert.equal(preservedSource.messageId, null, "Source trace must remain while the raw-message relation is nulled.");
