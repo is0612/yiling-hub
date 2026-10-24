@@ -42,6 +42,13 @@ Phase 0 结束前由开发者与 AI 一起审查本清单。标记为“待本�
 - OpenAPI lint：GitHub Actions 通过（Redocly minimal 规则集）；后续接口变更会继续运行检查。
 - Windows 备份/恢复实测：需要在目标环境执行；当前脚本尚未经真实数据恢复演练。
 
+## 最近一次自动化回归
+
+- 2026-10-24，分支 `docs/project-blueprint` 的提交 [`97e926e`](https://github.com/is0612/yiling-hub/commit/97e926e770d8c2e14b8a6f55613fb774e9365106) 的 GitHub Actions 全量校验已通过：[查看运行结果](https://github.com/is0612/yiling-hub/actions/runs/40075129087)。
+- 该次 CI 包含 Prisma Schema 与迁移一致性、TypeScript、周期调度单元测试、PostgreSQL 并发/幂等与消息保留期限集成测试、AI 来源校验、记忆检索、角色模型配置、ESLint、Nuxt 生产构建、OpenAPI lint，以及使用模拟模型的本地 API 端到端冒烟测试。
+- 清理相关验收覆盖：原文实际删除数量、较新的消息保留、快照/来源/长期记忆保留、旧快照失败时阻止清理、保留期限放宽或撤销授权后的取消、永久保留不排队，以及任务审计结果展示。
+- **仍待本机或部署环境验证：** 真实供应商模型的实际表现、Windows + Docker 的真实数据备份/恢复演练、正式管理员登录与公开部署前的安全检查。CI 通过不代表这些环境级验收已经完成。
+
 推荐命令（安装项目依赖后）：
 ```powershell
 npx prisma format
