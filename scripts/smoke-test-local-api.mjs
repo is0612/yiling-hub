@@ -50,6 +50,11 @@ async function waitForServer() {
 
 await waitForServer();
 
+const sameOriginResponse = await fetch(new URL("/api/characters", baseUrl), {
+  headers: { origin: new URL(baseUrl).origin, "sec-fetch-site": "same-origin" },
+});
+assert(sameOriginResponse.status === 200, "Local API should continue to accept a matching same-origin browser request.");
+await sameOriginResponse.arrayBuffer();
 const crossOriginResponse = await fetch(new URL("/api/characters", baseUrl), {
   headers: { origin: "https://attacker.example" },
 });
