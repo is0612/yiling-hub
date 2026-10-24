@@ -24,6 +24,7 @@
     "scheduler:run": "tsx scripts/run-memory-scheduler.ts",
     "scheduler:watch": "tsx scripts/run-memory-scheduler.ts --watch",
     "test:scheduler": "tsx scripts/test-memory-scheduler.ts",
+    "test:scheduler-db": "tsx scripts/test-memory-scheduler-db.ts",
     "test:memory-ai": "tsx scripts/test-memory-ai.ts",
     "worker:run": "tsx scripts/run-memory-worker.ts",
     "worker:watch": "tsx scripts/run-memory-worker.ts --watch",

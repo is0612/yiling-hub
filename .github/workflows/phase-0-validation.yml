@@ -95,6 +95,9 @@ jobs:
       - name: 周期记忆调度单元测试
         run: yarn run test:scheduler
 
+      - name: 数据库调度器并发与幂等集成测试
+        run: yarn run test:scheduler-db
+
       - name: AI 记忆来源与输出校验测试
         run: yarn run test:memory-ai
 
