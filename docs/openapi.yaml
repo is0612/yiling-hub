@@ -265,6 +265,122 @@ paths:
           description: 仅管理员可访问
         '404':
           $ref: '#/components/responses/NotFound'
+  /admin/channels:
+    get:
+      tags: [Auth]
+      summary: 列出渠道连接（仅管理员）
+      description: 返回平台连接与角色绑定信息；AppSecret 永不返回。
+      responses:
+        '200':
+          description: 渠道连接列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [connections]
+                properties:
+                  connections:
+                    type: array
+                    items: { $ref: '#/components/schemas/ChannelConnectionSummary' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: 仅管理员可访问
+    post:
+      tags: [Auth]
+      summary: 创建或更新 QQ 机器人连接（仅管理员）
+      description: AppSecret 使用 AES-256-GCM 加密后入库，只有渠道适配器可解密。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [appId, appSecret]
+              properties:
+                appId: { type: string, maxLength: 100 }
+                appSecret: { type: string, maxLength: 500 }
+                displayName: { type: string, maxLength: 120 }
+      responses:
+        '200':
+          description: 连接已保存
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChannelConnectionSummary'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: 仅管理员可访问
+  /admin/channels/{connectionId}:
+    delete:
+      tags: [Auth]
+      summary: 删除渠道连接（仅管理员）
+      parameters:
+        - name: connectionId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: 已删除
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: 仅管理员可访问
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/channels/{connectionId}/bindings:
+    post:
+      tags: [Auth]
+      summary: 绑定角色到渠道连接（仅管理员）
+      description: 可选 routingKey 限制到单个群 openid；不填则为该连接的默认绑定。
+      parameters:
+        - name: connectionId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [characterId]
+              properties:
+                characterId: { type: string, format: uuid }
+                routingKey: { type: string, maxLength: 255 }
+      responses:
+        '200':
+          description: 绑定结果
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: 仅管理员可访问
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/channels/{connectionId}/bindings/{bindingId}:
+    delete:
+      tags: [Auth]
+      summary: 解除角色绑定（仅管理员）
+      parameters:
+        - name: connectionId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: bindingId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: 已解绑
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: 仅管理员可访问
+        '404':
+          $ref: '#/components/responses/NotFound'
   /characters:
     get:
       tags: [Characters]
@@ -1627,6 +1743,27 @@ components:
         createdAt: { type: string, format: date-time }
         characterCount: { type: integer, minimum: 0 }
         lastActiveAt: { type: string, format: date-time, nullable: true }
+    ChannelConnectionSummary:
+      type: object
+      required: [id, platform, displayName, appId, status, lastEventAt, createdAt, bindings]
+      properties:
+        id: { type: string, format: uuid }
+        platform: { type: string }
+        displayName: { type: string }
+        appId: { type: string, nullable: true }
+        status: { type: string, enum: [CONNECTED, DISCONNECTED, ERROR, DISABLED] }
+        lastEventAt: { type: string, format: date-time, nullable: true }
+        createdAt: { type: string, format: date-time }
+        bindings:
+          type: array
+          items:
+            type: object
+            required: [id, characterId, characterName, routingKey]
+            properties:
+              id: { type: string, format: uuid }
+              characterId: { type: string, format: uuid }
+              characterName: { type: string }
+              routingKey: { type: string, nullable: true }
     LoginResponse:
       type: object
       required: [user, expiresAt]
