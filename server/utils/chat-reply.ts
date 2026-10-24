@@ -85,6 +85,18 @@ export async function generateConversationReply(input: ConversationReplyInput): 
 
   const timeoutRaw = Number(process.env.LLM_TIMEOUT_MS ?? 60_000);
   const timeoutMs = Number.isInteger(timeoutRaw) && timeoutRaw >= 5_000 && timeoutRaw <= 180_000 ? timeoutRaw : 60_000;
+
+  // Serialize only the content needed to generate a reply. Never serialize API keys,
+  // provider URLs, or other connection settings into a prompt that the model can read.
+  const promptInput = {
+    characterName: input.characterName,
+    characterPrompt: input.characterPrompt,
+    currentMessage: input.currentMessage,
+    recentMessages: input.recentMessages,
+    memories: input.memories,
+    snapshots: input.snapshots,
+  };
+
   let response: Response;
   try {
     response = await fetch(endpoint, {
@@ -97,7 +109,7 @@ export async function generateConversationReply(input: ConversationReplyInput): 
         response_format: { type: "json_object" },
         messages: [
           { role: "system", content: systemPrompt() },
-          { role: "user", content: JSON.stringify(input) },
+          { role: "user", content: JSON.stringify(promptInput) },
         ],
       }),
       signal: AbortSignal.timeout(timeoutMs),
@@ -113,7 +125,13 @@ export async function generateConversationReply(input: ConversationReplyInput): 
     throw new Error("LLM_HTTP_ERROR: 模型服务返回 HTTP " + response.status + "。请检查 API 地址、Key 和模型权限。");
   }
 
-  const payload = asRecord(await response.json());
+  let responsePayload: unknown;
+  try {
+    responsePayload = await response.json();
+  } catch {
+    throw new Error("LLM_INVALID_RESPONSE: 模型服务没有返回有效的 JSON 响应。");
+  }
+  const payload = asRecord(responsePayload);
   const choices = payload && Array.isArray(payload.choices) ? payload.choices : [];
   const firstChoice = asRecord(choices[0]);
   const assistantMessage = asRecord(firstChoice?.message);

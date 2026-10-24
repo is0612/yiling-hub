@@ -70,6 +70,12 @@ const server = http.createServer(async (request, response) => {
 
     const input = JSON.parse(userMessage.content);
     if (typeof systemMessage?.content === "string" && systemMessage.content.includes("YILING_CONVERSATION_REPLY_V1")) {
+      const forbiddenPromptKeys = ["apiKey", "apiBaseUrl", "model", "temperature", "maxTokens"];
+      const leakedSetting = forbiddenPromptKeys.find((key) => Object.prototype.hasOwnProperty.call(input, key));
+      if (leakedSetting) {
+        sendJson(response, 400, { error: { message: "Chat prompt must not contain provider connection settings." } });
+        return;
+      }
       const memories = Array.isArray(input.memories) ? input.memories : [];
       const snapshots = Array.isArray(input.snapshots) ? input.snapshots : [];
       const firstMemory = memories[0] && typeof memories[0].id === "string" ? memories[0].id : null;
