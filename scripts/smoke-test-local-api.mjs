@@ -214,6 +214,39 @@ assert(cancelledPendingCycleSettings.activeSnapshotIntervalDays === 3, "Cancelli
 assert(cancelledPendingCycleSettings.pendingSnapshotIntervalDays === null, "Selecting the current interval should cancel the pending change.");
 assert(cancelledPendingCycleSettings.nextSnapshotAt === savedSettings.nextSnapshotAt, "Cancelling a pending change must not reset the current boundary.");
 
+const immediateRecalcSettings = await request(`/api/characters/${created.id}/memory-settings`, {
+  method: "PATCH",
+  body: {
+    snapshotIntervalDays: 4,
+    timezone: savedSettings.timezone,
+    anchorAt: savedSettings.anchorAt,
+    rawMessageRetentionDays: 30,
+    rawMessageCleanupEnabled: true,
+    autoSnapshotEnabled: true,
+    changePolicy: "IMMEDIATE_RECALC",
+  },
+});
+assert(immediateRecalcSettings.activeSnapshotIntervalDays === 4, "IMMEDIATE_RECALC must apply the selected interval immediately.");
+assert(immediateRecalcSettings.pendingSnapshotIntervalDays === null, "IMMEDIATE_RECALC must clear any pending interval.");
+assert(
+  immediateRecalcSettings.nextSnapshotAt === new Date(new Date(savedSettings.anchorAt).getTime() + 4 * 24 * 60 * 60 * 1000).toISOString(),
+  "IMMEDIATE_RECALC must recompute the next boundary from the current anchor and selected interval.",
+);
+const restoredThreeDaySettings = await request(`/api/characters/${created.id}/memory-settings`, {
+  method: "PATCH",
+  body: {
+    snapshotIntervalDays: 3,
+    timezone: savedSettings.timezone,
+    anchorAt: savedSettings.anchorAt,
+    rawMessageRetentionDays: 30,
+    rawMessageCleanupEnabled: true,
+    autoSnapshotEnabled: true,
+    changePolicy: "IMMEDIATE_RECALC",
+  },
+});
+assert(restoredThreeDaySettings.activeSnapshotIntervalDays === 3 && restoredThreeDaySettings.pendingSnapshotIntervalDays === null, "The smoke test should restore its original active interval before testing backfill.");
+assert(restoredThreeDaySettings.nextSnapshotAt === savedSettings.nextSnapshotAt, "Restoring the original interval should restore the original immediate-recalculation boundary.");
+
 const invalidRetentionResponse = await fetch(
   new URL(`/api/characters/${created.id}/memory-settings`, baseUrl),
   {
@@ -731,4 +764,4 @@ assert(
   "Permanent retention must not enqueue raw-message cleanup work."
 );
 
-console.log("Local API smoke test passed: character CRUD, encrypted per-character API settings and connection test, memory settings including next-cycle interval changes/cancellation, transcript import, scheduler backfill, local-mock AI extraction, source-ID validation, persisted provenance, manual and AI snapshot versions, safe AI regeneration, task cancel/requeue, recycle-bin lifecycle, context-aware AI chat, conversation search/rename, archive/restore, archived write protection, and end-to-end raw-message retention cleanup with audit-result visibility, cleanup-task cancel/retry, retention-widening protection, and permanent-retention safety.");
+console.log("Local API smoke test passed: character CRUD, encrypted per-character API settings and connection test, memory settings including deferred changes, pending-change cancellation and immediate recalculation, transcript import, scheduler backfill, local-mock AI extraction, source-ID validation, persisted provenance, manual and AI snapshot versions, safe AI regeneration, task cancel/requeue, recycle-bin lifecycle, context-aware AI chat, conversation search/rename, archive/restore, archived write protection, and end-to-end raw-message retention cleanup with audit-result visibility, cleanup-task cancel/retry, retention-widening protection, and permanent-retention safety.");
