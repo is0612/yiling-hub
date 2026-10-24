@@ -438,6 +438,11 @@ const retentionCleanupTask = tasksBeforeCleanup.items.find((task) =>
 );
 assert(retentionCleanupTask && typeof retentionCleanupTask.id === "string", "Scheduler should enqueue a retention cleanup task for the isolated character.");
 
+const cancelledCleanupTask = await request(`/api/tasks/${retentionCleanupTask.id}/cancel`, { method: "POST" });
+assert(cancelledCleanupTask.status === "CANCELLED", "Queued cleanup tasks should support safe manual cancellation.");
+const retriedCleanupTask = await request(`/api/tasks/${retentionCleanupTask.id}/retry`, { method: "POST" });
+assert(retriedCleanupTask.status === "QUEUED", "Cancelled cleanup tasks should be manually re-queued.");
+
 let retentionCleanupResult = null;
 for (let attempt = 0; attempt < 10; attempt += 1) {
   const result = await request("/api/tasks/worker/run", { method: "POST" });
