@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { readBody } from "h3";
 import { characterInclude, toCharacterDto } from "../../utils/character-dto";
-import { readTrimmedString, requireLocalDevOwner } from "../../utils/local-api";
+import { requireActorUserId } from "../../utils/auth";
+import { readTrimmedString } from "../../utils/local-api";
 import { getPrisma } from "../../utils/prisma";
 
 export default defineEventHandler(async (event) => {
-  const ownerId = requireLocalDevOwner(event);
+  const ownerId = await requireActorUserId(event);
   const body = await readBody<Record<string, unknown>>(event);
   const name = readTrimmedString(body.name, "角色名称", 100, { required: true });
   const alias = readTrimmedString(body.alias, "角色标签", 100) || "新建角色";

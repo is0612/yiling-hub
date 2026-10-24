@@ -1,12 +1,12 @@
 import { createError, getQuery } from "h3";
-import { requireLocalDevOwner } from "../../utils/local-api";
+import { requireActorUserId } from "../../utils/auth";
 import { getPrisma } from "../../utils/prisma";
 
 const statuses = ["QUEUED", "RUNNING", "SUCCEEDED", "FAILED", "SKIPPED", "RETRY_WAIT", "CANCELLED"] as const;
 type JobStatus = (typeof statuses)[number];
 
 export default defineEventHandler(async (event) => {
-  const ownerId = requireLocalDevOwner(event);
+  const ownerId = await requireActorUserId(event);
   const query = getQuery(event);
   const statusValue = typeof query.status === "string" ? query.status.toUpperCase() : "";
   if (statusValue && !(statuses as readonly string[]).includes(statusValue)) {

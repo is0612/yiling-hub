@@ -1,11 +1,12 @@
 import { createError, getRouterParam } from "h3";
 import { buildChatCompletionsEndpoint, resolveChatModelSettings } from "../../../../utils/chat-model-config";
 import { resolveCharacterApiKey } from "../../../../utils/credential-encryption";
-import { requireLocalDevOwner, requireUuid } from "../../../../utils/local-api";
+import { requireActorUserId } from "../../../../utils/auth";
+import { requireUuid } from "../../../../utils/local-api";
 import { getPrisma } from "../../../../utils/prisma";
 
 export default defineEventHandler(async (event) => {
-  const ownerId = requireLocalDevOwner(event);
+  const ownerId = await requireActorUserId(event);
   const characterId = requireUuid(getRouterParam(event, "id") ?? "", "角色");
   const character = await getPrisma().character.findFirst({
     where: { id: characterId, ownerId },

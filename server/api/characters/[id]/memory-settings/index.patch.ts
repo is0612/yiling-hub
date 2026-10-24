@@ -1,5 +1,6 @@
 import { createError, readBody } from "h3";
-import { requireLocalDevOwner, requireUuid } from "../../../../utils/local-api";
+import { requireActorUserId } from "../../../../utils/auth";
+import { requireUuid } from "../../../../utils/local-api";
 import { getPrisma } from "../../../../utils/prisma";
 
 const allowedRetentionDays = new Set([0, 30, 90, 180]);
@@ -9,7 +10,7 @@ function addDays(date: Date, days: number): Date {
 }
 
 export default defineEventHandler(async (event) => {
-  const ownerId = requireLocalDevOwner(event);
+  const ownerId = await requireActorUserId(event);
   const characterId = requireUuid(getRouterParam(event, "id") ?? "");
   const body = await readBody<Record<string, unknown>>(event);
   const prisma = getPrisma();

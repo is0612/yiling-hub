@@ -12,8 +12,9 @@ type ChatCharacter = {
   chatApiKeyConfigured: boolean;
   chatApiKeySource: "character" | "environment" | "missing";
 };
-type ChatMemorySource = { id: string; category: string; content: string };
-type ChatSnapshotSource = { id: string; summary: string; periodStart: string; periodEnd: string; version: number };
+type MemoryScopeOrigin = "character" | "private";
+type ChatMemorySource = { id: string; category: string; content: string; scope?: MemoryScopeOrigin };
+type ChatSnapshotSource = { id: string; summary: string; periodStart: string; periodEnd: string; version: number; scope?: MemoryScopeOrigin };
 type ChatMessage = {
   id: string;
   role: "USER" | "ASSISTANT";
@@ -50,7 +51,7 @@ type ChatSendResponse = {
   userMessage: ChatMessage;
   assistantMessage: ChatMessage;
   model: { name: string; provider: string; promptTemplateVersion: string };
-  retrieval: { memoriesAvailable: number; snapshotsAvailable: number };
+  retrieval: { memoriesAvailable: number; snapshotsAvailable: number; privateScopeActive?: boolean };
 };
 
 const route = useRoute();
@@ -365,9 +366,13 @@ async function exportConversation() {
       const sources = messageSources(message);
       if (sources.memories.length || sources.snapshots.length) {
         lines.push("引用来源：");
-        for (const memory of sources.memories) lines.push("- 长期记忆（" + memory.category + "）：" + memory.content + " [ID: " + memory.id + "]");
+        for (const memory of sources.memories) {
+          const scopeLabel = memory.scope === "private" ? "私人记忆" : "角色全局记忆";
+          lines.push("- " + scopeLabel + "（" + memory.category + "）：" + memory.content + " [ID: " + memory.id + "]");
+        }
         for (const snapshot of sources.snapshots) {
-          lines.push("- 快照 v" + snapshot.version + "（" + snapshot.periodStart + " — " + snapshot.periodEnd + "）：" + snapshot.summary + " [ID: " + snapshot.id + "]");
+          const scopeLabel = snapshot.scope === "private" ? "私人记忆" : "角色全局记忆";
+          lines.push("- " + scopeLabel + "快照 v" + snapshot.version + "（" + snapshot.periodStart + " — " + snapshot.periodEnd + "）：" + snapshot.summary + " [ID: " + snapshot.id + "]");
         }
         lines.push("");
       }
@@ -550,10 +555,12 @@ onMounted(() => void reload());
                 <div class="sources-title"><el-icon><Reading /></el-icon>本次回复引用的记忆来源</div>
                 <div v-for="source in messageSources(message).memories" :key="source.id" class="source-item">
                   <el-tag size="small" effect="plain">{{ source.category }}</el-tag>
+                  <el-tag v-if="source.scope === 'private'" size="small" type="warning" effect="plain">私人</el-tag>
                   <span>{{ source.content }}</span>
                 </div>
                 <div v-for="source in messageSources(message).snapshots" :key="source.id" class="source-item">
                   <el-tag size="small" type="success" effect="plain">快照 v{{ source.version }}</el-tag>
+                  <el-tag v-if="source.scope === 'private'" size="small" type="warning" effect="plain">私人</el-tag>
                   <span>{{ source.summary }}</span>
                 </div>
               </div>
@@ -582,7 +589,7 @@ onMounted(() => void reload());
             @keydown.ctrl.enter.prevent="void sendMessage()"
           />
           <div class="composer-footer">
-            <span><el-icon><Clock /></el-icon> {{ conversationView === "ARCHIVED" ? "归档会话为只读；恢复后可以继续聊天。" : "只使用匹配的长期记忆和历史快照；未匹配内容不会强行塞入上下文。" }}</span>
+            <span><el-icon><Clock /></el-icon> {{ conversationView === "ARCHIVED" ? "归档会话为只读；恢复后可以继续聊天。" : "只使用匹配的角色全局记忆、你自己的私人记忆和快照；其他人的私人记忆不会进入上下文。" }}</span>
             <el-button type="primary" :loading="sending" :disabled="!draft.trim() || !modelConfigured || conversationView === 'ARCHIVED'" @click="void sendMessage()">
               <el-icon><Promotion /></el-icon>发送消息
             </el-button>

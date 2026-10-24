@@ -3,11 +3,13 @@ import { generateConversationReply, type ConversationContextMessage } from "../.
 import { resolveChatModelSettings } from "../../../utils/chat-model-config";
 import { resolveCharacterApiKey } from "../../../utils/credential-encryption";
 import { rankMemoryCandidates, rankSnapshotCandidates } from "../../../utils/memory-retrieval";
-import { readTrimmedString, requireLocalDevOwner, requireUuid } from "../../../utils/local-api";
+import { resolveChatMemoryScopes } from "../../../utils/memory-scope-access";
+import { requireActorUserId } from "../../../utils/auth";
+import { readTrimmedString, requireUuid } from "../../../utils/local-api";
 import { getPrisma } from "../../../utils/prisma";
 
 export default defineEventHandler(async (event) => {
-  const ownerId = requireLocalDevOwner(event);
+  const ownerId = await requireActorUserId(event);
   const characterId = requireUuid(getRouterParam(event, "id") ?? "", "角色");
   const body = await readBody<Record<string, unknown>>(event);
   const message = readTrimmedString(body?.message, "消息", 8000, { required: true });
@@ -27,12 +29,27 @@ export default defineEventHandler(async (event) => {
       name: true,
       basePrompt: true,
       modelConfig: true,
-      memoryScopes: { where: { scopeType: "CHARACTER_GLOBAL" }, select: { id: true }, take: 1 },
+      memoryScopes: {
+        select: {
+          id: true,
+          scopeType: true,
+          userId: true,
+          externalIdentityId: true,
+          externalIdentity: { select: { status: true, linkedUserId: true } },
+        },
+      },
     },
   });
   if (!character) throw createError({ statusCode: 404, statusMessage: "角色不存在。" });
-  const memoryScopeId = character.memoryScopes[0]?.id;
-  if (!memoryScopeId) throw createError({ statusCode: 409, statusMessage: "该角色尚未建立全局记忆范围，请重新保存角色档案。" });
+
+  // Only character-global scopes and the acting user's own verified private scopes may be read.
+  const accessibleScopes = resolveChatMemoryScopes(character.memoryScopes, ownerId);
+  const globalScope = accessibleScopes.find((scope) => scope.origin === "character");
+  if (!globalScope) throw createError({ statusCode: 409, statusMessage: "该角色尚未建立全局记忆范围，请重新保存角色档案。" });
+  const memoryScopeId = globalScope.id;
+  const readableScopeIds = accessibleScopes.map((scope) => scope.id);
+  const scopeOriginById = new Map(accessibleScopes.map((scope) => [scope.id, scope.origin]));
+  const privateScopeActive = accessibleScopes.some((scope) => scope.origin === "private");
   const chatSettings = resolveChatModelSettings(character.modelConfig);
   let apiKey = "";
   try {
@@ -72,10 +89,10 @@ export default defineEventHandler(async (event) => {
     }));
 
   const memoryCandidates = await prisma.memoryItem.findMany({
-    where: { memoryScopeId, status: "ACTIVE", deletedAt: null },
+    where: { memoryScopeId: { in: readableScopeIds }, status: "ACTIVE", deletedAt: null },
     orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
-    take: 250,
-    select: { id: true, category: true, content: true, confidence: true, updatedAt: true, createdAt: true },
+    take: 300,
+    select: { id: true, category: true, content: true, confidence: true, updatedAt: true, createdAt: true, memoryScopeId: true },
   });
   const retrievalQuery = [
     message,
@@ -87,13 +104,14 @@ export default defineEventHandler(async (event) => {
     content: memory.content.slice(0, 1200),
     confidence: memory.confidence,
     relevanceScore: memory.relevanceScore,
+    scope: scopeOriginById.get(memory.memoryScopeId) ?? "character",
   }));
 
   const snapshotCandidates = await prisma.memorySnapshot.findMany({
-    where: { memoryScopeId, status: "CURRENT" },
+    where: { memoryScopeId: { in: readableScopeIds }, status: "CURRENT" },
     orderBy: [{ createdAt: "desc" }, { version: "desc" }],
     take: 80,
-    select: { id: true, summary: true, periodStart: true, periodEnd: true, version: true, createdAt: true },
+    select: { id: true, summary: true, periodStart: true, periodEnd: true, version: true, createdAt: true, memoryScopeId: true },
   });
   const snapshots = rankSnapshotCandidates(retrievalQuery, snapshotCandidates, 4).map((snapshot) => ({
     id: snapshot.id,
@@ -102,6 +120,7 @@ export default defineEventHandler(async (event) => {
     periodEnd: snapshot.periodEnd.toISOString(),
     version: snapshot.version,
     relevanceScore: snapshot.relevanceScore,
+    scope: scopeOriginById.get(snapshot.memoryScopeId) ?? "character",
   }));
 
   let generated;
@@ -131,9 +150,9 @@ export default defineEventHandler(async (event) => {
   const usedSnapshotIds = new Set(generated.usedSnapshotIds);
   const usedSources = {
     memories: memories.filter((memory) => usedMemoryIds.has(memory.id))
-      .map(({ id, category, content }) => ({ id, category, content })),
+      .map(({ id, category, content, scope }) => ({ id, category, content, scope })),
     snapshots: snapshots.filter((snapshot) => usedSnapshotIds.has(snapshot.id))
-      .map(({ id, summary, periodStart, periodEnd, version }) => ({ id, summary, periodStart, periodEnd, version })),
+      .map(({ id, summary, periodStart, periodEnd, version, scope }) => ({ id, summary, periodStart, periodEnd, version, scope })),
   };
 
   const now = new Date();
@@ -184,6 +203,6 @@ export default defineEventHandler(async (event) => {
     userMessage: { ...saved.userMessage, sources: { memories: [], snapshots: [] } },
     assistantMessage: { ...saved.assistantMessage, sources: usedSources },
     model: { name: generated.model, provider: generated.provider, promptTemplateVersion: generated.promptTemplateVersion },
-    retrieval: { memoriesAvailable: memories.length, snapshotsAvailable: snapshots.length },
+    retrieval: { memoriesAvailable: memories.length, snapshotsAvailable: snapshots.length, privateScopeActive },
   };
 });

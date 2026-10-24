@@ -1,37 +1,8 @@
 import { createError, getQuery, getRouterParam } from "h3";
-import { requireLocalDevOwner, requireUuid } from "../../../../utils/local-api";
+import { readStoredChatSources } from "../../../../utils/chat-sources";
+import { requireActorUserId } from "../../../../utils/auth";
+import { requireUuid } from "../../../../utils/local-api";
 import { getPrisma } from "../../../../utils/prisma";
-
-type StoredSources = {
-  memories: Array<{ id: string; category: string; content: string }>;
-  snapshots: Array<{ id: string; summary: string; periodStart: string; periodEnd: string; version: number }>;
-};
-
-function readStoredSources(metadata: unknown): StoredSources {
-  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return { memories: [], snapshots: [] };
-  const root = metadata as Record<string, unknown>;
-  const raw = root.usedSources;
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { memories: [], snapshots: [] };
-  const sourceRoot = raw as Record<string, unknown>;
-  const memories = Array.isArray(sourceRoot.memories)
-    ? sourceRoot.memories.flatMap((item) => {
-        if (!item || typeof item !== "object" || Array.isArray(item)) return [];
-        const record = item as Record<string, unknown>;
-        if (typeof record.id !== "string" || typeof record.content !== "string") return [];
-        return [{ id: record.id, category: typeof record.category === "string" ? record.category : "OTHER", content: record.content }];
-      }).slice(0, 12)
-    : [];
-  const snapshots = Array.isArray(sourceRoot.snapshots)
-    ? sourceRoot.snapshots.flatMap((item) => {
-        if (!item || typeof item !== "object" || Array.isArray(item)) return [];
-        const record = item as Record<string, unknown>;
-        if (typeof record.id !== "string" || typeof record.summary !== "string" ||
-          typeof record.periodStart !== "string" || typeof record.periodEnd !== "string" || typeof record.version !== "number") return [];
-        return [{ id: record.id, summary: record.summary, periodStart: record.periodStart, periodEnd: record.periodEnd, version: record.version }];
-      }).slice(0, 12)
-    : [];
-  return { memories, snapshots };
-}
 
 function readPageNumber(value: unknown, fallback: number, maximum: number, label: string): number {
   if (value === undefined) return fallback;
@@ -46,7 +17,7 @@ function readPageNumber(value: unknown, fallback: number, maximum: number, label
 }
 
 export default defineEventHandler(async (event) => {
-  const ownerId = requireLocalDevOwner(event);
+  const ownerId = await requireActorUserId(event);
   const characterId = requireUuid(getRouterParam(event, "id") ?? "", "角色");
   const conversationId = requireUuid(getRouterParam(event, "conversationId") ?? "", "会话");
   const query = getQuery(event);
@@ -95,7 +66,7 @@ export default defineEventHandler(async (event) => {
       role: message.role,
       content: message.content,
       occurredAt: message.occurredAt,
-      sources: message.role === "ASSISTANT" ? readStoredSources(message.metadata) : { memories: [], snapshots: [] },
+      sources: message.role === "ASSISTANT" ? readStoredChatSources(message.metadata) : { memories: [], snapshots: [] },
     })),
   };
 });

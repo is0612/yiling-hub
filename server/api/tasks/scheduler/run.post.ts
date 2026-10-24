@@ -1,9 +1,9 @@
-import { requireLocalDevOwner } from "../../../utils/local-api";
+import { requireActorUserId } from "../../../utils/auth";
 import { getPrisma } from "../../../utils/prisma";
 import { enqueueDueMemorySnapshots } from "../../../utils/memory-scheduler";
 
 export default defineEventHandler(async (event) => {
-  const ownerId = requireLocalDevOwner(event);
+  const ownerId = await requireActorUserId(event);
   const report = await enqueueDueMemorySnapshots(getPrisma(), { ownerId });
   return {
     ...report,

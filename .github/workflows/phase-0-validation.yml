@@ -110,6 +110,18 @@ jobs:
       - name: 对话模型提示词凭据隔离测试
         run: yarn run test:chat-reply
 
+      - name: 私人记忆范围隔离测试
+        run: yarn run test:chat-private-memory
+
+      - name: 私人记忆范围数据库隔离测试
+        run: yarn run test:chat-private-memory-db
+
+      - name: 管理员登录与会话鉴权单元测试
+        run: yarn run test:auth
+
+      - name: 会话与登录限流数据库集成测试
+        run: yarn run test:auth-db
+
       - name: ESLint 检查
         run: yarn run lint
 

@@ -2,64 +2,55 @@ import { createError, getHeader } from "h3";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+export type SameOriginInput = {
+  origin?: string | null;
+  host?: string | null;
+  secFetchSite?: string | null;
+};
+
+export type SameOriginDecision = { ok: true } | { ok: false; reason: "invalid_origin" | "host_mismatch" | "cross_site" };
+
 /**
- * Phase 2 uses an explicitly local-only API while authentication is not ready.
- * Production is denied even if the feature flag is accidentally enabled.
+ * CSRF defence for cookie-authenticated state changes.
+ *
+ * A browser always attaches `Origin` to cross-origin requests and, for fetch/XHR, also
+ * `Sec-Fetch-Site`. Both must agree with the request Host. Requests without either header are
+ * treated as non-browser clients (curl, server-to-server, tests) and pass through: they still need
+ * a valid session cookie, which a cross-site attacker cannot read.
  */
-export function requireLocalDevOwner(event: Parameters<typeof getHeader>[0]): string {
-  const hostHeader = (getHeader(event, "host") ?? "").toLowerCase();
-  const hostname = hostHeader.startsWith("[")
-    ? hostHeader.slice(1, hostHeader.indexOf("]"))
-    : (hostHeader.split(":")[0] ?? "");
-
-  if (
-    !import.meta.dev ||
-    process.env.YILING_LOCAL_API_ENABLED !== "true" ||
-    !["localhost", "127.0.0.1", "::1"].includes(hostname)
-  ) {
-    throw createError({
-      statusCode: 403,
-      statusMessage: "该接口仅在启用本地开发模式且通过 localhost 访问时可用。",
-    });
-  }
-
-  // Loopback Host checks alone do not stop a malicious website from sending browser
-  // requests to localhost. Validate browser fetch metadata when the browser supplies it.
-  const originHeader = getHeader(event, "origin");
-  if (originHeader) {
-    let originUrl: URL | null = null;
-    try {
-      originUrl = new URL(originHeader);
-    } catch {
-      // Invalid and opaque origins (for example, "null") are not trusted.
-    }
-    const rawOriginHostname = originUrl?.hostname.toLowerCase() ?? "";
-    const originHostname = rawOriginHostname.startsWith("[") && rawOriginHostname.endsWith("]")
-      ? rawOriginHostname.slice(1, -1)
-      : rawOriginHostname;
-    if (
-      !originUrl ||
-      !["http:", "https:"].includes(originUrl.protocol) ||
-      originUrl.host.toLowerCase() !== hostHeader ||
-      !["localhost", "127.0.0.1", "::1"].includes(originHostname)
-    ) {
-      throw createError({ statusCode: 403, statusMessage: "本地开发接口拒绝跨源请求。" });
-    }
-  }
-  const fetchSite = (getHeader(event, "sec-fetch-site") ?? "").toLowerCase();
+export function checkSameOrigin(input: SameOriginInput): SameOriginDecision {
+  const host = (input.host ?? "").trim().toLowerCase();
+  const fetchSite = (input.secFetchSite ?? "").trim().toLowerCase();
   if (fetchSite && fetchSite !== "same-origin" && fetchSite !== "none") {
-    throw createError({ statusCode: 403, statusMessage: "本地开发接口拒绝跨站请求。" });
+    return { ok: false, reason: "cross_site" };
   }
 
-  const ownerId = process.env.DEV_OWNER_ID;
-  if (!ownerId || !UUID_PATTERN.test(ownerId)) {
-    throw createError({
-      statusCode: 503,
-      statusMessage: "请在 .env 中设置有效的 DEV_OWNER_ID，并运行 npm run db:seed:dev。",
-    });
-  }
+  const origin = (input.origin ?? "").trim();
+  if (!origin) return { ok: true };
 
-  return ownerId;
+  let parsed: URL;
+  try {
+    parsed = new URL(origin);
+  } catch {
+    // Opaque origins such as "null" are never trusted.
+    return { ok: false, reason: "invalid_origin" };
+  }
+  if (!["http:", "https:"].includes(parsed.protocol)) return { ok: false, reason: "invalid_origin" };
+  if (!host || parsed.host.toLowerCase() !== host) return { ok: false, reason: "host_mismatch" };
+  return { ok: true };
+}
+
+export function requireSameOrigin(event: Parameters<typeof getHeader>[0]): void {
+  const decision = checkSameOrigin({
+    origin: getHeader(event, "origin"),
+    host: getHeader(event, "host"),
+    secFetchSite: getHeader(event, "sec-fetch-site"),
+  });
+  if (decision.ok) return;
+  if (decision.reason === "cross_site") {
+    throw createError({ statusCode: 403, statusMessage: "服务端拒绝跨站请求。" });
+  }
+  throw createError({ statusCode: 403, statusMessage: "服务端拒绝来自未知来源的请求。" });
 }
 
 export function requireUuid(value: string, label = "资源 ID"): string {

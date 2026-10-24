@@ -1,9 +1,9 @@
 import { characterInclude, toCharacterDto } from "../../utils/character-dto";
-import { requireLocalDevOwner } from "../../utils/local-api";
+import { requireActorUserId } from "../../utils/auth";
 import { getPrisma } from "../../utils/prisma";
 
 export default defineEventHandler(async (event) => {
-  const ownerId = requireLocalDevOwner(event);
+  const ownerId = await requireActorUserId(event);
   const characters = await getPrisma().character.findMany({
     where: { ownerId },
     include: characterInclude,

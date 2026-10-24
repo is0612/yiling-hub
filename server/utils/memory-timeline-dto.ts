@@ -33,6 +33,7 @@ type MemoryRecord = {
   status: "ACTIVE" | "SUPERSEDED" | "ARCHIVED" | "INVALIDATED" | "TRASHED";
   createdAt: Date;
   updatedAt: Date;
+  memoryScope: { scopeType: string };
 };
 
 type SnapshotRecord = Parameters<typeof toMemorySnapshotDtos>[0][number];
@@ -123,6 +124,7 @@ export function toMemoryTimelineDtos(input: {
 
   for (const memory of input.memoryItems) {
     const statusLabel = memoryStatusLabels[memory.status];
+    const isPrivate = memory.memoryScope.scopeType === "USER_PRIVATE";
     records.push({
       timestamp: memory.updatedAt.getTime(),
       entry: {
@@ -131,7 +133,7 @@ export function toMemoryTimelineDtos(input: {
         title: memoryCategoryLabels[memory.category],
         summary: summarize(memory.content),
         time: formatTime(memory.updatedAt, timeZone),
-        channel: "长期记忆",
+        channel: isPrivate ? "私人记忆" : "长期记忆",
         tag: statusLabel,
         tagTone: memory.status === "ACTIVE" ? "purple" : memory.status === "INVALIDATED" ? "amber" : "gray",
         source: "记忆条目 #" + memory.id.slice(0, 8),

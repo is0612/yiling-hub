@@ -3,11 +3,12 @@ import type { Prisma } from "../../../src/generated/prisma/client";
 import { characterInclude, toCharacterDto } from "../../utils/character-dto";
 import { readChatModelSettingsPatch } from "../../utils/chat-model-config";
 import { encryptApiKey } from "../../utils/credential-encryption";
-import { readTrimmedString, requireLocalDevOwner, requireUuid } from "../../utils/local-api";
+import { requireActorUserId } from "../../utils/auth";
+import { readTrimmedString, requireUuid } from "../../utils/local-api";
 import { getPrisma } from "../../utils/prisma";
 
 export default defineEventHandler(async (event) => {
-  const ownerId = requireLocalDevOwner(event);
+  const ownerId = await requireActorUserId(event);
   const id = requireUuid(getRouterParam(event, "id") ?? "");
   const body = await readBody<Record<string, unknown>>(event);
   const prisma = getPrisma();

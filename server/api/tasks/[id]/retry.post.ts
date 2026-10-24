@@ -1,12 +1,13 @@
 import { createError, getRouterParam } from "h3";
-import { requireLocalDevOwner, requireUuid } from "../../../utils/local-api";
+import { requireActorUserId } from "../../../utils/auth";
+import { requireUuid } from "../../../utils/local-api";
 import { getPrisma } from "../../../utils/prisma";
 
 const RETRYABLE_TYPES = new Set(["GENERATE_SNAPSHOT", "REGENERATE_SNAPSHOT", "CLEAN_EXPIRED_MESSAGES"]);
 const RETRYABLE_STATUSES = new Set(["FAILED", "RETRY_WAIT", "CANCELLED"]);
 
 export default defineEventHandler(async (event) => {
-  const ownerId = requireLocalDevOwner(event);
+  const ownerId = await requireActorUserId(event);
   const id = requireUuid(getRouterParam(event, "id") ?? "", "任务");
   const now = new Date();
   const prisma = getPrisma();

@@ -1,9 +1,10 @@
 import { createError, getRouterParam, readBody } from "h3";
-import { readTrimmedString, requireLocalDevOwner, requireUuid } from "../../../../utils/local-api";
+import { requireActorUserId } from "../../../../utils/auth";
+import { readTrimmedString, requireUuid } from "../../../../utils/local-api";
 import { getPrisma } from "../../../../utils/prisma";
 
 export default defineEventHandler(async (event) => {
-  const ownerId = requireLocalDevOwner(event);
+  const ownerId = await requireActorUserId(event);
   const characterId = requireUuid(getRouterParam(event, "id") ?? "", "角色");
   const conversationId = requireUuid(getRouterParam(event, "conversationId") ?? "", "会话");
   const body = await readBody<Record<string, unknown>>(event);

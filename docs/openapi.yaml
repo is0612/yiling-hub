@@ -5,6 +5,9 @@ info:
   description: |
     多角色 AI 养成中枢的初始接口契约。
     当前定义用于前后端协作和 Mock；只有实际实现并测试后，接口才算可用。
+
+    鉴权：除 `/auth/session`、`/auth/login`、`/auth/logout` 外，所有接口都要求服务端会话 Cookie（`yiling_session`，HttpOnly、SameSite=Strict，生产环境 Secure）。未登录返回 401；浏览器跨源/跨站请求返回 403。
+    本地开发：只有当服务端处于开发模式、`YILING_LOCAL_API_ENABLED=true`、`YILING_ALLOW_DEV_OWNER_BYPASS` 未关闭、且请求通过 localhost/回环地址访问时，才会以 `DEV_OWNER_ID` 身份运行；生产构建不存在该回退。
 servers:
   - url: /api
     description: 当前部署的同源 API
@@ -23,6 +26,7 @@ paths:
     get:
       tags: [Auth]
       summary: 获取当前管理员会话状态
+      description: "匿名访问返回 200 且 mode 为 anonymous，便于前端决定是否跳转登录页；只有传入失效 Cookie 时才返回 reason=invalid_session。"
       security: []
       responses:
         '200':
@@ -35,6 +39,7 @@ paths:
     post:
       tags: [Auth]
       summary: 管理员登录
+      description: 使用用户名和密码换取服务端会话。密码使用 scrypt 校验；连续失败会按用户名与来源地址限流。成功时通过 `Set-Cookie` 下发 HttpOnly、SameSite=Strict 的会话 Cookie。
       security: []
       requestBody:
         required: true
@@ -44,7 +49,7 @@ paths:
               type: object
               required: [username, password]
               properties:
-                username: { type: string }
+                username: { type: string, maxLength: 100 }
                 password: { type: string, format: password }
       responses:
         '200':
@@ -55,18 +60,21 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SessionResponse'
+                $ref: '#/components/schemas/LoginResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
-          $ref: '#/components/responses/Unauthorized'
+          description: 用户名或密码不正确，或账号已停用
+        '429':
+          description: 登录失败次数过多，已被临时限流
   /auth/logout:
     post:
       tags: [Auth]
       summary: 退出登录
+      description: 撤销当前会话并清除 Cookie；没有会话时同样返回 204，避免失效 Cookie 让浏览器卡在已登录状态。
       responses:
         '204':
           description: 已退出并清除会话
-        '401':
-          $ref: '#/components/responses/Unauthorized'
   /characters:
     get:
       tags: [Characters]
@@ -204,11 +212,10 @@ paths:
     parameters:
       - $ref: '#/components/parameters/CharacterId'
     get:
-      security: []
       tags: [Characters]
       operationId: getCharacterChatHistory
       summary: 获取角色 AI 会话列表和历史消息
-      description: 本地开发功能。只返回当前角色全局记忆范围的会话，不读取其他角色或私人记忆范围。
+      description: 本地开发功能。只返回当前角色全局记忆范围的会话，不读取其他角色或私人记忆范围的会话；会话本身仍归属角色全局范围，但每次回复可以检索当前用户自己的私人记忆。
       parameters:
         - name: conversationId
           in: query
@@ -264,15 +271,14 @@ paths:
         '400':
           description: conversationId 参数格式无效
         '403':
-          description: 仅限本机开发模式访问
+          description: 浏览器请求的 Origin / Sec-Fetch-Site 与当前主机不一致，或未登录
         '404':
           $ref: '#/components/responses/NotFound'
     post:
-      security: []
       tags: [Characters]
       operationId: sendCharacterChatMessage
       summary: 向 AI 角色发送消息并保存对话
-      description: 本地开发功能。按当前消息检索匹配的角色全局长期记忆和快照；模型返回的来源 ID 会通过候选白名单过滤。推荐在网页的角色模型参数中配置 API Base URL、API Key 和模型名称；服务端环境变量可作为默认回退配置。
+      description: 本地开发功能。按当前消息检索匹配的角色全局长期记忆和快照，并合并当前开发用户自己的私人记忆范围；其他人的私人记忆、未验证外部身份的范围和未知范围类型一律不参与检索。模型返回的来源 ID 会通过候选白名单过滤。推荐在网页的角色模型参数中配置 API Base URL、API Key 和模型名称；服务端环境变量可作为默认回退配置。
       requestBody:
         required: true
         content:
@@ -303,10 +309,13 @@ paths:
                     properties:
                       memoriesAvailable: { type: integer }
                       snapshotsAvailable: { type: integer }
+                      privateScopeActive:
+                        type: boolean
+                        description: 当前开发用户在这个角色下已有可读的私人记忆范围时为 true。
         '400':
           description: 消息格式无效
         '403':
-          description: 仅限本机开发模式访问
+          description: 浏览器请求的 Origin / Sec-Fetch-Site 与当前主机不一致，或未登录
         '404':
           $ref: '#/components/responses/NotFound'
         '502':
@@ -317,7 +326,6 @@ paths:
     parameters:
       - $ref: '#/components/parameters/CharacterId'
     post:
-      security: []
       tags: [Characters]
       operationId: testCharacterChatApiConnection
       summary: 测试角色已保存的模型 API
@@ -337,7 +345,7 @@ paths:
                   provider: { type: string }
                   elapsedMs: { type: integer, minimum: 0 }
         '403':
-          description: 仅限本机开发模式访问
+          description: 浏览器请求的 Origin / Sec-Fetch-Site 与当前主机不一致，或未登录
         '404':
           $ref: '#/components/responses/NotFound'
   /characters/{characterId}/chat/{conversationId}:
@@ -348,7 +356,6 @@ paths:
         required: true
         schema: { type: string, format: uuid }
     get:
-      security: []
       tags: [Characters]
       operationId: exportCharacterChatTranscript
       summary: 分页读取完整角色会话及验证过的来源引用
@@ -383,11 +390,10 @@ paths:
         '400':
           description: 分页参数无效
         '403':
-          description: 仅限本机开发模式访问
+          description: 浏览器请求的 Origin / Sec-Fetch-Site 与当前主机不一致，或未登录
         '404':
           $ref: '#/components/responses/NotFound'
     patch:
-      security: []
       tags: [Characters]
       operationId: setCharacterChatConversationStatus
       summary: 归档或恢复角色会话
@@ -416,7 +422,7 @@ paths:
         '400':
           description: status 参数无效
         '403':
-          description: 仅限本机开发模式访问
+          description: 浏览器请求的 Origin / Sec-Fetch-Site 与当前主机不一致，或未登录
         '404':
           $ref: '#/components/responses/NotFound'
   /characters/{characterId}/timeline:
@@ -427,7 +433,6 @@ paths:
       operationId: getCharacterMemoryTimeline
       summary: 获取角色的已保存记忆时间线
       description: 本地开发过渡接口。返回数据库中已保存的消息、长期记忆和快照；本机可手动录入记忆与纯文本对话。外部渠道接入、事件自动提炼和模型总结尚未接入。
-      security: []
       responses:
         '200':
           description: 按时间倒序排列的真实时间线记录
@@ -517,7 +522,6 @@ paths:
       operationId: importCharacterTranscript
       summary: 在本地开发环境手动录入纯文本对话
       description: 仅限 localhost 的开发过渡接口。未提供 occurredAt 的消息会用导入时间附近的毫秒偏移保留输入顺序，不代表原始消息时间；不会调用模型。
-      security: []
       requestBody:
         required: true
         content:
@@ -666,8 +670,7 @@ paths:
       tags: [Memories]
       operationId: createCharacterMemory
       summary: 手动创建长期记忆（本地开发）
-      description: 仅限 localhost 的开发过渡接口；创建的条目默认 ACTIVE，并立即显示在角色时间线中。
-      security: []
+      description: 仅限 localhost 的开发过渡接口；创建的条目默认 ACTIVE，并立即显示在角色时间线中。scope 为 character 时写入角色全局记忆范围，为该角色所有对话共享；为 private 时写入当前开发用户的私人记忆范围，只在该用户与这个角色对话时参与检索。
       requestBody:
         required: true
         content:
@@ -678,7 +681,7 @@ paths:
               properties:
                 content: { type: string, minLength: 1 }
                 category: { type: string, enum: [FACT, PREFERENCE, RELATIONSHIP, COMMITMENT, GOAL, EVENT, SUMMARY, OTHER] }
-                scopeId: { type: string, format: uuid }
+                scope: { type: string, enum: [character, private], default: character }
       responses:
         '201':
           description: 已创建
@@ -707,7 +710,6 @@ paths:
       operationId: moveMemoryToTrash
       summary: 将长期记忆移入回收站（本地开发）
       description: 保留移入前的状态与时间戳；已有快照保持不变。
-      security: []
       responses:
         '200':
           description: 已移入回收站
@@ -738,7 +740,6 @@ paths:
       operationId: restoreMemoryFromTrash
       summary: 从回收站恢复长期记忆（本地开发）
       description: 恢复到移入回收站之前的记忆状态。
-      security: []
       responses:
         '200':
           description: 已恢复
@@ -769,7 +770,6 @@ paths:
       operationId: getMemoryItem
       summary: 获取长期记忆详情（本地开发）
       description: 仅限 localhost 的开发过渡接口，且只允许读取当前本地开发用户拥有角色下的记忆。
-      security: []
       responses:
         '200':
           description: 记忆详情
@@ -852,7 +852,6 @@ paths:
       operationId: permanentlyDeleteTrashedMemory
       summary: 永久删除回收站中的当前记忆条目（本地开发）
       description: 仅可删除已在回收站的条目。不会改写快照；历史快照中的生成时内容副本与来源记录仍保留，因此这不是对所有历史副本的内容擦除。
-      security: []
       responses:
         '200':
           description: 当前长期记忆条目已永久删除，历史快照被保留
@@ -879,7 +878,6 @@ paths:
       tags: [Memories]
       operationId: listCharacterMemoryTrash
       summary: 获取角色记忆回收站（本地开发）
-      security: []
       responses:
         '200':
           description: 回收站条目列表
@@ -1112,7 +1110,6 @@ paths:
       operationId: listMemoryJobs
       summary: 查询当前本地开发用户的持久化后台任务
       description: 本地开发过渡接口；仅返回当前本地开发用户拥有的角色任务，最多返回最近 100 条。
-      security: []
       parameters:
         - name: status
           in: query
@@ -1163,7 +1160,6 @@ paths:
       operationId: enqueueDueMemoryJobs
       summary: 扫描到期周期并排入持久化任务队列（本地开发）
       description: 处理到期的周期边界并使用幂等键将任务写入持久化队列。真实模型调用由独立 Worker 完成。
-      security: []
       responses:
         '200':
           description: 本次扫描统计
@@ -1188,7 +1184,6 @@ paths:
       operationId: runOneMemoryWorkerJob
       summary: 由本地开发界面执行一条周期快照任务（本地开发）
       description: 手动触发一次 Worker 处理。当前消费 GENERATE_SNAPSHOT 与 REGENERATE_SNAPSHOT 任务；配置 LLM_BASE_URL、LLM_API_KEY 与 LLM_MODEL 后调用 OpenAI-compatible Chat Completions。AI 重新提炼会在同一逻辑快照下创建新版本；提议的长期记忆变化只供审核，不会重放应用到当前记忆。未配置模型时任务留在队列。此接口仅限本地开发环境。
-      security: []
       responses:
         '200':
           description: 本次处理结果；processed=false 表示当前没有可执行的任务
@@ -1235,7 +1230,6 @@ paths:
       operationId: requeueSnapshotTask
       summary: 手动重新排队快照任务（本地开发）
       description: 仅支持 GENERATE_SNAPSHOT / REGENERATE_SNAPSHOT 类型，且任务当前状态为 FAILED、RETRY_WAIT 或 CANCELLED。会将尝试计数重置为 0，并写入审计日志。
-      security: []
       parameters:
         - name: taskId
           in: path
@@ -1265,7 +1259,6 @@ paths:
       operationId: cancelQueuedSnapshotTask
       summary: 取消等待中的任务（本地开发）
       description: 仅支持 QUEUED 或 RETRY_WAIT 状态。RUNNING 任务不能被强制取消，以避免与正在进行的 Worker 写事务产生竞态；取消动作写入审计日志。
-      security: []
       parameters:
         - name: taskId
           in: path
@@ -1322,7 +1315,8 @@ components:
     sessionCookie:
       type: apiKey
       in: cookie
-      name: __Host-yiling_session
+      name: yiling_session
+      description: 登录成功后由服务端下发的 HttpOnly、SameSite=Strict 会话 Cookie。生产环境（HTTPS）额外带 Secure。
   parameters:
     CharacterId:
       name: characterId
@@ -1388,15 +1382,37 @@ components:
           type: object
           additionalProperties: true
     SessionResponse:
-      allOf:
-        - $ref: '#/components/schemas/ApiResponse'
-        - type: object
+      type: object
+      required: [mode, user]
+      properties:
+        mode:
+          type: string
+          enum: [session, local-dev, anonymous]
+          description: session=有效登录会话；local-dev=仅本地开发且显式允许的开发用户回退；anonymous=未登录。
+        reason:
+          type: string
+          nullable: true
+          enum: [missing_session, invalid_session, disabled_user, null]
+        user:
+          type: object
+          nullable: true
+          required: [id, username, displayName]
           properties:
-            data:
-              type: object
-              properties:
-                authenticated: { type: boolean }
-                username: { type: string, nullable: true }
+            id: { type: string, format: uuid }
+            username: { type: string }
+            displayName: { type: string, nullable: true }
+    LoginResponse:
+      type: object
+      required: [user, expiresAt]
+      properties:
+        user:
+          type: object
+          required: [id, username, displayName]
+          properties:
+            id: { type: string, format: uuid }
+            username: { type: string }
+            displayName: { type: string, nullable: true }
+        expiresAt: { type: string, format: date-time }
     MemoryScope:
       type: object
       required: [id, characterId, scopeType, scopeKey, createdAt]
@@ -1430,22 +1446,24 @@ components:
               type: array
               items:
                 type: object
-                required: [id, category, content]
+                required: [id, category, content, scope]
                 properties:
                   id: { type: string, format: uuid }
                   category: { type: string }
                   content: { type: string }
+                  scope: { type: string, enum: [character, private] }
             snapshots:
               type: array
               items:
                 type: object
-                required: [id, summary, periodStart, periodEnd, version]
+                required: [id, summary, periodStart, periodEnd, version, scope]
                 properties:
                   id: { type: string, format: uuid }
                   summary: { type: string }
                   periodStart: { type: string, format: date-time }
                   periodEnd: { type: string, format: date-time }
                   version: { type: integer }
+                  scope: { type: string, enum: [character, private] }
     ConversationInput:
       type: object
       required: [memoryScopeId]

@@ -10,10 +10,24 @@ import {
   Search,
   Setting,
   MagicStick,
+  SwitchButton,
   User,
 } from "@element-plus/icons-vue";
 
 const route = useRoute();
+const { displayName, logout, isLocalDevIdentity } = useAuthSession();
+const loggingOut = ref(false);
+const avatarLetter = computed(() => (displayName.value || "管").slice(0, 1));
+
+async function handleLogout() {
+  if (loggingOut.value) return;
+  loggingOut.value = true;
+  try {
+    await logout();
+  } finally {
+    loggingOut.value = false;
+  }
+}
 type NavigationItem = {
   key: string;
   label: string;
@@ -113,12 +127,15 @@ function isActive(item: NavigationItem) {
 
       <div class="sidebar-bottom">
         <div class="admin-row">
-          <div class="admin-avatar">你</div>
+          <div class="admin-avatar">{{ avatarLetter }}</div>
           <div class="admin-info sidebar-bottom-copy">
-            <div class="admin-name">本地管理员</div>
-            <div class="admin-note">开发预览</div>
+            <div class="admin-name">{{ displayName }}</div>
+            <div class="admin-note">{{ isLocalDevIdentity ? "本地开发身份" : "已登录管理员" }}</div>
           </div>
         </div>
+        <el-button class="sidebar-logout" text size="small" :loading="loggingOut" @click="handleLogout">
+          <el-icon><SwitchButton /></el-icon>退出登录
+        </el-button>
         <div class="sidebar-version"><span>Yiling Hub · 预览版</span><span>v0.1</span></div>
       </div>
     </aside>
@@ -131,10 +148,13 @@ function isActive(item: NavigationItem) {
           </el-input>
         </div>
         <div class="topbar-right">
-          <span class="env-indicator"><span class="env-dot" />本地环境</span>
+          <span class="env-indicator"><span class="env-dot" />{{ isLocalDevIdentity ? "本地开发" : "已登录" }}</span>
           <el-button text circle aria-label="通知"><el-icon><Bell /></el-icon></el-button>
           <el-divider direction="vertical" />
-          <div class="user-pill"><el-avatar :size="30">你</el-avatar><span>管理员</span></div>
+          <div class="user-pill"><el-avatar :size="30">{{ avatarLetter }}</el-avatar><span>{{ displayName }}</span></div>
+          <el-button text size="small" :loading="loggingOut" @click="handleLogout">
+            <el-icon><SwitchButton /></el-icon>退出
+          </el-button>
         </div>
       </header>
       <main><slot /></main>

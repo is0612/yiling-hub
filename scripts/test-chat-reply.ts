@@ -48,6 +48,7 @@ try {
       content: "用户喜欢星空。",
       confidence: 0.95,
       relevanceScore: 4,
+      scope: "character",
     }],
     snapshots: [{
       id: "snapshot-1",
@@ -56,6 +57,7 @@ try {
       periodEnd: "2026-10-09T00:00:00.000Z",
       version: 1,
       relevanceScore: 2,
+      scope: "character",
     }],
   });
 
@@ -70,6 +72,9 @@ try {
     messages: Array<{ role: string; content: string }>;
   };
   assert.equal(requestBody.model, "test-chat-model");
+  const systemMessage = requestBody.messages.find((item) => item.role === "system");
+  assert(systemMessage, "The request must include a system prompt.");
+  assert(systemMessage.content.includes("YILING_CONVERSATION_REPLY_V2"), "The system prompt marker must stay in sync with the prompt template version.");
   const userMessage = requestBody.messages.find((item) => item.role === "user");
   assert(userMessage, "The request must include a structured user context.");
   const promptInput = JSON.parse(userMessage.content) as Record<string, unknown>;
@@ -79,6 +84,11 @@ try {
     "Only explicit conversation-context fields should be serialized into the prompt.",
   );
   assert.equal(result.reply, "我记得你的偏好。");
+  const promptMemories = promptInput.memories as Array<Record<string, unknown>>;
+  const promptSnapshots = promptInput.snapshots as Array<Record<string, unknown>>;
+  assert.equal(promptMemories[0]?.scope, "character", "Character-global memory keeps its scope label.");
+  assert.equal(promptSnapshots[0]?.scope, "character", "Character-global snapshot keeps its scope label.");
+  assert(!capturedBody.includes("scopeType"), "Internal scope typing must not leak into the prompt.");
   assert.deepEqual(result.usedMemoryIds, ["memory-1"], "Invented source IDs must be filtered out.");
   assert.deepEqual(result.usedSnapshotIds, ["snapshot-1"]);
   assert.equal(result.usage?.totalTokens, 20);

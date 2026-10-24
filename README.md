@@ -2,7 +2,7 @@
 
 一个用于管理多角色 AI、周期性记忆快照和长期记忆的项目。
 
-> 当前状态：角色档案、记忆周期设置、对话录入、快照版本和周期任务已接入 PostgreSQL。周期 Worker 已接入 OpenAI-compatible 模型调用，可生成周期语义总结、识别有来源支持的事实/偏好变化，并维护长期记忆；真实渠道适配器、正式管理员登录和公网部署安全仍待后续阶段完成。
+> 当前状态：角色档案、记忆周期设置、对话录入、快照版本和周期任务已接入 PostgreSQL。周期 Worker 已接入 OpenAI-compatible 模型调用，可生成周期语义总结、识别有来源支持的事实/偏好变化，并维护长期记忆；AI 对话可按身份隔离读取角色全局记忆与当前用户私人记忆。管理员登录、服务端会话、CSRF 校验与登录限流已实现；真实渠道适配器、多用户权限与公网部署加固仍待后续阶段完成。
 
 ## 周期任务调度（开发阶段）
 
@@ -35,12 +35,24 @@ Worker 配置模型后会调用 LLM 对周期对话进行结构化总结，验�
 
 - 在角色档案的侧边栏打开“AI 对话”，可以创建新会话、继续历史会话并保存消息到 PostgreSQL。
 - 每次回复只携带最近 20 条会话消息、按当前话题匹配的最多 8 条活动长期记忆和最多 4 份当前快照；不会把整个记忆库塞入模型上下文。
-- 模型引用的长期记忆/快照 ID 会按本次实际提供的来源白名单过滤；聊天页面会展示通过验证的来源。当前版本只使用角色全局记忆，不把不同用户的私人记忆混入上下文。
+- 模型引用的长期记忆/快照 ID 会按本次实际提供的来源白名单过滤；聊天页面会展示通过验证的来源，并用「私人」标签区分当前用户自己的私人记忆。
+- 检索范围按身份隔离：总是包含角色全局记忆，另外只包含当前用户自己的私人记忆范围（`USER_PRIVATE`）。其他人的私人记忆、未验证外部身份绑定的范围、其他类型的范围一律不参与检索；提示词里只标注 `character` / `private` 语义，不发送范围 ID 或用户 ID。会话本身仍保存在角色全局范围下，历史消息结构不变。
+- 在角色页「新增长期记忆」里可以选择「角色全局」或「我的私人」，私人记忆只在你与该角色对话时参与检索，并在时间线中标注为「私人记忆」。
 - 历史会话支持按标题/消息内容搜索、重命名、归档与恢复；归档不会删除消息或来源记录，归档会话只读。完整对话可以导出为 Markdown，AI 回复可一键复制。
 - 每个角色的“AI 对话 → 模型参数”可填写 API Base URL、API Key、模型名称、温度和最大输出 Token，并可直接测试 API 连通性；聊天和周期记忆 Worker 都会使用该角色的配置。
 - API Key 使用 AES-256-GCM 加密后保存，网页不会读取或回显密钥原文。加密密钥会自动生成在本机 `.data/credentials-encryption.key`，该文件已被 Git 忽略；备份/迁移数据库时必须一并保管，丢失后需要重新填写 API Key。
-- `LLM_API_KEY`、`LLM_MODEL`、`LLM_BASE_URL` 现在是可选的服务端默认/兼容配置；没有填写角色 API 时才会按规则回退。开发接口仍仅限本机访问；真实渠道 Adapter 与正式管理员登录尚未完成。
-- 检索逻辑可运行 `yarn test:memory-retrieval` 测试；角色模型参数和全局 Key 的供应商隔离可运行 `yarn test:chat-model-config` 测试；提示词凭据隔离、来源 ID 校验和异常模型响应可运行 `yarn test:chat-reply` 测试。
+- `LLM_API_KEY`、`LLM_MODEL`、`LLM_BASE_URL` 现在是可选的服务端默认/兼容配置；没有填写角色 API 时才会按规则回退。业务接口需要登录会话，本地开发保留受限回退；真实渠道 Adapter 与多用户权限仍未完成。
+- 检索逻辑可运行 `yarn test:memory-retrieval` 测试；角色模型参数和全局 Key 的供应商隔离可运行 `yarn test:chat-model-config` 测试；提示词凭据隔离、来源 ID 校验和异常模型响应可运行 `yarn test:chat-reply` 测试；私人记忆范围隔离（纯逻辑 + 数据库查询）可运行 `yarn test:chat-private-memory` 和 `yarn test:chat-private-memory-db` 测试。
+
+## 管理员登录与会话鉴权
+
+- 登录页在 `/login`，使用 `DEV_OWNER_USERNAME` / `DEV_OWNER_PASSWORD` 创建的账号登录（由 `yarn db:seed:dev` 写入）。密码用 scrypt 存储与校验。
+- 会话保存在 PostgreSQL `sessions` 表，浏览器只持有 HttpOnly、SameSite=Strict 的 `yiling_session` Cookie；数据库只存该令牌的 SHA-256 哈希。有效期由 `AUTH_SESSION_TTL_HOURS` 控制（1–720，默认 12）。生产环境（或 `YILING_COOKIE_SECURE=true`）自动加 `Secure`。
+- 所有 `/api` 业务接口都在服务端从会话取身份；未登录返回 401。所有 `/api` 请求都会校验 `Origin` / `Sec-Fetch-Site` 与当前 Host 一致，跨源/跨站请求返回 403。
+- 登录失败按用户名（15 分钟 5 次）与来源地址（15 分钟 20 次）限流，超过返回 429；成功登录会清除该账号的失败记录。失败记录保存在 `login_attempts` 表，来源地址只存哈希。
+- 本地开发默认仍允许免登录回退：`yarn dev` + `YILING_LOCAL_API_ENABLED=true` + 通过 localhost 访问 + 未关闭 `YILING_ALLOW_DEV_OWNER_BYPASS` 时，以 `DEV_OWNER_ID` 身份运行，侧边栏会标注「本地开发身份」。把 `YILING_ALLOW_DEV_OWNER_BYPASS=false` 写进 `.env` 即可强制本地也走真实登录；生产构建没有这个回退。
+- 携带失效或已撤销的 Cookie 时不会回退成开发身份，而是要求重新登录，避免「看起来已登录、实际是以开发用户操作」的错觉。
+- 验证命令：`yarn test:auth`（哈希、Cookie 属性、同源矩阵、身份回退决策、限流阈值）与 `yarn test:auth-db`（会话签发/过期/撤销、停用账号拒绝、哈希存储、限流计数）。完整登录/登出/限流流程在 `yarn test` 冒烟脚本中覆盖。
 
 ## 从哪里开始
 
@@ -115,7 +127,7 @@ yarn run db:seed:dev
 yarn run dev
 ```
 
-在浏览器打开 `http://localhost:3000`。角色列表、角色创建/编辑、记忆周期设置、手动新增长期记忆、消息录入、时间线和快照版本会读写 PostgreSQL。周期任务通过 `yarn scheduler:run` 入队，由 `yarn worker:run` 处理；调试时可分别运行 watch 模式。周期总结和长期记忆提炼需要先配置服务端模型参数。自动记忆仅采纳带有本周期原始消息证据、且通过来源 ID 校验的模型结果。真实聊天渠道适配、正式管理员登录和公网部署安全仍待完成。
+在浏览器打开 `http://localhost:3000`。角色列表、角色创建/编辑、记忆周期设置、手动新增长期记忆、消息录入、时间线和快照版本会读写 PostgreSQL。周期任务通过 `yarn scheduler:run` 入队，由 `yarn worker:run` 处理；调试时可分别运行 watch 模式。周期总结和长期记忆提炼需要先配置服务端模型参数。自动记忆仅采纳带有本周期原始消息证据、且通过来源 ID 校验的模型结果。真实聊天渠道适配、多用户权限和公网部署加固仍待完成。
 
 ## 本地全量校验
 
@@ -125,7 +137,7 @@ yarn run dev
 yarn verify:local
 ```
 
-该命令会校验 Prisma Schema、重新生成 Prisma Client、准备 Nuxt 类型信息，并依次运行 TypeScript 检查、周期调度单元测试、PostgreSQL 调度与清理集成测试、AI 来源校验、记忆检索测试、角色模型参数测试、聊天提示词凭据隔离测试、ESLint 和生产构建。
+该命令会校验 Prisma Schema、重新生成 Prisma Client、准备 Nuxt 类型信息，并依次运行 TypeScript 检查、周期调度单元测试、PostgreSQL 调度与清理集成测试、AI 来源校验、记忆检索测试、角色模型参数测试、聊天提示词凭据隔离测试、私人记忆范围隔离测试（含数据库集成）、登录会话与 CSRF 单元测试、会话与登录限流数据库测试、ESLint 和生产构建。
 
 运行前请先启动 PostgreSQL，并确认 `.env` 中的 `DATABASE_URL` 指向本机开发/测试数据库，且已应用仓库迁移。数据库集成测试会创建并清理临时数据；不要将该命令指向包含重要数据的数据库。该命令不会自动重置数据库，也不会启动 Nuxt 服务或模拟模型服务。
 
@@ -133,6 +145,8 @@ GitHub Actions 还会额外启动本地模拟模型与 Nuxt，执行完整 API �
 
 ## 本地 API 安全说明
 
-本阶段 API 只在 Nuxt 开发构建中可用，且必须显式设置 `YILING_LOCAL_API_ENABLED=true` 并通过 `localhost`/回环 Host 访问；Nuxt 开发服务器默认绑定 `127.0.0.1`。生产构建会拒绝这些请求。管理员登录、会话管理、正式权限校验必须在服务公开部署前完成；不要通过 `--host 0.0.0.0` 覆盖回环绑定，或把本地开发 API 暴露给局域网/公网。
+业务接口现在要求登录会话；本地开发为了方便调试，额外提供一条受限回退：只有 `YILING_LOCAL_API_ENABLED=true`、`YILING_ALLOW_DEV_OWNER_BYPASS` 未关闭、通过 `localhost`/回环 Host 访问、且运行在开发构建中时，才会以 `DEV_OWNER_ID` 身份放行。Nuxt 开发服务器默认绑定 `127.0.0.1`。生产构建不接受这条回退，必须登录。
+
+回退只是本地便利，不代表可以把这个开发服务暴露出去：不要通过 `--host 0.0.0.0` 覆盖回环绑定，也不要把开发数据库或开发服务接入局域网/公网。公开部署前还需要 HTTPS、反向代理信任配置、数据库不对外暴露、备份恢复演练等部署侧工作，见 [安全规范](docs/security.md)。
 
 数据备份和换电脑迁移流程见 [本地开发与数据迁移规范](docs/local-development-and-data-migration.md)。

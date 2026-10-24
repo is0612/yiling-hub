@@ -8,12 +8,14 @@ export function useCharacterList() {
 }
 
 /**
- * 拉取角色列表并写入共享状态。数据库未就绪时不抛出，交由页面自行提示。
+ * 拉取角色列表并写入共享状态。数据库未就绪或未登录时不抛出，交由页面自行提示。
+ * SSR 阶段使用 useRequestFetch 转发 cookie，避免把已登录用户的请求变成匿名请求。
  */
 export async function loadCharacters(): Promise<Character[]> {
   const characters = useCharacterList();
+  const request = import.meta.server ? useRequestFetch() : $fetch;
   try {
-    characters.value = await $fetch<Character[]>("/api/characters");
+    characters.value = await request<Character[]>("/api/characters");
   } catch {
     // 保持已有列表，调用方按空列表处理。
   }

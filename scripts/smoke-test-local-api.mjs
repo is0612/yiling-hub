@@ -73,6 +73,66 @@ const crossSiteResponse = await fetch(new URL("/api/characters", baseUrl), {
 assert(crossSiteResponse.status === 403, "Local API must reject browser requests marked as cross-site.");
 await crossSiteResponse.arrayBuffer();
 
+// --- Admin login, server-side session and logout coverage ---
+const writeHeaders = { "content-type": "application/json", origin: new URL(baseUrl).origin, "sec-fetch-site": "same-origin" };
+const anonymousSession = await (await fetch(new URL("/api/auth/session", baseUrl))).json();
+assert(anonymousSession.mode === "local-dev" && anonymousSession.user, "Without a session the local development identity should be reported.");
+
+const loginResponse = await fetch(new URL("/api/auth/login", baseUrl), {
+  method: "POST",
+  headers: writeHeaders,
+  body: JSON.stringify({ username: process.env.DEV_OWNER_USERNAME, password: process.env.DEV_OWNER_PASSWORD }),
+});
+const loginPayload = await loginResponse.json().catch(() => null);
+assert(loginResponse.status === 200, `POST /api/auth/login failed (${loginResponse.status}): ${JSON.stringify(loginPayload)}`);
+assert(loginPayload.user?.id === process.env.DEV_OWNER_ID, "Login must return the seeded administrator.");
+const sessionSetCookie = loginResponse.headers.get("set-cookie") || "";
+assert(/HttpOnly/i.test(sessionSetCookie), "The session cookie must be HttpOnly.");
+assert(/SameSite=Strict/i.test(sessionSetCookie), "The session cookie must be SameSite=Strict.");
+assert(/Max-Age=\d+/i.test(sessionSetCookie), "The session cookie must carry an expiry.");
+const sessionCookie = sessionSetCookie.split(";")[0];
+assert(sessionCookie.startsWith("yiling_session="), "The session cookie name must match the server contract.");
+
+const cookieSession = await (await fetch(new URL("/api/auth/session", baseUrl), { headers: { cookie: sessionCookie } })).json();
+assert(cookieSession.mode === "session" && cookieSession.user?.id === process.env.DEV_OWNER_ID, "A valid session cookie must resolve to the logged-in administrator.");
+
+const noSuchAccount = "ci-no-such-user-" + Date.now().toString();
+const badLogin = await fetch(new URL("/api/auth/login", baseUrl), {
+  method: "POST",
+  headers: writeHeaders,
+  body: JSON.stringify({ username: noSuchAccount, password: "definitely-the-wrong-password" }),
+});
+assert(badLogin.status === 401, "A wrong password must be rejected with 401.");
+await badLogin.arrayBuffer();
+
+let throttleStatus = 0;
+for (let attempt = 0; attempt < 6; attempt += 1) {
+  const response = await fetch(new URL("/api/auth/login", baseUrl), {
+    method: "POST",
+    headers: writeHeaders,
+    body: JSON.stringify({ username: noSuchAccount, password: "definitely-the-wrong-password" }),
+  });
+  throttleStatus = response.status;
+  await response.arrayBuffer();
+  if (throttleStatus === 429) break;
+}
+assert(throttleStatus === 429, "Repeated failed logins must be throttled.");
+await prisma.loginAttempt.deleteMany({ where: { username: noSuchAccount } });
+
+const logoutResponse = await fetch(new URL("/api/auth/logout", baseUrl), {
+  method: "POST",
+  headers: { cookie: sessionCookie, origin: new URL(baseUrl).origin, "sec-fetch-site": "same-origin" },
+});
+assert(logoutResponse.status === 204, "Logout must succeed with 204.");
+assert(/Max-Age=0/i.test(logoutResponse.headers.get("set-cookie") || ""), "Logout must expire the session cookie.");
+await logoutResponse.arrayBuffer();
+
+const afterLogoutSession = await (await fetch(new URL("/api/auth/session", baseUrl), { headers: { cookie: sessionCookie } })).json();
+assert(
+  afterLogoutSession.mode === "anonymous" && afterLogoutSession.user === null,
+  "A revoked cookie must not authenticate and must not silently fall back to the development owner.",
+);
+
 const firstList = await request("/api/characters");
 assert(Array.isArray(firstList), "GET /api/characters must return a list.");
 
@@ -470,26 +530,46 @@ assert(finalSnapshotHistory.some((snapshot) => snapshot.id === retriedRegenerati
 const latestList = await request("/api/characters");
 assert(latestList.some((character) => character.id === created.id && character.name === edited.name), "Character changes did not appear in the list.");
 
-// Plant a distinctive private-scope memory. The mock model rejects any chat prompt
-// that contains this marker, so a scope leak fails the real HTTP smoke test.
+// Scope isolation over real HTTP. Another user's private memory must never reach the prompt, while
+// the acting user's own private memory must be retrievable and labelled as private.
 const characterForPrivateScope = await prisma.character.findUnique({
   where: { id: created.id },
   select: { ownerId: true },
 });
 assert(characterForPrivateScope?.ownerId, "The smoke-test character should have an owner for private-scope isolation coverage.");
-const privateScope = await prisma.memoryScope.create({
+const foreignUser = await prisma.user.create({
+  data: { username: `ci-private-other-${unique}`, passwordHash: "ci-only" },
+});
+const foreignPrivateScope = await prisma.memoryScope.create({
   data: {
     characterId: created.id,
     scopeType: "USER_PRIVATE",
     scopeKey: `ci-private-isolation:${created.id}:${unique}`,
-    userId: characterForPrivateScope.ownerId,
+    userId: foreignUser.id,
   },
 });
 await prisma.memoryItem.create({
   data: {
-    memoryScopeId: privateScope.id,
+    memoryScopeId: foreignPrivateScope.id,
     category: "PREFERENCE",
-    content: `YILING_PRIVATE_SCOPE_ONLY_SENTINEL_${unique}: must not enter the role-global chat context.`,
+    content: `YILING_PRIVATE_SCOPE_ONLY_SENTINEL_${unique}: must not enter another user's chat context.`,
+    confidence: 1,
+  },
+});
+const ownPrivateScope = await prisma.memoryScope.create({
+  data: {
+    characterId: created.id,
+    scopeType: "USER_PRIVATE",
+    scopeKey: `character:${created.id}:user:${characterForPrivateScope.ownerId}`,
+    userId: characterForPrivateScope.ownerId,
+  },
+});
+const ownPrivateMarker = `柠檬气泡水-${unique}`;
+await prisma.memoryItem.create({
+  data: {
+    memoryScopeId: ownPrivateScope.id,
+    category: "PREFERENCE",
+    content: `我的私人口味：${ownPrivateMarker}。`,
     confidence: 1,
   },
 });
@@ -497,11 +577,22 @@ let chatReply;
 try {
   chatReply = await request("/api/characters/" + created.id + "/chat", {
     method: "POST",
-    body: { message: "请回忆一下历史周期用户消息 " + unique },
+    body: { message: `请回忆一下历史周期用户消息：我的私人口味 ${ownPrivateMarker} 是什么？` },
   });
 } finally {
-  await prisma.memoryScope.delete({ where: { id: privateScope.id } });
+  await prisma.memoryScope.delete({ where: { id: foreignPrivateScope.id } });
+  await prisma.memoryScope.delete({ where: { id: ownPrivateScope.id } });
+  await prisma.user.delete({ where: { id: foreignUser.id } });
 }
+assert(chatReply.retrieval?.privateScopeActive === true, "The chat should report that the acting user's private scope is active.");
+assert(
+  chatReply.assistantMessage.sources.memories.some((memory) => memory.scope === "private" && memory.content.includes(ownPrivateMarker)),
+  "The acting user's own private memory must be retrievable and labelled as private.",
+);
+assert(
+  chatReply.assistantMessage.sources.memories.every((memory) => !memory.content.includes("YILING_PRIVATE_SCOPE_ONLY_SENTINEL_")),
+  "Another user's private memory must never be cited.",
+);
 assert(typeof chatReply.conversationId === "string", "AI chat should persist a conversation.");
 assert(chatReply.assistantMessage?.content?.includes("CI 模拟模型回复"), "Chat API should return the local mock model response.");
 assert(Array.isArray(chatReply.assistantMessage?.sources?.memories), "Chat reply should expose validated memory source references.");
@@ -512,6 +603,10 @@ assert(chatHistory.selectedConversationId === chatReply.conversationId, "GET cha
 assert(chatHistory.messages.length === 2, "A new chat should persist one user message and one assistant reply.");
 assert(chatHistory.messages[0].role === "USER" && chatHistory.messages[1].role === "ASSISTANT", "Persisted chat messages should keep their speaker roles.");
 assert(chatHistory.messages[1].content === chatReply.assistantMessage.content, "Reopened chat should preserve the assistant reply.");
+assert(
+  chatHistory.messages[1].sources.memories.every((memory) => memory.scope === "character" || memory.scope === "private"),
+  "Stored chat sources should keep an explicit scope label.",
+);
 
 const renamedTitle = "CI 重命名会话 " + unique;
 const renamedConversation = await request("/api/characters/" + created.id + "/chat/" + chatReply.conversationId, {
@@ -815,6 +910,6 @@ assert(
   "Permanent retention must not enqueue raw-message cleanup work."
 );
 
-console.log("Local API smoke test passed: character CRUD, encrypted per-character API settings and connection test, memory settings including deferred changes, pending-change cancellation and immediate recalculation, transcript import, scheduler backfill, local-mock AI extraction, source-ID validation, persisted provenance, manual and AI snapshot versions, safe AI regeneration, task cancel/requeue, recycle-bin lifecycle, context-aware AI chat, conversation search/rename, archive/restore, archived write protection, and end-to-end raw-message retention cleanup with audit-result visibility, cleanup-task cancel/retry, retention-widening protection, and permanent-retention safety.");
+console.log("Local API smoke test passed: character CRUD, encrypted per-character API settings and connection test, memory settings including deferred changes, pending-change cancellation and immediate recalculation, transcript import, scheduler backfill, local-mock AI extraction, source-ID validation, persisted provenance, manual and AI snapshot versions, safe AI regeneration, task cancel/requeue, recycle-bin lifecycle, context-aware AI chat with private-scope isolation, conversation search/rename, archive/restore, archived write protection, and end-to-end raw-message retention cleanup with audit-result visibility, cleanup-task cancel/retry, retention-widening protection, and permanent-retention safety.");
 
 await prisma.$disconnect();

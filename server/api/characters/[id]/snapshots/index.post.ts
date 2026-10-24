@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { createError, getRouterParam, readBody } from "h3";
 import { isMemoryModelConfigured } from "../../../../utils/memory-ai";
-import { requireLocalDevOwner, requireUuid } from "../../../../utils/local-api";
+import { requireActorUserId } from "../../../../utils/auth";
+import { requireUuid } from "../../../../utils/local-api";
 import { getPrisma } from "../../../../utils/prisma";
 
 type CreateSnapshotBody = {
@@ -10,7 +11,7 @@ type CreateSnapshotBody = {
 };
 
 export default defineEventHandler(async (event) => {
-  const ownerId = requireLocalDevOwner(event);
+  const ownerId = await requireActorUserId(event);
   const characterId = requireUuid(getRouterParam(event, "id") ?? "", "角色");
   const body = await readBody<CreateSnapshotBody>(event).catch(() => ({} as CreateSnapshotBody));
 

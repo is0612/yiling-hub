@@ -69,7 +69,7 @@ const server = http.createServer(async (request, response) => {
     }
 
     const input = JSON.parse(userMessage.content);
-    if (typeof systemMessage?.content === "string" && systemMessage.content.includes("YILING_CONVERSATION_REPLY_V1")) {
+    if (typeof systemMessage?.content === "string" && /YILING_CONVERSATION_REPLY_V\d/.test(systemMessage.content)) {
       const forbiddenPromptKeys = ["apiKey", "apiBaseUrl", "model", "temperature", "maxTokens"];
       const leakedSetting = forbiddenPromptKeys.find((key) => Object.prototype.hasOwnProperty.call(input, key));
       if (leakedSetting) {
@@ -80,7 +80,7 @@ const server = http.createServer(async (request, response) => {
       const snapshots = Array.isArray(input.snapshots) ? input.snapshots : [];
       const privateScopeSentinel = "YILING_PRIVATE_SCOPE_ONLY_SENTINEL_";
       if (JSON.stringify({ memories, snapshots }).includes(privateScopeSentinel)) {
-        sendJson(response, 400, { error: { message: "Private-scope memory must never enter the role-global chat prompt." } });
+        sendJson(response, 400, { error: { message: "Another user's private-scope memory must never enter this user's chat prompt." } });
         return;
       }
       const firstMemory = memories[0] && typeof memories[0].id === "string" ? memories[0].id : null;
