@@ -179,6 +179,25 @@ assert(savedSettings.timezone === "America/Los_Angeles", "Timezone was not saved
 assert(savedSettings.rawMessageRetentionDays === 30, "Message retention was not saved.");
 assert(savedSettings.changePolicy === "IMMEDIATE_RECALC", "Change policy was not saved.");
 
+const invalidRetentionResponse = await fetch(
+  new URL(`/api/characters/${created.id}/memory-settings`, baseUrl),
+  {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      snapshotIntervalDays: 3,
+      timezone: "America/Los_Angeles",
+      anchorAt: schedulerAnchorAt.toISOString(),
+      rawMessageRetentionDays: 45,
+      autoSnapshotEnabled: true,
+      changePolicy: "IMMEDIATE_RECALC",
+    }),
+  }
+);
+assert(invalidRetentionResponse.status === 400, "Unsupported retention durations such as 45 days must be rejected.");
+const settingsAfterInvalidRetention = await request(`/api/characters/${created.id}/memory-settings`);
+assert(settingsAfterInvalidRetention.rawMessageRetentionDays === 30, "A rejected retention update must not change the saved setting.");
+
 const reloadedSettings = await request(`/api/characters/${created.id}/memory-settings`);
 assert(reloadedSettings.snapshotIntervalDays === 3, "Memory interval did not persist after a new read.");
 assert(reloadedSettings.autoSnapshotEnabled === true, "Auto-snapshot switch did not persist.");
