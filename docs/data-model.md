@@ -17,7 +17,7 @@
 | memory_items | 长期记忆条目 | 应保留状态、有效期、置信度和来源 |
 | memory_snapshots | 周期或手动快照的版本 | 周期范围清晰；逻辑快照版本不重复 |
 | memory_snapshot_sources | 快照与来源的多对多关系 | 来源关系可追溯 |
-| character_memory_settings | 默认与角色级周期设置 | 周期为 1–365 天整数；时区合法 |
+| character_memory_settings | 默认与角色级周期设置 | 生效周期与待生效周期分开保存；时区合法；原始消息清理须显式启用 |
 | memory_jobs | 持久化后台任务 | `idempotency_key` 唯一 |
 | audit_logs | 关键管理操作审计 | 不写入密钥或不必要的敏感正文 |
 
