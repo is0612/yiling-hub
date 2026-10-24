@@ -1584,14 +1584,43 @@ components:
         createdAt: { type: string, format: date-time }
     MemorySettings:
       type: object
-      required: [snapshotIntervalDays, timezone, autoSnapshotEnabled]
+      required: [snapshotIntervalDays, activeSnapshotIntervalDays, timezone, autoSnapshotEnabled, rawMessageCleanupEnabled]
       properties:
-        snapshotIntervalDays: { type: integer, minimum: 1, maximum: 365, default: 8 }
+        snapshotIntervalDays:
+          type: integer
+          minimum: 1
+          maximum: 365
+          default: 8
+          description: 当前表单选择的间隔；若存在待生效值则返回待生效值，否则返回当前生效值
+        activeSnapshotIntervalDays:
+          type: integer
+          minimum: 1
+          maximum: 365
+          readOnly: true
+          description: 当前周期实际使用的快照间隔
+        pendingSnapshotIntervalDays:
+          type: integer
+          minimum: 1
+          maximum: 365
+          nullable: true
+          description: 下一周期边界生效的快照间隔；立即重算策略下为 null
         timezone: { type: string, example: Asia/Shanghai }
         anchorAt: { type: string, format: date-time, nullable: true }
         nextSnapshotAt: { type: string, format: date-time, nullable: true, readOnly: true }
-        rawMessageRetentionDays: { type: integer, minimum: 1, nullable: true }
+        rawMessageRetentionDays:
+          type: integer
+          minimum: 0
+          nullable: true
+          description: 0 或 null 表示永久保留；期限本身不会自动启用清理
+        rawMessageCleanupEnabled:
+          type: boolean
+          default: false
+          description: 是否允许后台清理超过保留期限的原始消息
         autoSnapshotEnabled: { type: boolean, default: true }
+        changePolicy:
+          type: string
+          enum: [NEXT_CYCLE, IMMEDIATE_RECALC]
+          default: NEXT_CYCLE
     MemoryJob:
       type: object
       required: [id, type, status, attemptCount, createdAt]
