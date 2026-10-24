@@ -117,10 +117,12 @@ export async function enqueueDueMemorySnapshots(
     // Do not queue a cleanup while an older snapshot period is still pending.
     const retentionDays = setting.rawMessageRetentionDays;
     const cutoff = retentionDays && retentionDays > 0 ? addDays(now, -retentionDays) : null;
+    const firstSnapshotBoundary = setting.nextSnapshotAt ?? addDays(setting.anchorAt, setting.snapshotIntervalDays);
     const hasUnqueuedExpiredSnapshotPeriods = Boolean(
       setting.autoSnapshotEnabled &&
       cutoff &&
-      (setting.nextSnapshotAt ?? addDays(setting.anchorAt, setting.snapshotIntervalDays)).getTime() < cutoff.getTime()
+      firstSnapshotBoundary.getTime() <= now.getTime() &&
+      firstSnapshotBoundary.getTime() - setting.snapshotIntervalDays * DAY_MS < cutoff.getTime()
     );
     if (cutoff && !hasUnqueuedExpiredSnapshotPeriods) {
       for (const scope of setting.character.memoryScopes) {
