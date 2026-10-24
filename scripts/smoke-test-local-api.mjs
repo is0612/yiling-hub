@@ -1,3 +1,6 @@
+import { PrismaPg } from "@prisma/adapter-pg";
+import { PrismaClient } from "../src/generated/prisma/client";
+
 const baseUrl = process.env.SMOKE_BASE_URL || "http://127.0.0.1:3000";
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
@@ -49,6 +52,10 @@ async function waitForServer() {
 }
 
 await waitForServer();
+
+const databaseUrl = process.env.DATABASE_URL;
+assert(typeof databaseUrl === "string" && databaseUrl.length > 0, "DATABASE_URL is required for scope-isolation smoke coverage.");
+const prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString: databaseUrl }) });
 
 const sameOriginResponse = await fetch(new URL("/api/characters", baseUrl), {
   headers: { origin: new URL(baseUrl).origin, "sec-fetch-site": "same-origin" },
@@ -463,10 +470,38 @@ assert(finalSnapshotHistory.some((snapshot) => snapshot.id === retriedRegenerati
 const latestList = await request("/api/characters");
 assert(latestList.some((character) => character.id === created.id && character.name === edited.name), "Character changes did not appear in the list.");
 
-const chatReply = await request("/api/characters/" + created.id + "/chat", {
-  method: "POST",
-  body: { message: "请回忆一下历史周期用户消息 " + unique },
+// Plant a distinctive private-scope memory. The mock model rejects any chat prompt
+// that contains this marker, so a scope leak fails the real HTTP smoke test.
+const characterForPrivateScope = await prisma.character.findUnique({
+  where: { id: created.id },
+  select: { ownerId: true },
 });
+assert(characterForPrivateScope?.ownerId, "The smoke-test character should have an owner for private-scope isolation coverage.");
+const privateScope = await prisma.memoryScope.create({
+  data: {
+    characterId: created.id,
+    scopeType: "USER_PRIVATE",
+    scopeKey: `ci-private-isolation:${created.id}:${unique}`,
+    userId: characterForPrivateScope.ownerId,
+  },
+});
+await prisma.memoryItem.create({
+  data: {
+    memoryScopeId: privateScope.id,
+    category: "PREFERENCE",
+    content: `YILING_PRIVATE_SCOPE_ONLY_SENTINEL_${unique}: must not enter the role-global chat context.`,
+    confidence: 1,
+  },
+});
+let chatReply;
+try {
+  chatReply = await request("/api/characters/" + created.id + "/chat", {
+    method: "POST",
+    body: { message: "请回忆一下历史周期用户消息 " + unique },
+  });
+} finally {
+  await prisma.memoryScope.delete({ where: { id: privateScope.id } });
+}
 assert(typeof chatReply.conversationId === "string", "AI chat should persist a conversation.");
 assert(chatReply.assistantMessage?.content?.includes("CI 模拟模型回复"), "Chat API should return the local mock model response.");
 assert(Array.isArray(chatReply.assistantMessage?.sources?.memories), "Chat reply should expose validated memory source references.");
@@ -781,3 +816,5 @@ assert(
 );
 
 console.log("Local API smoke test passed: character CRUD, encrypted per-character API settings and connection test, memory settings including deferred changes, pending-change cancellation and immediate recalculation, transcript import, scheduler backfill, local-mock AI extraction, source-ID validation, persisted provenance, manual and AI snapshot versions, safe AI regeneration, task cancel/requeue, recycle-bin lifecycle, context-aware AI chat, conversation search/rename, archive/restore, archived write protection, and end-to-end raw-message retention cleanup with audit-result visibility, cleanup-task cancel/retry, retention-widening protection, and permanent-retention safety.");
+
+await prisma.$disconnect();
