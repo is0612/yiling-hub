@@ -24,6 +24,7 @@ export default defineEventHandler(async (event) => {
       anchorAt: new Date(),
       autoSnapshotEnabled: false,
       rawMessageRetentionDays: null,
+      rawMessageCleanupEnabled: false,
     },
     update: {},
   });
@@ -33,6 +34,7 @@ export default defineEventHandler(async (event) => {
     timezone: settings.timezone,
     anchorAt: settings.anchorAt.toISOString(),
     rawMessageRetentionDays: settings.rawMessageRetentionDays ?? 0,
+    rawMessageCleanupEnabled: settings.rawMessageCleanupEnabled,
     autoSnapshotEnabled: settings.autoSnapshotEnabled,
     changePolicy: settings.changePolicy,
     nextSnapshotAt: settings.nextSnapshotAt?.toISOString() ?? null,

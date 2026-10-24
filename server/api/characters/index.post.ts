@@ -39,6 +39,7 @@ export default defineEventHandler(async (event) => {
           anchorAt: new Date(),
           autoSnapshotEnabled: false,
           rawMessageRetentionDays: null,
+          rawMessageCleanupEnabled: false,
         },
       },
     },

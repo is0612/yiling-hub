@@ -366,6 +366,7 @@ model CharacterMemorySetting {
   autoSnapshotEnabled    Boolean   @default(true)
   changePolicy           MemorySettingsChangePolicy @default(NEXT_CYCLE)
   rawMessageRetentionDays Int?
+  rawMessageCleanupEnabled Boolean   @default(false)
   createdAt              DateTime  @default(now()) @db.Timestamptz(6)
   updatedAt              DateTime  @updatedAt @db.Timestamptz(6)
   character              Character @relation(fields: [characterId], references: [id], onDelete: Cascade)

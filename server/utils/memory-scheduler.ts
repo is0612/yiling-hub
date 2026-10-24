@@ -86,6 +86,7 @@ export async function enqueueDueMemorySnapshots(
       nextSnapshotAt: true,
       autoSnapshotEnabled: true,
       rawMessageRetentionDays: true,
+      rawMessageCleanupEnabled: true,
       character: {
         select: {
           memoryScopes: {
@@ -116,7 +117,9 @@ export async function enqueueDueMemorySnapshots(
     // Queue retention cleanup independently from automatic snapshot generation.
     // Do not queue a cleanup while an older snapshot period is still pending.
     const retentionDays = setting.rawMessageRetentionDays;
-    const cutoff = retentionDays && retentionDays > 0 ? addDays(now, -retentionDays) : null;
+    const cutoff = setting.rawMessageCleanupEnabled && retentionDays && retentionDays > 0
+      ? addDays(now, -retentionDays)
+      : null;
     const firstSnapshotBoundary = setting.nextSnapshotAt ?? addDays(setting.anchorAt, setting.snapshotIntervalDays);
     const hasUnqueuedExpiredSnapshotPeriods = Boolean(
       setting.autoSnapshotEnabled &&

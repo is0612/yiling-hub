@@ -49,6 +49,13 @@ export default defineEventHandler(async (event) => {
   if (!Number.isInteger(rawRetention) || !allowedRetentionDays.has(rawRetention)) {
     throw createError({ statusCode: 400, statusMessage: "原始消息保留期限只能选择永久、30、90 或 180 天。" });
   }
+  if (typeof body.rawMessageCleanupEnabled !== "boolean") {
+    throw createError({ statusCode: 400, statusMessage: "请明确确认原始消息自动清理是否已授权。" });
+  }
+  const rawMessageCleanupEnabled = body.rawMessageCleanupEnabled;
+  if (rawRetention === 0 && rawMessageCleanupEnabled) {
+    throw createError({ statusCode: 400, statusMessage: "永久保留模式下不能启用原始消息自动清理。" });
+  }
 
   const rawAnchor = typeof body.anchorAt === "string" ? new Date(body.anchorAt) : new Date(Number.NaN);
   if (Number.isNaN(rawAnchor.getTime())) {
@@ -73,6 +80,7 @@ export default defineEventHandler(async (event) => {
       autoSnapshotEnabled: body.autoSnapshotEnabled,
       changePolicy,
       rawMessageRetentionDays: rawRetention === 0 ? null : rawRetention,
+      rawMessageCleanupEnabled,
     },
     update: {
       snapshotIntervalDays: interval,
@@ -82,6 +90,7 @@ export default defineEventHandler(async (event) => {
       autoSnapshotEnabled: body.autoSnapshotEnabled,
       changePolicy,
       rawMessageRetentionDays: rawRetention === 0 ? null : rawRetention,
+      rawMessageCleanupEnabled,
     },
   });
 
@@ -90,6 +99,7 @@ export default defineEventHandler(async (event) => {
     timezone: settings.timezone,
     anchorAt: settings.anchorAt.toISOString(),
     rawMessageRetentionDays: settings.rawMessageRetentionDays ?? 0,
+    rawMessageCleanupEnabled: settings.rawMessageCleanupEnabled,
     autoSnapshotEnabled: settings.autoSnapshotEnabled,
     changePolicy: settings.changePolicy,
     nextSnapshotAt: settings.nextSnapshotAt?.toISOString() ?? null,
