@@ -33,7 +33,10 @@ export function requireLocalDevOwner(event: Parameters<typeof getHeader>[0]): st
     } catch {
       // Invalid and opaque origins (for example, "null") are not trusted.
     }
-    const originHostname = originUrl?.hostname.toLowerCase().replace(/^\\[|\\]$/g, "") ?? "";
+    const rawOriginHostname = originUrl?.hostname.toLowerCase() ?? "";
+    const originHostname = rawOriginHostname.startsWith("[") && rawOriginHostname.endsWith("]")
+      ? rawOriginHostname.slice(1, -1)
+      : rawOriginHostname;
     if (
       !originUrl ||
       !["http:", "https:"].includes(originUrl.protocol) ||
