@@ -393,4 +393,84 @@ assert(restoreResult.status === "ACTIVE", "Restoring an archived conversation sh
 const restoredChat = await request("/api/characters/" + created.id + "/chat?conversationId=" + chatReply.conversationId);
 assert(restoredChat.selectedConversationId === chatReply.conversationId && restoredChat.messages.length === 2, "Restored chat history must preserve its messages.");
 
-console.log("Local API smoke test passed: character CRUD, encrypted per-character API settings and connection test, memory settings, transcript import, scheduler backfill, local-mock AI extraction, source-ID validation, persisted provenance, manual and AI snapshot versions, safe AI regeneration, task cancel/requeue, recycle-bin lifecycle, context-aware AI chat, conversation search/rename, archive/restore, and archived write protection.");
+// Isolated end-to-end retention check: only the expired message should be deleted.
+const retentionCharacter = await request("/api/characters", {
+  method: "POST",
+  body: {
+    name: "CI 消息保留策略测试 " + unique,
+    alias: "CI 保留测试",
+    description: "用于端到端验证过期原始消息清理。",
+    personality: "仅用于自动化测试。",
+  },
+});
+const dayMs = 24 * 60 * 60 * 1000;
+const expiredAt = new Date(Date.now() - 60 * dayMs);
+const retainedAt = new Date(Date.now() - 2 * dayMs);
+const retentionConversation = await request(`/api/characters/${retentionCharacter.id}/conversations/import`, {
+  method: "POST",
+  body: {
+    title: "CI 原始消息清理验收 " + unique,
+    messages: [
+      { role: "USER", content: "CI 过期原始消息 " + unique, occurredAt: expiredAt.toISOString() },
+      { role: "ASSISTANT", content: "CI 应保留的近期消息 " + unique, occurredAt: retainedAt.toISOString() },
+    ],
+  },
+});
+const retentionSettings = await request(`/api/characters/${retentionCharacter.id}/memory-settings`, {
+  method: "PATCH",
+  body: {
+    snapshotIntervalDays: 8,
+    timezone: "America/Los_Angeles",
+    anchorAt: new Date(Date.now() - 90 * dayMs).toISOString(),
+    rawMessageRetentionDays: 30,
+    autoSnapshotEnabled: false,
+    changePolicy: "NEXT_CYCLE",
+  },
+});
+assert(retentionSettings.rawMessageRetentionDays === 30 && retentionSettings.autoSnapshotEnabled === false, "Retention-only test character settings should persist without enabling automatic snapshots.");
+
+await request("/api/tasks/scheduler/run", { method: "POST" });
+const tasksBeforeCleanup = await request("/api/tasks?limit=100");
+const retentionCleanupTask = tasksBeforeCleanup.items.find((task) =>
+  task.characterId === retentionCharacter.id &&
+  task.type === "CLEAN_EXPIRED_MESSAGES" &&
+  task.status === "QUEUED"
+);
+assert(retentionCleanupTask && typeof retentionCleanupTask.id === "string", "Scheduler should enqueue a retention cleanup task for the isolated character.");
+
+let retentionCleanupResult = null;
+for (let attempt = 0; attempt < 10; attempt += 1) {
+  const result = await request("/api/tasks/worker/run", { method: "POST" });
+  if (result.jobId === retentionCleanupTask.id) {
+    retentionCleanupResult = result;
+    break;
+  }
+  if (!result.processed) break;
+}
+assert(retentionCleanupResult?.status === "SUCCEEDED", "Worker should execute the isolated raw-message retention cleanup.");
+
+const retentionHistory = await request(
+  `/api/characters/${retentionCharacter.id}/chat?conversationId=${retentionConversation.conversationId}`
+);
+assert(retentionHistory.messages.length === 1, "Cleanup should remove only the expired message from the imported conversation.");
+assert(
+  retentionHistory.messages[0].content === "CI 应保留的近期消息 " + unique,
+  "Cleanup must preserve the recent message after removing the expired one."
+);
+
+const tasksAfterCleanup = await request("/api/tasks?limit=100");
+const visibleCleanupTask = tasksAfterCleanup.items.find((task) => task.id === retentionCleanupTask.id);
+assert(visibleCleanupTask?.status === "SUCCEEDED", "Task API should expose the completed cleanup state.");
+assert(
+  visibleCleanupTask.cleanupResult?.deletedMessageCount === 1,
+  "Task API should read the actual deleted-message count from the cleanup audit record."
+);
+assert(
+  typeof visibleCleanupTask.cleanupResult.cutoff === "string" &&
+  Date.parse(visibleCleanupTask.cleanupResult.cutoff) > expiredAt.getTime() &&
+  Date.parse(visibleCleanupTask.cleanupResult.cutoff) < retainedAt.getTime(),
+  "Task API should expose the exact cutoff between the expired and retained messages."
+);
+
+console.log("Local API smoke test passed: character CRUD, encrypted per-character API settings and connection test, memory settings, transcript import, scheduler backfill, local-mock AI extraction, source-ID validation, persisted provenance, manual and AI snapshot versions, safe AI regeneration, task cancel/requeue, recycle-bin lifecycle, context-aware AI chat, conversation search/rename, archive/restore, archived write protection, and end-to-end raw-message retention cleanup with audit-result visibility.");
+ character CRUD, encrypted per-character API settings and connection test, memory settings, transcript import, scheduler backfill, local-mock AI extraction, source-ID validation, persisted provenance, manual and AI snapshot versions, safe AI regeneration, task cancel/requeue, recycle-bin lifecycle, context-aware AI chat, conversation search/rename, archive/restore, and archived write protection.");
