@@ -477,4 +477,38 @@ assert(
   "Task API should expose the exact cutoff between the expired and retained messages."
 );
 
-console.log("Local API smoke test passed: character CRUD, encrypted per-character API settings and connection test, memory settings, transcript import, scheduler backfill, local-mock AI extraction, source-ID validation, persisted provenance, manual and AI snapshot versions, safe AI regeneration, task cancel/requeue, recycle-bin lifecycle, context-aware AI chat, conversation search/rename, archive/restore, archived write protection, and end-to-end raw-message retention cleanup with audit-result visibility.");
+// Permanent retention is a safety mode: scheduler must never enqueue cleanup for it.
+const permanentRetentionCharacter = await request("/api/characters", {
+  method: "POST",
+  body: {
+    name: "CI 永久保留测试 " + unique,
+    alias: "CI 永久保留",
+    description: "用于确认永久保留不会排入清理任务。",
+    personality: "仅用于自动化测试。",
+  },
+});
+const permanentSettings = await request(
+  `/api/characters/${permanentRetentionCharacter.id}/memory-settings`,
+  {
+    method: "PATCH",
+    body: {
+      snapshotIntervalDays: 8,
+      timezone: "America/Los_Angeles",
+      anchorAt: new Date().toISOString(),
+      rawMessageRetentionDays: 0,
+      autoSnapshotEnabled: false,
+      changePolicy: "NEXT_CYCLE",
+    },
+  }
+);
+assert(permanentSettings.rawMessageRetentionDays === 0, "Permanent retention should round-trip through the API as zero.");
+await request("/api/tasks/scheduler/run", { method: "POST" });
+const tasksWithPermanentRetention = await request("/api/tasks?limit=100");
+assert(
+  !tasksWithPermanentRetention.items.some((task) =>
+    task.characterId === permanentRetentionCharacter.id && task.type === "CLEAN_EXPIRED_MESSAGES"
+  ),
+  "Permanent retention must not enqueue raw-message cleanup work."
+);
+
+console.log("Local API smoke test passed: character CRUD, encrypted per-character API settings and connection test, memory settings, transcript import, scheduler backfill, local-mock AI extraction, source-ID validation, persisted provenance, manual and AI snapshot versions, safe AI regeneration, task cancel/requeue, recycle-bin lifecycle, context-aware AI chat, conversation search/rename, archive/restore, archived write protection, and end-to-end raw-message retention cleanup with audit-result visibility, cleanup-task cancel/retry, and permanent-retention safety.");
