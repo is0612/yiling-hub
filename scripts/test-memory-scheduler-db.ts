@@ -377,6 +377,11 @@ try {
   );
 
   // A repeat cleanup after eligible messages are gone should record an exact zero deletion count.
+  // Keep unrelated queued snapshots out of this race test, so both workers contend only for this cleanup job.
+  await prisma.memoryJob.updateMany({
+    where: { memoryScopeId: scopeId, type: "GENERATE_SNAPSHOT", status: "QUEUED" },
+    data: { status: "CANCELLED", completedAt: now, lastError: "并发 Worker 验收：隔离其他队列任务。" },
+  });
   const zeroDeleteJob = await prisma.memoryJob.create({
     data: {
       memoryScopeId: retentionScopeId,
@@ -388,9 +393,26 @@ try {
     },
     select: { id: true },
   });
-  const zeroDeleteResult = await processNextMemoryJob(prisma, { now, workerId: "zero-delete-worker-" + suffix });
-  assert.equal(zeroDeleteResult.jobId, zeroDeleteJob.id, "Worker should process the zero-deletion cleanup task.");
-  assert.equal(zeroDeleteResult.status, "SUCCEEDED", "A cleanup with no remaining eligible messages should still succeed.");
+  const concurrentWorkerResults = await Promise.all([
+    processNextMemoryJob(prisma, { now, workerId: "zero-delete-worker-a-" + suffix }),
+    processNextMemoryJob(prisma, { now, workerId: "zero-delete-worker-b-" + suffix }),
+  ]);
+  const successfulZeroDeleteRuns = concurrentWorkerResults.filter((result) =>
+    result.processed && result.jobId === zeroDeleteJob.id && result.status === "SUCCEEDED"
+  );
+  assert.equal(successfulZeroDeleteRuns.length, 1, "Concurrent workers must claim and complete the same task at most once.");
+  assert.equal(
+    await prisma.auditLog.count({
+      where: {
+        action: "message.retention_cleanup",
+        entityType: "MemoryScope",
+        entityId: retentionScopeId,
+        details: { path: ["jobId"], equals: zeroDeleteJob.id },
+      },
+    }),
+    1,
+    "Concurrent workers must create exactly one cleanup audit record for a task.",
+  );
   const zeroDeleteAudit = await prisma.auditLog.findFirstOrThrow({
     where: { action: "message.retention_cleanup", entityType: "MemoryScope", entityId: retentionScopeId, details: { path: ["jobId"], equals: zeroDeleteJob.id } },
     select: { details: true },
