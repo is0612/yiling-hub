@@ -158,7 +158,7 @@ const apiTest = await request(`/api/characters/${created.id}/chat/test-connectio
 assert(apiTest.ok === true && apiTest.provider === "127.0.0.1", "API connection test should use the saved URL and decrypted API Key.");
 
 const initialSettings = await request(`/api/characters/${created.id}/memory-settings`);
-assert(initialSettings.snapshotIntervalDays === 8, "New character should get an 8-day default interval.");
+assert(initialSettings.snapshotIntervalDays === 8 && initialSettings.activeSnapshotIntervalDays === 8 && initialSettings.pendingSnapshotIntervalDays === null, "New character should get an 8-day default interval with no pending change.");
 assert(initialSettings.changePolicy === "NEXT_CYCLE", "New character should use NEXT_CYCLE by default.");
 assert(initialSettings.rawMessageRetentionDays === 0, "New characters should preserve raw messages permanently until the user opts into cleanup.");
 assert(initialSettings.rawMessageCleanupEnabled === false, "New characters should require an explicit cleanup opt-in.");
@@ -180,6 +180,39 @@ assert(savedSettings.snapshotIntervalDays === 3, "Memory interval was not saved.
 assert(savedSettings.timezone === "America/Los_Angeles", "Timezone was not saved.");
 assert(savedSettings.rawMessageRetentionDays === 30, "Message retention was not saved.");
 assert(savedSettings.changePolicy === "IMMEDIATE_RECALC", "Change policy was not saved.");
+
+const pendingCycleSettings = await request(`/api/characters/${created.id}/memory-settings`, {
+  method: "PATCH",
+  body: {
+    snapshotIntervalDays: 5,
+    timezone: savedSettings.timezone,
+    anchorAt: savedSettings.anchorAt,
+    rawMessageRetentionDays: 30,
+    rawMessageCleanupEnabled: true,
+    autoSnapshotEnabled: true,
+    changePolicy: "NEXT_CYCLE",
+  },
+});
+assert(pendingCycleSettings.snapshotIntervalDays === 5, "The API should return the requested pending interval.");
+assert(pendingCycleSettings.activeSnapshotIntervalDays === 3, "The active interval must remain unchanged before the current cycle ends.");
+assert(pendingCycleSettings.pendingSnapshotIntervalDays === 5, "NEXT_CYCLE should persist the selected interval as pending.");
+assert(pendingCycleSettings.nextSnapshotAt === savedSettings.nextSnapshotAt, "NEXT_CYCLE must keep the existing cycle boundary.");
+
+const cancelledPendingCycleSettings = await request(`/api/characters/${created.id}/memory-settings`, {
+  method: "PATCH",
+  body: {
+    snapshotIntervalDays: 3,
+    timezone: savedSettings.timezone,
+    anchorAt: savedSettings.anchorAt,
+    rawMessageRetentionDays: 30,
+    rawMessageCleanupEnabled: true,
+    autoSnapshotEnabled: true,
+    changePolicy: "NEXT_CYCLE",
+  },
+});
+assert(cancelledPendingCycleSettings.activeSnapshotIntervalDays === 3, "Cancelling a pending interval must leave the active interval unchanged.");
+assert(cancelledPendingCycleSettings.pendingSnapshotIntervalDays === null, "Selecting the current interval should cancel the pending change.");
+assert(cancelledPendingCycleSettings.nextSnapshotAt === savedSettings.nextSnapshotAt, "Cancelling a pending change must not reset the current boundary.");
 
 const invalidRetentionResponse = await fetch(
   new URL(`/api/characters/${created.id}/memory-settings`, baseUrl),
@@ -698,4 +731,4 @@ assert(
   "Permanent retention must not enqueue raw-message cleanup work."
 );
 
-console.log("Local API smoke test passed: character CRUD, encrypted per-character API settings and connection test, memory settings, transcript import, scheduler backfill, local-mock AI extraction, source-ID validation, persisted provenance, manual and AI snapshot versions, safe AI regeneration, task cancel/requeue, recycle-bin lifecycle, context-aware AI chat, conversation search/rename, archive/restore, archived write protection, and end-to-end raw-message retention cleanup with audit-result visibility, cleanup-task cancel/retry, and permanent-retention safety.");
+console.log("Local API smoke test passed: character CRUD, encrypted per-character API settings and connection test, memory settings including next-cycle interval changes/cancellation, transcript import, scheduler backfill, local-mock AI extraction, source-ID validation, persisted provenance, manual and AI snapshot versions, safe AI regeneration, task cancel/requeue, recycle-bin lifecycle, context-aware AI chat, conversation search/rename, archive/restore, archived write protection, and end-to-end raw-message retention cleanup with audit-result visibility, cleanup-task cancel/retry, retention-widening protection, and permanent-retention safety.");
