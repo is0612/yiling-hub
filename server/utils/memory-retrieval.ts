@@ -131,7 +131,7 @@ function rankCandidates<T extends { id: string }>(
   }));
   const totalWeight = [...termWeights.values()].reduce((sum, weight) => sum + weight, 0);
 
-  return prepared
+  const ranked = prepared
     .map((entry) => {
       const matchedTerms = terms.filter((term) =>
         entry.normalizedText.includes(normalizeComparable(term)),
@@ -141,7 +141,7 @@ function rankCandidates<T extends { id: string }>(
       const exactPhraseBonus = normalizedQuery.length >= 2 && entry.normalizedText.includes(normalizedQuery) ? 5 : 0;
       const score = weightedCoverage * 10 + exactPhraseBonus + Math.min(matchedTerms.length, 4) * 0.05;
       return {
-        ...entry.candidate,
+        candidate: entry.candidate,
         score,
         matchedTerms,
         recency: entry.recency,
@@ -151,14 +151,15 @@ function rankCandidates<T extends { id: string }>(
     .sort((left, right) =>
       right.score - left.score ||
       right.recency - left.recency ||
-      left.id.localeCompare(right.id),
+      left.candidate.id.localeCompare(right.candidate.id),
     )
-    .slice(0, limit)
-    .map(({ score, matchedTerms, recency: _recency, ...candidate }) => ({
-      ...candidate,
-      relevanceScore: Math.round(score * 100) / 100,
-      matchedTerms,
-    }));
+    .slice(0, limit);
+
+  return ranked.map((entry) => ({
+    ...entry.candidate,
+    relevanceScore: Math.round(entry.score * 100) / 100,
+    matchedTerms: entry.matchedTerms,
+  }));
 }
 
 export function rankMemoryCandidates<T extends { id: string; content: string; updatedAt?: unknown; createdAt?: unknown }>(
