@@ -2,7 +2,7 @@ import { createError, getRouterParam } from "h3";
 import { requireLocalDevOwner, requireUuid } from "../../../utils/local-api";
 import { getPrisma } from "../../../utils/prisma";
 
-const RETRYABLE_TYPES = new Set(["GENERATE_SNAPSHOT", "REGENERATE_SNAPSHOT"]);
+const RETRYABLE_TYPES = new Set(["GENERATE_SNAPSHOT", "REGENERATE_SNAPSHOT", "CLEAN_EXPIRED_MESSAGES"]);
 const RETRYABLE_STATUSES = new Set(["FAILED", "RETRY_WAIT", "CANCELLED"]);
 
 export default defineEventHandler(async (event) => {
@@ -24,7 +24,7 @@ export default defineEventHandler(async (event) => {
     });
     if (!job) throw createError({ statusCode: 404, statusMessage: "任务不存在。" });
     if (!RETRYABLE_TYPES.has(job.type)) {
-      throw createError({ statusCode: 409, statusMessage: "该任务类型尚未接入 Worker，暂时不能手动重试。" });
+      throw createError({ statusCode: 409, statusMessage: "该任务类型暂时不能手动重试。" });
     }
     if (!RETRYABLE_STATUSES.has(job.status)) {
       throw createError({ statusCode: 409, statusMessage: "只有失败、等待重试或已取消的任务可以手动重新入队。" });

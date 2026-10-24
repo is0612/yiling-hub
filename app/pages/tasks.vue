@@ -306,7 +306,7 @@ onMounted(() => void loadTasks());
 
     <div class="info-callout" style="margin-top:18px">
       <el-icon><Warning /></el-icon>
-      <span>任务由独立 Worker 消费。周期生成与 AI 重新提炼会调用服务端配置的模型；手动取消仅适用于等待执行/等待重试的任务，手动重新入队会写入审计日志。</span>
+      <span>任务由独立 Worker 消费。周期生成与 AI 重新提炼会调用服务端配置的模型；过期消息清理任务也可在失败后手动重新入队。重新入队与清理结果均会保留审计记录。</span>
     </div>
 
     <el-dialog v-model="detailsOpen" title="任务详情" width="min(620px, 94vw)">
@@ -318,12 +318,12 @@ onMounted(() => void loadTasks());
         <div class="detail-row"><span>处理周期</span><strong>{{ periodText(selectedTask) }}</strong></div>
         <div class="detail-row"><span>尝试次数</span><strong>{{ selectedTask.attemptCount }} / {{ selectedTask.maxAttempts }}</strong></div>
         <div class="detail-row"><span>计划执行时间</span><strong>{{ formatDate(selectedTask.runAt) }}</strong></div>
-        <div class="detail-row"><span>创建时间</span><strong>{{ formatDate(selectedTask.createdAt) }}</strong></div>
+        <div class="detail-row"><span>开始时间</span><strong>{{ formatDate(selectedTask.startedAt) }}</strong></div>\n        <div class="detail-row"><span>完成时间</span><strong>{{ formatDate(selectedTask.completedAt) }}</strong></div>\n        <div class="detail-row"><span>创建时间</span><strong>{{ formatDate(selectedTask.createdAt) }}</strong></div>
         <div v-if="selectedTask.lastError" class="task-error"><strong>最近错误</strong><p>{{ selectedTask.lastError }}</p></div>
         <div v-else class="info-callout" style="margin-top:14px"><el-icon><Files /></el-icon><span>当前为持久化排队记录；还没有 Worker 执行日志。</span></div>
       </template>
       <template #footer>
-        <el-button v-if="selectedTask && ['FAILED', 'RETRY_WAIT', 'CANCELLED'].includes(selectedTask.status) && ['GENERATE_SNAPSHOT', 'REGENERATE_SNAPSHOT'].includes(selectedTask.type)" :loading="taskActionLoading" @click="retrySelectedTask"><el-icon><Refresh /></el-icon>重新入队</el-button>
+        <el-button v-if="selectedTask && ['FAILED', 'RETRY_WAIT', 'CANCELLED'].includes(selectedTask.status) && ['GENERATE_SNAPSHOT', 'REGENERATE_SNAPSHOT', 'CLEAN_EXPIRED_MESSAGES'].includes(selectedTask.type)" :loading="taskActionLoading" @click="retrySelectedTask"><el-icon><Refresh /></el-icon>重新入队</el-button>
         <el-button v-if="selectedTask && ['QUEUED', 'RETRY_WAIT'].includes(selectedTask.status)" :loading="taskActionLoading" @click="cancelSelectedTask"><el-icon><Warning /></el-icon>取消任务</el-button>
         <el-button @click="detailsOpen = false">关闭</el-button>
       </template>

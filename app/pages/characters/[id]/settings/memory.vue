@@ -183,7 +183,7 @@ watch(id, () => void loadSettings());
             <div class="form-grid">
               <el-form-item label="记忆时区"><el-select v-model="timezone" style="width:100%"><el-option label="中国标准时间（Asia/Shanghai）" value="Asia/Shanghai" /><el-option label="协调世界时（UTC）" value="UTC" /><el-option label="美国太平洋时间（America/Los_Angeles）" value="America/Los_Angeles" /></el-select></el-form-item>
               <el-form-item label="周期启用锚点"><el-date-picker v-model="anchor" type="datetime" value-format="YYYY-MM-DDTHH:mm:ss" placeholder="选择周期起始时间" style="width:100%" /></el-form-item>
-              <el-form-item label="原始消息保留期限"><el-select v-model="retention" style="width:100%"><el-option label="30 天" :value="30" /><el-option label="90 天" :value="90" /><el-option label="180 天" :value="180" /><el-option label="永久保留" :value="0" /></el-select><div class="form-help">该期限独立于快照周期；清理任务尚未接入 Worker。</div></el-form-item>
+              <el-form-item label="原始消息保留期限"><el-select v-model="retention" style="width:100%"><el-option label="30 天" :value="30" /><el-option label="90 天" :value="90" /><el-option label="180 天" :value="180" /><el-option label="永久保留" :value="0" /></el-select><div class="form-help">到期后由 Scheduler 创建清理任务，Worker 会先检查较早快照任务；永久保留不会创建清理任务。</div></el-form-item>
               <el-form-item label="修改何时生效"><el-radio-group v-model="effectivePolicy"><el-radio value="下一个周期生效">下一个周期</el-radio><el-radio value="立即重算">立即重算</el-radio></el-radio-group></el-form-item>
             </div>
           </el-form>
@@ -213,7 +213,7 @@ watch(id, () => void loadSettings());
         </section>
       </aside>
     </div>
-    <p class="footer-note">记忆周期、时区、锚点与原始消息保留期限已写入数据库。周期快照由 Scheduler 排队、Worker 执行；原始消息自动清理尚未接入。</p>
+    <p class="footer-note">记忆周期、时区、锚点与原始消息保留期限已写入数据库。清理任务会删除截止时间之前的原始消息，并保留快照与来源追溯记录。</p>
   </div>
 </template>
 
