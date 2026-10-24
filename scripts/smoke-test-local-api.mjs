@@ -198,8 +198,29 @@ const invalidRetentionResponse = await fetch(
   }
 );
 assert(invalidRetentionResponse.status === 400, "Unsupported retention durations such as 45 days must be rejected.");
+const invalidPermanentCleanupResponse = await fetch(
+  new URL(`/api/characters/${created.id}/memory-settings`, baseUrl),
+  {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      snapshotIntervalDays: 3,
+      timezone: "America/Los_Angeles",
+      anchorAt: schedulerAnchorAt.toISOString(),
+      rawMessageRetentionDays: 0,
+      rawMessageCleanupEnabled: true,
+      autoSnapshotEnabled: true,
+      changePolicy: "IMMEDIATE_RECALC",
+    }),
+  }
+);
+assert(
+  invalidPermanentCleanupResponse.status === 400,
+  "Permanent retention and enabled raw-message cleanup must be rejected as a contradictory policy.",
+);
+await invalidPermanentCleanupResponse.text();
 const settingsAfterInvalidRetention = await request(`/api/characters/${created.id}/memory-settings`);
-assert(settingsAfterInvalidRetention.rawMessageRetentionDays === 30, "A rejected retention update must not change the saved setting.");
+assert(settingsAfterInvalidRetention.rawMessageRetentionDays === 30 && settingsAfterInvalidRetention.rawMessageCleanupEnabled === true, "Rejected retention updates must not change the saved value or its authorization state.");
 
 const reloadedSettings = await request(`/api/characters/${created.id}/memory-settings`);
 assert(reloadedSettings.snapshotIntervalDays === 3, "Memory interval did not persist after a new read.");
