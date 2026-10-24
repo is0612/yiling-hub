@@ -365,6 +365,26 @@ try {
     "A repeated scheduler pass must not duplicate a completed cleanup audit.",
   );
 
+  // A repeat cleanup after eligible messages are gone should record an exact zero deletion count.
+  const zeroDeleteJob = await prisma.memoryJob.create({
+    data: {
+      memoryScopeId: retentionScopeId,
+      type: "CLEAN_EXPIRED_MESSAGES",
+      idempotencyKey: "zero-delete-cleanup:" + suffix,
+      periodEnd: new Date("2026-09-24T12:00:00.000Z"),
+      status: "QUEUED",
+      runAt: now,
+    },
+    select: { id: true },
+  });
+  const zeroDeleteResult = await processNextMemoryJob(prisma, { now, workerId: "zero-delete-worker-" + suffix });
+  assert.equal(zeroDeleteResult.jobId, zeroDeleteJob.id, "Worker should process the zero-deletion cleanup task.");
+  assert.equal(zeroDeleteResult.status, "SUCCEEDED", "A cleanup with no remaining eligible messages should still succeed.");
+  const zeroDeleteAudit = await prisma.auditLog.findFirstOrThrow({
+    where: { action: "message.retention_cleanup", entityType: "MemoryScope", entityId: retentionScopeId, details: { path: ["jobId"], equals: zeroDeleteJob.id } },
+    select: { details: true },
+  });
+  assert.deepEqual(zeroDeleteAudit.details, { cutoff: "2026-09-24T12:00:00.000Z", deletedMessages: 0, jobId: zeroDeleteJob.id }, "A zero-delete run must not be confused with a missing audit result.");
   // A queued 30-day cleanup must be cancelled if the owner widens retention to 90 days.
   await prisma.memoryScope.create({
     data: {
@@ -482,6 +502,7 @@ try {
 
   console.log("Memory DB integration passed: concurrent scheduling, overdue backfill, cursor advancement, repeat-run idempotency, worker replay reuse, and retention cleanup.");
 } finally {
+  await prisma.auditLog.deleteMany({ where: { characterId } });
   await prisma.characterMemorySetting.deleteMany({ where: { characterId } });
   await prisma.conversation.deleteMany({ where: { id: { in: [conversationId, blockedConversationId, unauthorizedConversationId, relaxedConversationId] } } });
   await prisma.memoryScope.deleteMany({ where: { id: { in: [scopeId, retentionScopeId, unauthorizedScopeId, relaxedScopeId] } } });
