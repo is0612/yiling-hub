@@ -1,4 +1,5 @@
-import { createError, getRouterParam, readBody } from "h3";
+import { randomUUID } from "node:crypto";
+import { createError, getRouterParam, readBody, setResponseStatus } from "h3";
 import { generateConversationReply, type ConversationContextMessage } from "../../../utils/chat-reply";
 import { resolveChatModelSettings } from "../../../utils/chat-model-config";
 import { resolveCharacterApiKey } from "../../../utils/credential-encryption";
@@ -13,6 +14,13 @@ export default defineEventHandler(async (event) => {
   const characterId = requireUuid(getRouterParam(event, "id") ?? "", "角色");
   const body = await readBody<Record<string, unknown>>(event);
   const message = readTrimmedString(body?.message, "消息", 8000, { required: true });
+  const rawRequestKey = body?.requestKey;
+  if (rawRequestKey !== undefined && typeof rawRequestKey !== "string") {
+    throw createError({ statusCode: 400, statusMessage: "requestKey 格式无效。" });
+  }
+  const requestKey = typeof rawRequestKey === "string" && rawRequestKey
+    ? requireUuid(rawRequestKey, "请求")
+    : randomUUID();
   const rawConversationId = body?.conversationId;
   if (rawConversationId !== undefined && typeof rawConversationId !== "string") {
     throw createError({ statusCode: 400, statusMessage: "conversationId 格式无效。" });
@@ -41,6 +49,52 @@ export default defineEventHandler(async (event) => {
     },
   });
   if (!character) throw createError({ statusCode: 404, statusMessage: "角色不存在。" });
+
+  // A stable client requestKey prevents duplicate model calls and duplicate conversation creation on retries.
+  const staleBefore = new Date(Date.now() - 10 * 60 * 1000);
+  let chatRequest = await prisma.chatRequest.findUnique({
+    where: { ownerId_characterId_requestKey: { ownerId, characterId, requestKey } },
+  });
+  if (chatRequest?.status === "COMPLETED" && chatRequest.response) {
+    setResponseStatus(event, 200);
+    return chatRequest.response;
+  }
+  if (chatRequest) {
+    const claimed = await prisma.chatRequest.updateMany({
+      where: {
+        id: chatRequest.id,
+        OR: [
+          { status: "FAILED" },
+          { status: "PROCESSING", updatedAt: { lt: staleBefore } },
+        ],
+      },
+      data: { status: "PROCESSING", claimToken: randomUUID(), lastError: null, response: undefined, conversationId: null },
+    });
+    if (claimed.count !== 1) {
+      throw createError({ statusCode: 409, statusMessage: "相同聊天请求正在处理中，请稍后刷新会话，避免重复发送。" });
+    }
+    chatRequest = await prisma.chatRequest.findUniqueOrThrow({ where: { id: chatRequest.id } });
+  } else {
+    try {
+      chatRequest = await prisma.chatRequest.create({
+        data: { ownerId, characterId, requestKey, claimToken: randomUUID(), status: "PROCESSING" },
+      });
+    } catch (error) {
+      if (typeof error === "object" && error !== null && "code" in error && error.code === "P2002") {
+        const concurrentRequest = await prisma.chatRequest.findUnique({
+          where: { ownerId_characterId_requestKey: { ownerId, characterId, requestKey } },
+        });
+        if (concurrentRequest?.status === "COMPLETED" && concurrentRequest.response) {
+          setResponseStatus(event, 200);
+          return concurrentRequest.response;
+        }
+        throw createError({ statusCode: 409, statusMessage: "相同聊天请求正在处理中，请稍后刷新会话，避免重复发送。" });
+      }
+      throw error;
+    }
+  }
+
+  try {
 
   // Only character-global scopes and the acting user's own verified private scopes may be read.
   const accessibleScopes = resolveChatMemoryScopes(character.memoryScopes, ownerId);
@@ -159,7 +213,7 @@ export default defineEventHandler(async (event) => {
   const assistantAt = new Date(now.getTime() + 1);
   const proposedTitle = message.slice(0, 80);
   const title = existingConversation?.title || proposedTitle;
-  const saved = await prisma.$transaction(async (tx) => {
+  const response = await prisma.$transaction(async (tx) => {
     const conversation = existingConversation ?? await tx.conversation.create({
       data: { characterId, memoryScopeId, title, status: "ACTIVE", metadata: { createdFrom: "yiling-chat-ui" } },
       select: { id: true, title: true },
@@ -194,15 +248,45 @@ export default defineEventHandler(async (event) => {
       select: { id: true, role: true, content: true, occurredAt: true },
     });
     await tx.conversation.update({ where: { id: conversation.id }, data: { lastMessageAt: assistantAt } });
-    return { conversationId: conversation.id, title: conversation.title || title, userMessage, assistantMessage };
-  });
 
+    const saved = {
+      conversationId: conversation.id,
+      title: conversation.title || title,
+      userMessage,
+      assistantMessage,
+    };
+    const result = {
+      ...saved,
+      userMessage: { ...saved.userMessage, sources: { memories: [], snapshots: [] } },
+      assistantMessage: { ...saved.assistantMessage, sources: usedSources },
+      model: { name: generated.model, provider: generated.provider, promptTemplateVersion: generated.promptTemplateVersion },
+      retrieval: { memoriesAvailable: memories.length, snapshotsAvailable: snapshots.length, privateScopeActive },
+    };
+    // Commit messages and the replayable response atomically. A database failure must not
+    // leave saved messages behind while the request is marked FAILED and retried.
+    const finalized = await tx.chatRequest.updateMany({
+      where: { id: chatRequest.id, status: "PROCESSING", claimToken: chatRequest.claimToken },
+      data: { status: "COMPLETED", conversationId: saved.conversationId, response: result, lastError: null },
+    });
+    if (finalized.count !== 1) {
+      // The lease was reclaimed while this model call was running. Throwing rolls back
+      // this transaction, so the stale claimant cannot append duplicate messages.
+      throw createError({ statusCode: 409, statusMessage: "聊天请求已被新的重试接管，请刷新会话后查看结果。" });
+    }
+    return result;
+  });
   setResponseStatus(event, 201);
-  return {
-    ...saved,
-    userMessage: { ...saved.userMessage, sources: { memories: [], snapshots: [] } },
-    assistantMessage: { ...saved.assistantMessage, sources: usedSources },
-    model: { name: generated.model, provider: generated.provider, promptTemplateVersion: generated.promptTemplateVersion },
-    retrieval: { memoriesAvailable: memories.length, snapshotsAvailable: snapshots.length, privateScopeActive },
-  };
+  return response;
+  } catch (error) {
+    const statusMessage = error instanceof Error ? error.message : "聊天请求失败。";
+    try {
+      await prisma.chatRequest.updateMany({
+        where: { id: chatRequest.id, status: "PROCESSING" },
+        data: { status: "FAILED", lastError: statusMessage.slice(0, 700) },
+      });
+    } catch {
+      // Preserve the original error; a stale PROCESSING request can be reclaimed after the lease expires.
+    }
+    throw error;
+  }
 });

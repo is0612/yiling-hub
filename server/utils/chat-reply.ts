@@ -129,6 +129,7 @@ export async function generateConversationReply(input: ConversationReplyInput): 
   try {
     response = await fetch(endpoint, {
       method: "POST",
+      redirect: "error",
       headers: { authorization: "Bearer " + apiKey, "content-type": "application/json" },
       body: JSON.stringify({
         model,

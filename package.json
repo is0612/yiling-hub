@@ -7,7 +7,7 @@
     "node": ">=20.19.0"
   },
   "scripts": {
-    "postinstall": "prisma generate && nuxt prepare",
+    "postinstall": "nuxt prepare && prisma generate",
     "db:format": "prisma format",
     "db:validate": "prisma validate",
     "db:generate": "prisma generate",
@@ -37,6 +37,7 @@
     "test:chat-reply": "tsx scripts/test-chat-reply.ts",
     "test:chat-private-memory": "tsx scripts/test-chat-private-memory.ts",
     "test:chat-private-memory-db": "tsx scripts/test-chat-private-memory-db.ts",
+    "test:chat-request-idempotency-db": "tsx scripts/test-chat-request-idempotency-db.ts",
     "test:auth": "tsx scripts/test-auth.ts",
     "test:auth-db": "tsx scripts/test-auth-db.ts",
     "test:channel": "tsx scripts/test-qq-adapter.ts",
