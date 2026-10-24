@@ -1093,7 +1093,7 @@ paths:
               $ref: '#/components/schemas/MemorySettingsInput'
       responses:
         '200':
-          description: 设置已更新；周期默认于当前周期结束后生效
+          description: 设置已更新；NEXT_CYCLE 保留当前周期边界并在该边界后应用新间隔，IMMEDIATE_RECALC 或明确修改锚点/时区会立即重算计划
           content:
             application/json:
               schema:
@@ -1605,7 +1605,9 @@ components:
       type: object
       required: [snapshotIntervalDays, timezone, anchorAt, rawMessageRetentionDays, rawMessageCleanupEnabled, autoSnapshotEnabled, changePolicy, nextSnapshotAt, updatedAt]
       properties:
-        snapshotIntervalDays: { type: integer, minimum: 1, maximum: 365, default: 8 }
+        snapshotIntervalDays: { type: integer, minimum: 1, maximum: 365, default: 8, description: 当前选择的周期；若存在待生效修改则返回待生效间隔。 }
+        activeSnapshotIntervalDays: { type: integer, minimum: 1, maximum: 365, readOnly: true, description: 当前正在用于计算周期的间隔。 }
+        pendingSnapshotIntervalDays: { type: integer, minimum: 1, maximum: 365, nullable: true, readOnly: true, description: 下一个周期边界后生效的间隔；应用后会清空。 }
         timezone: { type: string, example: Asia/Shanghai }
         anchorAt: { type: string, format: date-time, nullable: true }
         rawMessageRetentionDays:

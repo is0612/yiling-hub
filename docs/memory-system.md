@@ -17,7 +17,8 @@
 - 时间戳以 UTC/标准化时间存储，显示和日历计划使用范围配置的 IANA 时区。
 - 周期使用左闭右开区间：`[period_start, period_end)`。
 - 下一周期从当前周期的结束边界开始。
-- 修改周期默认在当前周期结束后生效，不回溯修改已归档内容。
+- 修改周期选择“下一个周期生效”时，`pendingSnapshotIntervalDays` 保存新间隔，当前周期继续沿用 `snapshotIntervalDays` 和已经安排的结束边界；该边界到期后，调度器先为旧周期排队，再切换到新间隔并清空待生效字段。
+- 选择“立即重算”时，系统按当前锚点与新间隔重算下次边界，并立即应用新间隔；明确修改锚点或时区也会重设周期计划。关闭自动归档会清除待生效调整，重新启用时按当前配置建立计划。
 - 手动生成快照默认不改变自动计划时间，且应记录覆盖范围与快照类型。
 - 周期内没有活动时可以跳过模型调用，但必须记录跳过原因并推进计划。
 
@@ -78,6 +79,7 @@
 ## 8. 周期调度与 AI 记忆引擎（当前实现边界）
 
 - `CharacterMemorySetting.nextSnapshotAt` 表示下一个待处理的周期结束边界；启用自动快照但缺少边界的设置，会根据 `anchorAt + snapshotIntervalDays` 自动修复并在日志中报告。
+- `snapshotIntervalDays` 是当前周期使用的实际间隔；`pendingSnapshotIntervalDays` 是已选择但尚未生效的间隔。调度器在同一事务内排入跨越边界的周期、推进边界并将待生效间隔切换为当前间隔，以避免丢失或重复周期。
 - 调度器会检查启用/禁用设置、缺失边界与未到期设置。若 `jobsQueued=0`，请先查看 `settingsDisabled`、`settingsNotDue`、`settingsWithoutNextSnapshotAt` 和 `missingGlobalScope`，不要默认判断为代码故障。
 - 当周期到期，调度器把每段周期写入 `MemoryJob` 队列并推进下一边界；稳定幂等键与数据库唯一约束防止重复排队。每次最多补处理 24 个周期（可由调用参数覆盖），剩余逾期周期在后续扫描补齐。
 - 手动运行 `yarn scheduler:run`，或单独运行 `yarn scheduler:watch`（默认每 60 秒扫描；`YILING_MEMORY_SCHEDULER_INTERVAL_MS` 可调整，最小 5 秒）。
