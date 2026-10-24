@@ -539,6 +539,74 @@ assert(
   "Task API should expose the exact cutoff between the expired and retained messages."
 );
 
+// Extending retention must cancel a previously queued, more aggressive cleanup job.
+const widenedRetentionCharacter = await request("/api/characters", {
+  method: "POST",
+  body: {
+    name: "CI 延长保留期限测试 " + unique,
+    alias: "CI 延长期限",
+    description: "确认延长保留期限后旧清理任务不会误删原始消息。",
+    personality: "仅用于自动化测试。",
+  },
+});
+const widenedExpiredAt = new Date(Date.now() - 60 * dayMs);
+const widenedConversation = await request(
+  `/api/characters/${widenedRetentionCharacter.id}/conversations/import`,
+  {
+    method: "POST",
+    body: {
+      title: "CI 保留期限延长测试 " + unique,
+      messages: [
+        { role: "USER", content: "延长保留期后必须保留的原文 " + unique, occurredAt: widenedExpiredAt.toISOString() },
+      ],
+    },
+  }
+);
+const widenedSettingsBase = {
+  snapshotIntervalDays: 8,
+  timezone: "America/Los_Angeles",
+  anchorAt: new Date(Date.now() - 90 * dayMs).toISOString(),
+  rawMessageCleanupEnabled: true,
+  autoSnapshotEnabled: false,
+  changePolicy: "NEXT_CYCLE",
+};
+await request(`/api/characters/${widenedRetentionCharacter.id}/memory-settings`, {
+  method: "PATCH",
+  body: { ...widenedSettingsBase, rawMessageRetentionDays: 30 },
+});
+await request("/api/tasks/scheduler/run", { method: "POST" });
+const tasksBeforeWidening = await request("/api/tasks?limit=100");
+const staleWidenedCleanupTask = tasksBeforeWidening.items.find((task) =>
+  task.characterId === widenedRetentionCharacter.id &&
+  task.type === "CLEAN_EXPIRED_MESSAGES" &&
+  task.status === "QUEUED"
+);
+assert(staleWidenedCleanupTask, "A 30-day retention policy should queue the initial cleanup task.");
+await request(`/api/characters/${widenedRetentionCharacter.id}/memory-settings`, {
+  method: "PATCH",
+  body: { ...widenedSettingsBase, rawMessageRetentionDays: 90 },
+});
+let widenedCleanupResult = null;
+for (let attempt = 0; attempt < 30; attempt += 1) {
+  const result = await request("/api/tasks/worker/run", { method: "POST" });
+  if (result.jobId === staleWidenedCleanupTask.id) {
+    widenedCleanupResult = result;
+    break;
+  }
+  if (!result.processed) break;
+}
+assert(widenedCleanupResult?.status === "CANCELLED", "The worker must cancel an old 30-day cleanup after retention is widened to 90 days.");
+const widenedHistory = await request(
+  `/api/characters/${widenedRetentionCharacter.id}/chat?conversationId=${widenedConversation.conversationId}`
+);
+assert(
+  widenedHistory.messages.length === 1 &&
+  widenedHistory.messages[0].content === "延长保留期后必须保留的原文 " + unique,
+  "A message still inside the widened 90-day retention window must remain readable.",
+);
+const widenedTaskAfterRun = (await request("/api/tasks?limit=100")).items.find((task) => task.id === staleWidenedCleanupTask.id);
+assert(widenedTaskAfterRun?.status === "CANCELLED", "Task API should expose cancellation of the stale cleanup job.");
+
 // A finite retention value is not consent by itself (covers legacy settings after upgrade).
 const unoptedRetentionCharacter = await request("/api/characters", {
   method: "POST",
