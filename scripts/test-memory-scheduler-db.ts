@@ -15,6 +15,8 @@ const suffix = randomUUID();
 const ownerId = randomUUID();
 const characterId = randomUUID();
 const scopeId = randomUUID();
+const retentionScopeId = randomUUID();
+const conversationId = randomUUID();
 const username = `scheduler-test-${suffix}`;
 const now = new Date("2026-10-24T12:00:00.000Z");
 const nextSnapshotAt = new Date("2026-10-01T00:00:00.000Z");
@@ -56,6 +58,7 @@ try {
       anchorAt: new Date("2026-09-23T00:00:00.000Z"),
       nextSnapshotAt,
       autoSnapshotEnabled: true,
+      rawMessageRetentionDays: 30,
     },
   });
 
@@ -132,10 +135,114 @@ try {
   });
   assert.equal(snapshotCount, 1, "Worker replay must not create a duplicate snapshot.");
 
-  console.log("Memory DB integration passed: concurrent scheduling, overdue backfill, cursor advancement, repeat-run idempotency, and worker replay reuse.");
+  // Retention cleanup must delete expired raw messages but preserve snapshot/source/memory records.
+  await prisma.memoryScope.create({
+    data: {
+      id: retentionScopeId,
+      characterId,
+      scopeType: "CHARACTER_GLOBAL",
+      scopeKey: `retention-test:${suffix}`,
+    },
+  });
+  await prisma.conversation.create({
+    data: {
+      id: conversationId,
+      characterId,
+      memoryScopeId: retentionScopeId,
+      title: "原始消息保留策略集成测试",
+    },
+  });
+  const expiredMessage = await prisma.message.create({
+    data: {
+      conversationId,
+      role: "USER",
+      eventType: "message",
+      content: "这条过期原文应该被清理，但其来源记录要保留。",
+      occurredAt: new Date("2026-08-01T00:00:00.000Z"),
+    },
+    select: { id: true },
+  });
+  const retainedMessage = await prisma.message.create({
+    data: {
+      conversationId,
+      role: "ASSISTANT",
+      eventType: "message",
+      content: "这条未过期原文必须保留。",
+      occurredAt: new Date("2026-10-20T00:00:00.000Z"),
+    },
+    select: { id: true },
+  });
+  const retentionSnapshot = await prisma.memorySnapshot.create({
+    data: {
+      snapshotKey: `retention-test:${suffix}`,
+      memoryScopeId: retentionScopeId,
+      kind: "AUTOMATIC",
+      version: 1,
+      periodStart: new Date("2026-07-01T00:00:00.000Z"),
+      periodEnd: new Date("2026-08-31T00:00:00.000Z"),
+      summary: "用于验证原文清理后快照仍然存在。",
+      structuredContent: {},
+      status: "CURRENT",
+    },
+    select: { id: true },
+  });
+  const sourceRecord = await prisma.memorySnapshotSource.create({
+    data: {
+      snapshotId: retentionSnapshot.id,
+      sourceType: "MESSAGE",
+      sourceRef: expiredMessage.id,
+      messageId: expiredMessage.id,
+    },
+    select: { id: true },
+  });
+  const memoryItem = await prisma.memoryItem.create({
+    data: {
+      memoryScopeId: retentionScopeId,
+      category: "FACT",
+      content: "集成测试中的长期记忆。",
+      status: "ACTIVE",
+      sourceMessageId: expiredMessage.id,
+      sourceSnapshotId: retentionSnapshot.id,
+      validFrom: new Date("2026-08-01T00:00:00.000Z"),
+    },
+    select: { id: true },
+  });
+  const cleanupJob = await prisma.memoryJob.create({
+    data: {
+      memoryScopeId: retentionScopeId,
+      type: "CLEAN_EXPIRED_MESSAGES",
+      idempotencyKey: `clean-expired-messages:${retentionScopeId}:2026-09-24`,
+      periodEnd: new Date("2026-09-24T00:00:00.000Z"),
+      status: "QUEUED",
+      runAt: now,
+    },
+    select: { id: true },
+  });
+  const cleanupResult = await processNextMemoryJob(prisma, {
+    now,
+    workerId: `retention-worker-${suffix}`,
+  });
+  assert.equal(cleanupResult.processed, true, "Worker should process a due retention cleanup job.");
+  assert.equal(cleanupResult.status, "SUCCEEDED", "Retention cleanup should complete successfully.");
+  assert.equal(await prisma.message.count({ where: { id: expiredMessage.id } }), 0, "Expired raw message must be deleted.");
+  assert.equal(await prisma.message.count({ where: { id: retainedMessage.id } }), 1, "Message newer than cutoff must remain.");
+  assert.equal(await prisma.memorySnapshot.count({ where: { id: retentionSnapshot.id } }), 1, "Snapshot must survive raw message cleanup.");
+  const preservedSource = await prisma.memorySnapshotSource.findUniqueOrThrow({ where: { id: sourceRecord.id } });
+  assert.equal(preservedSource.messageId, null, "Source trace must remain while the raw-message relation is nulled.");
+  assert.equal(preservedSource.sourceRef, expiredMessage.id, "Source reference must remain traceable after raw content expires.");
+  const preservedMemory = await prisma.memoryItem.findUniqueOrThrow({ where: { id: memoryItem.id } });
+  assert.equal(preservedMemory.sourceMessageId, null, "Long-term memory must survive with a nullable raw-message relation.");
+  assert.equal(preservedMemory.sourceSnapshotId, retentionSnapshot.id, "Long-term memory must keep its snapshot provenance.");
+  const completedCleanup = await prisma.memoryJob.findUniqueOrThrow({ where: { id: cleanupJob.id } });
+  assert.equal(completedCleanup.status, "SUCCEEDED", "Cleanup job should be marked successful.");
+
+  console.log("Memory retention integration passed: expired raw message removal, recent-message preservation, and snapshot/source/long-term-memory provenance preservation.");
+
+  console.log("Memory DB integration passed: concurrent scheduling, overdue backfill, cursor advancement, repeat-run idempotency, worker replay reuse, and retention cleanup.");
 } finally {
   await prisma.characterMemorySetting.deleteMany({ where: { characterId } });
-  await prisma.memoryScope.deleteMany({ where: { id: scopeId } });
+  await prisma.conversation.deleteMany({ where: { id: conversationId } });
+  await prisma.memoryScope.deleteMany({ where: { id: { in: [scopeId, retentionScopeId] } } });
   await prisma.character.deleteMany({ where: { id: characterId } });
   await prisma.user.deleteMany({ where: { id: ownerId } });
   await prisma.$disconnect();
