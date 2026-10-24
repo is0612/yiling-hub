@@ -101,6 +101,9 @@ jobs:
       - name: AI 记忆来源与输出校验测试
         run: yarn run test:memory-ai
 
+      - name: 记忆提炼请求凭据隔离测试
+        run: yarn run test:memory-ai-request
+
       - name: 对话记忆检索测试
         run: yarn run test:memory-retrieval
 
