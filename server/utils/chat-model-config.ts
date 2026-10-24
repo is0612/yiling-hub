@@ -61,7 +61,6 @@ export function validateChatApiBaseUrl(value: string): string {
   const isPrivateIpv4 = ipVersion === 4 && (() => {
     const octets = unbracketedHostname.split(".").map(Number);
     return octets[0] === 10
-      || octets[0] === 127
       || (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31)
       || (octets[0] === 192 && octets[1] === 168)
       || (octets[0] === 169 && octets[1] === 254)
@@ -81,9 +80,6 @@ export function validateChatApiBaseUrl(value: string): string {
     || unbracketedHostname === "home.arpa";
   if (isPrivateIpv4 || isPrivateIpv6 || isLocalOnlyHostname && process.env.NODE_ENV === "production") {
     throw new Error("API Base URL 不允许指向私有网络或本机地址；生产环境请使用可公开访问的 HTTPS 模型服务。");
-  }
-  if (isIP(unbracketedHostname) === 4 && isPrivateIpv4) {
-    throw new Error("API Base URL 不允许使用私有网络 IP 地址。");
   }
   if (url.protocol === "http:" && !(isLoopbackName && process.env.NODE_ENV !== "production")) {
     throw new Error("为了保护 API Key，HTTP 仅允许非生产环境的本机 API 地址；其他地址必须使用 HTTPS。");
