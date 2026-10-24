@@ -60,11 +60,13 @@ export function validateChatApiBaseUrl(value: string): string {
   const ipVersion = isIP(unbracketedHostname);
   const isPrivateIpv4 = ipVersion === 4 && (() => {
     const octets = unbracketedHostname.split(".").map(Number);
-    return octets[0] === 10
-      || (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31)
-      || (octets[0] === 192 && octets[1] === 168)
-      || (octets[0] === 169 && octets[1] === 254)
-      || octets[0] === 0;
+    const first = octets[0] ?? -1;
+    const second = octets[1] ?? -1;
+    return first === 10
+      || (first === 172 && second >= 16 && second <= 31)
+      || (first === 192 && second === 168)
+      || (first === 169 && second === 254)
+      || first === 0;
   })();
   const isPrivateIpv6 = ipVersion === 6 && (
     unbracketedHostname === "::"
