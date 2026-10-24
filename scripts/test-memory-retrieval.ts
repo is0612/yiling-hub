@@ -9,8 +9,12 @@ assert(!terms.includes("用户") && !terms.includes("喜欢"), "Generic query-in
 
 const englishTerms = extractRetrievalTerms("What did we discuss about science fiction movies");
 assert(englishTerms.includes("science") && englishTerms.includes("fiction") && englishTerms.includes("movies"));
-assert(!englishTerms.includes("what") && !englishTerms.includes("did") && !englishTerms.includes("we") && !englishTerms.includes("about"),
-  "Common English query words should not dominate retrieval.");
+assert(!englishTerms.includes("what") && !englishTerms.includes("did") && !englishTerms.includes("we") &&
+  !englishTerms.includes("about") && !englishTerms.includes("discuss"),
+  "Common English query-intent words should not dominate retrieval.");
+const preferenceTerms = extractRetrievalTerms("What do I like about science fiction?");
+assert(preferenceTerms.includes("science") && preferenceTerms.includes("fiction") && !preferenceTerms.includes("like"),
+  "English preference verbs should not outweigh the actual topic.");
 
 const memories = [
   { id: "memory-film", content: "用户明确说喜欢科幻电影，尤其是太空探索题材。", updatedAt: "2026-10-20T10:00:00.000Z" },
