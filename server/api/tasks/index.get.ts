@@ -22,7 +22,7 @@ export default defineEventHandler(async (event) => {
     memoryScope: { is: { character: { is: { ownerId } } } },
     ...(statusValue ? { status: statusValue as JobStatus } : {}),
   };
-  const [jobs, total] = await Promise.all([
+  const [jobs, total, statusGroups] = await Promise.all([
     prisma.memoryJob.findMany({
       where,
       orderBy: [{ createdAt: "desc" }, { id: "desc" }],
@@ -45,6 +45,7 @@ export default defineEventHandler(async (event) => {
       },
     }),
     prisma.memoryJob.count({ where }),
+    prisma.memoryJob.groupBy({ by: ["status"], where: { memoryScope: { is: { character: { is: { ownerId } } } }, ...(statusValue ? { status: statusValue as JobStatus } : {}) }, _count: { _all: true } }),
   ]);
 
   return {
@@ -66,5 +67,14 @@ export default defineEventHandler(async (event) => {
       characterName: job.memoryScope.character.name,
     })),
     total,
+    statusCounts: {
+      QUEUED: statusGroups.find((group) => group.status === "QUEUED")?._count._all ?? 0,
+      RUNNING: statusGroups.find((group) => group.status === "RUNNING")?._count._all ?? 0,
+      SUCCEEDED: statusGroups.find((group) => group.status === "SUCCEEDED")?._count._all ?? 0,
+      FAILED: statusGroups.find((group) => group.status === "FAILED")?._count._all ?? 0,
+      RETRY_WAIT: statusGroups.find((group) => group.status === "RETRY_WAIT")?._count._all ?? 0,
+      SKIPPED: statusGroups.find((group) => group.status === "SKIPPED")?._count._all ?? 0,
+      CANCELLED: statusGroups.find((group) => group.status === "CANCELLED")?._count._all ?? 0,
+    },
   };
 });

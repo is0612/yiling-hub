@@ -19,7 +19,11 @@ type MemoryTask = {
   characterId: string;
   characterName: string;
 };
-type TaskListResponse = { items: MemoryTask[]; total: number };
+type TaskListResponse = {
+  items: MemoryTask[];
+  total: number;
+  statusCounts: Record<MemoryTask["status"], number>;
+};
 type WorkerResult = {
   processed: boolean;
   jobId?: string;
@@ -39,6 +43,9 @@ type SchedulerReport = {
 
 const tasks = ref<MemoryTask[]>([]);
 const totalTasks = ref(0);
+const statusCounts = ref<Record<MemoryTask["status"], number>>({
+  QUEUED: 0, RUNNING: 0, SUCCEEDED: 0, FAILED: 0, SKIPPED: 0, RETRY_WAIT: 0, CANCELLED: 0,
+});
 const query = ref("");
 const statusFilter = ref("ALL");
 const loading = ref(false);
@@ -60,10 +67,10 @@ const statuses = [
   { label: "已取消", value: "CANCELLED" },
 ];
 
-const queuedCount = computed(() => tasks.value.filter((task) => task.status === "QUEUED").length);
-const runningCount = computed(() => tasks.value.filter((task) => task.status === "RUNNING").length);
-const succeededCount = computed(() => tasks.value.filter((task) => task.status === "SUCCEEDED").length);
-const failedCount = computed(() => tasks.value.filter((task) => task.status === "FAILED" || task.status === "RETRY_WAIT").length);
+const queuedCount = computed(() => statusCounts.value.QUEUED);
+const runningCount = computed(() => statusCounts.value.RUNNING);
+const succeededCount = computed(() => statusCounts.value.SUCCEEDED);
+const failedCount = computed(() => statusCounts.value.FAILED + statusCounts.value.RETRY_WAIT);
 
 const filtered = computed(() => tasks.value.filter((task) => {
   const text = [task.id, task.characterName, task.characterId, taskTypeText(task.type)].join(" ").toLowerCase();
@@ -122,9 +129,11 @@ async function loadTasks() {
     const result = await $fetch<TaskListResponse>("/api/tasks?limit=100");
     tasks.value = result.items;
     totalTasks.value = result.total;
+    statusCounts.value = result.statusCounts;
   } catch (error) {
     tasks.value = [];
     totalTasks.value = 0;
+    statusCounts.value = { QUEUED: 0, RUNNING: 0, SUCCEEDED: 0, FAILED: 0, SKIPPED: 0, RETRY_WAIT: 0, CANCELLED: 0 };
     loadError.value = error && typeof error === "object" && "statusMessage" in error
       ? String(error.statusMessage)
       : error instanceof Error ? error.message : "任务列表读取失败。";

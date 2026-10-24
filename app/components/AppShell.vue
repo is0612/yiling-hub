@@ -56,7 +56,7 @@ const navigation = computed<NavigationItem[]>(() => {
       icon: Calendar,
     },
     { key: "channels", label: "渠道管理", href: "/channels", icon: ChatDotRound, section: "系统管理" },
-    { key: "tasks", label: "任务监控", href: "/tasks", icon: DataAnalysis, count: "2" },
+    { key: "tasks", label: "任务监控", href: "/tasks", icon: DataAnalysis },
     { key: "settings", label: "系统设置", href: "/settings", icon: Setting },
   ];
 });
