@@ -55,9 +55,9 @@ export type MemoryAiAnalysis = {
 };
 
 export type MemoryAiInput = {
-  apiKey?: string;
-  apiBaseUrl?: string;
-  model?: string;
+  apiKey: string;
+  apiBaseUrl: string;
+  model: string;
   periodStart: string;
   periodEnd: string;
   timezone: string;
@@ -250,13 +250,12 @@ export async function analyzeMemoryPeriod(input: MemoryAiInput): Promise<{
 }> {
   // Credentials must be resolved by the caller for the selected provider. Never silently
   // substitute the global environment key for a request targeting another provider.
-  const apiKey = input.apiKey?.trim();
-  const model = input.model?.trim() || process.env.LLM_MODEL?.trim();
-  if (!apiKey || !model) {
-    throw new Error("LLM_NOT_CONFIGURED: 当前模型请求缺少 API Key 或模型名称；请检查角色模型配置和服务端默认配置。");
+  const apiKey = input.apiKey.trim();
+  const model = input.model.trim();
+  const baseUrl = input.apiBaseUrl.trim();
+  if (!apiKey || !model || !baseUrl) {
+    throw new Error("LLM_NOT_CONFIGURED: 当前模型请求缺少已解析的 API Key、API Base URL 或模型名称；请检查角色模型配置和服务端默认配置。");
   }
-
-  const baseUrl = input.apiBaseUrl?.trim() || process.env.LLM_BASE_URL?.trim() || "https://api.openai.com/v1";
   let endpoint: URL;
   try {
     endpoint = buildChatCompletionsEndpoint(baseUrl);
