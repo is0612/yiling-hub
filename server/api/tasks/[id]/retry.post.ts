@@ -19,7 +19,7 @@ export default defineEventHandler(async (event) => {
         type: true,
         status: true,
         attemptCount: true,
-        memoryScope: { select: { character: { select: { id: true } } } },
+        memoryScope: { select: { character: { select: { id: true, memorySetting: { select: { rawMessageCleanupEnabled: true, rawMessageRetentionDays: true } } } } },
       },
     });
     if (!job) throw createError({ statusCode: 404, statusMessage: "任务不存在。" });
@@ -28,6 +28,13 @@ export default defineEventHandler(async (event) => {
     }
     if (!RETRYABLE_STATUSES.has(job.status)) {
       throw createError({ statusCode: 409, statusMessage: "只有失败、等待重试或已取消的任务可以手动重新入队。" });
+    }
+    if (
+      job.type === "CLEAN_EXPIRED_MESSAGES" &&
+      (!job.memoryScope.character.memorySetting?.rawMessageCleanupEnabled ||
+        !job.memoryScope.character.memorySetting.rawMessageRetentionDays)
+    ) {
+      throw createError({ statusCode: 409, statusMessage: "请先在角色记忆设置中明确启用有限期限的原始消息自动清理，再重新入队。" });
     }
 
     const updated = await tx.memoryJob.updateMany({

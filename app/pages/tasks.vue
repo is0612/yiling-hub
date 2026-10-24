@@ -28,7 +28,7 @@ type TaskListResponse = {
 type WorkerResult = {
   processed: boolean;
   jobId?: string;
-  status?: "SUCCEEDED" | "SKIPPED" | "RETRY_WAIT" | "FAILED";
+  status?: "SUCCEEDED" | "SKIPPED" | "RETRY_WAIT" | "FAILED" | "CANCELLED";
   snapshotId?: string;
   message: string;
 };
@@ -196,7 +196,9 @@ async function runWorker() {
     } else if (result.status === "SUCCEEDED") {
       ElMessage.success(result.message || "任务执行完成。");
     } else if (result.status === "SKIPPED") {
-      ElMessage.info("该周期没有已保存活动，任务已跳过。");
+      ElMessage.info(result.message || "该周期没有已保存活动，任务已跳过。");
+    } else if (result.status === "CANCELLED") {
+      ElMessage.info(result.message || "任务已取消。");
     } else {
       ElMessage.warning(result.message);
     }

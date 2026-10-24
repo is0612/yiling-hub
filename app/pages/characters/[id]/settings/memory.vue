@@ -8,6 +8,7 @@ type MemorySettings = {
   timezone: string;
   anchorAt: string;
   rawMessageRetentionDays: number;
+  rawMessageCleanupEnabled: boolean;
   autoSnapshotEnabled: boolean;
   changePolicy: "NEXT_CYCLE" | "IMMEDIATE_RECALC";
   nextSnapshotAt: string | null;
@@ -22,6 +23,7 @@ const timezone = ref("Asia/Shanghai");
 const anchor = ref("2026-10-21T09:00:00");
 const retention = ref(0);
 const savedRetention = ref(0);
+const savedRetentionCleanupEnabled = ref(false);
 const autoSnapshot = ref(false);
 const nextSnapshotAt = ref<string | null>(null);
 const effectivePolicy = ref("下一个周期生效");
@@ -77,6 +79,7 @@ async function loadSettings() {
     anchor.value = formatAnchor(settings.anchorAt, settings.timezone);
     retention.value = settings.rawMessageRetentionDays;
     savedRetention.value = settings.rawMessageRetentionDays;
+    savedRetentionCleanupEnabled.value = settings.rawMessageCleanupEnabled;
     autoSnapshot.value = settings.autoSnapshotEnabled;
     nextSnapshotAt.value = settings.nextSnapshotAt;
     effectivePolicy.value = settings.changePolicy === "IMMEDIATE_RECALC" ? "立即重算" : "下一个周期生效";
@@ -94,7 +97,7 @@ async function saveSettings() {
   const previousRetention = savedRetention.value;
   const nextRetention = Number(retention.value);
   const retentionBecomesMoreDestructive = nextRetention > 0 &&
-    (previousRetention === 0 || nextRetention < previousRetention);
+    (!savedRetentionCleanupEnabled.value || (previousRetention > 0 && nextRetention < previousRetention));
   if (retentionBecomesMoreDestructive) {
     const archiveWarning = autoSnapshot.value
       ? ""
@@ -125,6 +128,7 @@ async function saveSettings() {
         timezone: timezone.value,
         anchorAt,
         rawMessageRetentionDays: retention.value,
+        rawMessageCleanupEnabled: nextRetention > 0,
         autoSnapshotEnabled: autoSnapshot.value,
         changePolicy: effectivePolicy.value === "立即重算" ? "IMMEDIATE_RECALC" : "NEXT_CYCLE",
       },
@@ -133,6 +137,7 @@ async function saveSettings() {
     nextSnapshotAt.value = saved.nextSnapshotAt;
     retention.value = saved.rawMessageRetentionDays;
     savedRetention.value = saved.rawMessageRetentionDays;
+    savedRetentionCleanupEnabled.value = saved.rawMessageCleanupEnabled;
     autoSnapshot.value = saved.autoSnapshotEnabled;
     anchor.value = formatAnchor(saved.anchorAt, saved.timezone);
     effectivePolicy.value = saved.changePolicy === "IMMEDIATE_RECALC" ? "立即重算" : "下一个周期生效";
@@ -211,7 +216,7 @@ watch(id, () => void loadSettings());
             <div class="form-grid">
               <el-form-item label="记忆时区"><el-select v-model="timezone" style="width:100%"><el-option label="中国标准时间（Asia/Shanghai）" value="Asia/Shanghai" /><el-option label="协调世界时（UTC）" value="UTC" /><el-option label="美国太平洋时间（America/Los_Angeles）" value="America/Los_Angeles" /></el-select></el-form-item>
               <el-form-item label="周期启用锚点"><el-date-picker v-model="anchor" type="datetime" value-format="YYYY-MM-DDTHH:mm:ss" placeholder="选择周期起始时间" style="width:100%" /></el-form-item>
-              <el-form-item label="原始消息保留期限"><el-select v-model="retention" style="width:100%"><el-option label="30 天" :value="30" /><el-option label="90 天" :value="90" /><el-option label="180 天" :value="180" /><el-option label="永久保留" :value="0" /></el-select><div class="form-help">到期后由 Scheduler 创建清理任务，Worker 会先检查较早快照任务；永久保留不会创建清理任务。</div></el-form-item>
+              <el-form-item label="原始消息保留期限"><el-select v-model="retention" style="width:100%"><el-option label="30 天" :value="30" /><el-option label="90 天" :value="90" /><el-option label="180 天" :value="180" /><el-option label="永久保留" :value="0" /></el-select><div class="form-help">{{ Number(retention) === 0 ? "永久保留；保存后不会再排入原始消息清理任务。" : savedRetentionCleanupEnabled ? "自动清理已获授权；缩短保留期时会再次要求确认。较早的快照任务尚未完成时，Worker 会延后清理。" : "当前期限仅为配置，自动清理尚未获授权。保存时需要明确确认；未确认前不会排入清理任务。" }}</div></el-form-item>
               <el-form-item label="修改何时生效"><el-radio-group v-model="effectivePolicy"><el-radio value="下一个周期生效">下一个周期</el-radio><el-radio value="立即重算">立即重算</el-radio></el-radio-group></el-form-item>
             </div>
           </el-form>
