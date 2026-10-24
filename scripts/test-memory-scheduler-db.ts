@@ -242,7 +242,46 @@ try {
   const completedCleanup = await prisma.memoryJob.findUniqueOrThrow({ where: { id: cleanupJob.id } });
   assert.equal(completedCleanup.status, "SUCCEEDED", "Cleanup job should be marked successful.");
 
-  console.log("Memory retention integration passed: expired raw message removal, recent-message preservation, and snapshot/source/long-term-memory provenance preservation.");
+  const cleanupAudit = await prisma.auditLog.findFirstOrThrow({
+    where: {
+      action: "message.retention_cleanup",
+      entityType: "MemoryScope",
+      entityId: retentionScopeId,
+      details: { path: ["jobId"], equals: cleanupJob.id },
+    },
+    select: { details: true, characterId: true },
+  });
+  assert.equal(cleanupAudit.characterId, characterId, "Cleanup audit should retain the owning character context.");
+  assert.deepEqual(
+    cleanupAudit.details,
+    {
+      cutoff: "2026-09-24T12:00:00.000Z",
+      deletedMessages: 1,
+      jobId: cleanupJob.id,
+    },
+    "Cleanup audit must record the exact cutoff, deletion count, and originating task.",
+  );
+
+  // A repeated scheduler pass on the same day must not enqueue duplicate cleanup work.
+  await enqueueDueMemorySnapshots(prisma, { now });
+  assert.equal(
+    await prisma.memoryJob.count({ where: { idempotencyKey: `clean-expired-messages:${retentionScopeId}:2026-09-24` } }),
+    1,
+    "Repeating the scheduler must not create a second cleanup job for the same scope and cutoff.",
+  );
+  assert.equal(
+    await prisma.auditLog.count({
+      where: {
+        action: "message.retention_cleanup",
+        entityType: "MemoryScope",
+        entityId: retentionScopeId,
+      },
+    }),
+    1,
+    "A repeated scheduler pass must not duplicate a completed cleanup audit.",
+  );
+
+  console.log("Memory retention integration passed: safe deletion, provenance preservation, accurate audit data, and cleanup scheduling idempotency.");
 
   console.log("Memory DB integration passed: concurrent scheduling, overdue backfill, cursor advancement, repeat-run idempotency, worker replay reuse, and retention cleanup.");
 } finally {

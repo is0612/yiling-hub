@@ -48,27 +48,37 @@ export default defineEventHandler(async (event) => {
     prisma.memoryJob.groupBy({ by: ["status"], where: { memoryScope: { is: { character: { is: { ownerId } } } } }, _count: { _all: true } }),
   ]);
 
-  const cleanupAudits = await Promise.all(jobs.filter((job) => job.type === "CLEAN_EXPIRED_MESSAGES").map(async (job) => {
-    const audit = await prisma.auditLog.findFirst({
+  const cleanupJobs = jobs.filter((job) => job.type === "CLEAN_EXPIRED_MESSAGES");
+  const cleanupJobIds = new Set(cleanupJobs.map((job) => job.id));
+  const cleanupScopeIds = [...new Set(cleanupJobs.map((job) => job.memoryScope.id))];
+  const cleanupAudits = cleanupScopeIds.length > 0
+    ? await prisma.auditLog.findMany({
       where: {
         action: "message.retention_cleanup",
         entityType: "MemoryScope",
-        entityId: job.memoryScope.id,
-        details: { path: ["jobId"], equals: job.id },
+        entityId: { in: cleanupScopeIds },
       },
       orderBy: { createdAt: "desc" },
-      select: { details: true, createdAt: true },
-    });
-    const details = audit?.details && typeof audit.details === "object" && !Array.isArray(audit.details)
+      select: { entityId: true, details: true, createdAt: true },
+    })
+    : [];
+  const cleanupResultByJobId = new Map<string, {
+    deletedMessageCount: number | null;
+    cutoff: string | null;
+    recordedAt: string;
+  }>();
+  for (const audit of cleanupAudits) {
+    const details = audit.details && typeof audit.details === "object" && !Array.isArray(audit.details)
       ? audit.details as Record<string, unknown>
       : null;
-    return [job.id, audit ? {
+    const jobId = typeof details?.jobId === "string" ? details.jobId : null;
+    if (!jobId || !cleanupJobIds.has(jobId) || cleanupResultByJobId.has(jobId)) continue;
+    cleanupResultByJobId.set(jobId, {
       deletedMessageCount: typeof details?.deletedMessages === "number" ? details.deletedMessages : null,
       cutoff: typeof details?.cutoff === "string" ? details.cutoff : null,
       recordedAt: audit.createdAt.toISOString(),
-    } : null] as const;
-  }));
-  const cleanupResultByJobId = new Map(cleanupAudits);
+    });
+  }
 
   return {
     items: jobs.map((job) => ({
