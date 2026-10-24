@@ -329,6 +329,67 @@ try {
     "A repeated scheduler pass must not duplicate a completed cleanup audit.",
   );
 
+  // A queued 30-day cleanup must be cancelled if the owner widens retention to 90 days.
+  const relaxedScopeId = randomUUID();
+  const relaxedConversationId = randomUUID();
+  await prisma.memoryScope.create({
+    data: {
+      id: relaxedScopeId,
+      characterId,
+      scopeType: "USER_PRIVATE",
+      scopeKey: `relaxed-retention-test:${suffix}`,
+    },
+  });
+  await prisma.conversation.create({
+    data: {
+      id: relaxedConversationId,
+      characterId,
+      memoryScopeId: relaxedScopeId,
+      title: "放宽原文保留期限后保护消息",
+    },
+  });
+  const relaxedMessage = await prisma.message.create({
+    data: {
+      conversationId: relaxedConversationId,
+      role: "USER",
+      eventType: "message",
+      content: "保留期限从 30 天放宽至 90 天后，这条消息不应按旧截止时间删除。",
+      occurredAt: new Date("2026-08-01T00:00:00.000Z"),
+    },
+    select: { id: true },
+  });
+  const staleAggressiveCleanup = await prisma.memoryJob.create({
+    data: {
+      memoryScopeId: relaxedScopeId,
+      type: "CLEAN_EXPIRED_MESSAGES",
+      idempotencyKey: `stale-30-day-cleanup:${suffix}`,
+      periodEnd: new Date("2026-09-24T12:00:00.000Z"),
+      status: "QUEUED",
+      runAt: now,
+    },
+    select: { id: true },
+  });
+  await prisma.characterMemorySetting.update({
+    where: { characterId },
+    data: { rawMessageRetentionDays: 90, rawMessageCleanupEnabled: true },
+  });
+  const relaxedPolicyResult = await processNextMemoryJob(prisma, {
+    now,
+    workerId: `relaxed-retention-worker-${suffix}`,
+  });
+  assert.equal(relaxedPolicyResult.jobId, staleAggressiveCleanup.id, "Worker should examine the stale cleanup cutoff after retention is widened.");
+  assert.equal(relaxedPolicyResult.status, "CANCELLED", "Worker must cancel a queued task whose cutoff is more aggressive than the latest 90-day policy.");
+  assert.equal(
+    await prisma.message.count({ where: { id: relaxedMessage.id } }),
+    1,
+    "Widening retention from 30 to 90 days must preserve messages that are no longer eligible for deletion.",
+  );
+
+  await prisma.characterMemorySetting.update({
+    where: { characterId },
+    data: { rawMessageCleanupEnabled: false },
+  });
+
   // A legacy cleanup job must not delete anything after explicit authorization is revoked.
   await prisma.characterMemorySetting.update({
     where: { characterId },
@@ -388,8 +449,8 @@ try {
   console.log("Memory DB integration passed: concurrent scheduling, overdue backfill, cursor advancement, repeat-run idempotency, worker replay reuse, and retention cleanup.");
 } finally {
   await prisma.characterMemorySetting.deleteMany({ where: { characterId } });
-  await prisma.conversation.deleteMany({ where: { id: { in: [conversationId, blockedConversationId, unauthorizedConversationId] } } });
-  await prisma.memoryScope.deleteMany({ where: { id: { in: [scopeId, retentionScopeId, unauthorizedScopeId] } } });
+  await prisma.conversation.deleteMany({ where: { id: { in: [conversationId, blockedConversationId, unauthorizedConversationId, relaxedConversationId] } } });
+  await prisma.memoryScope.deleteMany({ where: { id: { in: [scopeId, retentionScopeId, unauthorizedScopeId, relaxedScopeId] } } });
   await prisma.character.deleteMany({ where: { id: characterId } });
   await prisma.user.deleteMany({ where: { id: ownerId } });
   await prisma.$disconnect();
