@@ -45,7 +45,7 @@ export default defineEventHandler(async (event) => {
       },
     }),
     prisma.memoryJob.count({ where }),
-    prisma.memoryJob.groupBy({ by: ["status"], where: { memoryScope: { is: { character: { is: { ownerId } } } }, ...(statusValue ? { status: statusValue as JobStatus } : {}) }, _count: { _all: true } }),
+    prisma.memoryJob.groupBy({ by: ["status"], where: { memoryScope: { is: { character: { is: { ownerId } } } } }, _count: { _all: true } }),
   ]);
 
   return {
