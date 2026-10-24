@@ -66,6 +66,16 @@ assert.throws(() => validateChatApiBaseUrl("https://192.168.1.10/v1"), /私有�
 assert.throws(() => validateChatApiBaseUrl("https://169.254.169.254/latest/meta-data"), /私有网络/);
 assert.throws(() => validateChatApiBaseUrl("https://service.internal/v1"), /本机地址/);
 assert.throws(() => validateChatApiBaseUrl("https://[fd00::1]/v1"), /私有网络/);
+const originalNodeEnv = process.env.NODE_ENV;
+try {
+  process.env.NODE_ENV = "production";
+  assert.throws(() => validateChatApiBaseUrl("http://127.0.0.1:4010/v1"), /本机地址/);
+  assert.throws(() => validateChatApiBaseUrl("https://127.0.0.2/v1"), /本机地址/);
+  assert.throws(() => validateChatApiBaseUrl("https://service.localhost/v1"), /本机地址/);
+} finally {
+  if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
+  else process.env.NODE_ENV = originalNodeEnv;
+}
 assert.throws(() => validateChatApiBaseUrl("ftp://api.example.com/v1"), /只支持 HTTPS/);
 assert.throws(() => validateChatApiBaseUrl("https://user:pass@api.example.com/v1"), /不应包含用户名/);
 assert.throws(() => validateChatApiBaseUrl("https://api.example.com/v1/chat/completions"), /不要填写 \/chat\/completions/);
