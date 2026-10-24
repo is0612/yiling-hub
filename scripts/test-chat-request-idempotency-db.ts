@@ -18,14 +18,14 @@ const requestIds: string[] = [];
 try {
   const request = await prisma.chatRequest.create({
     data: { ownerId, characterId, requestKey, claimToken: randomUUID(), status: "PROCESSING" },
-    select: { id: true, status: true },
+    select: { id: true, status: true, claimToken: true },
   });
   requestIds.push(request.id);
   assert.equal(request.status, "PROCESSING");
 
   // The database unique constraint is the final guard against duplicate request rows.
   await assert.rejects(
-    prisma.chatRequest.create({ data: { ownerId, characterId, requestKey } }),
+    prisma.chatRequest.create({ data: { ownerId, characterId, requestKey, claimToken: randomUUID() } }),
     (error: { code?: string }) => error.code === "P2002",
     "The same owner/character/request key must not create two request records.",
   );
@@ -44,7 +44,7 @@ try {
     }),
     prisma.chatRequest.updateMany({
       where: { id: request.id, status: "PROCESSING", updatedAt: { lt: staleBefore } },
-      data: { status: "PROCESSING", lastError: null, response: undefined, conversationId: null },
+      data: { status: "PROCESSING", claimToken: randomUUID(), lastError: null, response: undefined, conversationId: null },
     }),
   ]);
   assert.equal(claims.reduce((sum, claim) => sum + claim.count, 0), 1,
@@ -87,7 +87,7 @@ try {
   requestIds.push(failed.id);
   const retry = await prisma.chatRequest.updateMany({
     where: { id: failed.id, status: "FAILED" },
-    data: { status: "PROCESSING", lastError: null, response: undefined, conversationId: null },
+    data: { status: "PROCESSING", claimToken: randomUUID(), lastError: null, response: undefined, conversationId: null },
   });
   assert.equal(retry.count, 1, "A failed request must be eligible for a controlled retry.");
 
