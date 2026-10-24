@@ -50,6 +50,17 @@ async function waitForServer() {
 
 await waitForServer();
 
+const crossOriginResponse = await fetch(new URL("/api/characters", baseUrl), {
+  headers: { origin: "https://attacker.example" },
+});
+assert(crossOriginResponse.status === 403, "Local API must reject browser requests whose Origin does not match the loopback host.");
+await crossOriginResponse.arrayBuffer();
+const crossSiteResponse = await fetch(new URL("/api/characters", baseUrl), {
+  headers: { "sec-fetch-site": "cross-site" },
+});
+assert(crossSiteResponse.status === 403, "Local API must reject browser requests marked as cross-site.");
+await crossSiteResponse.arrayBuffer();
+
 const firstList = await request("/api/characters");
 assert(Array.isArray(firstList), "GET /api/characters must return a list.");
 

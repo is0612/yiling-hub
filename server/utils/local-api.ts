@@ -23,6 +23,31 @@ export function requireLocalDevOwner(event: Parameters<typeof getHeader>[0]): st
     });
   }
 
+  // Loopback Host checks alone do not stop a malicious website from sending browser
+  // requests to localhost. Validate browser fetch metadata when the browser supplies it.
+  const originHeader = getHeader(event, "origin");
+  if (originHeader) {
+    let originUrl: URL | null = null;
+    try {
+      originUrl = new URL(originHeader);
+    } catch {
+      // Invalid and opaque origins (for example, "null") are not trusted.
+    }
+    const originHostname = originUrl?.hostname.toLowerCase().replace(/^\\[|\\]$/g, "") ?? "";
+    if (
+      !originUrl ||
+      !["http:", "https:"].includes(originUrl.protocol) ||
+      originUrl.host.toLowerCase() !== hostHeader ||
+      !["localhost", "127.0.0.1", "::1"].includes(originHostname)
+    ) {
+      throw createError({ statusCode: 403, statusMessage: "本地开发接口拒绝跨源请求。" });
+    }
+  }
+  const fetchSite = (getHeader(event, "sec-fetch-site") ?? "").toLowerCase();
+  if (fetchSite && fetchSite !== "same-origin" && fetchSite !== "none") {
+    throw createError({ statusCode: 403, statusMessage: "本地开发接口拒绝跨站请求。" });
+  }
+
   const ownerId = process.env.DEV_OWNER_ID;
   if (!ownerId || !UUID_PATTERN.test(ownerId)) {
     throw createError({
