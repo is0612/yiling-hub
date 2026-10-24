@@ -119,6 +119,9 @@ function formatDate(value: string | null) {
 }
 
 function periodText(task: MemoryTask) {
+  if (task.type === "CLEAN_EXPIRED_MESSAGES") {
+    return task.periodEnd ? `清理 ${formatDate(task.periodEnd)} 之前的原始消息` : "未指定清理截止时间";
+  }
   if (!task.periodStart || !task.periodEnd) return "未指定周期范围";
   return `${formatDate(task.periodStart)} — ${formatDate(task.periodEnd)}`;
 }
