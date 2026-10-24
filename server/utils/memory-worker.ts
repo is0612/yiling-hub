@@ -21,7 +21,7 @@ const MIN_MEMORY_CONFIDENCE = 0.65;
 
 export type MemoryWorkerResult =
   | { processed: false; message: string }
-  | { processed: true; jobId: string; status: "SUCCEEDED" | "SKIPPED" | "RETRY_WAIT" | "FAILED"; snapshotId?: string; message: string };
+  | { processed: true; jobId: string; status: "SUCCEEDED" | "SKIPPED" | "RETRY_WAIT" | "FAILED" | "CANCELLED"; snapshotId?: string; message: string };
 
 type WorkerOptions = {
   ownerId?: string;
@@ -108,6 +108,56 @@ export async function processNextMemoryJob(
     });
     if (claim.count !== 1) continue;
 
+    const scope = await prisma.memoryScope.findUnique({
+      where: { id: candidate.memoryScopeId },
+      select: {
+        characterId: true,
+        character: {
+          select: {
+            memorySetting: {
+              select: {
+                rawMessageCleanupEnabled: true,
+                rawMessageRetentionDays: true,
+              },
+            },
+          },
+        },
+      },
+    });
+    if (!scope) {
+      await prisma.memoryJob.updateMany({
+        where: { id: candidate.id, status: "RUNNING", lockedBy: workerId },
+        data: { status: "FAILED", completedAt: now, lockedAt: null, lockedBy: null, lastError: "找不到清理任务关联的记忆范围。" },
+      });
+      return { processed: true, jobId: candidate.id, status: "FAILED", message: "找不到清理任务关联的记忆范围。" };
+    }
+
+    const currentRetentionDays = scope.character.memorySetting?.rawMessageRetentionDays;
+    const currentCutoff = scope.character.memorySetting?.rawMessageCleanupEnabled &&
+      currentRetentionDays && currentRetentionDays > 0
+      ? new Date(now.getTime() - currentRetentionDays * 24 * 60 * 60 * 1000)
+      : null;
+    if (!currentCutoff || candidate.periodEnd.getTime() > currentCutoff.getTime()) {
+      const reason = !currentCutoff
+        ? "当前角色尚未明确授权原始消息自动清理，或已选择永久保留；该旧任务已取消，未删除原始消息。"
+        : "原始消息保留期限已放宽，当前任务的截止范围比最新策略更激进；该旧任务已取消，未删除原始消息。";
+      const cancelled = await prisma.memoryJob.updateMany({
+        where: { id: candidate.id, status: "RUNNING", lockedBy: workerId },
+        data: {
+          status: "CANCELLED",
+          attemptCount: { decrement: 1 },
+          completedAt: now,
+          lockedAt: null,
+          lockedBy: null,
+          lastError: reason,
+        },
+      });
+      if (cancelled.count === 1) {
+        return { processed: true, jobId: candidate.id, status: "CANCELLED", message: reason };
+      }
+      continue;
+    }
+
     const pendingSnapshot = await prisma.memoryJob.findFirst({
       where: {
         memoryScopeId: candidate.memoryScopeId,
@@ -137,18 +187,6 @@ export async function processNextMemoryJob(
       continue;
     }
 
-    const scope = await prisma.memoryScope.findUnique({
-      where: { id: candidate.memoryScopeId },
-      select: { characterId: true },
-    });
-    if (!scope) {
-      await prisma.memoryJob.updateMany({
-        where: { id: candidate.id, status: "RUNNING", lockedBy: workerId },
-        data: { status: "FAILED", completedAt: now, lockedAt: null, lockedBy: null, lastError: "找不到清理任务关联的记忆范围。" },
-      });
-      return { processed: true, jobId: candidate.id, status: "FAILED", message: "找不到清理任务关联的记忆范围。" };
-    }
-
     try {
       // Keep the deletion, job completion, and audit record in one transaction.
       // Lock/verify ownership first so a stale or displaced worker cannot delete content.
@@ -159,6 +197,18 @@ export async function processNextMemoryJob(
         });
         if (claim.count !== 1) {
           throw new Error("清理任务租约已失效；拒绝删除原始消息。");
+        }
+        const latestPolicy = await tx.characterMemorySetting.findUnique({
+          where: { characterId: scope.characterId },
+          select: { rawMessageCleanupEnabled: true, rawMessageRetentionDays: true },
+        });
+        const latestRetentionDays = latestPolicy?.rawMessageRetentionDays;
+        const latestCutoff = latestPolicy?.rawMessageCleanupEnabled &&
+          latestRetentionDays && latestRetentionDays > 0
+          ? new Date(now.getTime() - latestRetentionDays * 24 * 60 * 60 * 1000)
+          : null;
+        if (!latestCutoff || candidate.periodEnd!.getTime() > latestCutoff.getTime()) {
+          throw new Error("CLEANUP_POLICY_CHANGED");
         }
 
         const deleted = await tx.message.deleteMany({
@@ -185,6 +235,25 @@ export async function processNextMemoryJob(
       });
       return { processed: true, jobId: candidate.id, status: "SUCCEEDED", message: `原始消息清理完成，删除 ${deletedCount} 条过期消息；快照与来源记录已保留。` };
     } catch (error) {
+      if (error instanceof Error && error.message === "CLEANUP_POLICY_CHANGED") {
+        const message = "清理策略已变更或尚未授权；该任务已取消，未删除原始消息。";
+        const cancelled = await prisma.memoryJob.updateMany({
+          where: { id: candidate.id, status: "RUNNING", lockedBy: workerId },
+          data: {
+            status: "CANCELLED",
+            attemptCount: { decrement: 1 },
+            runAt: now,
+            lockedAt: null,
+            lockedBy: null,
+            lastError: message,
+            completedAt: now,
+          },
+        });
+        if (cancelled.count === 1) {
+          return { processed: true, jobId: candidate.id, status: "CANCELLED", message };
+        }
+        return { processed: false, message: "清理任务状态已变化，未删除原始消息。" };
+      }
       const message = (error instanceof Error ? error.message : String(error)).slice(0, 2000);
       const attemptCount = candidate.attemptCount + 1;
       const exhausted = attemptCount >= candidate.maxAttempts;
