@@ -73,6 +73,8 @@ assert.throws(() => validateChatApiBaseUrl("https://[fc00::1]/v1"), /私有网�
 assert.throws(() => validateChatApiBaseUrl("https://[fe80::1]/v1"), /私有网络/, "IPv6 link-local addresses must be rejected.");
 assert.throws(() => validateChatApiBaseUrl("https://[::ffff:7f00:1]/v1"), /私有网络/, "IPv4-mapped IPv6 loopback must not bypass IPv4 restrictions.");
 assert.throws(() => validateChatApiBaseUrl("https://[::ffff:a00:1]/v1"), /私有网络/, "IPv4-mapped IPv6 private addresses must not bypass IPv4 restrictions.");
+assert.throws(() => validateChatApiBaseUrl("https://[::7f00:1]/v1"), /私有网络/, "IPv4-compatible IPv6 loopback must not bypass IPv4 restrictions.");
+assert.throws(() => validateChatApiBaseUrl("https://[::a00:1]/v1"), /私有网络/, "IPv4-compatible IPv6 private addresses must not bypass IPv4 restrictions.");
 const originalNodeEnv = process.env.NODE_ENV;
 try {
   process.env.NODE_ENV = "production";
