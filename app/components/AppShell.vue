@@ -14,6 +14,8 @@ import {
   User,
   UserFilled,
   Connection,
+  VideoPlay,
+  Operation,
 } from "@element-plus/icons-vue";
 
 const route = useRoute();
@@ -78,6 +80,8 @@ const navigation = computed<NavigationItem[]>(() => {
   if (isAdmin.value) {
     items.push(
       { key: "channels", label: "渠道管理", href: "/channels", icon: ChatDotRound, section: "系统管理" },
+      { key: "bili", label: "B站工作台", href: "/bili", icon: VideoPlay },
+      { key: "bili-commands", label: "B站命令", href: "/bili/commands", icon: Operation },
       { key: "tasks", label: "任务监控", href: "/tasks", icon: DataAnalysis },
       { key: "identities", label: "身份管理", href: "/identities", icon: Connection },
       { key: "users", label: "用户管理", href: "/users", icon: UserFilled },
@@ -100,6 +104,8 @@ function isActive(item: NavigationItem) {
       return path.startsWith("/characters/") && path.endsWith("/chat");
     case "snapshots":
       return /^\/characters\/[^/]+\/snapshots$/.test(path);
+    case "bili":
+      return path === "/bili";
     default:
       return path === item.href || path.startsWith(`${item.href}/`);
   }
