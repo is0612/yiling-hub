@@ -9,6 +9,8 @@
 
 import { spawn } from "node:child_process";
 import { createConnection } from "node:net";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 
 export type BiliRunResult = {
   code: number | null;
@@ -33,8 +35,28 @@ export type BiliRunOptions = {
 
 const DEFAULT_TIMEOUT_MS = 240_000;
 
+/**
+ * 解析 bili 可执行文件路径，查找顺序（对齐 bili-desk 的 paths.py）：
+ *   1. 环境变量 BILI_BIN
+ *   2. 本项目 .venv（Windows: .venv/Scripts/bili.exe；Unix: .venv/bin/bili）
+ *   3. 回退到 PATH 里的 `bili`
+ *
+ * bili 是 PyPI 的 `bili-agent` 包（独立安装，不依赖 bili-desk），
+ * 装进项目自己的 .venv 后换台机器也不用全局装。
+ */
 function resolveBiliBin(): string {
-  return process.env.BILI_BIN?.trim() || "bili";
+  const fromEnv = process.env.BILI_BIN?.trim();
+  if (fromEnv) return fromEnv;
+
+  const root = process.cwd();
+  const candidates =
+    process.platform === "win32"
+      ? [join(root, ".venv", "Scripts", "bili.exe"), join(root, ".venv", "Scripts", "bili")]
+      : [join(root, ".venv", "bin", "bili")];
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+  return "bili";
 }
 
 // ---------------------------------------------------------------------------
@@ -43,6 +65,11 @@ function resolveBiliBin(): string {
 // ---------------------------------------------------------------------------
 
 const PROXY_KEYS = ["http_proxy", "https_proxy", "all_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"];
+
+// 光看端口通不通不够：端口活着也可能是个 SOCKS 口，或者代理自己连不上上游
+// （那正是 `ProxyError: 502 Bad Gateway` 的来源）。所以再发一次 CONNECT 探针，
+// 代理真能建立到 B站 的隧道才认为可用。对齐 bili-desk 的 netenv.py。
+const PROBE_TARGET = "api.bilibili.com:443";
 
 function hostPort(value: string): { host: string; port: number } | null {
   const raw = (value || "").trim();
@@ -63,12 +90,31 @@ function hostPort(value: string): { host: string; port: number } | null {
 function proxyAlive(value: string): Promise<boolean> {
   const hp = hostPort(value);
   if (!hp) return Promise.resolve(false);
-  // 简单 TCP 连通性探测（对应 netenv.py 的 socket.create_connection 探测）。
   return new Promise((resolve) => {
+    // 第一步：TCP 连通性（代理软件没开的情况，0.4 秒连不上基本就是没开）。
     const sock = createConnection({ host: hp.host, port: hp.port, timeout: 400 });
     sock.once("connect", () => {
-      sock.destroy();
-      resolve(true);
+      // 第二步：发 CONNECT 探针，确认代理能真正建立到 B站 的隧道。
+      // 200 = 隧道通；407 = 要认证但代理本身好。5xx = 代理连不上上游，不能信。
+      const request = `CONNECT ${PROBE_TARGET} HTTP/1.1\r\nHost: ${PROBE_TARGET}\r\nProxy-Connection: keep-alive\r\n\r\n`;
+      sock.write(request);
+      sock.setTimeout(1500);
+      let buf = "";
+      sock.on("data", (data: Buffer) => {
+        buf += data.toString("utf8");
+        const head = buf.split("\r\n", 1)[0] || "";
+        if (head.startsWith("HTTP/1.")) {
+          const ok = head.includes(" 200") || head.includes(" 407");
+          sock.destroy();
+          resolve(ok);
+        }
+      });
+      sock.once("error", () => resolve(false));
+      sock.once("timeout", () => {
+        sock.destroy();
+        resolve(false);
+      });
+      sock.once("close", () => resolve(false));
     });
     sock.once("error", () => resolve(false));
     sock.once("timeout", () => {

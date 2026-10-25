@@ -70,6 +70,27 @@ channel-adapter/
 （数据目录、bili 可执行文件路径、perDay/keywords/zone 等值班设置）写入 `metadata` JSON，
 B站凭证沿用 `%APPDATA%\bili-cli\credential.json`（不随代码走）。
 
+### 4.0 bili CLI 独立安装（不依赖 bili-desk）
+
+bili 命令来自 PyPI 的 `bili-agent` 包（github.com/kukemc/bili-cli，MIT）。它不随代码走，
+需要装进项目自己的 `.venv`（已加入 `.gitignore`）。换台机器重建环境：
+
+```bash
+# 用 uv（或用 pip 亦可）装进项目 .venv
+uv venv .venv --python 3.13
+uv pip install --python .venv/Scripts/python.exe "bili-agent==0.6.0"
+
+# 验证
+.venv/Scripts/bili.exe --version   # {"ok": true, "data": {"version": "0.6.0"}}
+```
+
+`runner.ts` 的 `resolveBiliBin()` 查找顺序：`BILI_BIN` 环境变量 → 项目 `.venv/Scripts/bili.exe`
+（Windows）→ PATH 里的 `bili`。
+
+**代理残留坑**：机器上残留死代理（如 `http_proxy=http://127.0.0.1:62614`，代理软件已关但变量还在）
+会让 bili 撞上 `ProxyError: 502 Bad Gateway`。`runner.ts` 起子进程前会发 CONNECT 探针
+（连 `api.bilibili.com:443`），代理连不上上游就摘掉代理变量改直连——对齐 bili-desk 的 `netenv.py`。
+
 新增两张 B站专属表：
 
 ```prisma

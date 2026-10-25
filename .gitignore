@@ -9,6 +9,9 @@ dist/
 build/
 coverage/
 
+# python virtualenv (bili-agent CLI 独立安装在这里)
+.venv/
+
 # local environment and secrets
 .env
 .env.*
