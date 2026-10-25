@@ -69,6 +69,10 @@ assert.throws(() => validateChatApiBaseUrl("https://198.18.0.1/v1"), /私有网�
 assert.throws(() => validateChatApiBaseUrl("https://203.0.113.10/v1"), /私有网络/, "Documentation-only IPv4 ranges must not be accepted as public provider endpoints.");
 assert.throws(() => validateChatApiBaseUrl("https://224.0.0.1/v1"), /私有网络/, "Multicast IPv4 addresses must not be accepted.");
 assert.throws(() => validateChatApiBaseUrl("https://[fd00::1]/v1"), /私有网络/);
+assert.throws(() => validateChatApiBaseUrl("https://[fc00::1]/v1"), /私有网络/, "IPv6 unique-local addresses must be rejected.");
+assert.throws(() => validateChatApiBaseUrl("https://[fe80::1]/v1"), /私有网络/, "IPv6 link-local addresses must be rejected.");
+assert.throws(() => validateChatApiBaseUrl("https://[::ffff:7f00:1]/v1"), /私有网络/, "IPv4-mapped IPv6 loopback must not bypass IPv4 restrictions.");
+assert.throws(() => validateChatApiBaseUrl("https://[::ffff:a00:1]/v1"), /私有网络/, "IPv4-mapped IPv6 private addresses must not bypass IPv4 restrictions.");
 const originalNodeEnv = process.env.NODE_ENV;
 try {
   process.env.NODE_ENV = "production";
