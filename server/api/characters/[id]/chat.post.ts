@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createError, getRouterParam, readBody, setResponseStatus } from "h3";
 import { generateConversationReply, type ConversationContextMessage } from "../../../utils/chat-reply";
 import { resolveChatModelSettings } from "../../../utils/chat-model-config";
@@ -28,6 +28,11 @@ export default defineEventHandler(async (event) => {
   const requestedConversationId = typeof rawConversationId === "string" && rawConversationId
     ? requireUuid(rawConversationId, "会话")
     : null;
+  // Bind a stable idempotency key to the exact user input and target conversation.
+  // The hash contains no credentials or model configuration.
+  const requestHash = createHash("sha256")
+    .update(JSON.stringify({ message, conversationId: requestedConversationId }))
+    .digest("hex");
 
   const prisma = getPrisma();
   const character = await prisma.character.findFirst({
@@ -55,6 +60,9 @@ export default defineEventHandler(async (event) => {
   let chatRequest = await prisma.chatRequest.findUnique({
     where: { ownerId_characterId_requestKey: { ownerId, characterId, requestKey } },
   });
+  if (chatRequest && chatRequest.requestHash !== requestHash) {
+    throw createError({ statusCode: 409, statusMessage: "该请求标识已用于不同的消息内容，请重新发送以生成新的请求标识。" });
+  }
   if (chatRequest?.status === "COMPLETED" && chatRequest.response) {
     setResponseStatus(event, 200);
     return chatRequest.response;
@@ -77,13 +85,16 @@ export default defineEventHandler(async (event) => {
   } else {
     try {
       chatRequest = await prisma.chatRequest.create({
-        data: { ownerId, characterId, requestKey, claimToken: randomUUID(), status: "PROCESSING" },
+        data: { ownerId, characterId, requestKey, requestHash, claimToken: randomUUID(), status: "PROCESSING" },
       });
     } catch (error) {
       if (typeof error === "object" && error !== null && "code" in error && error.code === "P2002") {
         const concurrentRequest = await prisma.chatRequest.findUnique({
           where: { ownerId_characterId_requestKey: { ownerId, characterId, requestKey } },
         });
+        if (concurrentRequest && concurrentRequest.requestHash !== requestHash) {
+          throw createError({ statusCode: 409, statusMessage: "该请求标识已用于不同的消息内容，请重新发送以生成新的请求标识。" });
+        }
         if (concurrentRequest?.status === "COMPLETED" && concurrentRequest.response) {
           setResponseStatus(event, 200);
           return concurrentRequest.response;
@@ -281,7 +292,7 @@ export default defineEventHandler(async (event) => {
     const statusMessage = error instanceof Error ? error.message : "聊天请求失败。";
     try {
       await prisma.chatRequest.updateMany({
-        where: { id: chatRequest.id, status: "PROCESSING" },
+        where: { id: chatRequest.id, status: "PROCESSING", claimToken: chatRequest.claimToken },
         data: { status: "FAILED", lastError: statusMessage.slice(0, 700) },
       });
     } catch {
