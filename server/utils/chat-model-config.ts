@@ -79,7 +79,7 @@ export function validateChatApiBaseUrl(value: string): string {
   })();
   const isPrivateIpv6 = ipVersion === 6 && (
     // Reject IPv4-compatible IPv6 literals too: they can encode loopback/private IPv4 targets.
-    unbracketedHostname.startsWith("::")
+    (unbracketedHostname.startsWith("::") && unbracketedHostname !== "::1")
     || unbracketedHostname.startsWith("fc")
     || unbracketedHostname.startsWith("fd")
     || /^fe[89ab]/.test(unbracketedHostname)
