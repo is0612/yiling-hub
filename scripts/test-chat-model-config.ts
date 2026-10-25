@@ -90,6 +90,7 @@ assert.throws(() => validateChatApiBaseUrl("ftp://api.example.com/v1"), /只支�
 assert.throws(() => validateChatApiBaseUrl("https://user:pass@api.example.com/v1"), /不应包含用户名/);
 assert.throws(() => validateChatApiBaseUrl("https://api.example.com/v1/chat/completions"), /不要填写 \/chat\/completions/);
 assert.equal(validateChatApiBaseUrl("http://127.0.0.1:4010/v1/"), "http://127.0.0.1:4010/v1");
+assert.equal(validateChatApiBaseUrl("http://[::1]:4010/v1/"), "http://[::1]:4010/v1", "Development should retain local IPv6 loopback support.");
 assert.equal(buildChatCompletionsEndpoint("https://api.example.com/v1").href, "https://api.example.com/v1/chat/completions");
 
 const encryptionKey = randomBytes(32);
