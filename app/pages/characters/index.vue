@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ArrowRight, CirclePlus, MoreFilled, Plus, Search, MagicStick, Close } from "@element-plus/icons-vue";
-import { ElMessage } from "element-plus";
+import { ArrowRight, CirclePlus, MoreFilled, Plus, Search, MagicStick, Close, Delete } from "@element-plus/icons-vue";
+import { ElMessage, ElMessageBox } from "element-plus";
 import type { Character, CharacterStatus } from "~/utils/mock-data";
 
 const characters = ref<Character[]>([]);
@@ -64,6 +64,28 @@ function statusTone(status: CharacterStatus) {
   return status === "运行中" ? "pill-green" : status === "已暂停" ? "pill-amber" : "pill-gray";
 }
 
+async function deleteCharacter(character: Character) {
+  try {
+    await ElMessageBox.confirm(
+      `确定删除角色「${character.name}」吗？该角色下的所有会话、记忆、快照都会被一并删除，且无法恢复。`,
+      "删除角色",
+      { confirmButtonText: "删除", cancelButtonText: "取消", type: "warning" },
+    );
+  } catch {
+    return;
+  }
+  try {
+    await $fetch(`/api/characters/${character.id}`, { method: "DELETE" });
+    characters.value = characters.value.filter((c) => c.id !== character.id);
+    ElMessage.success("角色已删除。");
+  } catch (error) {
+    const message = error && typeof error === "object" && "statusMessage" in error
+      ? String(error.statusMessage)
+      : "删除失败，请稍后重试。";
+    ElMessage.error(message);
+  }
+}
+
 onMounted(() => void loadCharacters());
 </script>
 
@@ -111,6 +133,9 @@ onMounted(() => void loadCharacters());
               <el-dropdown-menu>
                 <el-dropdown-item @click="navigateTo('/characters/' + character.id)">打开驾驶舱</el-dropdown-item>
                 <el-dropdown-item @click="navigateTo('/characters/' + character.id + '/settings/memory')">记忆设置</el-dropdown-item>
+                <el-dropdown-item divided @click="deleteCharacter(character)">
+                  <el-icon><Delete /></el-icon>删除角色
+                </el-dropdown-item>
               </el-dropdown-menu>
             </template>
           </el-dropdown>
