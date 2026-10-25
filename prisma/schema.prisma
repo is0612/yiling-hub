@@ -297,6 +297,25 @@ model Message {
   @@map("messages")
 }
 
+model ChatRequest {
+  id             String   @id @default(uuid()) @db.Uuid
+  ownerId        String   @db.Uuid
+  characterId    String   @db.Uuid
+  requestKey     String   @db.Uuid
+  requestHash    String?  @db.VarChar(64)
+  claimToken     String   @db.Uuid
+  status         String   @default("PROCESSING") @db.VarChar(20)
+  conversationId String?  @db.Uuid
+  response       Json?    @db.JsonB
+  lastError      String?  @db.VarChar(700)
+  createdAt      DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt      DateTime @updatedAt @db.Timestamptz(6)
+
+  @@unique([ownerId, characterId, requestKey])
+  @@index([status, updatedAt])
+  @@map("chat_requests")
+}
+
 model MemoryItem {
   id              String                 @id @default(uuid()) @db.Uuid
   memoryScopeId   String                 @db.Uuid

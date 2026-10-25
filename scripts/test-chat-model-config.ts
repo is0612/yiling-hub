@@ -60,10 +60,37 @@ assert.throws(() => readChatModelSettingsPatch({ chatMaxTokens: 255 }), /256 到
 assert.throws(() => readChatModelSettingsPatch({ chatMaxTokens: 1024.5 }), /整数/);
 assert.throws(() => readChatModelSettingsPatch({ chatApiKey: "k".repeat(8193) }), /8192 个字符/);
 assert.throws(() => validateChatApiBaseUrl("http://api.example.com/v1"), /必须使用 HTTPS/);
+assert.throws(() => validateChatApiBaseUrl("https://10.0.0.8/v1"), /私有网络/);
+assert.throws(() => validateChatApiBaseUrl("https://172.16.0.1/v1"), /私有网络/);
+assert.throws(() => validateChatApiBaseUrl("https://192.168.1.10/v1"), /私有网络/);
+assert.throws(() => validateChatApiBaseUrl("https://169.254.169.254/latest/meta-data"), /私有网络/);
+assert.throws(() => validateChatApiBaseUrl("https://100.100.100.200/v1"), /私有网络/, "Carrier-grade NAT addresses are not public provider endpoints.");
+assert.throws(() => validateChatApiBaseUrl("https://198.18.0.1/v1"), /私有网络/, "Benchmarking-only IPv4 space must not be used as a provider endpoint.");
+assert.throws(() => validateChatApiBaseUrl("https://203.0.113.10/v1"), /私有网络/, "Documentation-only IPv4 ranges must not be accepted as public provider endpoints.");
+assert.throws(() => validateChatApiBaseUrl("https://224.0.0.1/v1"), /私有网络/, "Multicast IPv4 addresses must not be accepted.");
+assert.throws(() => validateChatApiBaseUrl("https://[fd00::1]/v1"), /私有网络/);
+assert.throws(() => validateChatApiBaseUrl("https://[fc00::1]/v1"), /私有网络/, "IPv6 unique-local addresses must be rejected.");
+assert.throws(() => validateChatApiBaseUrl("https://[fe80::1]/v1"), /私有网络/, "IPv6 link-local addresses must be rejected.");
+assert.throws(() => validateChatApiBaseUrl("https://[::ffff:7f00:1]/v1"), /私有网络/, "IPv4-mapped IPv6 loopback must not bypass IPv4 restrictions.");
+assert.throws(() => validateChatApiBaseUrl("https://[::ffff:a00:1]/v1"), /私有网络/, "IPv4-mapped IPv6 private addresses must not bypass IPv4 restrictions.");
+assert.throws(() => validateChatApiBaseUrl("https://[::7f00:1]/v1"), /私有网络/, "IPv4-compatible IPv6 loopback must not bypass IPv4 restrictions.");
+assert.throws(() => validateChatApiBaseUrl("https://[::a00:1]/v1"), /私有网络/, "IPv4-compatible IPv6 private addresses must not bypass IPv4 restrictions.");
+const originalNodeEnv = process.env.NODE_ENV;
+try {
+  process.env.NODE_ENV = "production";
+  assert.throws(() => validateChatApiBaseUrl("https://service.internal/v1"), /本机地址/);
+  assert.throws(() => validateChatApiBaseUrl("http://127.0.0.1:4010/v1"), /本机地址/);
+  assert.throws(() => validateChatApiBaseUrl("https://127.0.0.2/v1"), /本机地址/);
+  assert.throws(() => validateChatApiBaseUrl("https://service.localhost/v1"), /本机地址/);
+} finally {
+  if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
+  else process.env.NODE_ENV = originalNodeEnv;
+}
 assert.throws(() => validateChatApiBaseUrl("ftp://api.example.com/v1"), /只支持 HTTPS/);
 assert.throws(() => validateChatApiBaseUrl("https://user:pass@api.example.com/v1"), /不应包含用户名/);
 assert.throws(() => validateChatApiBaseUrl("https://api.example.com/v1/chat/completions"), /不要填写 \/chat\/completions/);
 assert.equal(validateChatApiBaseUrl("http://127.0.0.1:4010/v1/"), "http://127.0.0.1:4010/v1");
+assert.equal(validateChatApiBaseUrl("http://[::1]:4010/v1/"), "http://[::1]:4010/v1", "Development should retain local IPv6 loopback support.");
 assert.equal(buildChatCompletionsEndpoint("https://api.example.com/v1").href, "https://api.example.com/v1/chat/completions");
 
 const encryptionKey = randomBytes(32);

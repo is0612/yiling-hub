@@ -67,6 +67,8 @@ const messages = ref<ChatMessage[]>([]);
 const draft = ref("");
 const loading = ref(false);
 const sending = ref(false);
+const pendingRequestKey = ref<string | null>(null);
+const pendingRequestContent = ref<string | null>(null);
 const exporting = ref(false);
 const modelSettingsOpen = ref(false);
 const modelSettingsSaving = ref(false);
@@ -412,13 +414,20 @@ async function sendMessage() {
     return;
   }
 
+  if (!pendingRequestKey.value || pendingRequestContent.value !== content) {
+    pendingRequestKey.value = crypto.randomUUID();
+    pendingRequestContent.value = content;
+  }
+  const requestKey = pendingRequestKey.value;
   sending.value = true;
   draft.value = "";
   try {
     const result = await $fetch<ChatSendResponse>("/api/characters/" + encodeURIComponent(id.value) + "/chat", {
       method: "POST",
-      body: { message: content, ...(conversationId.value ? { conversationId: conversationId.value } : {}) },
+      body: { requestKey, message: content, ...(conversationId.value ? { conversationId: conversationId.value } : {}) },
     });
+    pendingRequestKey.value = null;
+    pendingRequestContent.value = null;
 
     conversationId.value = result.conversationId;
     messages.value.push(result.userMessage, result.assistantMessage);
