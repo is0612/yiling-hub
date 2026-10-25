@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ArrowRight, Cpu, Calendar, Files, Search, Setting, MagicStick, Delete } from "@element-plus/icons-vue";
+import { ArrowRight, Cpu, Calendar, Collection, Files, Search, Setting, MagicStick, Delete } from "@element-plus/icons-vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { initialCharacters, type Character, type Snapshot, type TimelineEntry, type TimelineType } from "~/utils/mock-data";
 
@@ -106,6 +106,12 @@ const filteredEntries = computed(() => {
     return typeMatches && channelMatches && textMatches;
   });
 });
+
+/** 筛选 chip 后面跟随的条数（不受搜索框影响，方便一眼看出各类型有多少存量） */
+function countFor(label: string) {
+  const type = filterOptions.find((option) => option.label === label)?.type;
+  return type ? timelineEntries.value.filter((entry) => entry.type === type).length : timelineEntries.value.length;
+}
 
 async function loadTimeline() {
   timelineLoading.value = true;
@@ -476,193 +482,663 @@ watch(id, () => void loadCharacter());
 
 <template>
   <div class="page-wrap">
-    <PageHeader eyebrow="工作空间 / 角色管理 / 记忆驾驶舱" title="记忆驾驶舱" description="查看角色对话、AI 周期总结与长期记忆。配置服务端模型并启用自动归档后，周期 Worker 会提炼事实与偏好变化，并保留原始消息来源。">
-      <template #actions><el-button @click="editOpen = true"><el-icon><Setting /></el-icon>编辑角色</el-button><el-button @click="memoryDialogOpen = true">新增长期记忆</el-button><el-button @click="conversationDialogOpen = true">录入对话</el-button><el-button type="primary" :loading="snapshotCreating" @click="manualSnapshot"><el-icon><MagicStick /></el-icon>手动归档</el-button></template>
+    <PageHeader
+      eyebrow="工作空间 / 角色管理 / 记忆驾驶舱"
+      title="记忆驾驶舱"
+      description="查看角色对话、周期总结与长期记忆。启用自动归档后，周期 Worker 会提炼事实与偏好变化，并保留原始消息来源。"
+    >
+      <template #actions>
+        <el-tooltip
+          content="编辑角色资料"
+          placement="top"
+        >
+          <button
+            type="button"
+            class="icon-btn"
+            aria-label="编辑角色资料"
+            @click="editOpen = true"
+          >
+            <el-icon><Setting /></el-icon>
+          </button>
+        </el-tooltip>
+        <button
+          type="button"
+          class="btn"
+          @click="memoryDialogOpen = true"
+        >
+          新增长期记忆
+        </button>
+        <button
+          type="button"
+          class="btn"
+          @click="conversationDialogOpen = true"
+        >
+          录入对话
+        </button>
+        <button
+          type="button"
+          class="btn primary"
+          :disabled="snapshotCreating"
+          @click="manualSnapshot"
+        >
+          <el-icon><MagicStick /></el-icon>{{ snapshotCreating ? "归档中…" : "手动归档" }}
+        </button>
+      </template>
     </PageHeader>
 
-    <div class="info-callout" style="margin-bottom:20px">
-      <div class="avatar" style="width:34px;height:34px;border-radius:10px">{{ character.avatar }}</div>
-      <div style="flex:1"><strong style="color:#5f5b99">正在查看角色：{{ character.name }}</strong><div>快照周期 {{ character.intervalDays }} 天 · 记忆条目 {{ character.memoryCount }} 条</div></div>
-      <span class="pill pill-gray"><i class="env-dot" />仅展示已保存的数据库记录</span>
+    <div class="kpi-row">
+      <div class="kpi">
+        <div class="k">
+          长期记忆
+        </div>
+        <div class="v">
+          {{ character.memoryCount }}<small>条</small>
+        </div>
+        <div class="foot">
+          承诺与约定 {{ commitmentCount }} 项
+        </div>
+      </div>
+      <div class="kpi">
+        <div class="k">
+          归档周期
+        </div>
+        <div class="v">
+          {{ character.intervalDays }}<small>天</small>
+        </div>
+        <div class="foot">
+          下一次 {{ character.nextSnapshot }}
+        </div>
+      </div>
+      <div class="kpi">
+        <div class="k">
+          已记录对话
+        </div>
+        <div class="v">
+          {{ recordedMessageCount }}<small>条</small>
+        </div>
+        <div class="foot">
+          平台事件 {{ recordedEventCount }} 项
+        </div>
+      </div>
+      <div class="kpi">
+        <div class="k">
+          绑定渠道
+        </div>
+        <div class="v">
+          {{ character.channels.length || 0 }}<small>个</small>
+        </div>
+        <div class="foot">
+          {{ character.channels.length ? character.channels.join(" / ") : "尚未绑定渠道" }}
+        </div>
+      </div>
     </div>
 
-    <div class="cockpit-grid">
-      <aside class="surface panel">
-        <div style="display:flex;align-items:center;gap:12px">
-          <div class="avatar" :class="'avatar-' + character.avatarTone" style="width:56px;height:56px;font-size:20px">{{ character.avatar }}</div>
-          <div class="character-info"><div class="character-name">{{ character.name }}</div><div class="character-alias">{{ character.alias }}</div><span class="pill" :class="character.status === '运行中' ? 'pill-green' : 'pill-amber'" style="margin-top:7px">{{ character.status }}</span></div>
+    <div class="panel-grid">
+      <section>
+        <div class="sec-h">
+          <h2>角色记忆时间线</h2>
+          <span class="sub">{{ filteredEntries.length }}/{{ timelineEntries.length }} 条</span>
         </div>
-        <p class="profile-description">{{ character.description }}</p>
-        <el-divider />
-        <div class="metric-row"><span>长期记忆</span><span class="metric-value">{{ character.memoryCount }} 条</span></div>
-        <div class="metric-row"><span>归档周期</span><span class="metric-value">{{ character.intervalDays }} 天</span></div>
-        <div class="metric-row"><span>最近快照</span><span class="metric-value">{{ character.latestSnapshot }}</span></div>
-        <div class="metric-row"><span>绑定渠道</span><span class="metric-value">{{ character.channels.length || 0 }} 个</span></div>
-        <div class="section-content"><SectionTitle title="快捷操作" description="角色档案、快照与时间线已读取数据库中存在的记录" /></div>
-        <div class="quick-actions">
-          <el-button style="width:100%" plain @click="navigateTo('/characters/' + character.id + '/settings/memory')"><el-icon><Calendar /></el-icon>记忆周期设置</el-button>
-          <el-button style="width:100%" plain @click="navigateTo('/characters/' + character.id + '/snapshots')"><el-icon><Files /></el-icon>查看全部快照</el-button>
-          <el-button style="width:100%" plain @click="openRecycleBin"><el-icon><Delete /></el-icon>记忆回收站</el-button>
-        </div>
-      </aside>
-
-      <section class="surface panel timeline-panel">
-        <SectionTitle title="角色记忆时间线" description="显示数据库中已保存的对话、长期记忆、事件与快照记录" />
-        <div class="timeline-filters">
-          <el-input v-model="query" clearable placeholder="搜索时间线内容……" style="min-width:170px;flex:1"><template #prefix><el-icon><Search /></el-icon></template></el-input>
-          <el-select v-model="channelFilter" style="width:136px"><el-option label="全部渠道" value="全部渠道" /><el-option v-for="channel in channelOptions" :key="channel" :label="channel" :value="channel" /></el-select>
-        </div>
-        <el-tabs v-model="activeFilter" class="memory-tabs">
-          <el-tab-pane v-for="option in filterOptions" :key="option.label" :label="option.label" :name="option.label" />
-        </el-tabs>
-        <div class="timeline">
-          <div v-if="timelineLoading" class="empty-state">正在加载已保存的时间线记录……</div>
-          <template v-else>
-            <article v-for="entry in filteredEntries" :key="entry.id" class="timeline-item">
-              <div class="timeline-marker" :class="toneFor(entry.tagTone)">{{ markerFor(entry.type) }}</div>
-              <div class="timeline-content">
-                <div class="timeline-heading"><span class="timeline-title">{{ entry.title }}</span><span class="muted-note">{{ entry.time }}</span></div>
-                <p class="timeline-summary">{{ entry.summary }}</p>
-                <div class="timeline-meta"><span class="pill" :class="toneFor(entry.tagTone)">{{ entry.tag }}</span><span>{{ entry.channel }}</span><span>{{ entry.source }}</span></div>
-                <div v-if="entry.type === 'memory'" class="memory-actions">
-                  <el-button link type="primary" size="small" @click="openMemoryEditor(entry)">编辑</el-button>
-                  <template v-if="entry.tag === '长期记忆'">
-                    <el-button link size="small" @click="setMemoryStatus(entry, 'archived')">归档</el-button>
-                    <el-button link type="danger" size="small" @click="setMemoryStatus(entry, 'invalidated')">标记失效</el-button>
-                  </template>
-                  <el-button v-else link type="success" size="small" @click="setMemoryStatus(entry, 'active')">恢复有效</el-button>
-                  <el-button link type="danger" size="small" @click="moveMemoryToTrash(entry)">移入回收站</el-button>
+        <div class="card tl-card">
+          <div class="filters">
+            <button
+              v-for="option in filterOptions"
+              :key="option.label"
+              type="button"
+              class="chip"
+              :class="{ on: activeFilter === option.label }"
+              @click="activeFilter = option.label"
+            >
+              {{ option.label }}<span class="n">{{ countFor(option.label) }}</span>
+            </button>
+          </div>
+          <div class="tl-tools">
+            <el-input
+              v-model="query"
+              clearable
+              placeholder="搜索时间线内容……"
+              class="tl-search"
+            >
+              <template #prefix>
+                <el-icon><Search /></el-icon>
+              </template>
+            </el-input>
+            <el-select
+              v-model="channelFilter"
+              class="tl-select"
+            >
+              <el-option
+                label="全部渠道"
+                value="全部渠道"
+              /><el-option
+                v-for="channel in channelOptions"
+                :key="channel"
+                :label="channel"
+                :value="channel"
+              />
+            </el-select>
+          </div>
+          <div class="timeline">
+            <div
+              v-if="timelineLoading"
+              class="tl-loading"
+            >
+              正在加载已保存的时间线记录……
+            </div>
+            <template v-else>
+              <article
+                v-for="entry in filteredEntries"
+                :key="entry.id"
+                class="timeline-item"
+              >
+                <div
+                  class="timeline-marker"
+                  :class="toneFor(entry.tagTone)"
+                >
+                  {{ markerFor(entry.type) }}
                 </div>
+                <div class="timeline-content">
+                  <div class="timeline-heading">
+                    <span class="timeline-title">{{ entry.title }}</span><span class="muted-note">{{ entry.time }}</span>
+                  </div>
+                  <p class="timeline-summary">
+                    {{ entry.summary }}
+                  </p>
+                  <div class="timeline-meta">
+                    <span
+                      class="pill"
+                      :class="toneFor(entry.tagTone)"
+                    >{{ entry.tag }}</span><span>{{ entry.channel }}</span><span>{{ entry.source }}</span>
+                  </div>
+                  <div
+                    v-if="entry.type === 'memory'"
+                    class="memory-actions"
+                  >
+                    <el-button
+                      link
+                      type="primary"
+                      size="small"
+                      @click="openMemoryEditor(entry)"
+                    >
+                      编辑
+                    </el-button>
+                    <template v-if="entry.tag === '长期记忆'">
+                      <el-button
+                        link
+                        size="small"
+                        @click="setMemoryStatus(entry, 'archived')"
+                      >
+                        归档
+                      </el-button>
+                      <el-button
+                        link
+                        type="danger"
+                        size="small"
+                        @click="setMemoryStatus(entry, 'invalidated')"
+                      >
+                        标记失效
+                      </el-button>
+                    </template>
+                    <el-button
+                      v-else
+                      link
+                      type="success"
+                      size="small"
+                      @click="setMemoryStatus(entry, 'active')"
+                    >
+                      恢复有效
+                    </el-button>
+                    <el-button
+                      link
+                      type="danger"
+                      size="small"
+                      @click="moveMemoryToTrash(entry)"
+                    >
+                      移入回收站
+                    </el-button>
+                  </div>
+                </div>
+              </article>
+              <div
+                v-if="!filteredEntries.length"
+                class="card-empty"
+              >
+                <el-icon><Collection /></el-icon>
+                <span>{{ timelineEntries.length ? "没有匹配的记录" : "还没有已保存的记录" }}</span>
+                <span>{{ timelineEntries.length ? "换个筛选条件或清空搜索词再试一次" : "接入聊天消息、保存长期记忆之后，这里会按时间顺序出现对应条目" }}</span>
               </div>
-            </article>
-            <div v-if="!filteredEntries.length" class="empty-state">{{ timelineEntries.length ? "没有匹配的时间线记录，试试修改筛选条件。" : "暂无已保存的时间线记录。接入聊天消息或保存长期记忆后，这里会显示对应记录；生成的快照也会显示在这里。" }}</div>
-          </template>
+            </template>
+          </div>
         </div>
       </section>
 
-      <aside class="surface panel snapshot-side">
-        <SectionTitle title="记忆状态" description="当前角色的阶段归档概况" />
-        <div class="memory-score"><div class="memory-score-ring"><span>—</span></div><div><strong>自动归档状态</strong><p>启用自动快照并配置模型后，将自动总结周期对话并维护长期记忆</p></div></div>
-        <el-divider />
-        <div class="metric-row"><span>已记录对话消息</span><span class="metric-value">{{ recordedMessageCount }} 条</span></div>
-        <div class="metric-row"><span>已记录平台事件</span><span class="metric-value">{{ recordedEventCount }} 项</span></div>
-        <div class="metric-row"><span>承诺与约定</span><span class="metric-value">{{ commitmentCount }} 项</span></div>
-        <div class="section-content"><SectionTitle title="最近快照" description="保留版本以便回溯" /></div>
-        <div v-for="snapshot in snapshots.slice(0,2)" :key="snapshot.id" class="recent-snapshot">
-          <div class="recent-snapshot-top"><span>第 {{ snapshot.number }} 份快照</span><span class="muted-note">v{{ snapshot.version }}</span></div>
-          <p>{{ snapshot.summary }}</p>
-          <el-button link type="primary" @click="navigateTo('/characters/' + character.id + '/snapshots')">打开归档 <el-icon class="el-icon--right"><ArrowRight /></el-icon></el-button>
+      <aside class="side-col">
+        <div class="sec-h">
+          <h2>角色档案</h2>
         </div>
-        <div v-if="!snapshots.length" class="empty-state">还没有保存的快照。</div>
+        <div class="card char-box">
+          <div class="char-head">
+            <div
+              class="avatar character-avatar"
+              :class="'avatar-' + character.avatarTone"
+            >
+              {{ character.avatar }}
+            </div>
+            <div class="char-id">
+              <div class="character-name">
+                {{ character.name }}
+              </div>
+              <div class="character-alias">
+                {{ character.alias }}
+              </div>
+              <span
+                class="pill"
+                :class="character.status === '运行中' ? 'pill-green' : 'pill-amber'"
+              >{{ character.status }}</span>
+            </div>
+          </div>
+          <p class="char-desc">
+            {{ character.description }}
+          </p>
+          <div class="quick-actions">
+            <button
+              type="button"
+              class="btn"
+              @click="navigateTo('/characters/' + character.id + '/settings/memory')"
+            >
+              <el-icon><Calendar /></el-icon>记忆周期设置
+            </button>
+            <button
+              type="button"
+              class="btn"
+              @click="navigateTo('/characters/' + character.id + '/snapshots')"
+            >
+              <el-icon><Files /></el-icon>查看全部快照
+            </button>
+            <button
+              type="button"
+              class="btn"
+              @click="openRecycleBin"
+            >
+              <el-icon><Delete /></el-icon>记忆回收站
+            </button>
+          </div>
+        </div>
+
+        <div class="sec-h">
+          <h2>记忆状态</h2>
+          <span class="sub">{{ character.status === "已暂停" ? "已暂停" : "已计划" }}</span>
+        </div>
+        <div class="card stat-box">
+          <p class="stat-note">
+            启用自动快照并配置模型后，周期 Worker 会自动总结对话并维护长期记忆。
+          </p>
+          <div class="metric-row">
+            <span>已记录对话消息</span><span class="metric-value">{{ recordedMessageCount }} 条</span>
+          </div>
+          <div class="metric-row">
+            <span>已记录平台事件</span><span class="metric-value">{{ recordedEventCount }} 项</span>
+          </div>
+          <div class="metric-row">
+            <span>承诺与约定</span><span class="metric-value">{{ commitmentCount }} 项</span>
+          </div>
+          <div class="metric-row">
+            <span>归档周期</span><span class="metric-value">{{ character.intervalDays }} 天</span>
+          </div>
+        </div>
+
+        <div class="sec-h">
+          <h2>最近快照</h2>
+          <span class="sub">{{ snapshots.length }} 份</span>
+          <button
+            type="button"
+            class="more"
+            @click="navigateTo('/characters/' + character.id + '/snapshots')"
+          >
+            全部<el-icon><ArrowRight /></el-icon>
+          </button>
+        </div>
+        <div class="card">
+          <NuxtLink
+            v-for="snapshot in snapshots.slice(0, 2)"
+            :key="snapshot.id"
+            :to="'/characters/' + character.id + '/snapshots'"
+            class="snap-row"
+          >
+            <span class="snap-top">
+              <span>第 {{ snapshot.number }} 份快照</span>
+              <span class="muted-note">v{{ snapshot.version }}</span>
+            </span>
+            <span class="snap-sum">{{ snapshot.summary }}</span>
+          </NuxtLink>
+          <div
+            v-if="!snapshots.length"
+            class="card-empty"
+          >
+            <el-icon><Files /></el-icon>
+            <span>还没有保存的快照</span>
+            <span>手动归档一次或等周期 Worker 跑完，这里会出现版本记录</span>
+          </div>
+        </div>
       </aside>
     </div>
 
-    <el-dialog v-model="memoryDialogOpen" title="新增长期记忆" width="min(560px, 94vw)">
+    <el-dialog
+      v-model="memoryDialogOpen"
+      title="新增长期记忆"
+      width="min(560px, 94vw)"
+    >
       <el-form label-position="top">
         <el-form-item label="记忆分类">
-          <el-select v-model="draftMemoryCategory" style="width:100%">
-            <el-option v-for="option in memoryCategoryOptions" :key="option.value" :label="option.label" :value="option.value" />
+          <el-select
+            v-model="draftMemoryCategory"
+            style="width:100%"
+          >
+            <el-option
+              v-for="option in memoryCategoryOptions"
+              :key="option.value"
+              :label="option.label"
+              :value="option.value"
+            />
           </el-select>
         </el-form-item>
         <el-form-item label="记忆范围">
           <el-radio-group v-model="draftMemoryScope">
-            <el-radio-button value="character">角色全局</el-radio-button>
-            <el-radio-button value="private">我的私人</el-radio-button>
+            <el-radio-button value="character">
+              角色全局
+            </el-radio-button>
+            <el-radio-button value="private">
+              我的私人
+            </el-radio-button>
           </el-radio-group>
         </el-form-item>
         <el-form-item label="记忆内容">
-          <el-input v-model="draftMemoryContent" type="textarea" :rows="5" maxlength="12000" show-word-limit placeholder="例如：用户更喜欢简洁、直接的解释。" />
+          <el-input
+            v-model="draftMemoryContent"
+            type="textarea"
+            :rows="5"
+            maxlength="12000"
+            show-word-limit
+            placeholder="例如：用户更喜欢简洁、直接的解释。"
+          />
         </el-form-item>
-        <div class="info-callout"><span>保存后会写入 PostgreSQL，并立即出现在角色记忆时间线中。角色全局记忆在本角色所有对话中都可检索；私人记忆只在你自己和这个角色对话时使用，不会混入其他用户。</span></div>
+        <div class="info-callout">
+          <span>保存后会写入 PostgreSQL，并立即出现在角色记忆时间线中。角色全局记忆在本角色所有对话中都可检索；私人记忆只在你自己和这个角色对话时使用，不会混入其他用户。</span>
+        </div>
       </el-form>
       <template #footer>
-        <el-button @click="memoryDialogOpen = false">取消</el-button>
-        <el-button type="primary" :loading="memorySaving" @click="saveMemory">保存记忆</el-button>
+        <el-button @click="memoryDialogOpen = false">
+          取消
+        </el-button>
+        <el-button
+          type="primary"
+          :loading="memorySaving"
+          @click="saveMemory"
+        >
+          保存记忆
+        </el-button>
       </template>
     </el-dialog>
 
-    <el-dialog v-model="memoryEditDialogOpen" title="编辑长期记忆" width="min(560px, 94vw)" :close-on-click-modal="!memoryEditSaving">
-      <div v-if="memoryEditLoading" class="empty-state">正在加载记忆详情……</div>
-      <el-form v-else label-position="top">
+    <el-dialog
+      v-model="memoryEditDialogOpen"
+      title="编辑长期记忆"
+      width="min(560px, 94vw)"
+      :close-on-click-modal="!memoryEditSaving"
+    >
+      <div
+        v-if="memoryEditLoading"
+        class="empty-state"
+      >
+        正在加载记忆详情……
+      </div>
+      <el-form
+        v-else
+        label-position="top"
+      >
         <el-form-item label="记忆分类">
-          <el-select v-model="draftEditMemoryCategory" style="width:100%">
-            <el-option v-for="option in memoryCategoryOptions" :key="option.value" :label="option.label" :value="option.value" />
+          <el-select
+            v-model="draftEditMemoryCategory"
+            style="width:100%"
+          >
+            <el-option
+              v-for="option in memoryCategoryOptions"
+              :key="option.value"
+              :label="option.label"
+              :value="option.value"
+            />
           </el-select>
         </el-form-item>
         <el-form-item label="记忆内容">
-          <el-input v-model="draftEditMemoryContent" type="textarea" :rows="5" maxlength="12000" show-word-limit />
+          <el-input
+            v-model="draftEditMemoryContent"
+            type="textarea"
+            :rows="5"
+            maxlength="12000"
+            show-word-limit
+          />
         </el-form-item>
-        <div class="info-callout"><span>修改只更新当前长期记忆。已经生成的快照会保留生成时的历史副本。</span></div>
+        <div class="info-callout">
+          <span>修改只更新当前长期记忆。已经生成的快照会保留生成时的历史副本。</span>
+        </div>
       </el-form>
       <template #footer>
-        <el-button @click="memoryEditDialogOpen = false">取消</el-button>
-        <el-button type="primary" :loading="memoryEditSaving" :disabled="memoryEditLoading" @click="saveEditedMemory">保存修改</el-button>
+        <el-button @click="memoryEditDialogOpen = false">
+          取消
+        </el-button>
+        <el-button
+          type="primary"
+          :loading="memoryEditSaving"
+          :disabled="memoryEditLoading"
+          @click="saveEditedMemory"
+        >
+          保存修改
+        </el-button>
       </template>
     </el-dialog>
 
-    <el-dialog v-model="conversationDialogOpen" title="录入对话记录" width="min(640px, 94vw)">
+    <el-dialog
+      v-model="conversationDialogOpen"
+      title="录入对话记录"
+      width="min(640px, 94vw)"
+    >
       <el-form label-position="top">
         <el-form-item label="会话标题（可选）">
-          <el-input v-model="draftConversationTitle" maxlength="255" placeholder="例如：第一次讨论角色设定" />
+          <el-input
+            v-model="draftConversationTitle"
+            maxlength="255"
+            placeholder="例如：第一次讨论角色设定"
+          />
         </el-form-item>
         <el-form-item label="对话内容">
-          <el-input v-model="draftTranscript" type="textarea" :rows="10" maxlength="24000" show-word-limit placeholder="用户：你好&#10;角色：你好呀！&#10;用户：下一句" />
+          <el-input
+            v-model="draftTranscript"
+            type="textarea"
+            :rows="10"
+            maxlength="24000"
+            show-word-limit
+            placeholder="用户：你好&#10;角色：你好呀！&#10;用户：下一句"
+          />
         </el-form-item>
-        <div class="info-callout"><span>每行一条消息，按发生顺序填写。支持“用户：”“我：”“user:”“角色：”“助手：”“assistant:”。纯文本录入没有原始时间戳，系统会按行顺序设置导入时间。</span></div>
+        <div class="info-callout">
+          <span>每行一条消息，按发生顺序填写。支持“用户：”“我：”“user:”“角色：”“助手：”“assistant:”。纯文本录入没有原始时间戳，系统会按行顺序设置导入时间。</span>
+        </div>
       </el-form>
       <template #footer>
-        <el-button @click="conversationDialogOpen = false">取消</el-button>
-        <el-button type="primary" :loading="conversationSaving" @click="saveConversation">保存对话</el-button>
+        <el-button @click="conversationDialogOpen = false">
+          取消
+        </el-button>
+        <el-button
+          type="primary"
+          :loading="conversationSaving"
+          @click="saveConversation"
+        >
+          保存对话
+        </el-button>
       </template>
     </el-dialog>
 
-    <el-dialog v-model="recycleBinOpen" title="记忆回收站" width="min(760px, 94vw)" :close-on-click-modal="false">
-      <p style="margin:0 0 14px;color:#7d889f;font-size:12px;line-height:1.8">已移出当前记忆集合的条目。恢复会回到移入回收站前的状态；永久删除仅移除当前长期记忆条目，历史快照仍保留生成时的副本。</p>
-      <div v-if="recycleBinLoading" class="empty-state">正在读取回收站……</div>
-      <div v-else-if="!recycleBinEntries.length" class="empty-state">回收站是空的。移入回收站的长期记忆会显示在这里。</div>
-      <div v-else style="display:flex;flex-direction:column;gap:12px;max-height:55vh;overflow:auto">
-        <article v-for="memory in recycleBinEntries" :key="memory.id" style="padding:14px;border:1px solid #eceef5;border-radius:12px">
-          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
+    <el-dialog
+      v-model="recycleBinOpen"
+      title="记忆回收站"
+      width="min(760px, 94vw)"
+      :close-on-click-modal="false"
+    >
+      <p class="recycle-intro">
+        已移出当前记忆集合的条目。恢复会回到移入回收站前的状态；永久删除仅移除当前长期记忆条目，历史快照仍保留生成时的副本。
+      </p>
+      <div
+        v-if="recycleBinLoading"
+        class="empty-state"
+      >
+        正在读取回收站……
+      </div>
+      <div
+        v-else-if="!recycleBinEntries.length"
+        class="empty-state"
+      >
+        回收站是空的。移入回收站的长期记忆会显示在这里。
+      </div>
+      <div
+        v-else
+        class="recycle-list"
+      >
+        <article
+          v-for="memory in recycleBinEntries"
+          :key="memory.id"
+          class="recycle-card"
+        >
+          <div class="recycle-card-head">
             <div>
-              <strong style="color:#47526d;font-size:12px">{{ memoryCategoryOptions.find((option) => option.value === memory.category)?.label || "长期记忆" }}</strong>
-              <div style="margin-top:5px;color:#969fb2;font-size:11px">移入前状态：{{ memoryStatusText(memory.statusBeforeTrash) }} · {{ formatRecycleDate(memory.deletedAt) }}</div>
+              <strong class="recycle-card-title">{{ memoryCategoryOptions.find((option) => option.value === memory.category)?.label || "长期记忆" }}</strong>
+              <div class="recycle-card-meta">
+                移入前状态：{{ memoryStatusText(memory.statusBeforeTrash) }} · {{ formatRecycleDate(memory.deletedAt) }}
+              </div>
             </div>
             <span class="pill pill-gray">回收站</span>
           </div>
-          <p style="margin:10px 0;color:#65718b;font-size:12px;line-height:1.8;white-space:pre-wrap">{{ memory.content }}</p>
-          <div style="display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap">
-            <el-button size="small" :loading="recycleBinBusyIds.includes(memory.id)" @click="restoreTrashedMemory(memory)">恢复</el-button>
-            <el-button size="small" type="danger" plain :loading="recycleBinBusyIds.includes(memory.id)" @click="permanentlyDeleteMemory(memory)">永久删除条目</el-button>
+          <p class="recycle-card-body">
+            {{ memory.content }}
+          </p>
+          <div class="recycle-card-actions">
+            <el-button
+              size="small"
+              :loading="recycleBinBusyIds.includes(memory.id)"
+              @click="restoreTrashedMemory(memory)"
+            >
+              恢复
+            </el-button>
+            <el-button
+              size="small"
+              type="danger"
+              plain
+              :loading="recycleBinBusyIds.includes(memory.id)"
+              @click="permanentlyDeleteMemory(memory)"
+            >
+              永久删除条目
+            </el-button>
           </div>
         </article>
       </div>
-      <template #footer><el-button @click="recycleBinOpen = false">关闭</el-button></template>
+      <template #footer>
+        <el-button @click="recycleBinOpen = false">
+          关闭
+        </el-button>
+      </template>
     </el-dialog>
 
-    <el-dialog v-model="editOpen" title="编辑角色" width="min(560px, 94vw)">
+    <el-dialog
+      v-model="editOpen"
+      title="编辑角色"
+      width="min(560px, 94vw)"
+    >
       <el-form label-position="top">
-        <el-form-item label="角色名称"><el-input v-model="draftName" maxlength="40" /></el-form-item>
-        <el-form-item label="基础人设"><el-input v-model="draftPersonality" type="textarea" :rows="5" /></el-form-item>
-        <div class="info-callout"><el-icon><Cpu /></el-icon><span>角色资料会写入本地数据库。聊天渠道导入和真实模型生成仍未接入，时间线只展示已经保存的记录。</span></div>
+        <el-form-item label="角色名称">
+          <el-input
+            v-model="draftName"
+            maxlength="40"
+          />
+        </el-form-item>
+        <el-form-item label="基础人设">
+          <el-input
+            v-model="draftPersonality"
+            type="textarea"
+            :rows="5"
+          />
+        </el-form-item>
+        <div class="info-callout">
+          <el-icon><Cpu /></el-icon><span>角色资料会写入本地数据库。聊天渠道导入和真实模型生成仍未接入，时间线只展示已经保存的记录。</span>
+        </div>
       </el-form>
-      <template #footer><el-button @click="editOpen = false">取消</el-button><el-button type="primary" @click="saveProfile">保存修改</el-button></template>
+      <template #footer>
+        <el-button @click="editOpen = false">
+          取消
+        </el-button><el-button
+          type="primary"
+          @click="saveProfile"
+        >
+          保存修改
+        </el-button>
+      </template>
     </el-dialog>
   </div>
 </template>
 
 <style scoped>
-.cockpit-grid{display:grid;grid-template-columns:250px minmax(0,1fr) 280px;gap:15px;align-items:start}
-.profile-description{margin:16px 0;color:#728098;font-size:11px;line-height:1.8}
-.timeline-filters{display:flex;gap:9px;margin-top:17px}
-.memory-tabs{margin-top:9px}.timeline-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:9px}
-.memory-actions{display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-top:7px}
-.memory-source{margin-top:14px;padding:13px;border:1px solid #dce7f7;border-radius:12px;background:#f8fbff}
-.memory-source-heading{display:flex;align-items:center;justify-content:space-between;gap:10px;color:#47526d;font-size:12px}
-.memory-source-meta{margin-top:7px;color:#7f8ba3;font-size:11px;line-height:1.7}
-.memory-source-content{max-height:190px;overflow:auto;margin:9px 0 0;padding-top:9px;border-top:1px solid #e5edf8;color:#596781;font-size:12px;line-height:1.8;white-space:pre-wrap;overflow-wrap:anywhere}\n.timeline-marker.pill-green{background:#e8f8f1}.timeline-marker.pill-purple{background:#f0eeff}.timeline-marker.pill-blue{background:#eef5ff}.timeline-marker.pill-amber{background:#fff5e4}.timeline-marker.pill-gray{background:#f1f3f8}
-.memory-score{display:flex;align-items:center;gap:13px;margin-top:22px}.memory-score-ring{display:flex;width:65px;height:65px;flex:0 0 auto;align-items:center;justify-content:center;border:6px solid #e4e0ff;border-right-color:#8678ed;border-top-color:#8678ed;border-radius:50%;color:#7062df;font-size:16px;font-weight:850}
-.memory-score strong{color:#47526d;font-size:12px}.memory-score p{margin-top:6px;color:#969fb2;font-size:10px}
-.recent-snapshot{margin-top:12px;padding:12px;border:1px solid #eceef5;border-radius:12px}.recent-snapshot-top{display:flex;justify-content:space-between;color:#58637d;font-size:11px;font-weight:800}.recent-snapshot p{margin:8px 0;color:#7d889f;font-size:10px;line-height:1.8}
-@media(max-width:1350px){.cockpit-grid{grid-template-columns:230px minmax(0,1fr)}.snapshot-side{grid-column:1/-1;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.snapshot-side>.section-title{grid-column:1/-1}}
-@media(max-width:800px){.cockpit-grid{grid-template-columns:1fr}.snapshot-side{grid-column:auto;display:block}.timeline-filters{flex-wrap:wrap}.timeline-filters .el-select{width:100%!important}}
+/* KPI 行下面两栏：左时间线 + 右角色/状态栏，比例与概览页一致 */
+.panel-grid{margin-top:0}
+
+/* ── 时间线卡片 ─────────────────────────────────────── */
+.tl-card{padding:14px 18px 6px}
+.tl-tools{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.tl-search{min-width:170px;flex:1}
+.tl-select{width:132px;flex:none}
+.tl-loading{padding:34px 0;color:var(--faint);font-size:12px;text-align:center}
+.timeline-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:9px}
+.memory-actions{display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-top:2px}
+/* link 按钮：清掉 Element Plus 相邻边距，保持均匀间隔 */
+.memory-actions .el-button{margin-left:0;font-size:12px}
+.memory-actions .el-button + .el-button{margin-left:0}
+/* 图标按记录类型上色（原来借用 pill-* 的底色，这里补齐前景色） */
+.timeline-marker{font-size:12px;font-weight:700}
+.timeline-marker.pill-green{background:var(--green-soft);color:var(--green)}
+.timeline-marker.pill-purple{background:var(--brand-soft);color:var(--brand-strong)}
+.timeline-marker.pill-blue{background:var(--blue-soft);color:#3d4dab}
+.timeline-marker.pill-amber{background:var(--amber-soft);color:var(--amber)}
+.timeline-marker.pill-gray{background:var(--surface-3);color:var(--dim)}
+
+/* ── 右栏：角色卡 ───────────────────────────────────── */
+.char-box{padding:16px 18px 18px}
+.char-head{display:flex;align-items:flex-start;gap:12px}
+.char-id{display:flex;min-width:0;flex:1;flex-direction:column;align-items:flex-start;gap:4px}
+.char-id .character-name{font-size:16px;line-height:1.3}
+.char-id .character-alias{margin-top:0}
+.char-desc{margin:12px 0 14px;color:var(--dim);font-size:12px;line-height:1.8}
+/* 快捷操作：三行等宽、左对齐 */
+.quick-actions{display:flex;flex-direction:column;gap:6px}
+.quick-actions .btn{width:100%;justify-content:flex-start;font-size:12px}
+.quick-actions .btn .el-icon{color:var(--faint)}
+
+/* ── 右栏：记忆状态卡 ───────────────────────────────── */
+.stat-box{padding:0 18px 6px}
+.stat-note{margin:12px 0 0;padding-bottom:10px;border-bottom:1px solid var(--line);color:var(--dim);font-size:12px;line-height:1.75;text-wrap:pretty}
+
+/* ── 右栏：最近快照 ────────────────────────────────── */
+.snap-row{display:block;padding:12px 18px;border-bottom:1px solid var(--line);transition:background .14s var(--ease)}
+.snap-row:last-child{border-bottom:0}
+.snap-row:hover{background:var(--surface-2)}
+.snap-top{display:flex;align-items:center;justify-content:space-between;gap:8px;color:var(--text-2);font-size:12px;font-weight:600}
+.snap-sum{display:-webkit-box;overflow:hidden;margin-top:5px;color:var(--dim);font-size:12px;line-height:1.7;-webkit-box-orient:vertical;-webkit-line-clamp:2}
+
+/* ── 回收站弹窗 ─────────────────────────────────────── */
+.recycle-intro{margin:0 0 14px;color:var(--dim);font-size:12px;line-height:1.8}
+.recycle-list{display:flex;flex-direction:column;gap:10px;max-height:55vh;overflow:auto}
+.recycle-card{padding:14px 16px;border:1px solid var(--line);border-radius:var(--radius);background:var(--surface)}
+.recycle-card-head{display:flex;flex-wrap:wrap;align-items:flex-start;justify-content:space-between;gap:12px}
+.recycle-card-title{color:var(--text-2);font-size:14px;font-weight:700}
+.recycle-card-meta{margin-top:5px;color:var(--faint);font-size:12px}
+.recycle-card-body{margin:10px 0;color:var(--dim);font-size:12px;line-height:1.8;white-space:pre-wrap;overflow-wrap:anywhere}
+.recycle-card-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px}
+
+@media(max-width:640px){.tl-card{padding:12px 14px 4px}.tl-select{width:100%}}
 </style>

@@ -7,6 +7,7 @@ const route = useRoute();
 const id = computed(() => String(route.params.id || ""));
 const character = ref<Character>({ ...initialCharacters[0]!, id: "", name: "角色加载中" });
 const items = ref<Snapshot[]>([]);
+const loading = ref(true);
 const query = ref("");
 const statusFilter = ref("全部版本状态");
 const detail = ref<Snapshot | null>(null);
@@ -19,6 +20,8 @@ const filtered = computed(() => items.value.filter((item) => {
   const statusMatches = statusFilter.value === "全部版本状态" || item.status === statusFilter.value;
   return queryMatches && statusMatches;
 }));
+const totalMessages = computed(() => items.value.reduce((sum, item) => sum + item.messages, 0));
+const hasFilters = computed(() => Boolean(query.value) || statusFilter.value !== "全部版本状态");
 
 async function loadCharacter() {
   try {
@@ -30,6 +33,7 @@ async function loadCharacter() {
 }
 
 async function loadSnapshots(selectedId?: string) {
+  loading.value = true;
   try {
     const result = await $fetch<Snapshot[]>(`/api/characters/${encodeURIComponent(id.value)}/snapshots`);
     items.value = result;
@@ -38,6 +42,8 @@ async function loadSnapshots(selectedId?: string) {
     items.value = [];
     detail.value = null;
     ElMessage.error("快照数据加载失败，请确认本地数据库已迁移。");
+  } finally {
+    loading.value = false;
   }
 }
 
@@ -174,150 +180,468 @@ watch(id, () => {
 
 <template>
   <div class="page-wrap">
-    <PageHeader :eyebrow="`角色管理 / ${character.name} / 周期快照`" title="周期快照档案" description="自动周期快照会调用配置的 AI 模型提炼对话、事实与偏好变化；手动快照保留当下记录。每份自动记忆变化都应能追溯到原始消息。">
-      <template #actions><el-button @click="navigateTo('/characters/' + character.id)"><el-icon><ArrowLeft /></el-icon>返回驾驶舱</el-button><el-button type="primary" :loading="creating" @click="createSnapshot"><el-icon><MagicStick /></el-icon>生成快照</el-button></template>
+    <PageHeader
+      :eyebrow="`角色管理 / ${character.name} / 周期快照`"
+      title="周期快照档案"
+      description="自动周期快照会调用配置的 AI 模型提炼对话、事实与偏好变化；手动快照保留当下记录。每份自动记忆变化都应能追溯到原始消息。"
+    >
+      <template #actions>
+        <button
+          type="button"
+          class="btn"
+          @click="navigateTo('/characters/' + character.id)"
+        >
+          <el-icon><ArrowLeft /></el-icon>返回驾驶舱
+        </button>
+        <button
+          type="button"
+          class="btn primary"
+          :disabled="creating"
+          @click="createSnapshot"
+        >
+          <el-icon><MagicStick /></el-icon>{{ creating ? "生成中…" : "生成快照" }}
+        </button>
+      </template>
     </PageHeader>
 
-    <div class="stat-grid" style="grid-template-columns:repeat(3,minmax(0,1fr))">
-      <StatCard label="历史快照" :value="String(items.length).padStart(2, '0')" note="历史版本保存在数据库" symbol="▤" tone="purple" />
-      <StatCard label="覆盖消息" :value="String(items.reduce((sum, item) => sum + item.messages, 0))" note="接入消息后统计" symbol="☰" tone="blue" />
-      <StatCard label="最近生成" :value="items[0]?.date.slice(0, 10) || '暂无'" note="按保存时间更新" symbol="◷" tone="green" />
+    <div class="kpi-row is-three">
+      <div class="kpi">
+        <div class="k">
+          历史快照
+        </div>
+        <div class="v">
+          {{ items.length }}<small>份</small>
+        </div>
+        <div class="foot">
+          历史版本保存在数据库，不会被自动覆盖
+        </div>
+      </div>
+      <div class="kpi">
+        <div class="k">
+          覆盖消息
+        </div>
+        <div class="v">
+          {{ totalMessages }}<small>条</small>
+        </div>
+        <div class="foot">
+          来自已归档周期的原始对话
+        </div>
+      </div>
+      <div class="kpi">
+        <div class="k">
+          最近生成
+        </div>
+        <div class="v">
+          {{ items[0] ? items[0].date.slice(5, 10) : "—" }}
+        </div>
+        <div class="foot">
+          {{ items[0] ? items[0].date.slice(0, 4) + " 年归档" : "还没有生成过快照" }}
+        </div>
+      </div>
     </div>
 
-    <section class="surface panel" style="margin-top:20px">
+    <div class="card filter-card">
       <div class="filter-row">
-        <div class="filter-grow"><el-input v-model="query" clearable placeholder="搜索快照总结、时间段或编号……"><template #prefix><el-icon><Search /></el-icon></template></el-input></div>
-        <el-select v-model="statusFilter" style="width:170px"><el-option label="全部版本状态" value="全部版本状态" /><el-option label="当前版本" value="当前版本" /><el-option label="已被替代" value="已被替代" /></el-select>
-        <el-button @click="resetFilters">重置筛选</el-button>
+        <div class="filter-grow">
+          <el-input
+            v-model="query"
+            clearable
+            placeholder="搜索快照总结、时间段或编号……"
+          >
+            <template #prefix>
+              <el-icon><Search /></el-icon>
+            </template>
+          </el-input>
+        </div>
+        <el-select
+          v-model="statusFilter"
+          style="width:170px"
+        >
+          <el-option
+            label="全部版本状态"
+            value="全部版本状态"
+          /><el-option
+            label="当前版本"
+            value="当前版本"
+          /><el-option
+            label="已被替代"
+            value="已被替代"
+          />
+        </el-select>
+        <button
+          v-if="hasFilters"
+          type="button"
+          class="btn sm"
+          @click="resetFilters"
+        >
+          重置筛选
+        </button>
       </div>
-      <div class="filter-summary"><span>共 <strong>{{ filtered.length }}</strong> 份快照</span><span>历史版本不会被自动覆盖</span></div>
-    </section>
+    </div>
 
     <div class="snapshot-grid">
-      <section class="surface panel">
-        <SectionTitle title="归档时间线" description="按生成时间倒序排列" />
-        <div class="section-content">
-          <button v-for="snapshot in filtered" :key="snapshot.id" class="snapshot-item" :class="{ selected: detail?.id === snapshot.id }" @click="detail = snapshot">
-            <div class="snapshot-title"><span>第 {{ snapshot.number }} 份快照 <span style="color:#a2a9b9;font-weight:500">· v{{ snapshot.version }}</span></span><span class="pill" :class="statusTone(snapshot.status)">{{ snapshot.status }}</span></div>
-            <div class="snapshot-summary">{{ snapshot.summary }}</div>
-            <div class="snapshot-meta"><span><el-icon><Calendar /></el-icon>{{ snapshot.date }}</span><span>覆盖 {{ snapshot.messages }} 条消息</span><span>{{ snapshot.events }} 个事件</span></div>
-          </button>
-          <div v-if="!filtered.length" class="empty-state">没有找到符合条件的快照。</div>
+      <div>
+        <div class="sec-h">
+          <h2>归档时间线</h2>
+          <span class="sub">{{ filtered.length }}/{{ items.length }} 份</span>
         </div>
-      </section>
-
-      <aside class="surface panel">
-        <template v-if="detail">
-          <div class="detail-heading"><div><div class="eyebrow">快照详情 / VERSION {{ detail.version }}</div><h2 class="section-heading">第 {{ detail.number }} 份记忆快照</h2></div><span class="pill" :class="statusTone(detail.status)">{{ detail.status }}</span></div>
-          <p class="detail-summary">{{ detail.summary }}</p>
-          <div class="metric-row"><span>覆盖时间段</span><span class="metric-value">{{ detail.range }}</span></div>
-          <div class="metric-row"><span>生成时间</span><span class="metric-value">{{ detail.date }}</span></div>
-          <div class="metric-row"><span>来源消息</span><span class="metric-value">{{ detail.messages }} 条</span></div>
-          <div class="metric-row"><span>提炼事件</span><span class="metric-value">{{ detail.events }} 项</span></div>
-          <section class="source-section">
-            <div class="analysis-heading">
-              <div>
-                <div class="eyebrow">SOURCE TRACEABILITY</div>
-                <h3 class="source-title">来源消息与原文</h3>
-              </div>
-              <span class="pill pill-blue">{{ detail.sourceMessages?.length || 0 }} 条</span>
+        <div class="card snap-list">
+          <button
+            v-for="snapshot in filtered"
+            :key="snapshot.id"
+            class="snapshot-item"
+            :class="{ selected: detail?.id === snapshot.id }"
+            @click="detail = snapshot"
+          >
+            <div class="snapshot-title">
+              <span>第 {{ snapshot.number }} 份快照 <span class="snapshot-version">· v{{ snapshot.version }}</span></span><span
+                class="pill"
+                :class="statusTone(snapshot.status)"
+              >{{ snapshot.status }}</span>
             </div>
-            <p class="source-hint">以下是实际关联到这份快照的原始消息。AI 分析条目中的来源消息编号可与这里的记录对应。</p>
-            <div v-if="detail.sourceMessages?.length" class="source-list">
-              <article v-for="source in detail.sourceMessages" :key="source.id" class="source-item">
-                <div class="source-item-top">
-                  <span class="pill" :class="source.role === 'USER' ? 'pill-green' : source.role === 'ASSISTANT' ? 'pill-blue' : 'pill-gray'">{{ sourceRoleLabel(source) }}</span>
-                  <span class="source-time">{{ sourceTime(source) }}</span>
-                </div>
-                <div class="source-conversation">{{ source.conversationTitle || "未命名会话" }} · #{{ source.id.slice(0, 8) }}</div>
-                <p class="source-preview">{{ source.content }}</p>
-                <el-button link type="primary" size="small" @click="showSourceMessage(source)">查看完整原文</el-button>
-              </article>
+            <div class="snapshot-summary">
+              {{ snapshot.summary }}
             </div>
-            <div v-else class="empty-state source-empty">这份快照没有关联到可查看的原始消息。可能是旧版本、纯记忆归档，或来源消息已被清理。</div>
-          </section>
-          <div v-if="detail.analysis" class="analysis-sections">
-            <div class="analysis-heading">
-              <div class="eyebrow">AI 提炼结果</div>
-              <span v-if="detail.model?.name" class="pill pill-purple">{{ detail.model.name }}</span>
+            <div class="snapshot-meta">
+              <span><el-icon><Calendar /></el-icon>{{ snapshot.date }}</span><span>覆盖 {{ snapshot.messages }} 条消息</span><span>{{ snapshot.events }} 个事件</span>
             </div>
-            <section v-if="detail.analysis.importantEvents.length" class="analysis-block">
-              <h3>重要事件</h3>
-              <article v-for="(item, index) in detail.analysis.importantEvents" :key="'event-' + index" class="analysis-item">
-                <strong>{{ item.title }}</strong><p>{{ item.detail }}</p>
-                <small>来源消息：{{ evidenceLabel(item.evidenceMessageIds) }}</small>
-              </article>
-            </section>
-            <section v-if="detail.analysis.factAndPreferenceChanges.length" class="analysis-block">
-              <h3>事实与偏好变化</h3>
-              <article v-for="(item, index) in detail.analysis.factAndPreferenceChanges" :key="'fact-' + index" class="analysis-item">
-                <strong>{{ item.changeType }}</strong><p>{{ item.description }}</p>
-                <small>来源消息：{{ evidenceLabel(item.evidenceMessageIds) }}</small>
-              </article>
-            </section>
-            <section v-if="detail.analysis.relationshipChanges.length" class="analysis-block">
-              <h3>关系变化</h3>
-              <article v-for="(item, index) in detail.analysis.relationshipChanges" :key="'relation-' + index" class="analysis-item">
-                <p>{{ item.description }}</p><small>来源消息：{{ evidenceLabel(item.evidenceMessageIds) }}</small>
-              </article>
-            </section>
-            <section v-if="detail.analysis.goalsAndCommitments.length" class="analysis-block">
-              <h3>目标与承诺</h3>
-              <article v-for="(item, index) in detail.analysis.goalsAndCommitments" :key="'goal-' + index" class="analysis-item">
-                <strong>{{ item.status }}</strong><p>{{ item.description }}</p>
-                <small>来源消息：{{ evidenceLabel(item.evidenceMessageIds) }}</small>
-              </article>
-            </section>
-            <section v-if="detail.analysis.unresolvedTopics.length" class="analysis-block">
-              <h3>待跟进话题</h3>
-              <article v-for="(item, index) in detail.analysis.unresolvedTopics" :key="'topic-' + index" class="analysis-item">
-                <p>{{ item.description }}</p><small>来源消息：{{ evidenceLabel(item.evidenceMessageIds) }}</small>
-              </article>
-            </section>
-            <section v-if="detail.analysis.differencesFromPrevious.length" class="analysis-block">
-              <h3>相较上一快照</h3>
-              <ul><li v-for="(item, index) in detail.analysis.differencesFromPrevious" :key="'diff-' + index">{{ item }}</li></ul>
-            </section>
-            <section v-if="detail.analysis.memoryChangesApplied.length" class="analysis-block">
-              <h3>长期记忆变化与审核建议</h3>
-              <article v-for="(item, index) in detail.analysis.memoryChangesApplied" :key="'change-' + index" class="analysis-item">
-                <strong>{{ memoryChangeLabel(item.action, item.result) }}</strong>
-                <p>{{ item.content || '关联记忆 ' + (item.memoryItemId || item.supersededMemoryId || '—') }}</p>
-                <small v-if="item.evidenceMessageIds?.length">依据消息：{{ evidenceLabel(item.evidenceMessageIds) }}</small>
-              </article>
-            </section>
+          </button>
+          <div
+            v-if="loading"
+            class="snap-skeleton"
+          >
+            <div
+              v-for="n in 3"
+              :key="n"
+              class="sk"
+              style="height:74px"
+            />
           </div>
-          <div v-else class="info-callout" style="margin-top:19px"><el-icon><Files /></el-icon><span>这是一份手动或旧版快照，当前保存的是结构化记录；自动周期快照的 AI 分析会显示在这里。</span></div>
-          <div v-if="detail.kind === 'AUTOMATIC'" class="info-callout" style="margin-top:14px"><span>AI 重新提炼会对同一历史周期创建新版本，旧版本继续保留。本次提出的长期记忆变化仅供审核，不会自动覆盖当前记忆。</span></div>
-          <el-button v-if="detail.kind === 'AUTOMATIC'" style="width:100%;margin-top:12px" type="primary" plain :loading="aiRegeneratingId === detail.id" :disabled="regeneratingId === detail.id" @click="regenerateWithAi(detail)"><el-icon><Refresh /></el-icon>AI 重新提炼此版本</el-button>
-          <el-button v-else style="width:100%;margin-top:14px" type="primary" plain :loading="regeneratingId === detail.id" :disabled="aiRegeneratingId === detail.id" @click="regenerate(detail)"><el-icon><Refresh /></el-icon>重新生成此版本</el-button>
-        </template>
-        <div v-else class="empty-state">从左侧选择一份快照查看详情。</div>
-      </aside>
+          <div
+            v-else-if="!filtered.length"
+            class="card-empty"
+          >
+            <el-icon><Files /></el-icon>
+            <span>{{ hasFilters ? "没有符合条件的快照" : "还没有快照档案" }}</span>
+            <span>{{ hasFilters ? "换个搜索词或把状态筛选切回全部" : "点右上角「生成快照」手动归档当前周期" }}</span>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <div class="sec-h">
+          <h2>快照详情</h2>
+          <span class="sub">{{ detail ? "v" + detail.version : "未选择" }}</span>
+        </div>
+        <div class="card detail-card">
+          <template v-if="detail">
+            <div class="detail-heading">
+              <div>
+                <div class="mini-label">
+                  SNAPSHOT DETAIL
+                </div><h2 class="detail-title">
+                  第 {{ detail.number }} 份记忆快照
+                </h2>
+              </div><span
+                class="pill"
+                :class="statusTone(detail.status)"
+              >{{ detail.status }}</span>
+            </div>
+            <p class="detail-summary">
+              {{ detail.summary }}
+            </p>
+            <div class="metric-row">
+              <span>覆盖时间段</span><span class="metric-value">{{ detail.range }}</span>
+            </div>
+            <div class="metric-row">
+              <span>生成时间</span><span class="metric-value">{{ detail.date }}</span>
+            </div>
+            <div class="metric-row">
+              <span>来源消息</span><span class="metric-value">{{ detail.messages }} 条</span>
+            </div>
+            <div class="metric-row">
+              <span>提炼事件</span><span class="metric-value">{{ detail.events }} 项</span>
+            </div>
+            <section class="source-section">
+              <div class="analysis-heading">
+                <div>
+                  <div class="mini-label">
+                    SOURCE TRACEABILITY
+                  </div>
+                  <h3 class="block-title">
+                    来源消息与原文
+                  </h3>
+                </div>
+                <span class="pill pill-blue">{{ detail.sourceMessages?.length || 0 }} 条</span>
+              </div>
+              <p class="source-hint">
+                下面这些消息是实际关联到本份快照的原始记录；AI 分析条目里的「来源消息」编号可以和它们对应。
+              </p>
+              <div
+                v-if="detail.sourceMessages?.length"
+                class="source-list"
+              >
+                <article
+                  v-for="source in detail.sourceMessages"
+                  :key="source.id"
+                  class="source-item"
+                >
+                  <div class="source-item-top">
+                    <span
+                      class="pill"
+                      :class="source.role === 'USER' ? 'pill-green' : source.role === 'ASSISTANT' ? 'pill-blue' : 'pill-gray'"
+                    >{{ sourceRoleLabel(source) }}</span>
+                    <span class="source-time">{{ sourceTime(source) }}</span>
+                  </div>
+                  <div class="source-conversation">
+                    {{ source.conversationTitle || "未命名会话" }} · #{{ source.id.slice(0, 8) }}
+                  </div>
+                  <p class="source-preview">
+                    {{ source.content }}
+                  </p>
+                  <button
+                    type="button"
+                    class="card-link"
+                    @click="showSourceMessage(source)"
+                  >
+                    查看完整原文
+                  </button>
+                </article>
+              </div>
+              <div
+                v-else
+                class="card-empty"
+              >
+                <el-icon><Files /></el-icon>
+                <span>没有可追溯的原始消息</span>
+                <span>可能是旧版本、纯记忆归档，或来源消息已被清理</span>
+              </div>
+            </section>
+            <div
+              v-if="detail.analysis"
+              class="analysis-sections"
+            >
+              <div class="analysis-heading">
+                <div>
+                  <div class="mini-label">
+                    AI EXTRACTED
+                  </div>
+                  <h3 class="block-title">
+                    AI 提炼结果
+                  </h3>
+                </div>
+                <span
+                  v-if="detail.model?.name"
+                  class="pill pill-purple"
+                >{{ detail.model.name }}</span>
+              </div>
+              <section
+                v-if="detail.analysis.importantEvents.length"
+                class="analysis-block"
+              >
+                <h3>重要事件</h3>
+                <article
+                  v-for="(item, index) in detail.analysis.importantEvents"
+                  :key="'event-' + index"
+                  class="analysis-item"
+                >
+                  <strong>{{ item.title }}</strong><p>{{ item.detail }}</p>
+                  <small>来源消息：{{ evidenceLabel(item.evidenceMessageIds) }}</small>
+                </article>
+              </section>
+              <section
+                v-if="detail.analysis.factAndPreferenceChanges.length"
+                class="analysis-block"
+              >
+                <h3>事实与偏好变化</h3>
+                <article
+                  v-for="(item, index) in detail.analysis.factAndPreferenceChanges"
+                  :key="'fact-' + index"
+                  class="analysis-item"
+                >
+                  <strong>{{ item.changeType }}</strong><p>{{ item.description }}</p>
+                  <small>来源消息：{{ evidenceLabel(item.evidenceMessageIds) }}</small>
+                </article>
+              </section>
+              <section
+                v-if="detail.analysis.relationshipChanges.length"
+                class="analysis-block"
+              >
+                <h3>关系变化</h3>
+                <article
+                  v-for="(item, index) in detail.analysis.relationshipChanges"
+                  :key="'relation-' + index"
+                  class="analysis-item"
+                >
+                  <p>{{ item.description }}</p><small>来源消息：{{ evidenceLabel(item.evidenceMessageIds) }}</small>
+                </article>
+              </section>
+              <section
+                v-if="detail.analysis.goalsAndCommitments.length"
+                class="analysis-block"
+              >
+                <h3>目标与承诺</h3>
+                <article
+                  v-for="(item, index) in detail.analysis.goalsAndCommitments"
+                  :key="'goal-' + index"
+                  class="analysis-item"
+                >
+                  <strong>{{ item.status }}</strong><p>{{ item.description }}</p>
+                  <small>来源消息：{{ evidenceLabel(item.evidenceMessageIds) }}</small>
+                </article>
+              </section>
+              <section
+                v-if="detail.analysis.unresolvedTopics.length"
+                class="analysis-block"
+              >
+                <h3>待跟进话题</h3>
+                <article
+                  v-for="(item, index) in detail.analysis.unresolvedTopics"
+                  :key="'topic-' + index"
+                  class="analysis-item"
+                >
+                  <p>{{ item.description }}</p><small>来源消息：{{ evidenceLabel(item.evidenceMessageIds) }}</small>
+                </article>
+              </section>
+              <section
+                v-if="detail.analysis.differencesFromPrevious.length"
+                class="analysis-block"
+              >
+                <h3>相较上一快照</h3>
+                <ul>
+                  <li
+                    v-for="(item, index) in detail.analysis.differencesFromPrevious"
+                    :key="'diff-' + index"
+                  >
+                    {{ item }}
+                  </li>
+                </ul>
+              </section>
+              <section
+                v-if="detail.analysis.memoryChangesApplied.length"
+                class="analysis-block"
+              >
+                <h3>长期记忆变化与审核建议</h3>
+                <article
+                  v-for="(item, index) in detail.analysis.memoryChangesApplied"
+                  :key="'change-' + index"
+                  class="analysis-item"
+                >
+                  <strong>{{ memoryChangeLabel(item.action, item.result) }}</strong>
+                  <p>{{ item.content || '关联记忆 ' + (item.memoryItemId || item.supersededMemoryId || '—') }}</p>
+                  <small v-if="item.evidenceMessageIds?.length">依据消息：{{ evidenceLabel(item.evidenceMessageIds) }}</small>
+                </article>
+              </section>
+            </div>
+            <div
+              v-else
+              class="info-callout detail-callout"
+            >
+              <el-icon><Files /></el-icon><span>这是一份手动或旧版快照，当前保存的是结构化记录；自动周期快照的 AI 分析会显示在这里。</span>
+            </div>
+            <div
+              v-if="detail.kind === 'AUTOMATIC'"
+              class="info-callout detail-callout"
+            >
+              <span>AI 重新提炼会对同一历史周期创建新版本，旧版本继续保留。本次提出的长期记忆变化仅供审核，不会自动覆盖当前记忆。</span>
+            </div>
+            <button
+              v-if="detail.kind === 'AUTOMATIC'"
+              type="button"
+              class="btn detail-action"
+              :disabled="aiRegeneratingId === detail.id || regeneratingId === detail.id"
+              @click="regenerateWithAi(detail)"
+            >
+              <el-icon><Refresh /></el-icon>{{ aiRegeneratingId === detail.id ? "重新提炼中…" : "AI 重新提炼此版本" }}
+            </button>
+            <button
+              v-else
+              type="button"
+              class="btn detail-action"
+              :disabled="regeneratingId === detail.id || aiRegeneratingId === detail.id"
+              @click="regenerate(detail)"
+            >
+              <el-icon><Refresh /></el-icon>{{ regeneratingId === detail.id ? "重新生成中…" : "重新生成此版本" }}
+            </button>
+          </template>
+          <div
+            v-else-if="loading"
+            class="detail-skeleton"
+          >
+            <div
+              v-for="n in 5"
+              :key="n"
+              class="sk"
+              :style="{ height: n === 1 ? '22px' : '56px', width: n === 1 ? '46%' : '100%' }"
+            />
+          </div>
+          <div
+            v-else
+            class="card-empty"
+          >
+            <el-icon><Files /></el-icon>
+            <span>还没有选中的快照</span>
+            <span>从左侧时间线点一份快照，这里会展开总结、来源消息与 AI 提炼结果</span>
+          </div>
+        </div>
+      </div>
     </div>
-    <p class="footer-note">自动周期快照由独立 Worker 调用模型生成；模型输出中的消息来源会先校验再采纳。手动归档与旧版快照不代表 AI 总结。</p>
+    <p class="footer-note">
+      自动周期快照由独立 Worker 调用模型生成；模型输出中的消息来源会先校验再采纳。手动归档与旧版快照不代表 AI 总结。
+    </p>
   </div>
 </template>
 
 <style scoped>
-.snapshot-grid{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(320px,.85fr);gap:18px;margin-top:19px;align-items:start}
-.snapshot-meta{display:flex;flex-wrap:wrap;gap:14px;margin-top:12px;color:#9ca4b6;font-size:10px}.snapshot-meta span{display:flex;align-items:center;gap:5px}
-.detail-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.detail-summary{margin:18px 0 22px;color:#6f7b94;font-size:12px;line-height:1.9}
-.analysis-sections{margin-top:22px;padding-top:18px;border-top:1px solid #edf0f6}
-.analysis-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}
-.analysis-block{margin-top:16px}.analysis-block h3{margin:0 0 9px;color:#47526d;font-size:12px;font-weight:750}
-.analysis-item{padding:10px 11px;margin-top:7px;background:#f8f9fd;border:1px solid #edf0f7;border-radius:9px}
-.analysis-item strong{color:#566184;font-size:11px}.analysis-item p{margin:5px 0 0;color:#68758e;font-size:12px;line-height:1.8;white-space:pre-wrap;overflow-wrap:anywhere}
-.analysis-item small{display:block;margin-top:7px;color:#9ba4b6;font-size:10px}.analysis-block ul{padding-left:18px;color:#68758e;font-size:12px;line-height:1.9}
-.source-section{margin-top:22px;padding-top:18px;border-top:1px solid #edf0f6}
-.source-title{margin:5px 0 0;color:#47526d;font-size:13px;font-weight:750}
-.source-hint{margin:10px 0;color:#8792a8;font-size:11px;line-height:1.8}
-.source-list{display:flex;flex-direction:column;gap:9px}
-.source-item{padding:11px;border:1px solid #e8edf6;border-radius:10px;background:#fbfcff}
-.source-item-top{display:flex;justify-content:space-between;align-items:center;gap:8px}
-.source-time,.source-conversation{color:#929db2;font-size:10px}
-.source-conversation{margin-top:8px}
-.source-preview{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;margin:7px 0;color:#5f6c85;font-size:11px;line-height:1.8;white-space:pre-wrap;overflow-wrap:anywhere}
-.source-empty{margin-top:10px}
-@media(max-width:850px){.snapshot-grid{grid-template-columns:1fr}.stat-grid[style]{grid-template-columns:1fr!important}}
+/* 筛选工具条 */
+.filter-card{padding:13px 16px;margin-bottom:18px}
+
+/* 两栏：列表窄、详情宽（详情要读长文本） */
+.snapshot-grid{display:grid;grid-template-columns:minmax(0,.82fr) minmax(0,1.18fr);gap:18px;align-items:start}
+
+/* ── 归档时间线：卡片内的行式列表 ───────────────────── */
+.snap-list{padding:5px 0}
+.snapshot-item{border:0;border-bottom:1px solid var(--line);border-radius:0;background:transparent;padding:13px 18px}
+.snapshot-item + .snapshot-item{margin-top:0}
+.snapshot-item:last-child{border-bottom:0}
+.snapshot-item:hover{background:var(--surface-2)}
+.snapshot-item.selected{background:var(--brand-soft);box-shadow:inset 2px 0 0 var(--brand)}
+.snapshot-version{color:var(--dim);font-weight:500}
+.snapshot-meta{display:flex;flex-wrap:wrap;gap:14px;margin-top:10px;color:var(--faint);font-size:12px}
+.snapshot-meta span{display:flex;align-items:center;gap:5px}
+.snap-skeleton{display:flex;flex-direction:column;gap:8px;padding:14px 18px}
+
+/* ── 快照详情 ──────────────────────────────────────── */
+.detail-card{padding:16px 20px 18px}
+.mini-label{color:var(--faint);font:400 12px/1 Consolas,monospace;letter-spacing:.03em}
+.detail-title{margin:6px 0 0;color:var(--text);font-size:16px;font-weight:700;line-height:1.35}
+.detail-summary{margin:12px 0 4px;color:var(--text-2);font-size:14px;line-height:1.8}
+.detail-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.block-title{margin:6px 0 0;color:var(--text);font-size:14px;font-weight:700}
+.analysis-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:10px}
+.detail-callout{margin-top:14px}
+.detail-action{width:100%;margin-top:14px}
+.detail-skeleton{display:flex;flex-direction:column;gap:10px;padding:2px}
+
+/* ── AI 提炼结果 ───────────────────────────────────── */
+.analysis-sections{margin-top:20px;border-top:1px solid var(--line);padding-top:16px}
+.analysis-block{margin-top:16px}
+.analysis-block h3{margin:0 0 8px;color:var(--text-2);font-size:12px;font-weight:700}
+.analysis-item{margin-top:7px;border:1px solid var(--line);border-radius:var(--radius-sm);background:var(--surface-2);padding:10px 12px}
+.analysis-item strong{color:var(--text-2);font-size:12px}
+.analysis-item p{margin:5px 0 0;color:var(--dim);font-size:12px;line-height:1.8;white-space:pre-wrap;overflow-wrap:anywhere}
+.analysis-item small{display:block;margin-top:6px;color:var(--faint);font-size:12px}
+.analysis-block ul{margin:0;padding-left:18px;color:var(--dim);font-size:12px;line-height:1.9}
+
+/* ── 来源消息 ──────────────────────────────────────── */
+.source-section{margin-top:20px;border-top:1px solid var(--line);padding-top:16px}
+.source-hint{margin:0 0 10px;color:var(--dim);font-size:12px;line-height:1.8}
+.source-list{display:flex;flex-direction:column;gap:8px}
+.source-item{border:1px solid var(--line);border-radius:var(--radius-sm);background:var(--surface-2);padding:11px 12px}
+.source-item-top{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.source-time,.source-conversation{color:var(--faint);font-size:12px}
+.source-conversation{margin-top:7px}
+.source-preview{display:-webkit-box;overflow:hidden;margin:7px 0 6px;color:var(--text-2);font-size:12px;line-height:1.8;white-space:pre-wrap;overflow-wrap:anywhere;-webkit-box-orient:vertical;-webkit-line-clamp:3}
+
+@media(max-width:1150px){.snapshot-grid{grid-template-columns:minmax(0,1fr)}}
 </style>

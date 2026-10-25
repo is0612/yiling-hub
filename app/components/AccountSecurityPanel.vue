@@ -311,24 +311,24 @@ onMounted(loadSessions);
 </template>
 
 <style scoped>
-.security-icon{font-size:19px;color:#8176e7}
-.form-title{display:flex;align-items:center;gap:9px;color:#3e4963;font-size:14px;font-weight:800;margin-bottom:22px}
+.security-icon{font-size:18px;color:var(--primary)}
+.form-title{display:flex;align-items:center;gap:9px;color:var(--ink-soft);font-size:14px;font-weight:800;margin-bottom:20px}
 .password-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:0 14px}
 .form-actions{display:flex;justify-content:flex-end;margin-top:6px}
 .device-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap}
-.device-title{display:flex;align-items:center;gap:7px;color:#48536d;font-size:12px;font-weight:800}
-.device-title .el-icon{color:#8176e7;font-size:15px}
+.device-title{display:flex;align-items:center;gap:7px;color:var(--ink-soft);font-size:12px;font-weight:800}
+.device-title .el-icon{color:var(--primary);font-size:14px}
 .device-actions{display:flex;align-items:center;gap:6px}
 .device-list{margin-top:14px;min-height:60px}
-.device-empty{padding:22px 0;color:#9aa4b7;font-size:12px;text-align:center}
-.device-row{display:flex;align-items:center;gap:12px;padding:11px 0;border-bottom:1px solid #f0f2f7}
+.device-empty{padding:22px 0;color:var(--muted);font-size:12px;text-align:center}
+.device-row{display:flex;align-items:center;gap:12px;padding:11px 0;border-bottom:1px solid var(--line)}
 .device-row:last-child{border-bottom:0}
-.device-symbol{display:flex;width:34px;height:34px;flex:0 0 auto;align-items:center;justify-content:center;border-radius:11px;background:#f2f0ff;color:#786be4;font-size:16px}
+.device-symbol{display:flex;width:34px;height:34px;flex:0 0 auto;align-items:center;justify-content:center;border-radius:11px;background:var(--brand-soft);color:var(--primary);font-size:16px}
 .device-symbol.kind-mobile,.device-symbol.kind-tablet{background:#eef6ff;color:#4b8ce0}
 .device-copy{min-width:0;flex:1}
-.device-name{display:flex;align-items:center;gap:8px;color:#48536d;font-size:12px;font-weight:700}
-.current-badge{padding:1px 7px;border-radius:999px;background:#efeaff;color:#6d5fe0;font-size:10px;font-weight:700}
-.device-meta{margin-top:4px;color:#9aa4b7;font-size:11px;line-height:1.6}
-.device-revoke{color:#8189a0}
+.device-name{display:flex;align-items:center;gap:8px;color:var(--ink-soft);font-size:12px;font-weight:700}
+.current-badge{padding:2px 7px;border-radius:999px;background:var(--brand-soft);color:var(--brand-strong);font-size:12px;font-weight:700}
+.device-meta{margin-top:4px;color:var(--muted);font-size:12px;line-height:1.6}
+.device-revoke{color:var(--muted)}
 @media(max-width:1000px){.password-grid{grid-template-columns:1fr}}
 </style>

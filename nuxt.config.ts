@@ -11,7 +11,7 @@ export default defineNuxtConfig({
   },
   app: {
     head: {
-      title: "羚枢 · 多角色 AI 养成中枢",
+      title: "忆灵小窝 · 多角色 AI 养成",
       htmlAttrs: { lang: "zh-CN" },
       meta: [
         { name: "viewport", content: "width=device-width, initial-scale=1" },

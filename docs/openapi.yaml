@@ -3,7 +3,7 @@ info:
   title: Yiling Hub API
   version: 0.1.0
   description: |
-    多角色 AI 养成中枢的初始接口契约。
+    忆灵小窝（多角色 AI 养成）的初始接口契约。
     当前定义用于前后端协作和 Mock；只有实际实现并测试后，接口才算可用。
 
     鉴权：除 `/auth/session`、`/auth/login`、`/auth/logout` 外，所有接口都要求服务端会话 Cookie（`yiling_session`，HttpOnly、SameSite=Strict，生产环境 Secure）。未登录返回 401；浏览器跨源/跨站请求返回 403。

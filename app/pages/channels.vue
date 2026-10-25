@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ChatDotRound, Delete, Link, Plus, Refresh, VideoPlay } from "@element-plus/icons-vue";
+import { ChatDotRound, Delete, MoreFilled, Plus, Refresh, VideoPlay } from "@element-plus/icons-vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 
 type ChannelBinding = { id: string; characterId: string; characterName: string; routingKey: string | null };
@@ -10,7 +10,7 @@ type ChannelConnection = {
 };
 
 const connections = ref<ChannelConnection[]>([]);
-const loading = ref(false);
+const loading = ref(true);
 const saving = ref(false);
 const createVisible = ref(false);
 const createPlatform = ref<"qq" | "qq-onebot" | "bili">("qq");
@@ -56,11 +56,11 @@ function readErrorMessage(error: unknown, fallback: string) {
   return fallback;
 }
 
-const statusMap: Record<string, { label: string; type: "success" | "warning" | "danger" | "info" }> = {
-  CONNECTED: { label: "已连接", type: "success" },
-  DISCONNECTED: { label: "未连接", type: "warning" },
-  ERROR: { label: "连接异常", type: "danger" },
-  DISABLED: { label: "已停用", type: "info" },
+const statusMap: Record<string, { label: string; tone: string }> = {
+  CONNECTED: { label: "已连接", tone: "pill-green" },
+  DISCONNECTED: { label: "未连接", tone: "pill-amber" },
+  ERROR: { label: "连接异常", tone: "pill-rose" },
+  DISABLED: { label: "已停用", tone: "pill-gray" },
 };
 
 function platformLabel(platform: string) {
@@ -68,6 +68,18 @@ function platformLabel(platform: string) {
   if (platform === "qq") return "QQ";
   if (platform === "qq-onebot") return "QQ 小号";
   return platform;
+}
+
+function platformHint(platform: string) {
+  if (platform === "bili") return "yarn bili:run";
+  if (platform === "qq-onebot") return "yarn onebot:run";
+  return "yarn channel:run";
+}
+
+function channelSubtitle(connection: ChannelConnection) {
+  return connection.appId
+    ? `${platformLabel(connection.platform)} · ${connection.appId}`
+    : platformLabel(connection.platform);
 }
 
 function formatDateTime(value: string | null) {
@@ -237,43 +249,69 @@ onMounted(loadConnections);
       description="把角色接到 QQ 官方机器人、QQ 小号（OneBot）或 B站。QQ 机器人走群聊 @/私聊对话；QQ 小号走 OneBot 协议挂个人号；B站 走自动值班刷视频 + 私信/评论回复。"
     >
       <template #actions>
-        <el-button
-          :loading="loading"
+        <button
+          type="button"
+          class="btn"
+          :disabled="loading"
           @click="loadConnections"
         >
           <el-icon><Refresh /></el-icon>刷新
-        </el-button>
-        <el-button
-          type="primary"
+        </button>
+        <button
+          type="button"
+          class="btn primary"
           @click="createVisible = true"
         >
           <el-icon><Plus /></el-icon>添加渠道
-        </el-button>
+        </button>
       </template>
     </PageHeader>
 
-    <div
-      class="info-callout"
-      style="margin-bottom:20px"
-    >
+    <div class="notice info">
       <el-icon><ChatDotRound /></el-icon>
-      <span>QQ 的 AppSecret 会加密保存在数据库；QQ 小号的 OneBot 连接凭据（WS/HTTP Token）同样加密入库；B站 的登录凭证沿用 bili-cli 本机的 credential.json，不随代码走。连接保存后运行对应适配器脚本。</span>
+      <span>AppSecret 与 OneBot 凭据均加密入库，B站 沿用本机 credential.json。保存连接后运行对应适配器脚本即可上线。</span>
     </div>
 
     <div
-      v-loading="loading"
+      v-if="loading && !connections.length"
       class="channel-grid"
     >
       <div
-        v-if="!connections.length"
-        class="channel-empty"
+        v-for="i in 3"
+        :key="'sk-' + i"
+        class="card channel-card"
       >
-        还没有渠道连接，点击右上角「添加渠道」开始。
+        <div
+          v-for="n in 4"
+          :key="n"
+          class="sk"
+          :style="{ height: n === 1 ? '40px' : '14px', width: n === 1 ? '64%' : '100%' }"
+        />
       </div>
+    </div>
+    <div
+      v-else-if="!connections.length"
+      class="empty-block"
+    >
+      <span class="halo"><el-icon><ChatDotRound /></el-icon></span>
+      <h4>还没有渠道连接</h4>
+      <p>把角色接到 QQ 机器人、QQ 小号或 B站，这个页面就会出现连接卡片与绑定关系。</p>
+      <button
+        type="button"
+        class="btn primary"
+        @click="createVisible = true"
+      >
+        <el-icon><Plus /></el-icon>添加渠道
+      </button>
+    </div>
+    <div
+      v-else
+      class="channel-grid"
+    >
       <article
         v-for="connection in connections"
         :key="connection.id"
-        class="surface channel-card"
+        class="card channel-card"
       >
         <div class="channel-head">
           <div
@@ -285,81 +323,84 @@ onMounted(loadConnections);
               <ChatDotRound v-else />
             </el-icon>
           </div>
-          <div class="character-info">
-            <h2 class="character-name">
+          <div class="channel-info">
+            <h2 class="channel-name">
               {{ connection.displayName }}
             </h2>
-            <p class="character-alias">
-              {{ platformLabel(connection.platform) }} · {{ connection.appId }}
+            <p class="channel-subtitle">
+              {{ channelSubtitle(connection) }}
             </p>
           </div>
-          <el-tag
-            :type="statusMap[connection.status]?.type ?? 'info'"
-            effect="light"
-            size="small"
+          <span
+            class="pill"
+            :class="statusMap[connection.status]?.tone ?? 'pill-gray'"
+          >{{ statusMap[connection.status]?.label ?? connection.status }}</span>
+          <el-dropdown
+            trigger="click"
+            class="channel-more"
+            @command="removeConnection(connection)"
           >
-            {{ statusMap[connection.status]?.label ?? connection.status }}
-          </el-tag>
+            <button
+              class="more-trigger"
+              type="button"
+              aria-label="更多操作"
+            >
+              <el-icon><MoreFilled /></el-icon>
+            </button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="delete">
+                  <el-icon><Delete /></el-icon>删除连接
+                </el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
         </div>
 
         <div class="metric-row">
           <span>最近活动</span><span class="metric-value">{{ formatDateTime(connection.lastEventAt) }}</span>
         </div>
         <div class="metric-row">
-          <span>创建时间</span><span class="metric-value">{{ formatDateTime(connection.createdAt) }}</span>
+          <span>适配器</span><span class="metric-value">{{ platformHint(connection.platform) }}</span>
         </div>
 
         <div class="binding-title">
-          已绑定角色
-          <el-button
-            text
-            size="small"
-            type="primary"
+          <span>已绑定角色<em v-if="connection.bindings.length"> · {{ connection.bindings.length }}</em></span>
+          <button
+            type="button"
+            class="card-link"
             @click="openBind(connection)"
           >
-            <el-icon><Link /></el-icon>绑定
-          </el-button>
+            绑定角色
+          </button>
         </div>
         <div
           v-if="!connection.bindings.length"
           class="binding-empty"
         >
-          未绑定任何角色。
+          未绑定任何角色，这个渠道暂时不会产生对话。
         </div>
         <div
           v-for="binding in connection.bindings"
           :key="binding.id"
           class="binding-row"
         >
-          <div class="character-info">
-            <div
-              class="character-name"
-              style="font-size:11px"
-            >
+          <div class="channel-info">
+            <div class="binding-name">
               {{ binding.characterName }}
             </div>
-            <div class="character-alias">
+            <div class="channel-subtitle">
               {{ binding.routingKey ? "路由键：" + binding.routingKey : "默认（接收全部群消息）" }}
             </div>
           </div>
-          <el-button
-            text
-            size="small"
-            type="danger"
+          <button
+            type="button"
+            class="card-link is-danger"
             @click="unbind(connection, binding)"
           >
             解绑
-          </el-button>
+          </button>
         </div>
-
-        <el-button
-          style="width:100%;margin-top:14px"
-          plain
-          type="danger"
-          @click="removeConnection(connection)"
-        >
-          <el-icon><Delete /></el-icon>删除连接
-        </el-button>
       </article>
     </div>
 
@@ -412,6 +453,7 @@ onMounted(loadConnections);
       <el-form
         v-else-if="createPlatform === 'qq-onebot'"
         label-position="top"
+        class="dialog-scroll"
       >
         <el-form-item label="QQ 号（必填）">
           <el-input
@@ -463,6 +505,7 @@ onMounted(loadConnections);
       <el-form
         v-else
         label-position="top"
+        class="dialog-scroll"
       >
         <el-form-item label="显示名（可选）">
           <el-input
@@ -595,16 +638,29 @@ onMounted(loadConnections);
 </template>
 
 <style scoped>
-.channel-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:15px}
-.channel-card{padding:20px}
-.channel-head{display:flex;align-items:flex-start;gap:11px;min-height:52px}
-.channel-icon{display:flex;width:42px;height:42px;flex:0 0 auto;align-items:center;justify-content:center;border-radius:13px;background:#f0eeff;color:#786be4;font-size:19px}
-.channel-icon-bili{background:#fff0f5;color:#d94a76}
-.channel-empty{grid-column:1/-1;padding:40px 0;color:#a3aabb;font-size:12px;text-align:center}
-.binding-title{display:flex;align-items:center;justify-content:space-between;margin:16px 0 6px;color:#8b96ab;font-size:11px;font-weight:700}
-.binding-empty{padding:10px 0;color:#b4bbc8;font-size:11px}
-.binding-row{display:flex;align-items:center;justify-content:space-between;gap:10px;border-bottom:1px solid #f0f2f7;padding:9px 0}
+.channel-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;align-items:start}
+.channel-card{display:flex;flex-direction:column;padding:16px 18px}
+.channel-head{display:flex;align-items:flex-start;gap:11px}
+.channel-icon{display:flex;width:36px;height:36px;flex:0 0 auto;align-items:center;justify-content:center;border-radius:var(--radius-sm);background:var(--brand-soft);color:var(--brand);font-size:17px}
+.channel-icon-bili{background:var(--accent-soft)}
+.channel-info{min-width:0;flex:1}
+.channel-name{margin:0;color:var(--text);font-size:14px;font-weight:700;letter-spacing:-.01em}
+.channel-subtitle{margin:3px 0 0;color:var(--faint);font-size:12px;line-height:1.6;overflow-wrap:anywhere}
+.channel-more{flex:0 0 auto;margin-left:-2px}
+/* 删除是低频破坏性操作，收进卡片头的菜单 */
+.more-trigger{display:flex;width:24px;height:24px;align-items:center;justify-content:center;border:0;border-radius:var(--radius-xs);background:transparent;color:var(--faint);cursor:pointer;transition:color .15s,background .15s}
+.more-trigger:hover{color:var(--text-2);background:var(--surface-2)}
+
+.binding-title{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:12px 0 2px;color:var(--dim);font-size:12px;font-weight:600}
+.binding-title em{font-style:normal;color:var(--faint);font-weight:500}
+.binding-empty{padding:8px 0;color:var(--faint);font-size:12px;line-height:1.7}
+.binding-row{display:flex;align-items:center;justify-content:space-between;gap:10px;border-bottom:1px solid var(--line);padding:9px 0}
 .binding-row:last-of-type{border-bottom:0}
+.binding-name{color:var(--text-2);font-size:12px;font-weight:600}
+.card-link.is-danger{color:var(--red)}
+.card-link.is-danger:hover{color:#b02338}
+
+.dialog-scroll{max-height:56vh;overflow-y:auto;padding-right:4px}
 @media(max-width:1000px){.channel-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:650px){.channel-grid{grid-template-columns:1fr}}
 </style>

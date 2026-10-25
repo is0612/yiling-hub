@@ -49,7 +49,7 @@ const statusCounts = ref<Record<MemoryTask["status"], number>>({
 });
 const query = ref("");
 const statusFilter = ref("ALL");
-const loading = ref(false);
+const loading = ref(true);
 const schedulerRunning = ref(false);
 const workerRunning = ref(false);
 const loadError = ref("");
@@ -58,7 +58,6 @@ const selectedTask = ref<MemoryTask | null>(null);
 const taskActionLoading = ref(false);
 
 const statuses = [
-  { label: "全部状态", value: "ALL" },
   { label: "等待执行", value: "QUEUED" },
   { label: "运行中", value: "RUNNING" },
   { label: "执行成功", value: "SUCCEEDED" },
@@ -72,13 +71,23 @@ const queuedCount = computed(() => statusCounts.value.QUEUED);
 const runningCount = computed(() => statusCounts.value.RUNNING);
 const succeededCount = computed(() => statusCounts.value.SUCCEEDED);
 const failedCount = computed(() => statusCounts.value.FAILED + statusCounts.value.RETRY_WAIT);
+const hasFilters = computed(() => Boolean(query.value) || statusFilter.value !== "ALL");
 
 const filtered = computed(() => tasks.value.filter((task) => {
   const text = [task.id, task.characterName, task.characterId, taskTypeText(task.type)].join(" ").toLowerCase();
   const queryMatches = !query.value || text.includes(query.value.toLowerCase());
-  const statusMatches = statusFilter.value === "ALL" || task.status === statusFilter.value;
+  const statusMatches = statusFilter.value === "ALL"
+    ? true
+    : statusFilter.value === "ISSUES"
+      ? task.status === "FAILED" || task.status === "RETRY_WAIT"
+      : task.status === statusFilter.value;
   return queryMatches && statusMatches;
 }));
+
+function resetFilters() {
+  query.value = "";
+  statusFilter.value = "ALL";
+}
 
 function taskTypeText(type: MemoryTask["type"]) {
   const names: Record<MemoryTask["type"], string> = {
@@ -103,11 +112,12 @@ function statusText(status: MemoryTask["status"]) {
   return labels[status];
 }
 
-function tone(status: MemoryTask["status"]): "success" | "warning" | "danger" | "info" {
-  if (status === "SUCCEEDED") return "success";
-  if (status === "FAILED") return "danger";
-  if (status === "QUEUED" || status === "RETRY_WAIT") return "warning";
-  return "info";
+function tone(status: MemoryTask["status"]) {
+  if (status === "SUCCEEDED") return "pill-green";
+  if (status === "FAILED") return "pill-rose";
+  if (status === "QUEUED" || status === "RETRY_WAIT") return "pill-amber";
+  if (status === "RUNNING") return "pill-blue";
+  return "pill-gray";
 }
 
 function formatDate(value: string | null) {
@@ -280,41 +290,173 @@ onMounted(() => void loadTasks());
 
 <template>
   <div class="page-wrap">
-    <PageHeader eyebrow="系统管理 / 任务监控" title="后台任务" description="查看持久化任务、扫描到期周期、手动运行 Worker，并管理失败、待重试和等待执行的任务。">
+    <PageHeader
+      eyebrow="系统管理 / 任务监控"
+      title="后台任务"
+      description="查看持久化任务、扫描到期周期、手动运行 Worker，并管理失败、待重试和等待执行的任务。"
+    >
       <template #actions>
-        <el-button :loading="loading" @click="loadTasks"><el-icon><Refresh /></el-icon>刷新列表</el-button>
-        <el-button :loading="workerRunning" @click="runWorker"><el-icon><Cpu /></el-icon>运行一次 Worker</el-button>
-        <el-button type="primary" :loading="schedulerRunning" @click="runScheduler"><el-icon><MagicStick /></el-icon>扫描到期周期</el-button>
+        <button
+          type="button"
+          class="btn"
+          :disabled="loading"
+          @click="loadTasks"
+        >
+          <el-icon><Refresh /></el-icon>刷新列表
+        </button>
+        <button
+          type="button"
+          class="btn"
+          :disabled="workerRunning"
+          @click="runWorker"
+        >
+          <el-icon><Cpu /></el-icon>运行一次 Worker
+        </button>
+        <button
+          type="button"
+          class="btn primary"
+          :disabled="schedulerRunning"
+          @click="runScheduler"
+        >
+          <el-icon><MagicStick /></el-icon>扫描到期周期
+        </button>
       </template>
     </PageHeader>
 
-    <div class="stat-grid" style="grid-template-columns:repeat(4,minmax(0,1fr))">
-      <StatCard label="全部任务" :value="totalTasks" note="数据库持久化记录" symbol="▤" tone="purple" />
-      <StatCard label="等待执行" :value="queuedCount" note="已入队，等待 Worker" symbol="◷" tone="amber" />
-      <StatCard label="执行成功" :value="succeededCount" note="已完成任务" symbol="✓" tone="green" />
-      <StatCard label="失败 / 待重试" :value="failedCount" note="需要排查或重试" symbol="!" tone="blue" />
+    <!-- 状态概况同时承担筛选入口：看清分布后直接点进去 -->
+    <div class="kpi-row">
+      <button
+        type="button"
+        class="kpi is-action"
+        :class="{ 'is-on': statusFilter === 'ALL' }"
+        @click="statusFilter = 'ALL'"
+      >
+        <span class="k">全部任务</span>
+        <span class="v">{{ totalTasks }}<small>项</small></span>
+        <span class="foot">列表加载最近 100 条</span>
+      </button>
+      <button
+        type="button"
+        class="kpi is-action"
+        :class="{ 'is-on': statusFilter === 'QUEUED' }"
+        @click="statusFilter = 'QUEUED'"
+      >
+        <span class="k">等待执行</span>
+        <span class="v">{{ queuedCount }}<small>项</small></span>
+        <span class="foot">已排队，等 Worker 领取</span>
+      </button>
+      <button
+        type="button"
+        class="kpi is-action"
+        :class="{ 'is-on': statusFilter === 'SUCCEEDED' }"
+        @click="statusFilter = 'SUCCEEDED'"
+      >
+        <span class="k">执行成功</span>
+        <span class="v">{{ succeededCount }}<small>项</small></span>
+        <span class="foot">运行中 {{ runningCount }} 项</span>
+      </button>
+      <button
+        type="button"
+        class="kpi is-action"
+        :class="{ 'is-on': statusFilter === 'ISSUES', 'is-alert': failedCount > 0 }"
+        @click="statusFilter = 'ISSUES'"
+      >
+        <span class="k">失败 / 待重试</span>
+        <span class="v">{{ failedCount }}<small>项</small></span>
+        <span class="foot">{{ failedCount ? "需要处理，点开看错误原因" : "全部正常" }}</span>
+      </button>
     </div>
 
-    <section class="surface panel" style="margin-top:20px">
+    <div class="sec-h">
+      <h2>任务列表</h2>
+      <span class="sub">{{ filtered.length }}/{{ totalTasks }} 项</span>
+      <button
+        v-if="hasFilters"
+        type="button"
+        class="more"
+        @click="resetFilters"
+      >
+        重置筛选
+      </button>
+    </div>
+    <div class="card table-card">
       <div class="filter-row">
-        <div class="filter-grow"><el-input v-model="query" clearable placeholder="搜索任务名称、编号或角色……"><template #prefix><el-icon><Search /></el-icon></template></el-input></div>
-        <el-select v-model="statusFilter" style="width:160px"><el-option v-for="status in statuses" :key="status.value" :label="status.label" :value="status.value" /></el-select>
+        <div class="filter-grow">
+          <el-input
+            v-model="query"
+            clearable
+            placeholder="搜索任务名称、编号或角色……"
+          >
+            <template #prefix>
+              <el-icon><Search /></el-icon>
+            </template>
+          </el-input>
+        </div>
+        <el-select
+          v-model="statusFilter"
+          style="width:170px"
+        >
+          <el-option
+            label="全部状态"
+            value="ALL"
+          />
+          <el-option
+            v-for="status in statuses"
+            :key="status.value"
+            :label="status.label"
+            :value="status.value"
+          />
+        </el-select>
       </div>
-      <div class="filter-summary"><span>显示 <strong>{{ filtered.length }}</strong> 项 · 共 <strong>{{ totalTasks }}</strong> 项任务</span><span>列表最多加载最近 100 条</span></div>
-      <el-table v-loading="loading" :data="filtered" style="width:100%;margin-top:15px" row-key="id">
-        <el-table-column label="任务编号" width="120">
-          <template #default="{ row }"><span :title="row.id">{{ row.id.slice(0, 8) }}</span></template>
+      <el-table
+        v-loading="loading"
+        :data="filtered"
+        style="width:100%"
+        row-key="id"
+      >
+        <el-table-column
+          label="任务编号"
+          width="120"
+        >
+          <template #default="{ row }">
+            <span :title="row.id">{{ row.id.slice(0, 8) }}</span>
+          </template>
         </el-table-column>
-        <el-table-column label="任务" min-width="175">
-          <template #default="{ row }"><div class="table-main">{{ taskTypeText(row.type) }}</div><div class="table-sub">{{ row.characterName }}</div></template>
+        <el-table-column
+          label="任务"
+          min-width="175"
+        >
+          <template #default="{ row }">
+            <div class="table-main">
+              {{ taskTypeText(row.type) }}
+            </div><div class="table-sub">
+              {{ row.characterName }}
+            </div>
+          </template>
         </el-table-column>
-        <el-table-column label="处理范围" min-width="240">
-          <template #default="{ row }">{{ periodText(row as MemoryTask) }}</template>
+        <el-table-column
+          label="处理范围"
+          min-width="240"
+        >
+          <template #default="{ row }">
+            {{ periodText(row as MemoryTask) }}
+          </template>
         </el-table-column>
-        <el-table-column label="状态" width="125">
-          <template #default="{ row }"><el-tag :type="tone(row.status)" effect="light" round>{{ statusText(row.status) }}</el-tag></template>
+        <el-table-column
+          label="状态"
+          width="125"
+        >
+          <template #default="{ row }">
+            <span
+              class="pill"
+              :class="tone(row.status)"
+            >{{ statusText(row.status) }}</span>
+          </template>
         </el-table-column>
-        <el-table-column label="执行结果" min-width="135">
+        <el-table-column
+          label="执行结果"
+          min-width="135"
+        >
           <template #default="{ row }">
             <span v-if="row.type === 'CLEAN_EXPIRED_MESSAGES' && row.cleanupResult">
               已删除 {{ row.cleanupResult.deletedMessageCount ?? '未知' }} 条
@@ -323,61 +465,168 @@ onMounted(() => void loadTasks());
             <span v-else>—</span>
           </template>
         </el-table-column>
-        <el-table-column label="尝试次数" width="105" align="center">
-          <template #default="{ row }">{{ row.attemptCount }} / {{ row.maxAttempts }}</template>
+        <el-table-column
+          label="尝试次数"
+          width="105"
+          align="center"
+        >
+          <template #default="{ row }">
+            {{ row.attemptCount }} / {{ row.maxAttempts }}
+          </template>
         </el-table-column>
-        <el-table-column label="最近活动" min-width="155">
-          <template #default="{ row }">{{ formatDate(row.updatedAt) }}</template>
+        <el-table-column
+          label="最近活动"
+          min-width="155"
+        >
+          <template #default="{ row }">
+            {{ formatDate(row.updatedAt) }}
+          </template>
         </el-table-column>
-        <el-table-column label="操作" width="90" fixed="right">
-          <template #default="{ row }"><el-button text type="primary" @click="openDetails(row as MemoryTask)">详情</el-button></template>
+        <el-table-column
+          label="操作"
+          width="90"
+          fixed="right"
+        >
+          <template #default="{ row }">
+            <el-button
+              text
+              type="primary"
+              @click="openDetails(row as MemoryTask)"
+            >
+              详情
+            </el-button>
+          </template>
         </el-table-column>
-        <template #empty><div class="empty-state">{{ loadError || "暂无数据库任务。启用角色的自动归档并到达周期边界后，可以扫描到期任务。" }}</div></template>
+        <template #empty>
+          <div class="card-empty">
+            <el-icon><Files /></el-icon>
+            <span>{{ loadError ? "任务列表读取失败" : "暂无数据库任务" }}</span>
+            <span>{{ loadError || "启用角色的自动归档并到达周期边界后，可以扫描到期任务" }}</span>
+          </div>
+        </template>
       </el-table>
-    </section>
-
-    <div class="info-callout" style="margin-top:18px">
-      <el-icon><Warning /></el-icon>
-      <span>任务由独立 Worker 消费。周期生成与 AI 重新提炼会调用服务端配置的模型；过期消息清理任务也可在失败后手动重新入队。重新入队与清理结果均会保留审计记录。</span>
     </div>
 
-    <el-dialog v-model="detailsOpen" title="任务详情" width="min(620px, 94vw)">
+    <p class="footer-note">
+      任务由独立 Worker 消费。周期生成与 AI 重新提炼会调用服务端配置的模型；重新入队与清理结果都会保留审计记录。
+    </p>
+
+    <el-dialog
+      v-model="detailsOpen"
+      title="任务详情"
+      width="min(620px, 94vw)"
+    >
       <template v-if="selectedTask">
-        <div class="detail-row"><span>任务编号</span><code>{{ selectedTask.id }}</code></div>
-        <div class="detail-row"><span>任务类型</span><strong>{{ taskTypeText(selectedTask.type) }}</strong></div>
-        <div class="detail-row"><span>所属角色</span><strong>{{ selectedTask.characterName }}</strong></div>
-        <div class="detail-row"><span>状态</span><el-tag :type="tone(selectedTask.status)" effect="light" round>{{ statusText(selectedTask.status) }}</el-tag></div>
-        <div class="detail-row"><span>处理周期</span><strong>{{ periodText(selectedTask) }}</strong></div>
-        <div class="detail-row"><span>尝试次数</span><strong>{{ selectedTask.attemptCount }} / {{ selectedTask.maxAttempts }}</strong></div>
-        <div class="detail-row"><span>计划执行时间</span><strong>{{ formatDate(selectedTask.runAt) }}</strong></div>
-        <div class="detail-row"><span>开始时间</span><strong>{{ formatDate(selectedTask.startedAt) }}</strong></div>
-        <div class="detail-row"><span>完成时间</span><strong>{{ formatDate(selectedTask.completedAt) }}</strong></div>
-        <div class="detail-row"><span>创建时间</span><strong>{{ formatDate(selectedTask.createdAt) }}</strong></div>
+        <div class="detail-row">
+          <span>任务编号</span><code>{{ selectedTask.id }}</code>
+        </div>
+        <div class="detail-row">
+          <span>任务类型</span><strong>{{ taskTypeText(selectedTask.type) }}</strong>
+        </div>
+        <div class="detail-row">
+          <span>所属角色</span><strong>{{ selectedTask.characterName }}</strong>
+        </div>
+        <div class="detail-row">
+          <span>状态</span><span
+            class="pill"
+            :class="tone(selectedTask.status)"
+          >{{ statusText(selectedTask.status) }}</span>
+        </div>
+        <div class="detail-row">
+          <span>处理周期</span><strong>{{ periodText(selectedTask) }}</strong>
+        </div>
+        <div class="detail-row">
+          <span>尝试次数</span><strong>{{ selectedTask.attemptCount }} / {{ selectedTask.maxAttempts }}</strong>
+        </div>
+        <div class="detail-row">
+          <span>计划执行时间</span><strong>{{ formatDate(selectedTask.runAt) }}</strong>
+        </div>
+        <div class="detail-row">
+          <span>开始时间</span><strong>{{ formatDate(selectedTask.startedAt) }}</strong>
+        </div>
+        <div class="detail-row">
+          <span>完成时间</span><strong>{{ formatDate(selectedTask.completedAt) }}</strong>
+        </div>
+        <div class="detail-row">
+          <span>创建时间</span><strong>{{ formatDate(selectedTask.createdAt) }}</strong>
+        </div>
         <template v-if="selectedTask.type === 'CLEAN_EXPIRED_MESSAGES'">
-          <div class="detail-row"><span>清理结果</span><strong>{{ selectedTask.cleanupResult ? `已删除 ${selectedTask.cleanupResult.deletedMessageCount ?? "未知"} 条原始消息` : selectedTask.status === 'SUCCEEDED' ? "未找到对应审计记录" : "尚无成功清理记录" }}</strong></div>
-          <div v-if="selectedTask.cleanupResult?.cutoff" class="detail-row"><span>清理截止时间</span><strong>{{ formatDate(selectedTask.cleanupResult.cutoff) }} 之前</strong></div>
-          <div v-if="selectedTask.cleanupResult" class="detail-row"><span>审计记录时间</span><strong>{{ formatDate(selectedTask.cleanupResult.recordedAt) }}</strong></div>
+          <div class="detail-row">
+            <span>清理结果</span><strong>{{ selectedTask.cleanupResult ? `已删除 ${selectedTask.cleanupResult.deletedMessageCount ?? "未知"} 条原始消息` : selectedTask.status === 'SUCCEEDED' ? "未找到对应审计记录" : "尚无成功清理记录" }}</strong>
+          </div>
+          <div
+            v-if="selectedTask.cleanupResult?.cutoff"
+            class="detail-row"
+          >
+            <span>清理截止时间</span><strong>{{ formatDate(selectedTask.cleanupResult.cutoff) }} 之前</strong>
+          </div>
+          <div
+            v-if="selectedTask.cleanupResult"
+            class="detail-row"
+          >
+            <span>审计记录时间</span><strong>{{ formatDate(selectedTask.cleanupResult.recordedAt) }}</strong>
+          </div>
         </template>
-        <div v-if="selectedTask.lastError" class="task-error">
+        <div
+          v-if="selectedTask.lastError"
+          class="task-error"
+        >
           <strong>{{ taskIssueTitle(selectedTask) }}</strong>
           <p>{{ selectedTask.lastError }}</p>
         </div>
-        <div v-else class="info-callout" style="margin-top:14px">
+        <div
+          v-else
+          class="info-callout detail-callout"
+        >
           <el-icon><Files /></el-icon>
           <span>{{ taskStatusHint(selectedTask) }}</span>
         </div>
       </template>
       <template #footer>
-        <el-button v-if="selectedTask && ['FAILED', 'RETRY_WAIT', 'CANCELLED'].includes(selectedTask.status) && ['GENERATE_SNAPSHOT', 'REGENERATE_SNAPSHOT', 'CLEAN_EXPIRED_MESSAGES'].includes(selectedTask.type)" :loading="taskActionLoading" @click="retrySelectedTask"><el-icon><Refresh /></el-icon>重新入队</el-button>
-        <el-button v-if="selectedTask && ['QUEUED', 'RETRY_WAIT'].includes(selectedTask.status)" :loading="taskActionLoading" @click="cancelSelectedTask"><el-icon><Warning /></el-icon>取消任务</el-button>
-        <el-button @click="detailsOpen = false">关闭</el-button>
+        <el-button
+          v-if="selectedTask && ['FAILED', 'RETRY_WAIT', 'CANCELLED'].includes(selectedTask.status) && ['GENERATE_SNAPSHOT', 'REGENERATE_SNAPSHOT', 'CLEAN_EXPIRED_MESSAGES'].includes(selectedTask.type)"
+          :loading="taskActionLoading"
+          @click="retrySelectedTask"
+        >
+          <el-icon><Refresh /></el-icon>重新入队
+        </el-button>
+        <el-button
+          v-if="selectedTask && ['QUEUED', 'RETRY_WAIT'].includes(selectedTask.status)"
+          :loading="taskActionLoading"
+          @click="cancelSelectedTask"
+        >
+          <el-icon><Warning /></el-icon>取消任务
+        </el-button>
+        <el-button @click="detailsOpen = false">
+          关闭
+        </el-button>
       </template>
     </el-dialog>
   </div>
 </template>
 
 <style scoped>
-.table-main{color:#46516b;font-size:11px;font-weight:750}.table-sub{margin-top:5px;color:#9ba3b5;font-size:10px}
-.detail-row{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;padding:10px 0;border-bottom:1px solid #f0f1f6;font-size:12px}.detail-row>span{color:#8b95aa;flex:0 0 110px}.detail-row>strong,.detail-row>code{color:#48536c;overflow-wrap:anywhere;text-align:right}.task-error{margin-top:14px;padding:13px;border-radius:10px;background:#fff1f0;color:#a53c37;font-size:12px}.task-error p{margin:7px 0 0;line-height:1.7;white-space:pre-wrap}
-@media(max-width:650px){.stat-grid[style]{grid-template-columns:repeat(2,minmax(0,1fr))!important}.detail-row{flex-direction:column;gap:5px}.detail-row>strong,.detail-row>code{text-align:left}}
+/* KPI 兼作筛选入口：选中态用品牌浅底，失败格数值转红 */
+.kpi{width:100%;font:inherit;cursor:pointer;transition:border-color .14s var(--ease),background .14s var(--ease)}
+.kpi.is-on{border-color:var(--brand-line);background:#fffafb}
+.kpi.is-on .k{color:var(--brand-strong);font-weight:600}
+.kpi.is-alert .v{color:var(--red)}
+
+.table-card{padding:14px 16px 6px}
+.table-card .filter-row{margin-bottom:12px}
+.table-main{color:var(--text-2);font-size:14px;font-weight:600}
+.table-sub{margin-top:3px;color:var(--faint);font-size:12px}
+
+.detail-row{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;border-bottom:1px solid var(--line);padding:10px 0;font-size:12px}
+.detail-row>span{flex:0 0 110px;color:var(--dim)}
+.detail-row>strong,.detail-row>code{color:var(--text-2);overflow-wrap:anywhere;text-align:right}
+.detail-row>code{font-size:12px}
+.task-error{margin-top:14px;border-radius:var(--radius-sm);background:var(--red-soft);padding:12px 14px;color:var(--red);font-size:12px}
+.task-error p{margin:7px 0 0;line-height:1.7;white-space:pre-wrap}
+.detail-callout{margin-top:14px}
+
+@media(max-width:650px){
+  .detail-row{flex-direction:column;gap:5px}
+  .detail-row>strong,.detail-row>code{text-align:left}
+}
 </style>

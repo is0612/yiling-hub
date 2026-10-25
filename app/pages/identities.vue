@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Refresh, Link, Connection } from "@element-plus/icons-vue";
+import { Refresh, User } from "@element-plus/icons-vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 
 type ExternalIdentity = {
@@ -18,7 +18,7 @@ type ExternalIdentity = {
 
 type AdminUser = { id: string; username: string; email: string | null; displayName: string | null };
 
-const loading = ref(false);
+const loading = ref(true);
 const identities = ref<ExternalIdentity[]>([]);
 const users = ref<AdminUser[]>([]);
 const saving = ref(false);
@@ -46,11 +46,14 @@ function formatDateTime(value: string | null) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-const statusMap: Record<string, { label: string; type: "success" | "warning" | "danger" | "info" }> = {
-  UNVERIFIED: { label: "未验证", type: "info" },
-  VERIFIED: { label: "已绑定", type: "success" },
-  REVOKED: { label: "已撤销", type: "danger" },
+const statusMap: Record<string, { label: string; tone: string }> = {
+  UNVERIFIED: { label: "未验证", tone: "pill-gray" },
+  VERIFIED: { label: "已绑定", tone: "pill-green" },
+  REVOKED: { label: "已撤销", tone: "pill-rose" },
 };
+
+const verifiedCount = computed(() => identities.value.filter((item) => item.status === "VERIFIED").length);
+const pendingCount = computed(() => identities.value.filter((item) => item.status === "UNVERIFIED").length);
 
 async function loadIdentities() {
   loading.value = true;
@@ -146,37 +149,86 @@ onMounted(async () => {
       description="各平台外部用户跟角色互动时会被记录为「外部身份」。默认按平台隔离、不合并；管理员可显式把某个外部身份绑定到站内用户，打通跨平台私人记忆。"
     >
       <template #actions>
-        <el-button
-          :loading="loading"
+        <button
+          type="button"
+          class="btn"
+          :disabled="loading"
           @click="loadIdentities"
         >
           <el-icon><Refresh /></el-icon>刷新
-        </el-button>
+        </button>
       </template>
     </PageHeader>
 
-    <div
-      class="info-callout"
-      style="margin-bottom:20px"
-    >
-      <el-icon><Connection /></el-icon>
-      <span>只有显式「验证绑定」后，某个外部身份（如 B站 uid）的私人记忆才会对站内用户可读。昵称相同不会自动合并。</span>
+    <div class="kpi-row is-three">
+      <div class="kpi">
+        <div class="k">
+          全部外部身份
+        </div>
+        <div class="v">
+          {{ identities.length }}<small>个</small>
+        </div>
+        <div class="foot">
+          按平台隔离记录，同昵称不会自动合并
+        </div>
+      </div>
+      <div class="kpi">
+        <div class="k">
+          已绑定
+        </div>
+        <div class="v">
+          {{ verifiedCount }}<small>个</small>
+        </div>
+        <div class="foot">
+          私人记忆对该站内用户可读
+        </div>
+      </div>
+      <div class="kpi">
+        <div class="k">
+          待验证
+        </div>
+        <div class="v">
+          {{ pendingCount }}<small>个</small>
+        </div>
+        <div class="foot">
+          需要管理员显式绑定才生效
+        </div>
+      </div>
     </div>
 
     <div
-      v-loading="loading"
+      v-if="loading && !identities.length"
       class="identity-list"
     >
       <div
-        v-if="!identities.length"
-        class="identity-empty"
+        v-for="i in 2"
+        :key="'sk-' + i"
+        class="card identity-card"
       >
-        还没有外部身份。等角色在各平台产生互动后，这里会出现记录。
+        <div
+          v-for="n in 3"
+          :key="n"
+          class="sk"
+          :style="{ height: n === 1 ? '36px' : '14px', width: n === 1 ? '58%' : '100%' }"
+        />
       </div>
+    </div>
+    <div
+      v-else-if="!identities.length"
+      class="empty-block"
+    >
+      <span class="halo"><el-icon><User /></el-icon></span>
+      <h4>还没有外部身份</h4>
+      <p>角色在各平台产生互动后，这里会出现对应的外部用户记录。</p>
+    </div>
+    <div
+      v-else
+      class="identity-list"
+    >
       <article
         v-for="identity in identities"
         :key="identity.id"
-        class="surface identity-card"
+        class="card identity-card"
       >
         <div class="identity-head">
           <div class="identity-platform">
@@ -190,13 +242,10 @@ onMounted(async () => {
               {{ identity.platform }} · {{ identity.platformUid }}
             </div>
           </div>
-          <el-tag
-            :type="statusMap[identity.status]?.type ?? 'info'"
-            effect="light"
-            size="small"
-          >
-            {{ statusMap[identity.status]?.label ?? identity.status }}
-          </el-tag>
+          <span
+            class="pill"
+            :class="statusMap[identity.status]?.tone ?? 'pill-gray'"
+          >{{ statusMap[identity.status]?.label ?? identity.status }}</span>
         </div>
 
         <div class="metric-row">
@@ -212,35 +261,31 @@ onMounted(async () => {
           <span class="metric-value">{{ formatDateTime(identity.createdAt) }}</span>
         </div>
 
-        <div
-          style="display:flex;gap:8px;margin-top:14px"
-        >
-          <el-button
-            v-if="identity.status !== 'VERIFIED' && identity.status !== 'REVOKED'"
-            size="small"
-            type="primary"
+        <div class="identity-actions">
+          <button
+            v-if="identity.status === 'UNVERIFIED'"
+            type="button"
+            class="btn sm"
             @click="openBind(identity)"
           >
-            <el-icon><Link /></el-icon>绑定到用户
-          </el-button>
-          <el-button
+            绑定到用户
+          </button>
+          <button
             v-if="identity.status === 'VERIFIED'"
-            size="small"
-            plain
-            type="warning"
+            type="button"
+            class="btn sm"
             @click="unlink(identity)"
           >
             解绑
-          </el-button>
-          <el-button
+          </button>
+          <button
             v-if="identity.status !== 'REVOKED'"
-            size="small"
-            plain
-            type="danger"
+            type="button"
+            class="card-link is-danger"
             @click="revoke(identity)"
           >
-            撤销
-          </el-button>
+            撤销身份
+          </button>
         </div>
       </article>
     </div>
@@ -250,9 +295,7 @@ onMounted(async () => {
       title="绑定外部身份到用户"
       width="440px"
     >
-      <p
-        style="color:#8b96ab;font-size:13px;margin:0 0 16px"
-      >
+      <p class="bind-hint">
         把「{{ bindTarget?.displayName || bindTarget?.platformUid }}」绑定到某个站内用户，之后该身份的私人记忆会在该用户与角色对话时被检索到。
       </p>
       <el-form label-position="top">
@@ -288,13 +331,19 @@ onMounted(async () => {
 </template>
 
 <style scoped>
-.identity-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:15px}
-.identity-card{padding:20px}
-.identity-empty{grid-column:1/-1;padding:40px 0;color:#a3aabb;font-size:12px;text-align:center}
-.identity-head{display:flex;align-items:flex-start;gap:11px;min-height:52px}
-.identity-platform{display:flex;width:42px;height:42px;flex:0 0 auto;align-items:center;justify-content:center;border-radius:13px;background:#f0eeff;color:#786be4;font-size:13px;font-weight:700}
-.identity-info{flex:1;min-width:0}
-.identity-name{font-size:15px;font-weight:500;color:var(--color-text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.identity-uid{font-size:11px;color:#8b96ab;margin-top:2px;word-break:break-all}
+.identity-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;align-items:start}
+.identity-card{display:flex;flex-direction:column;gap:10px;padding:16px 18px}
+.identity-head{display:flex;align-items:flex-start;gap:11px}
+.identity-platform{display:flex;width:36px;height:36px;flex:0 0 auto;align-items:center;justify-content:center;border-radius:var(--radius-sm);background:var(--brand-soft);color:var(--brand-strong);font-size:12px;font-weight:700}
+.identity-info{min-width:0;flex:1}
+.identity-name{overflow:hidden;color:var(--text);font-size:14px;font-weight:700;letter-spacing:-.01em;white-space:nowrap;text-overflow:ellipsis}
+.identity-uid{margin-top:3px;color:var(--faint);font-size:12px;word-break:break-all}
+.identity-card .metric-row{padding:9px 0}
+.identity-actions{display:flex;align-items:center;gap:10px;margin-top:2px}
+.identity-actions .card-link{margin-left:auto}
+.card-link.is-danger{color:var(--red)}
+.card-link.is-danger:hover{color:#b02338}
+
+.bind-hint{margin:0 0 16px;color:var(--dim);font-size:12px;line-height:1.8}
 @media(max-width:800px){.identity-list{grid-template-columns:1fr}}
 </style>

@@ -58,14 +58,14 @@ async function submit() {
     <div class="login-card">
       <div class="login-brand">
         <div class="login-mark">
-          羚
+          忆
         </div>
         <div>
           <div class="login-title">
             注册账号
           </div>
           <div class="login-subtitle">
-            羚枢 Yiling Hub · 用邮箱创建你的账号
+            忆灵小窝 Yiling Hub · 用邮箱创建你的账号
           </div>
         </div>
       </div>
@@ -145,24 +145,24 @@ async function submit() {
 <style scoped>
 .login-page {
   display: flex; min-height: 100vh; align-items: center; justify-content: center;
-  background: radial-gradient(circle at 18% 12%, #efeaff 0%, transparent 42%),
-    radial-gradient(circle at 82% 88%, #e8f4ff 0%, transparent 46%), #f7f8fc;
+  background: radial-gradient(circle at 18% 12%, var(--accent-soft) 0%, transparent 42%),
+    radial-gradient(circle at 82% 88%, var(--brand-soft) 0%, transparent 46%), var(--surface-2);
   padding: 32px 18px;
 }
 .login-card {
-  width: min(420px, 100%); border: 1px solid var(--line); border-radius: 20px;
-  background: var(--surface); box-shadow: 0 18px 50px rgba(40, 52, 93, .09); padding: 30px 28px 24px;
+  width: min(420px, 100%); border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--surface); box-shadow: none; padding: 30px 28px 24px;
 }
 .login-brand { display: flex; align-items: center; gap: 12px; margin-bottom: 22px; }
 .login-mark {
   display: flex; width: 44px; height: 44px; align-items: center; justify-content: center;
-  border-radius: 14px; background: linear-gradient(135deg, #887cf4, #6558dc); color: #fff;
-  font-size: 22px; font-weight: 800; box-shadow: 0 8px 18px rgba(113, 100, 232, .26);
+  border-radius: var(--radius); background: var(--grad-brand); box-shadow: 0 14px 30px -16px rgba(217, 74, 118, .75); color: #fff;
+  font-size: 20px; font-weight: 700;
 }
-.login-title { color: #29324b; font-size: 17px; font-weight: 800; letter-spacing: -.02em; }
-.login-subtitle { margin-top: 3px; color: var(--muted); font-size: 11px; }
+.login-title { color: var(--text); font-size: 18px; font-weight: 700; letter-spacing: -.02em; }
+.login-subtitle { margin-top: 3px; color: var(--dim); font-size: 12px; }
 .login-alert { margin-bottom: 16px; }
 .login-submit { width: 100%; margin-top: 4px; }
-.login-note { margin: 18px 0 0; color: var(--muted); font-size: 11px; line-height: 1.7; text-align: center; }
-.register-link { color: #6d5fe0; font-weight: 700; }
+.login-note { margin: 18px 0 0; color: var(--dim); font-size: 12px; line-height: 1.7; text-align: center; }
+.register-link { color: var(--brand-strong); font-weight: 600; }
 </style>

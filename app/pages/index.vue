@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { DataAnalysis, ArrowDown, ArrowRight, TopRight, Calendar, Clock, Files, MagicStick, User } from "@element-plus/icons-vue";
+import { Calendar, Clock, DataAnalysis, Files, MagicStick, User, ChatDotRound, ArrowRight } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
 import { initialTimeline } from "~/utils/mock-data";
 
@@ -10,8 +10,14 @@ const weeks = [
   { day: "周一", value: 44 }, { day: "周二", value: 62 }, { day: "周三", value: 51 },
   { day: "周四", value: 76 }, { day: "周五", value: 58 }, { day: "周六", value: 86 }, { day: "周日", value: 68 },
 ];
+const weekMax = Math.max(...weeks.map((w) => w.value));
+const weekAvg = Math.round(weeks.reduce((sum, w) => sum + w.value, 0) / weeks.length);
+const weekPeak = weeks.reduce((a, b) => (a.value >= b.value ? a : b));
+const weekTotal = weeks.reduce((sum, w) => sum + w.value, 0);
+// 当前周期第 8 段（7 天已过，今天为第 8 天）
+const periodProgress = 87.5;
 
-// 后台任务告警：首页接入真实任务数据，失败/等待重试时在顶部告警。
+// 后台任务：首页接入真实任务数据，失败/等待重试时在顶部告警。
 type RealTask = { id: string; type: string; status: string; characterName: string; createdAt: string };
 const taskTypeNames: Record<string, string> = {
   GENERATE_SNAPSHOT: "周期快照生成",
@@ -27,19 +33,18 @@ const realTasks = ref<RealTask[]>([]);
 const failedCount = ref(0);
 const pendingCount = ref(0);
 
-function taskPill(status: string) {
-  if (status === "SUCCEEDED") return "pill-green";
-  if (status === "FAILED") return "pill-rose";
-  if (status === "QUEUED" || status === "RETRY_WAIT") return "pill-amber";
-  if (status === "RUNNING") return "pill-blue";
-  return "pill-gray";
+function taskTone(status: string) {
+  if (status === "SUCCEEDED") return "ok";
+  if (status === "FAILED") return "err";
+  if (status === "QUEUED" || status === "RETRY_WAIT") return "wait";
+  if (status === "RUNNING") return "run";
+  return "mute";
 }
-function taskSymbolTone(status: string) {
-  if (status === "SUCCEEDED") return "green";
-  if (status === "FAILED") return "rose";
-  if (status === "QUEUED" || status === "RETRY_WAIT") return "amber";
-  if (status === "RUNNING") return "blue";
-  return "";
+function taskStatusLabel(status: string) {
+  return taskStatusLabels[status] ?? status;
+}
+function taskTypeLabel(type: string) {
+  return taskTypeNames[type] ?? type;
 }
 function formatTaskTime(value: string) {
   const date = new Date(value);
@@ -67,331 +72,353 @@ onMounted(() => {
   }
   loadTasks();
 });
+
+const memoryIcon = (type: string) =>
+  type === "snapshot" ? Files : type === "memory" ? MagicStick : type === "message" ? ChatDotRound : Clock;
 </script>
 
 <template>
   <div class="page-wrap">
     <PageHeader
       eyebrow="工作空间 / 总览"
-      title="早上好，欢迎回来"
-      description="这里是你的 AI 角色工作台。角色近期活动、记忆归档与后台任务都可以在这里查看。"
+      title="今天的工作台"
+      description="角色近期活动、记忆归档与后台任务，一屏看完。"
     >
       <template #actions>
-        <DemoTag /><el-button
-          type="primary"
+        <DemoTag />
+        <button
+          class="btn"
+          type="button"
+          :disabled="!primaryCharacter"
+          @click="primaryCharacter && navigateTo(`/characters/${primaryCharacter.id}/chat`)"
+        >
+          开始对话
+        </button>
+        <button
+          class="btn primary"
+          type="button"
           @click="navigateTo('/characters')"
         >
           <el-icon><User /></el-icon>新建角色
-        </el-button>
+        </button>
       </template>
     </PageHeader>
 
-    <el-alert
+    <div
       v-if="failedCount > 0"
       class="task-alert"
-      type="error"
-      :closable="false"
-      show-icon
-      :title="`有 ${failedCount} 个后台任务失败或等待重试`"
     >
-      <el-button
-        text
-        type="primary"
+      <el-icon><Clock /></el-icon>
+      <span>有 {{ failedCount }} 个后台任务失败或等待重试。</span>
+      <button
+        class="card-link"
+        type="button"
         @click="navigateTo('/tasks')"
       >
-        前往任务监控处理
-      </el-button>
-    </el-alert>
-
-    <div class="stat-grid">
-      <StatCard
-        label="管理中的角色"
-        :value="String(characters.length).padStart(2, '0')"
-        note="2 个正在运行"
-        symbol="♙"
-        tone="purple"
-      />
-      <StatCard
-        label="长期记忆条目"
-        value="238"
-        note="较上周期 +12"
-        symbol="◈"
-        tone="blue"
-      />
-      <StatCard
-        label="已生成的快照"
-        value="27"
-        note="覆盖全部角色"
-        symbol="▤"
-        tone="green"
-      />
-      <StatCard
-        label="待处理任务"
-        :value="String(pendingCount).padStart(2, '0')"
-        :note="failedCount > 0 ? `${failedCount} 个失败待处理` : '暂无异常'"
-        symbol="◷"
-        tone="amber"
-      />
+        去任务监控处理
+      </button>
     </div>
 
-    <div class="panel-grid">
-      <section class="surface panel">
-        <div class="panel-title-row">
-          <SectionTitle
-            title="记忆活动概览"
-            description="近 7 天被记录的消息与事件"
-          />
-          <span class="pill pill-purple"><el-icon><DataAnalysis /></el-icon>本周</span>
+    <!-- KPI 四格：今天怎么样 -->
+    <div class="kpi-row">
+      <div class="kpi">
+        <div class="k">
+          <el-icon><Calendar /></el-icon>当前周期
         </div>
-        <div style="display:flex;align-items:flex-end;gap:11px;margin-top:24px">
-          <strong style="font-size:35px;line-height:1;letter-spacing:-.06em;color:#303a55">376</strong>
-          <span style="display:flex;align-items:center;gap:4px;margin-bottom:3px;color:#279877;font-size:10px;font-weight:800"><el-icon><ArrowDown /></el-icon>12.8%</span>
-          <span style="margin-bottom:3px;color:#a0a8b8;font-size:10px">较上周</span>
+        <div class="v">
+          {{ periodProgress }}<small>%</small>
         </div>
-        <div class="week-chart">
-          <div
-            v-for="(item, index) in weeks"
-            :key="item.day"
-            class="week-column"
-          >
-            <div class="week-bar-area">
+        <div class="bar">
+          <i :style="{ width: periodProgress + '%' }" />
+        </div>
+        <div class="foot">
+          周期进度 · 10 月 21 日 — 10 月 29 日
+        </div>
+      </div>
+
+      <div class="kpi">
+        <div class="k">
+          <el-icon><MagicStick /></el-icon>长期记忆
+        </div>
+        <div class="v">
+          238<small>条</small>
+        </div>
+        <div class="foot">
+          较上周期 <em>+12</em>
+        </div>
+      </div>
+
+      <div class="kpi">
+        <div class="k">
+          <el-icon><Files /></el-icon>周期快照
+        </div>
+        <div class="v">
+          13<small>份</small>
+        </div>
+        <div class="foot">
+          覆盖全部角色 · 第 13 份正在生成
+        </div>
+      </div>
+
+      <button
+        class="kpi is-action"
+        type="button"
+        title="打开任务监控"
+        @click="navigateTo('/tasks')"
+      >
+        <div class="k">
+          <el-icon><Clock /></el-icon>待处理任务
+        </div>
+        <div class="v">
+          {{ pendingCount }}<small>项</small>
+        </div>
+        <div class="foot">
+          <span v-if="failedCount > 0">{{ failedCount }} 个失败待处理</span>
+          <span v-else>暂无异常</span>
+        </div>
+      </button>
+    </div>
+
+    <!-- 左：记忆活动 / 最近记忆　右：最近任务 -->
+    <div class="home-cols">
+      <div>
+        <div class="sec-h">
+          <h2>记忆活动</h2>
+          <span class="sub">近 7 天被记录的消息与事件</span>
+        </div>
+        <div class="card">
+          <div class="chart-in">
+            <div class="chart-head">
+              <strong>{{ weekTotal }}</strong>
+              <span class="chart-delta"><el-icon><DataAnalysis /></el-icon>本周合计</span>
+              <span class="chart-vs">日均 {{ weekAvg }} 条 · 峰值 {{ weekPeak.day }} {{ weekPeak.value }} 条</span>
+            </div>
+            <div class="week-chart">
               <div
-                class="week-bar"
-                :class="{ featured: index === 5 }"
-                :style="{ height: item.value + '%' }"
-              />
-            </div>
-            <span :class="{ featured: index === 5 }">{{ item.day }}</span>
-          </div>
-        </div>
-        <div class="chart-legend">
-          <span><i class="legend-dot purple" />消息与事件</span><span><i class="legend-dot pale" />已纳入记忆处理</span><span class="legend-note">演示数据，仅用于页面预览</span>
-        </div>
-      </section>
-
-      <section class="surface panel">
-        <SectionTitle
-          title="下一次记忆归档"
-          description="接下来即将生成的周期快照"
-        >
-          <template #action>
-            <el-icon style="font-size:19px;color:#8b82e9">
-              <Calendar />
-            </el-icon>
-          </template>
-        </SectionTitle>
-        <div class="next-snapshot">
-          <div class="character-card-head">
-            <div
-              class="avatar"
-              :class="primaryCharacter ? 'avatar-' + primaryCharacter.avatarTone : ''"
-              style="width:44px;height:44px;font-size:18px"
-            >
-              {{ primaryCharacter?.avatar || '—' }}
-            </div>
-            <div class="character-info">
-              <div class="character-name-row">
-                <span
-                  class="character-name"
-                  style="font-size:13px"
-                >{{ primaryCharacter?.name || '暂无角色' }}</span><span
-                  class="pill"
-                  :class="primaryCharacter?.status === '已暂停' ? 'pill-gray' : 'pill-green'"
-                >{{ primaryCharacter?.status || '待创建' }}</span>
-              </div>
-              <div class="character-alias">
-                当前周期 · 第 13 份快照
+                v-for="(item, index) in weeks"
+                :key="item.day"
+                class="week-column"
+              >
+                <div class="week-bar-area">
+                  <div
+                    class="week-bar"
+                    :class="{ featured: index === 5 }"
+                    :style="{ height: (item.value / weekMax) * 100 + '%' }"
+                    :title="`${item.day} ${item.value} 条`"
+                  />
+                </div>
+                <span :class="{ featured: index === 5 }">{{ item.day }}</span>
               </div>
             </div>
-            <el-icon style="font-size:18px;color:#948af0">
-              <MagicStick />
-            </el-icon>
-          </div>
-          <div class="next-snapshot-stats">
-            <div>
-              <div class="muted-note">
-                预计归档时间
-              </div><strong>明天 09:00</strong>
-            </div>
-            <div style="text-align:right">
-              <div class="muted-note">
-                周期进度
-              </div><strong style="color:#7769e2">87.5%</strong>
-            </div>
-          </div>
-          <el-progress
-            :percentage="87.5"
-            :show-text="false"
-            :stroke-width="6"
-            color="#8172ed"
-          />
-          <div class="period-label">
-            <span>10 月 21 日 09:00</span><span>10 月 29 日 09:00</span>
           </div>
         </div>
-        <div
-          v-for="character in characters.slice(1, 3)"
-          :key="character.id"
-          class="mini-character"
-        >
-          <div
-            class="avatar"
-            :class="'avatar-' + character.avatarTone"
-            style="width:36px;height:36px;font-size:12px"
-          >
-            {{ character.avatar }}
-          </div>
-          <div class="character-info">
-            <div
-              class="character-name"
-              style="font-size:11px"
-            >
-              {{ character.name }}
-            </div><div class="character-alias">
-              {{ character.intervalDays }} 天周期 · {{ character.nextSnapshot }}
-            </div>
-          </div>
-          <span
-            class="pill"
-            :class="character.status === '已暂停' ? 'pill-gray' : 'pill-blue'"
-          >{{ character.status === '已暂停' ? '已暂停' : '计划中' }}</span>
-        </div>
-        <el-button
-          plain
-          style="width:100%;margin-top:12px"
-          :disabled="!primaryCharacter"
-          @click="primaryCharacter && navigateTo(`/characters/${primaryCharacter.id}/settings/memory`)"
-        >
-          管理归档计划<el-icon class="el-icon--right">
-            <ArrowRight />
-          </el-icon>
-        </el-button>
-      </section>
-    </div>
 
-    <div class="panel-grid equal">
-      <section class="surface panel">
-        <div class="panel-title-row">
-          <SectionTitle
-            title="角色最近动态"
-            description="各角色近期的记忆活动"
-          /><el-button
-            text
-            type="primary"
+        <div class="sec-h">
+          <h2>最近记忆</h2>
+          <span class="sub">刚刚发生的记录</span>
+          <button
+            class="more"
+            type="button"
             @click="navigateTo('/characters')"
           >
-            全部角色<el-icon class="el-icon--right">
-              <TopRight />
-            </el-icon>
-          </el-button>
+            全部<el-icon><ArrowRight /></el-icon>
+          </button>
         </div>
-        <div class="section-content">
+        <div class="card">
           <NuxtLink
-            v-for="(character, index) in characters"
+            v-for="entry in timeline.slice(0, 4)"
+            :key="entry.id"
+            :to="'/characters/' + (characters[0]?.id || '')"
+            class="mem-row"
+          >
+            <span class="mem-icon">
+              <el-icon><component :is="memoryIcon(entry.type)" /></el-icon>
+            </span>
+            <span class="mem-body">
+              <span class="mem-title">{{ entry.title }}</span>
+              <span class="mem-meta">{{ entry.channel }} · {{ entry.time }}</span>
+            </span>
+            <el-icon class="arw">
+              <ArrowRight />
+            </el-icon>
+          </NuxtLink>
+        </div>
+      </div>
+
+      <div>
+        <div class="sec-h">
+          <h2>最近任务</h2>
+          <span class="sub">{{ pendingCount + failedCount }} 项待处理</span>
+          <button
+            class="more"
+            type="button"
+            @click="navigateTo('/tasks')"
+          >
+            全部<el-icon><ArrowRight /></el-icon>
+          </button>
+        </div>
+        <div class="card">
+          <div
+            v-for="task in realTasks.slice(0, 5)"
+            :key="task.id"
+            class="task-row"
+          >
+            <span
+              class="task-dot"
+              :class="taskTone(task.status)"
+            />
+            <div class="task-body">
+              <div class="task-title">
+                {{ taskTypeLabel(task.type) }}
+              </div>
+              <div class="task-meta">
+                {{ task.characterName }} · {{ taskStatusLabel(task.status) }}
+              </div>
+            </div>
+            <span class="task-time">{{ formatTaskTime(task.createdAt) }}</span>
+          </div>
+          <div
+            v-if="!realTasks.length"
+            class="card-empty"
+          >
+            <el-icon><Clock /></el-icon>
+            <span>还没有后台任务</span>
+            <span>跑一次周期快照或记忆更新，这里就会出现执行记录</span>
+          </div>
+        </div>
+
+        <div class="sec-h">
+          <h2>角色进度</h2>
+        </div>
+        <div class="card">
+          <div
+            v-for="character in characters.slice(0, 3)"
             :key="character.id"
-            :to="'/characters/' + character.id"
-            class="activity-row"
+            class="role-line"
           >
             <div
               class="avatar"
               :class="'avatar-' + character.avatarTone"
-              style="width:40px;height:40px;font-size:13px"
             >
               {{ character.avatar }}
             </div>
-            <div class="character-info">
-              <div class="character-name-row">
+            <div class="role-line-body">
+              <div class="role-line-head">
+                <span class="role-line-name">{{ character.name }}</span>
                 <span
-                  class="character-name"
-                  style="font-size:12px"
-                >{{ character.name }}</span><span class="character-alias">{{ character.alias }}</span>
-              </div><div class="character-alias activity-snippet">
-                {{ timeline[index % timeline.length]?.title }}
+                  class="pill"
+                  :class="character.status === '已暂停' ? 'pill-gray' : 'pill-green'"
+                >{{ character.status }}</span>
+              </div>
+              <div class="role-line-track">
+                <div
+                  class="role-line-fill"
+                  :class="{ paused: character.status === '已暂停' }"
+                  :style="{ width: character.status === '已暂停' ? '100%' : (character.memoryCount % 2 ? '87.5%' : '25%') }"
+                />
+              </div>
+              <div class="role-line-meta">
+                {{ character.memoryCount }} 条记忆 · 下次归档 {{ character.nextSnapshot }}
               </div>
             </div>
-            <div class="activity-count">
-              <strong>{{ character.memoryCount }}</strong><span>记忆条目</span>
-            </div>
-            <el-icon class="activity-chevron">
-              <TopRight />
-            </el-icon>
-          </NuxtLink>
-        </div>
-      </section>
-
-      <section class="surface panel">
-        <div class="panel-title-row">
-          <SectionTitle
-            title="后台任务"
-            description="近期记忆任务与系统事件"
-          /><el-button
-            text
-            type="primary"
-            @click="navigateTo('/tasks')"
-          >
-            查看任务<el-icon class="el-icon--right">
-              <TopRight />
-            </el-icon>
-          </el-button>
-        </div>
-        <div class="section-content">
-          <div
-            v-if="!realTasks.length"
-            class="task-empty"
-          >
-            暂无后台任务。
           </div>
           <div
-            v-for="task in realTasks.slice(0, 4)"
-            :key="task.id"
-            class="task-row"
+            v-if="!characters.length"
+            class="card-empty"
           >
-            <div
-              class="task-symbol"
-              :class="taskSymbolTone(task.status)"
-            >
-              <el-icon><component :is="task.status === 'SUCCEEDED' ? Files : task.status === 'FAILED' ? DataAnalysis : Clock" /></el-icon>
-            </div>
-            <div class="character-info">
-              <div
-                class="character-name"
-                style="font-size:11px"
-              >
-                {{ taskTypeNames[task.type] || task.type }}
-              </div><div class="character-alias">
-                {{ task.characterName }} · {{ formatTaskTime(task.createdAt) }}
-              </div>
-            </div>
-            <span
-              class="pill"
-              :class="taskPill(task.status)"
-            >{{ taskStatusLabels[task.status] || task.status }}</span>
+            <el-icon><User /></el-icon>
+            <span>还没有角色</span>
+            <span>先从「角色管理」建一个，再回来看看</span>
           </div>
         </div>
-      </section>
+      </div>
     </div>
+
     <p class="footer-note">
-      角色档案与后台任务已接入本地数据库；活动时间线、周概览与快照卡片仍为演示数据。
+      角色档案与后台任务已接入本地数据库；记忆活动周概览与最近记忆时间线仍为演示数据。
     </p>
   </div>
 </template>
 
 <style scoped>
-.week-chart{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:12px;height:160px;margin-top:25px;padding-bottom:12px;border-bottom:1px solid #eef0f6}
-.week-column{display:flex;flex-direction:column;align-items:center;justify-content:flex-end;gap:9px;color:#a1a9ba;font-size:10px}
-.week-bar-area{display:flex;width:100%;height:100%;align-items:flex-end;justify-content:center}
-.week-bar{width:100%;max-width:30px;border-radius:7px 7px 2px 2px;background:#e5e2ff;transition:opacity .15s}
-.week-bar:hover{opacity:.72}.week-bar.featured{background:linear-gradient(0deg,#7668e4,#b6aefb)}
-.week-column span.featured{color:#7062df;font-weight:800}
-.chart-legend{display:flex;flex-wrap:wrap;align-items:center;gap:14px;margin-top:14px;color:#969fb2;font-size:10px}
-.chart-legend span{display:flex;align-items:center;gap:6px}.legend-dot{width:8px;height:8px;border-radius:2px}.legend-dot.purple{background:#9d93f4}.legend-dot.pale{background:#e5e2ff}.legend-note{margin-left:auto}
-.next-snapshot{margin-top:17px;padding:15px;border:1px solid #eae7ff;border-radius:14px;background:linear-gradient(135deg,#faf9ff,#f6f5ff)}
-.next-snapshot-stats{display:flex;align-items:flex-end;justify-content:space-between;gap:14px;margin:19px 0 11px}.next-snapshot-stats strong{display:block;margin-top:5px;color:#3c4562;font-size:17px;letter-spacing:-.04em}
-.period-label{display:flex;justify-content:space-between;margin-top:8px;color:#a2a9b9;font-size:9px}
-.mini-character{display:flex;align-items:center;gap:10px;margin-top:15px}.activity-row{display:flex;align-items:center;gap:12px;border-radius:12px;padding:11px 7px;transition:background .15s}.activity-row:hover{background:#fbfbff}.activity-count{min-width:55px;text-align:right}.activity-count strong,.activity-count span{display:block}.activity-count strong{color:#5f6a83;font-size:11px}.activity-count span{margin-top:4px;color:#a3aabb;font-size:9px}.activity-chevron{color:#c4c9d7}.activity-row:hover .activity-chevron{color:#786be4}.activity-snippet{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.task-row{display:flex;align-items:center;gap:10px;border-bottom:1px solid #f0f2f7;padding:12px 0}.task-row:last-child{border:0}.task-symbol{display:flex;width:34px;height:34px;align-items:center;justify-content:center;border-radius:11px;background:#f1f3f8;color:#78839a}.task-symbol.green{background:#e8f8f1;color:#249b77}.task-symbol.rose{background:#fff0f3;color:#c45e76}.task-symbol.amber{background:#fff5e4;color:#b77922}.task-symbol.blue{background:#eef5ff;color:#4f7ac0}
-.task-alert{margin-bottom:18px}
-.task-empty{padding:26px 0;color:#a3aabb;font-size:11px;text-align:center}
-.footer-note{margin-top:24px;color:#a3aabb;font-size:10px;text-align:center}
-@media(max-width:480px){.week-chart{gap:5px}.chart-legend{gap:8px}.legend-note{width:100%;margin-left:0}}
+.task-alert {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 14px;
+  border: 1px solid var(--red-soft);
+  border-radius: var(--radius);
+  background: var(--red-soft);
+  padding: 10px 14px;
+  color: #8e2739;
+  font-size: 12px;
+}
+.task-alert .card-link { margin-left: auto; }
+
+/* 两栏 */
+.home-cols { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); gap: 22px; align-items: start; }
+
+/* 记忆活动 */
+.chart-in { padding: 14px 16px 16px; }
+.chart-head { display: flex; align-items: baseline; gap: 10px; }
+.chart-head strong { color: var(--text); font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -.02em; line-height: 1.15; }
+.chart-delta { display: inline-flex; align-items: center; gap: 3px; color: var(--brand-strong); font-size: 12px; font-weight: 600; }
+.chart-vs { margin-left: auto; color: var(--faint); font-size: 12px; }
+.week-chart {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 12px;
+  height: 150px;
+  margin-top: 16px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 4px;
+}
+.week-column { display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 7px; color: var(--faint); font-size: 12px; }
+.week-bar-area { display: flex; width: 100%; height: 100%; align-items: flex-end; justify-content: center; }
+.week-bar { width: 100%; max-width: 32px; border-radius: 5px 5px 2px 2px; background: var(--brand-soft); transition: opacity .15s var(--ease); }
+.week-bar:hover { opacity: .72; }
+.week-bar.featured { background: var(--brand); }
+.week-column span.featured { color: var(--brand-strong); font-weight: 600; }
+
+/* 最近记忆 */
+.mem-row { display: flex; align-items: center; gap: 11px; border-bottom: 1px solid var(--line); padding: 11px 14px; transition: background .13s var(--ease); }
+.mem-row:last-child { border-bottom: 0; }
+.mem-row:hover { background: var(--surface-2); }
+.mem-icon { display: grid; width: 28px; height: 28px; flex: none; place-items: center; border-radius: var(--radius-xs); background: var(--surface-3); color: var(--dim); }
+.mem-body { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 2px; }
+.mem-title { overflow: hidden; color: var(--text-2); font-size: 14px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.mem-meta { color: var(--faint); font-size: 12px; }
+.mem-row .arw { flex: none; color: #cbd1db; font-size: 12px; }
+
+/* 最近任务 */
+.task-row { display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--line); padding: 11px 14px; }
+.task-row:last-child { border-bottom: 0; }
+.task-dot { width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--faint); }
+.task-dot.ok { background: var(--green); }
+.task-dot.err { background: var(--red); }
+.task-dot.wait { background: var(--amber); }
+.task-dot.run { background: var(--blue); }
+.task-body { min-width: 0; flex: 1; }
+.task-title { overflow: hidden; color: var(--text-2); font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
+.task-meta { margin-top: 2px; color: var(--faint); font-size: 12px; }
+.task-time { flex: none; color: var(--faint); font-size: 12px; font-variant-numeric: tabular-nums; }
+
+/* 角色进度行 */
+.role-line { display: flex; align-items: center; gap: 11px; border-bottom: 1px solid var(--line); padding: 11px 14px; }
+.role-line:last-child { border-bottom: 0; }
+.role-line .avatar { width: 30px; height: 30px; font-size: 12px; }
+.role-line-body { min-width: 0; flex: 1; }
+.role-line-head { display: flex; align-items: center; gap: 8px; }
+.role-line-name { color: var(--text-2); font-size: 14px; font-weight: 600; }
+.role-line-track { height: 5px; margin-top: 6px; overflow: hidden; border-radius: 3px; background: var(--surface-3); }
+.role-line-fill { height: 100%; border-radius: 3px; background: linear-gradient(90deg, #e86b92, var(--brand)); }
+.role-line-fill.paused { background: #d5d9df; }
+.role-line-meta { margin-top: 5px; color: var(--faint); font-size: 12px; }
+
+@media (max-width: 1150px) {
+  .home-cols { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 640px) {
+  .week-chart { gap: 5px; height: 120px; }
+}
 </style>

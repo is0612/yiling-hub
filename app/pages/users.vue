@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Refresh, UserFilled } from "@element-plus/icons-vue";
+import { Clock, Refresh, UserFilled } from "@element-plus/icons-vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 
 type AdminUser = {
@@ -14,7 +14,7 @@ type AdminUser = {
   lastActiveAt: string | null;
 };
 
-const loading = ref(false);
+const loading = ref(true);
 const users = ref<AdminUser[]>([]);
 const resetting = ref(false);
 const dialogVisible = ref(false);
@@ -36,6 +36,9 @@ function formatDateTime(value: string | null) {
   const pad = (input: number) => String(input).padStart(2, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
+
+const adminCount = computed(() => users.value.filter((item) => item.role === "ADMIN").length);
+const disabledCount = computed(() => users.value.filter((item) => item.status === "DISABLED").length);
 
 function labelOf(user: AdminUser) {
   return user.displayName || user.email || user.username;
@@ -140,16 +143,54 @@ onMounted(() => {
       description="查看使用本系统的账号与活动统计。这里只显示账号信息，不包含任何人的对话或记忆内容。"
     >
       <template #actions>
-        <el-button
-          :loading="loading"
+        <button
+          type="button"
+          class="btn"
+          :disabled="loading"
           @click="loadUsers"
         >
           <el-icon><Refresh /></el-icon>刷新
-        </el-button>
+        </button>
       </template>
     </PageHeader>
 
-    <section class="surface">
+    <div class="kpi-row is-three">
+      <div class="kpi">
+        <div class="k">
+          全部账号
+        </div>
+        <div class="v">
+          {{ users.length }}<small>个</small>
+        </div>
+        <div class="foot">
+          只显示账号信息，不含对话与记忆内容
+        </div>
+      </div>
+      <div class="kpi">
+        <div class="k">
+          管理员
+        </div>
+        <div class="v">
+          {{ adminCount }}<small>个</small>
+        </div>
+        <div class="foot">
+          可管理用户、渠道与系统设置
+        </div>
+      </div>
+      <div class="kpi">
+        <div class="k">
+          已停用
+        </div>
+        <div class="v">
+          {{ disabledCount }}<small>个</small>
+        </div>
+        <div class="foot">
+          停用后无法登录，数据保留
+        </div>
+      </div>
+    </div>
+
+    <div class="card table-card">
       <div
         v-loading="loading"
         class="users-table"
@@ -183,13 +224,10 @@ onMounted(() => {
             width="110"
           >
             <template #default="{ row }">
-              <el-tag
-                :type="(row as AdminUser).role === 'ADMIN' ? 'primary' : 'info'"
-                effect="light"
-                size="small"
-              >
-                {{ (row as AdminUser).role === "ADMIN" ? "管理员" : "用户" }}
-              </el-tag>
+              <span
+                class="pill"
+                :class="(row as AdminUser).role === 'ADMIN' ? 'pill-purple' : 'pill-gray'"
+              >{{ (row as AdminUser).role === "ADMIN" ? "管理员" : "用户" }}</span>
             </template>
           </el-table-column>
           <el-table-column
@@ -197,13 +235,10 @@ onMounted(() => {
             width="100"
           >
             <template #default="{ row }">
-              <el-tag
-                :type="(row as AdminUser).status === 'ACTIVE' ? 'success' : 'danger'"
-                effect="light"
-                size="small"
-              >
-                {{ (row as AdminUser).status === "ACTIVE" ? "正常" : "已停用" }}
-              </el-tag>
+              <span
+                class="pill"
+                :class="(row as AdminUser).status === 'ACTIVE' ? 'pill-green' : 'pill-rose'"
+              >{{ (row as AdminUser).status === "ACTIVE" ? "正常" : "已停用" }}</span>
             </template>
           </el-table-column>
           <el-table-column
@@ -237,50 +272,49 @@ onMounted(() => {
             fixed="right"
           >
             <template #default="{ row }">
-              <el-button
-                text
-                size="small"
-                type="primary"
-                @click="openReset(row as AdminUser)"
-              >
-                重置密码
-              </el-button>
-              <el-button
-                v-if="(row as AdminUser).status === 'ACTIVE'"
-                text
-                size="small"
-                type="danger"
-                @click="toggleStatus(row as AdminUser)"
-              >
-                停用
-              </el-button>
-              <el-button
-                v-else
-                text
-                size="small"
-                type="success"
-                @click="toggleStatus(row as AdminUser)"
-              >
-                启用
-              </el-button>
+              <div class="row-actions">
+                <button
+                  type="button"
+                  class="card-link"
+                  @click="openReset(row as AdminUser)"
+                >
+                  重置密码
+                </button>
+                <button
+                  v-if="(row as AdminUser).status === 'ACTIVE'"
+                  type="button"
+                  class="card-link is-danger"
+                  @click="toggleStatus(row as AdminUser)"
+                >
+                  停用
+                </button>
+                <button
+                  v-else
+                  type="button"
+                  class="card-link is-ok"
+                  @click="toggleStatus(row as AdminUser)"
+                >
+                  启用
+                </button>
+              </div>
             </template>
           </el-table-column>
         </el-table>
       </div>
-    </section>
+    </div>
 
-    <section
-      class="surface"
-      style="margin-top:16px"
-    >
-      <div class="audit-title">
-        最近登录活动
-      </div>
+    <div class="sec-h">
+      <h2>最近登录活动</h2>
+      <span class="sub">{{ auditItems.length }} 条</span>
+    </div>
+    <div class="card audit-panel">
       <div
         v-if="!auditItems.length"
-        class="audit-empty"
+        class="card-empty"
       >
-        暂无记录。
+        <el-icon><Clock /></el-icon>
+        <span>还没有登录记录</span>
+        <span>账号登录、失败与登出都会留下审计记录</span>
       </div>
       <div
         v-for="item in auditItems"
@@ -300,7 +334,7 @@ onMounted(() => {
           {{ formatDateTime(item.createdAt) }}
         </span>
       </div>
-    </section>
+    </div>
 
     <el-dialog
       v-model="dialogVisible"
@@ -333,18 +367,27 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.users-table { min-height: 200px; }
-.user-cell { display: flex; align-items: center; gap: 10px; }
-.user-avatar { display: flex; width: 32px; height: 32px; flex: 0 0 auto; align-items: center; justify-content: center; border-radius: 10px; background: #f2f0ff; color: #786be4; font-size: 15px; }
-.user-name { color: #48536d; font-size: 13px; font-weight: 700; }
-.user-sub { margin-top: 2px; color: #9aa4b7; font-size: 11px; }
-.reset-hint { margin: 0 0 12px; color: #8c97ac; font-size: 12px; line-height: 1.6; }
-.audit-title { color: #48536d; font-size: 12px; font-weight: 800; margin-bottom: 8px; }
-.audit-empty { padding: 16px 0; color: #b4bbc8; font-size: 11px; }
-.audit-row { display: flex; align-items: center; gap: 14px; border-bottom: 1px solid #f0f2f7; padding: 9px 0; font-size: 12px; }
-.audit-row:last-child { border-bottom: 0; }
-.audit-action { color: #5f6a83; font-weight: 700; }
-.audit-action.is-fail { color: #c45e76; }
-.audit-actor { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #7d879c; }
-.audit-time { color: #a3aabb; font-size: 11px; }
+.table-card{padding:6px 0 4px}
+.users-table{min-height:120px}
+.user-cell{display:flex;align-items:center;gap:10px}
+.user-avatar{display:flex;width:30px;height:30px;flex:0 0 auto;align-items:center;justify-content:center;border-radius:var(--radius-sm);background:var(--brand-soft);color:var(--brand);font-size:14px}
+.user-name{color:var(--text-2);font-size:14px;font-weight:600}
+.user-sub{margin-top:2px;color:var(--faint);font-size:12px}
+.row-actions{display:flex;align-items:center;gap:12px}
+.card-link.is-danger{color:var(--red)}
+.card-link.is-danger:hover{color:#b02338}
+.card-link.is-ok{color:var(--green)}
+.reset-hint{margin:0 0 12px;color:var(--dim);font-size:12px;line-height:1.7}
+
+.audit-panel{padding:6px 18px 8px}
+.audit-row{display:flex;align-items:center;gap:14px;border-bottom:1px solid var(--line);padding:10px 0;font-size:12px}
+.audit-row:last-child{border-bottom:0}
+.audit-action{flex:0 0 96px;color:var(--text-2);font-weight:600}
+.audit-action.is-fail{color:var(--red)}
+.audit-actor{min-width:0;flex:1;overflow:hidden;color:var(--dim);text-overflow:ellipsis;white-space:nowrap}
+.audit-time{color:var(--faint);font-size:12px;white-space:nowrap}
+
+@media(max-width:700px){
+  .audit-action{flex:0 0 auto}
+}
 </style>
