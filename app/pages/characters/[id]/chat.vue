@@ -69,6 +69,7 @@ const loading = ref(false);
 const sending = ref(false);
 const pendingRequestKey = ref<string | null>(null);
 const pendingRequestContent = ref<string | null>(null);
+const pendingRequestConversationId = ref<string | null>(null);
 const exporting = ref(false);
 const modelSettingsOpen = ref(false);
 const modelSettingsSaving = ref(false);
@@ -429,9 +430,14 @@ async function sendMessage() {
     return;
   }
 
-  if (!pendingRequestKey.value || pendingRequestContent.value !== content) {
+  if (
+    !pendingRequestKey.value ||
+    pendingRequestContent.value !== content ||
+    pendingRequestConversationId.value !== conversationId.value
+  ) {
     pendingRequestKey.value = crypto.randomUUID();
     pendingRequestContent.value = content;
+    pendingRequestConversationId.value = conversationId.value;
   }
   const requestKey = pendingRequestKey.value;
   sending.value = true;
@@ -443,6 +449,7 @@ async function sendMessage() {
     });
     pendingRequestKey.value = null;
     pendingRequestContent.value = null;
+    pendingRequestConversationId.value = null;
 
     conversationId.value = result.conversationId;
     messages.value.push(result.userMessage, result.assistantMessage);
