@@ -61,12 +61,12 @@ const loading = ref(false);
 const dashboard = ref<DashboardData>({ today: "", accounts: [] });
 
 // ── B站扫码登录 ──────────────────────────────────────────
-type BiliAuthStatus = { ok: boolean; user: unknown; error: unknown };
+type BiliAuthStatus = { ok: boolean; user: unknown; error: { code?: string; message?: string; hint?: string } | null };
 
 const loginVisible = ref(false);
 const loginLoading = ref(false);
 const qrDataUrl = ref("");
-const loginStatus = ref<"idle" | "waiting" | "done" | "error">("idle");
+const loginStatus = ref<"idle" | "waiting" | "done" | "error" | "expired">("idle");
 const loginUser = ref<unknown>(null);
 let loginTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -102,6 +102,13 @@ async function pollLoginStatus() {
       loginUser.value = status.user;
       stopLoginTimer();
       ElMessage.success("B站 登录成功。");
+      return;
+    }
+    // 二维码过期：停止轮询，提示重新生成
+    if (status.error?.code === "login_expired") {
+      loginStatus.value = "expired";
+      stopLoginTimer();
+      ElMessage.warning("二维码已过期，请重新生成。");
     }
   } catch {
     // 轮询失败忽略，等下一轮
@@ -567,6 +574,7 @@ onMounted(loadDashboard);
               :src="qrDataUrl"
               alt="B站登录二维码"
               class="bili-login-qrimg"
+              :class="{ 'bili-login-qrimg-expired': loginStatus === 'expired' }"
             />
             <div
               v-else
@@ -575,7 +583,7 @@ onMounted(loadDashboard);
               点击「生成二维码」开始登录
             </div>
             <p class="bili-login-hint">
-              {{ loginStatus === 'waiting' ? '请用 B站 App 扫码登录' : '扫码登录后即可使用 B站 全部功能' }}
+              {{ loginStatus === 'expired' ? '二维码已过期，请重新生成' : loginStatus === 'waiting' ? '请用 B站 App 扫码登录' : '扫码登录后即可使用 B站 全部功能' }}
             </p>
             <el-button
               v-if="loginStatus !== 'waiting'"
@@ -583,7 +591,7 @@ onMounted(loadDashboard);
               :loading="loginLoading"
               @click="startLogin"
             >
-              生成二维码
+              {{ loginStatus === 'expired' ? '重新生成二维码' : '生成二维码' }}
             </el-button>
           </div>
         </template>
@@ -965,6 +973,10 @@ onMounted(loadDashboard);
   height: 220px;
   border: 1px solid var(--border, #eef0f3);
   border-radius: 8px;
+}
+.bili-login-qrimg-expired {
+  opacity: 0.4;
+  filter: grayscale(1);
 }
 .bili-login-empty {
   width: 220px;
