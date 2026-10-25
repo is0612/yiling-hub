@@ -55,9 +55,9 @@ export type MemoryAiAnalysis = {
 };
 
 export type MemoryAiInput = {
-  apiKey?: string;
-  apiBaseUrl?: string;
-  model?: string;
+  apiKey: string;
+  apiBaseUrl: string;
+  model: string;
   periodStart: string;
   periodEnd: string;
   timezone: string;
@@ -248,13 +248,14 @@ export async function analyzeMemoryPeriod(input: MemoryAiInput): Promise<{
   promptTemplateVersion: string;
   usage?: { promptTokens?: number; completionTokens?: number; totalTokens?: number };
 }> {
-  const apiKey = input.apiKey?.trim() || process.env.LLM_API_KEY?.trim();
-  const model = input.model?.trim() || process.env.LLM_MODEL?.trim();
-  if (!apiKey || !model) {
-    throw new Error("LLM_NOT_CONFIGURED: 请在服务端 .env 配置 LLM_API_KEY 和 LLM_MODEL；任务会保留在队列中等待配置。");
+  // Credentials must be resolved by the caller for the selected provider. Never silently
+  // substitute the global environment key for a request targeting another provider.
+  const apiKey = input.apiKey.trim();
+  const model = input.model.trim();
+  const baseUrl = input.apiBaseUrl.trim();
+  if (!apiKey || !model || !baseUrl) {
+    throw new Error("LLM_NOT_CONFIGURED: 当前模型请求缺少已解析的 API Key、API Base URL 或模型名称；请检查角色模型配置和服务端默认配置。");
   }
-
-  const baseUrl = input.apiBaseUrl?.trim() || process.env.LLM_BASE_URL?.trim() || "https://api.openai.com/v1";
   let endpoint: URL;
   try {
     endpoint = buildChatCompletionsEndpoint(baseUrl);
@@ -266,6 +267,25 @@ export async function analyzeMemoryPeriod(input: MemoryAiInput): Promise<{
   const timeoutMs = Number.isInteger(timeoutRaw) && timeoutRaw >= 5_000 && timeoutRaw <= 180_000
     ? timeoutRaw
     : 60_000;
+  // Keep connection settings out of the user prompt. Project fields explicitly so
+  // extra runtime properties on nested objects cannot accidentally be serialized.
+  const promptInput = {
+    periodStart: input.periodStart,
+    periodEnd: input.periodEnd,
+    timezone: input.timezone,
+    scopeType: input.scopeType,
+    characterName: input.characterName,
+    messages: input.messages.map(({ id, role, eventType, occurredAt, content }) => ({
+      id, role, eventType, occurredAt, content,
+    })),
+    totalMessageCount: input.totalMessageCount,
+    omittedMessageCount: input.omittedMessageCount,
+    activeMemories: input.activeMemories.map(({
+      id, category, content, confidence, validFrom, validTo, createdAt,
+    }) => ({ id, category, content, confidence, validFrom, validTo, createdAt })),
+    previousSnapshotSummary: input.previousSnapshotSummary,
+  };
+
   const response = await fetch(endpoint, {
     method: "POST",
     headers: {
@@ -279,7 +299,7 @@ export async function analyzeMemoryPeriod(input: MemoryAiInput): Promise<{
       response_format: { type: "json_object" },
       messages: [
         { role: "system", content: systemPrompt() },
-        { role: "user", content: JSON.stringify(input) },
+        { role: "user", content: JSON.stringify(promptInput) },
       ],
     }),
     signal: AbortSignal.timeout(timeoutMs),
