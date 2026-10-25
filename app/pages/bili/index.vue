@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { Refresh, VideoPlay, Clock, Tickets, Collection, ChatLineRound, Camera } from "@element-plus/icons-vue";
-import { ElMessage } from "element-plus";
+import { Refresh, VideoPlay, Clock, Tickets, Collection, ChatLineRound, Camera, Setting, Promotion } from "@element-plus/icons-vue";
+import { ElMessage, ElMessageBox } from "element-plus";
 
 type BiliReport = {
   id: string;
@@ -42,6 +42,11 @@ type BiliAccount = {
     night: boolean;
     keywords: string[];
     zone: string;
+    frames: number;
+    autoComment: boolean;
+    commentPerRound: number;
+    mentionName: string;
+    dmMode: "only" | "both" | "off";
   };
   nextWindow: "noon" | "night" | null;
   bindings: BiliBinding[];
@@ -223,6 +228,97 @@ async function loadDashboard() {
   }
 }
 
+// ── 值班设置 ──────────────────────────────────────────
+const ZONES = ["all", "anime", "music", "dance", "game", "knowledge", "tech", "sports", "car", "life", "food", "animal", "kichiku", "fashion", "ent", "film", "original", "rookie"];
+
+const dutyVisible = ref(false);
+const dutySaving = ref(false);
+const dutyTarget = ref<BiliAccount | null>(null);
+const dutyForm = reactive({
+  perDay: 5,
+  peakValley: true,
+  noon: true,
+  night: true,
+  keywordsText: "",
+  zone: "all",
+  frames: 0,
+  dmMode: "only" as "only" | "both" | "off",
+  autoComment: false,
+  commentPerRound: 1,
+  mentionName: "",
+});
+
+function openDutySettings(account: BiliAccount) {
+  dutyTarget.value = account;
+  const duty = account.duty;
+  dutyForm.perDay = duty.perDay ?? 5;
+  dutyForm.peakValley = duty.peakValley ?? true;
+  dutyForm.noon = duty.noon ?? true;
+  dutyForm.night = duty.night ?? true;
+  dutyForm.keywordsText = (duty.keywords ?? []).join("\n");
+  dutyForm.zone = duty.zone || "all";
+  dutyForm.frames = duty.frames ?? 0;
+  dutyForm.dmMode = duty.dmMode ?? "only";
+  dutyForm.autoComment = duty.autoComment ?? false;
+  dutyForm.commentPerRound = duty.commentPerRound ?? 1;
+  dutyForm.mentionName = duty.mentionName ?? "";
+  dutyVisible.value = true;
+}
+
+async function saveDuty() {
+  if (!dutyTarget.value) return;
+  dutySaving.value = true;
+  try {
+    const duty = {
+      perDay: dutyForm.perDay,
+      peakValley: dutyForm.peakValley,
+      noon: dutyForm.noon,
+      night: dutyForm.night,
+      keywords: dutyForm.keywordsText.split(/[,，\n]/).map((k) => k.trim()).filter(Boolean),
+      zone: dutyForm.zone,
+      frames: dutyForm.frames,
+      dmMode: dutyForm.dmMode,
+      autoComment: dutyForm.autoComment,
+      commentPerRound: dutyForm.commentPerRound,
+      mentionName: dutyForm.mentionName.trim(),
+    };
+    await $fetch("/api/admin/bili/duty", {
+      method: "PUT",
+      body: { connectionId: dutyTarget.value.connectionId, duty },
+    });
+    ElMessage.success("已保存，下一轮按新设置跑。");
+    dutyVisible.value = false;
+    await loadDashboard();
+  } catch (error) {
+    ElMessage.error(readErrorMessage(error, "保存值班设置失败。"));
+  } finally {
+    dutySaving.value = false;
+  }
+}
+
+// ── 现在跑一轮 ──────────────────────────────────────────
+const running = ref<string | null>(null); // 正在跑的 bindingId
+
+async function runNow(account: BiliAccount, binding: BiliBinding) {
+  running.value = binding.bindingId;
+  try {
+    const result = await $fetch<{ ok: boolean; seconds: number; picked: number; skipped: number; error?: string }>("/api/admin/bili/run-round", {
+      method: "POST",
+      body: { connectionId: account.connectionId, bindingId: binding.bindingId },
+    });
+    if (result.ok) {
+      ElMessage.success(`跑完了（${result.seconds}s），这轮挑中 ${result.picked} 条、跳过 ${result.skipped} 条。`);
+    } else {
+      ElMessage.warning(result.error || "这一轮没跑成。");
+    }
+    await loadDashboard();
+  } catch (error) {
+    ElMessage.error(readErrorMessage(error, "执行失败。"));
+  } finally {
+    running.value = null;
+  }
+}
+
 onMounted(loadDashboard);
 </script>
 
@@ -274,13 +370,21 @@ onMounted(loadDashboard);
               数据目录 {{ account.dataHome || '（默认）' }} · 每天上限 {{ account.duty.perDay }} 条
             </p>
           </div>
-          <el-tag
-            :type="account.nextWindow ? 'warning' : 'info'"
-            effect="light"
-            size="small"
-          >
-            {{ windowActiveLabel(account) }}
-          </el-tag>
+          <div class="bili-account-actions">
+            <el-tag
+              :type="account.nextWindow ? 'warning' : 'info'"
+              effect="light"
+              size="small"
+            >
+              {{ windowActiveLabel(account) }}
+            </el-tag>
+            <el-button
+              size="small"
+              @click="openDutySettings(account)"
+            >
+              <el-icon><Setting /></el-icon>值班设置
+            </el-button>
+          </div>
         </div>
 
         <div
@@ -290,6 +394,14 @@ onMounted(loadDashboard);
         >
           <div class="metric-row" style="margin-bottom:14px">
             <span class="bili-binding-role">角色：{{ binding.characterName }}</span>
+            <el-button
+              type="primary"
+              size="small"
+              :loading="running === binding.bindingId"
+              @click="runNow(account, binding)"
+            >
+              <el-icon><Promotion /></el-icon>{{ running === binding.bindingId ? '跑一轮中…' : '现在跑一轮' }}
+            </el-button>
           </div>
 
           <!-- 概览卡片 -->
@@ -477,6 +589,161 @@ onMounted(loadDashboard);
         </template>
       </div>
     </el-dialog>
+
+    <el-dialog
+      v-model="dutyVisible"
+      title="值班设置"
+      width="640px"
+      :close-on-click-modal="false"
+    >
+      <el-form label-position="top">
+        <el-row :gutter="16">
+          <el-col :xs="24" :sm="12">
+            <el-form-item label="每天最多挑几条（0-50）">
+              <el-input-number
+                v-model="dutyForm.perDay"
+                :min="0"
+                :max="50"
+                controls-position="right"
+                style="width: 100%"
+              />
+            </el-form-item>
+          </el-col>
+
+          <el-col :xs="24" :sm="12">
+            <el-form-item label="峰谷时段自动刷">
+              <el-switch v-model="dutyForm.peakValley" />
+            </el-form-item>
+          </el-col>
+
+          <el-col :xs="24" :sm="12">
+            <el-form-item label="中午窗口 12:00–14:00">
+              <el-switch
+                v-model="dutyForm.noon"
+                :disabled="!dutyForm.peakValley"
+              />
+            </el-form-item>
+          </el-col>
+
+          <el-col :xs="24" :sm="12">
+            <el-form-item label="夜间窗口 18:00–09:00">
+              <el-switch
+                v-model="dutyForm.night"
+                :disabled="!dutyForm.peakValley"
+              />
+            </el-form-item>
+          </el-col>
+
+          <el-col :xs="24" :sm="12">
+            <el-form-item label="投递方式">
+              <el-radio-group v-model="dutyForm.dmMode">
+                <el-radio-button value="only">只私信</el-radio-button>
+                <el-radio-button value="both">私信 + 评论</el-radio-button>
+                <el-radio-button value="off">都不发</el-radio-button>
+              </el-radio-group>
+            </el-form-item>
+          </el-col>
+
+          <el-col :xs="24" :sm="12">
+            <el-form-item label="热门分区">
+              <el-select
+                v-model="dutyForm.zone"
+                style="width: 100%"
+                filterable
+                allow-create
+              >
+                <el-option
+                  v-for="zone in ZONES"
+                  :key="zone"
+                  :label="zone === 'all' ? '全站' : zone"
+                  :value="zone"
+                />
+              </el-select>
+            </el-form-item>
+          </el-col>
+
+          <el-col :xs="24" :sm="12">
+            <el-form-item label="每条视频抽几帧（0 = 不抽）">
+              <el-input-number
+                v-model="dutyForm.frames"
+                :min="0"
+                :max="30"
+                controls-position="right"
+                style="width: 100%"
+              />
+            </el-form-item>
+          </el-col>
+
+          <el-col :xs="24" :sm="12">
+            <el-form-item label="自动公开评论">
+              <el-switch v-model="dutyForm.autoComment" />
+            </el-form-item>
+          </el-col>
+
+          <el-col
+            v-if="dutyForm.autoComment"
+            :xs="24"
+            :sm="12"
+          >
+            <el-form-item label="@ 谁（留空 = 不 @ 任何人）">
+              <el-input
+                v-model="dutyForm.mentionName"
+                placeholder="例如：没有喵i"
+              />
+            </el-form-item>
+          </el-col>
+
+          <el-col
+            v-if="dutyForm.autoComment"
+            :xs="24"
+            :sm="12"
+          >
+            <el-form-item label="每轮最多几条评论">
+              <el-input-number
+                v-model="dutyForm.commentPerRound"
+                :min="0"
+                :max="20"
+                controls-position="right"
+                style="width: 100%"
+              />
+            </el-form-item>
+          </el-col>
+
+          <el-col :span="24">
+            <el-form-item label="关注关键词（每行一个，可留空；留空则只看热榜和推荐流）">
+              <el-input
+                v-model="dutyForm.keywordsText"
+                type="textarea"
+                :rows="3"
+                placeholder="例如：DeepSeek&#10;AI 绘画"
+              />
+            </el-form-item>
+          </el-col>
+        </el-row>
+      </el-form>
+
+      <el-alert
+        v-if="dutyForm.autoComment"
+        type="warning"
+        :closable="false"
+        show-icon
+        style="margin-bottom: 8px"
+        title="公开评论会以该 B站 账号的身份真的发出去。"
+      />
+
+      <template #footer>
+        <el-button @click="dutyVisible = false">
+          取消
+        </el-button>
+        <el-button
+          type="primary"
+          :loading="dutySaving"
+          @click="saveDuty"
+        >
+          保存
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -497,6 +764,12 @@ onMounted(loadDashboard);
   justify-content: space-between;
   align-items: flex-start;
   margin-bottom: 16px;
+}
+.bili-account-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
 }
 .bili-account-name {
   font-size: 17px;
