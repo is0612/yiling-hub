@@ -217,6 +217,17 @@ export async function runDutyRound(record: BiliConnectionRecord, binding: { id: 
     .map((c) => `### ${c.bvid}\n${c.title}（UP：${c.author}）\n值得一看`)
     .join("\n\n");
 
+  // 人格札记：替换掉 bili-desk 的 human-world.md，落成角色长期记忆。
+  // 只在挑中视频时写 —— 「刷了 5 条一条没挑」不值得占用长期记忆，那种情况值班台
+  // 自己的 BiliRoundReport 已经记着了。
+  const journal = picked.length
+    ? `我在 B站 看了 ${picked.length + skipped.length} 条视频，挑中了 ${picked.length} 条：${picked
+        .map((c) => `《${c.title}》（UP：${c.author}）`)
+        .join("、")}`
+    : "";
+  // 同一 (binding, day, roundIndex) 重跑时覆盖同一条记忆，不重复堆积
+  const journalKey = `bili-duty:${binding.id}:${today}:${roundIndex}`;
+
   const report = await prisma.$transaction(async (tx) => {
     const created = await tx.biliRoundReport.create({
       data: {
@@ -228,18 +239,41 @@ export async function runDutyRound(record: BiliConnectionRecord, binding: { id: 
       },
       select: { id: true },
     });
-    for (const c of [...picked, ...skipped]) {
-      const pickedFlag = picked.includes(c);
-      await tx.biliSeenVideo.create({
-        data: {
-          bindingId: binding.id,
-          bvid: c.bvid,
-          title: c.title,
-          author: c.author,
-          result: pickedFlag ? "picked" : "skipped",
-          reason: pickedFlag ? "值得" : "跳过",
-        },
-      }).catch(() => undefined); // 判重表唯一约束：同一 BV 已存在则忽略
+
+    if (journal) {
+      const existing = await tx.memoryItem.findFirst({
+        where: { memoryScopeId: globalScope.id, dedupeKey: journalKey },
+        select: { id: true },
+      });
+      if (existing) {
+        await tx.memoryItem.update({ where: { id: existing.id }, data: { content: journal } });
+      } else {
+        await tx.memoryItem.create({
+          data: {
+            memoryScopeId: globalScope.id,
+            category: "EVENT",
+            content: journal,
+            // 是模型自己的判断，不是主人亲口说的，可信度略低于对话抽取的记忆
+            confidence: 0.8,
+            dedupeKey: journalKey,
+            validFrom: now,
+          },
+        });
+      }
+    }
+    // 判重表：用 createMany + skipDuplicates 批量写。
+    // 原来是逐条 create 再 catch 掉唯一冲突 —— 但在 Postgres 事务里，一条语句失败
+    // 会让整个事务进入 aborted 状态，后面写的东西（包括上面那条记忆）跟着一起回滚。
+    const seenRows = [...picked, ...skipped].map((c) => ({
+      bindingId: binding.id,
+      bvid: c.bvid,
+      title: c.title,
+      author: c.author,
+      result: picked.includes(c) ? "picked" : "skipped",
+      reason: picked.includes(c) ? "值得" : "跳过",
+    }));
+    if (seenRows.length) {
+      await tx.biliSeenVideo.createMany({ data: seenRows, skipDuplicates: true });
     }
     return created;
   });
