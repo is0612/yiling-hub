@@ -300,6 +300,7 @@ model ChatRequest {
   ownerId        String   @db.Uuid
   characterId    String   @db.Uuid
   requestKey     String   @db.Uuid
+  requestHash    String?  @db.VarChar(64)
   claimToken     String   @db.Uuid
   status         String   @default("PROCESSING") @db.VarChar(20)
   conversationId String?  @db.Uuid
