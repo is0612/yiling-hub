@@ -78,11 +78,11 @@ export function validateChatApiBaseUrl(value: string): string {
       || first >= 224;
   })();
   const isPrivateIpv6 = ipVersion === 6 && (
-    unbracketedHostname === "::"
+    // Reject IPv4-compatible IPv6 literals too: they can encode loopback/private IPv4 targets.
+    unbracketedHostname.startsWith("::")
     || unbracketedHostname.startsWith("fc")
     || unbracketedHostname.startsWith("fd")
     || /^fe[89ab]/.test(unbracketedHostname)
-    || unbracketedHostname.startsWith("::ffff:")
   );
   const isLocalOnlyHostname = isLoopbackName
     || unbracketedHostname.endsWith(".local")
