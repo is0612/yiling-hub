@@ -13,15 +13,17 @@ const prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString }) })
 const ownerId = randomUUID();
 const characterId = randomUUID();
 const requestKey = randomUUID();
+const requestHash = "a".repeat(64);
 const requestIds: string[] = [];
 
 try {
   const request = await prisma.chatRequest.create({
-    data: { ownerId, characterId, requestKey, claimToken: randomUUID(), status: "PROCESSING" },
-    select: { id: true, status: true, claimToken: true },
+    data: { ownerId, characterId, requestKey, requestHash, claimToken: randomUUID(), status: "PROCESSING" },
+    select: { id: true, status: true, claimToken: true, requestHash: true },
   });
   requestIds.push(request.id);
   assert.equal(request.status, "PROCESSING");
+  assert.equal(request.requestHash, requestHash, "The request payload fingerprint must be stored with the idempotency key.");
 
   // The database unique constraint is the final guard against duplicate request rows.
   await assert.rejects(
@@ -59,6 +61,12 @@ try {
     "A previous claimant must not finalize after a retry has replaced its claim token.");
   assert.notEqual(winningClaim.claimToken, request.claimToken,
     "Reclaiming a stale request must rotate its claim token.");
+  const staleFailure = await prisma.chatRequest.updateMany({
+    where: { id: request.id, status: "PROCESSING", claimToken: request.claimToken },
+    data: { status: "FAILED", lastError: "stale claimant failure" },
+  });
+  assert.equal(staleFailure.count, 0,
+    "A stale claimant must not mark a request FAILED after a newer claimant has taken over.");
 
   const conversationId = randomUUID();
   const cachedResponse = {
@@ -91,7 +99,7 @@ try {
   });
   assert.equal(retry.count, 1, "A failed request must be eligible for a controlled retry.");
 
-  console.log("Chat request idempotency DB tests passed: unique key, concurrent stale-lease claim, completed response replay, and failed-request retry.");
+  console.log("Chat request idempotency DB tests passed: unique key, payload fingerprint, concurrent stale-lease claim, stale claimant protection, completed response replay, and failed-request retry.");
 } finally {
   await prisma.chatRequest.deleteMany({ where: { id: { in: requestIds } } });
   await prisma.chatRequest.deleteMany({ where: { ownerId, characterId } });
