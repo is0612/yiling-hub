@@ -34,7 +34,10 @@ Thumbs.db
 .idea/
 
 # WorkBuddy workspace memory (agent-local notes, not project source)
-.workbuddy/
+# 用 .workbuddy/* 而非 .workbuddy/ ，以便下面可以重新纳入 skills 子目录
+.workbuddy/*
+# 共享给 AI 的 Agent Skills 属于项目资产，需要入库并随仓库分发
+!.workbuddy/skills/
 
 # Prisma local artifacts (keep schema, generated migration SQL, and migrations tracked)
 prisma/*.db

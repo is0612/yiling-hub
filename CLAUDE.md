@@ -40,3 +40,14 @@ AI 对话的检索范围按身份隔离：`resolveChatMemoryScopes()` 只放行�
 仍未完成的边界：密码重置（需 SMTP）、注册邮箱验证（需 SMTP）、渠道适配器的断线重连与主动消息、渠道按外部用户隔离私人记忆、公网部署加固（HTTPS、反向代理信任、备份演练）；真实模型端到端调用也需要开发者在本机配置 API 后验证。当前 CI 用仅监听回环地址的模拟模型服务验证完整数据流。模型未配置时任务必须留在队列，不得用规则摘要冒充 AI 输出。来源证据必须通过当前周期原始消息 ID 白名单校验；不要把未验证的模型推断当作确定事实自动写入长期记忆。每次代码修改后运行适用的类型检查、测试、lint 与构建；没有实际执行的检查不能声称通过。
 
 账号模型为「1 个管理员 + 邮箱注册普通用户」：`User.role` 只有 ADMIN/USER；业务接口按会话 `userId` 过滤，天然隔离；管理员接口 `/api/admin/*` 走 `requireAdminActor()`。QQ 渠道适配器（`server/utils/channel-adapter/*`）走官方开放平台 WebSocket 网关 + REST 发消息，AppSecret 加密入库，消息处理按角色绑定路由、幂等去重、回写平台；回归测试 `yarn test:channel`。
+
+## 外部 Vue Skill 的 Nuxt 覆盖说明
+
+项目引入了 `vue-best-practices` skill（`.workbuddy/skills/vue-best-practices/`，来源 `github.com/vuejs-ai/skills` v19）。它面向 Vue 核心库，**不含 Nuxt 知识**，以下条目覆盖其冲突规则，优先级高于该 skill：
+
+1. **状态共享禁止引入 Pinia，也禁止模块级 `reactive`/`ref` 单例。** 该 skill 的 `references/state-management.md` 建议「SSR/Nuxt 应用默认使用 Pinia」，本项目不采用。跨页面共享状态一律用 Nuxt `useState`，范本为 `app/composables/useActiveCharacter.ts` 与 `useAuthSession.ts`。模块级单例在 SSR 下会跨请求串号，属于必须避免的实现。
+2. **路由规则不适用。** 走 Nuxt 文件路由与 `app/middleware/*.ts`，动态参数用 `route.params.id`；不要按 `vue-router-best-practices` 的思路新增路由配置文件或额外引入 `vue-router`。
+3. **数据获取用 Nuxt 内建能力。** 页面级数据用 `useAsyncData` / `useFetch`；SSR 阶段需要转发登录态时用 `useRequestFetch()`（见 `useActiveCharacter.ts` 的 `loadCharacters`）。不要改成客户端 `onMounted` + `$fetch`。
+4. **Element Plus 优先级高于 skill 的通用 UI 建议。** 先查 `el-*` 组件；skill 提到的手写控件、自定义过渡/弹层方案，只有在 Element Plus 确实没有对应能力时才考虑。
+5. **拆分与重构的判定标准**按该 skill `SKILL.md` 1.2 的责任边界（行为是否一起变化、是否共担同一不变量），文件行数只作为复查信号，不作为拆分阈值。第 12 条「不擅自扩大需求」指不越出用户要求的功能范围，不包含为完成该功能所必需的结构调整；但跨文件的大范围重构仍需先给出方案再动代码。
+6. **冲突兜底：** 该 skill 属社区早期实验，规则可能不完整。任何与本文档 1–17 条或上述条目冲突之处，以本文档为准；不得为迁就 skill 而引入新依赖或重搭技术栈。
