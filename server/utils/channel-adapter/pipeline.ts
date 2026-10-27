@@ -40,6 +40,24 @@ export type ChannelMessageResult =
 export async function handleChannelMessage(input: ChannelMessageInput): Promise<ChannelMessageResult> {
   const prisma = getPrisma();
 
+  // Character lookup comes first: a paused or archived character must not answer channel
+  // messages, and rejecting early also avoids creating an external identity for a dead character.
+  const character = await prisma.character.findUnique({
+    where: { id: input.characterId },
+    select: {
+      id: true,
+      name: true,
+      basePrompt: true,
+      status: true,
+      modelConfig: true,
+      memoryScopes: { where: { scopeType: "CHARACTER_GLOBAL" }, select: { id: true } },
+    },
+  });
+  if (!character) return { status: "ignored", reason: "character_missing" };
+  if (character.status !== "ACTIVE") return { status: "ignored", reason: "character_inactive" };
+  const globalScope = character.memoryScopes[0];
+  if (!globalScope) return { status: "ignored", reason: "no_global_scope" };
+
   // Idempotency: a QQ message id is unique for the application, so a re-delivered event is dropped
   // regardless of whether its conversation has been created yet.
   const duplicate = await prisma.message.findFirst({
@@ -74,20 +92,6 @@ export async function handleChannelMessage(input: ChannelMessageInput): Promise<
     const scope = await ensureExternalIdentityScope(input.characterId, input.platform, platformUid, externalIdentityId).catch(() => null);
     identityScopeId = scope?.scopeId ?? null;
   }
-
-  const character = await prisma.character.findUnique({
-    where: { id: input.characterId },
-    select: {
-      id: true,
-      name: true,
-      basePrompt: true,
-      modelConfig: true,
-      memoryScopes: { where: { scopeType: "CHARACTER_GLOBAL" }, select: { id: true } },
-    },
-  });
-  if (!character) return { status: "ignored", reason: "character_missing" };
-  const globalScope = character.memoryScopes[0];
-  if (!globalScope) return { status: "ignored", reason: "no_global_scope" };
 
   const chatSettings = resolveChatModelSettings(character.modelConfig);
   let apiKey = "";

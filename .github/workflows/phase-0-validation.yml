@@ -128,6 +128,24 @@ jobs:
       - name: 会话与登录限流数据库集成测试
         run: yarn run test:auth-db
 
+      - name: 跨平台身份隔离数据库测试
+        run: yarn run test:identity
+
+      - name: QQ 小号（OneBot）渠道端到端测试
+        run: yarn run test:onebot
+
+      - name: B站 命令目录与解析层测试
+        run: yarn run test:bili-runner
+
+      - name: B站 视频卡片解析测试
+        run: yarn run test:bili-cards
+
+      - name: B站 值班窗口与判重测试
+        run: yarn run test:bili-duty
+
+      - name: B站 数据库集成测试
+        run: yarn run test:bili-db
+
       - name: ESLint 检查
         run: yarn run lint
 

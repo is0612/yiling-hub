@@ -13,9 +13,9 @@ const connections = ref<ChannelConnection[]>([]);
 const loading = ref(true);
 const saving = ref(false);
 const createVisible = ref(false);
-const createPlatform = ref<"qq" | "qq-onebot" | "bili">("qq");
+const createPlatform = ref<"qq-onebot" | "bili">("qq-onebot");
 
-const createForm = reactive({ appId: "", appSecret: "", displayName: "" });
+const createForm = reactive({ displayName: "" });
 const onebotForm = reactive({
   qqNumber: "",
   wsUrl: "",
@@ -65,7 +65,6 @@ const statusMap: Record<string, { label: string; tone: string }> = {
 
 function platformLabel(platform: string) {
   if (platform === "bili") return "B站";
-  if (platform === "qq") return "QQ";
   if (platform === "qq-onebot") return "QQ 小号";
   return platform;
 }
@@ -73,7 +72,8 @@ function platformLabel(platform: string) {
 function platformHint(platform: string) {
   if (platform === "bili") return "yarn bili:run";
   if (platform === "qq-onebot") return "yarn onebot:run";
-  return "yarn channel:run";
+  // 官方机器人渠道已下线，遗留连接不再有适配器，只能删除。
+  return "已下线";
 }
 
 function channelSubtitle(connection: ChannelConnection) {
@@ -104,60 +104,47 @@ async function loadConnections() {
 
 async function submitCreate() {
   if (saving.value) return;
-  if (createPlatform.value === "qq") {
-    if (!createForm.appId.trim() || !createForm.appSecret.trim()) {
-      ElMessage.warning("请填写 AppID 和 AppSecret。");
-      return;
-    }
-  } else if (createPlatform.value === "qq-onebot") {
-    if (!onebotForm.qqNumber.trim()) {
-      ElMessage.warning("请填写 QQ 号。");
-      return;
-    }
+  if (createPlatform.value === "qq-onebot" && !onebotForm.qqNumber.trim()) {
+    ElMessage.warning("请填写 QQ 号。");
+    return;
   }
   saving.value = true;
   try {
-    const body = createPlatform.value === "qq"
-      ? { platform: "qq", appId: createForm.appId.trim(), appSecret: createForm.appSecret, displayName: createForm.displayName.trim() }
-      : createPlatform.value === "qq-onebot"
-        ? {
-            platform: "qq-onebot",
-            qqNumber: onebotForm.qqNumber.trim(),
-            wsUrl: onebotForm.wsUrl.trim(),
-            httpUrl: onebotForm.httpUrl.trim(),
-            accessToken: onebotForm.accessToken,
-            httpToken: onebotForm.httpToken,
-            replyOnlyWhenMentioned: onebotForm.replyOnlyWhenMentioned,
-            displayName: createForm.displayName.trim(),
-          }
-        : {
-            platform: "bili",
-            displayName: createForm.displayName.trim(),
-            dataHome: biliForm.dataHome.trim(),
-            biliBin: biliForm.biliBin.trim(),
-            duty: {
-              perDay: biliForm.perDay,
-              peakValley: biliForm.peakValley,
-              noon: biliForm.noon,
-              night: biliForm.night,
-              keywords: biliForm.keywordsText.split(/[,，\n]/).map((k) => k.trim()).filter(Boolean),
-              zone: biliForm.zone,
-              dmMode: biliForm.dmMode,
-              autoComment: biliForm.autoComment,
-              commentPerRound: biliForm.commentPerRound,
-              mentionName: biliForm.mentionName.trim(),
-            },
-          };
+    const body = createPlatform.value === "qq-onebot"
+      ? {
+          platform: "qq-onebot",
+          qqNumber: onebotForm.qqNumber.trim(),
+          wsUrl: onebotForm.wsUrl.trim(),
+          httpUrl: onebotForm.httpUrl.trim(),
+          accessToken: onebotForm.accessToken,
+          httpToken: onebotForm.httpToken,
+          replyOnlyWhenMentioned: onebotForm.replyOnlyWhenMentioned,
+          displayName: createForm.displayName.trim(),
+        }
+      : {
+          platform: "bili",
+          displayName: createForm.displayName.trim(),
+          dataHome: biliForm.dataHome.trim(),
+          biliBin: biliForm.biliBin.trim(),
+          duty: {
+            perDay: biliForm.perDay,
+            peakValley: biliForm.peakValley,
+            noon: biliForm.noon,
+            night: biliForm.night,
+            keywords: biliForm.keywordsText.split(/[,，\n]/).map((k) => k.trim()).filter(Boolean),
+            zone: biliForm.zone,
+            dmMode: biliForm.dmMode,
+            autoComment: biliForm.autoComment,
+            commentPerRound: biliForm.commentPerRound,
+            mentionName: biliForm.mentionName.trim(),
+          },
+        };
     await $fetch("/api/admin/channels", { method: "POST", body });
     ElMessage.success(
-      createPlatform.value === "qq"
-        ? "QQ 渠道已保存，运行 `yarn channel:run` 接入。"
-        : createPlatform.value === "qq-onebot"
-          ? "QQ 小号渠道已保存，运行 `yarn onebot:run` 接入。"
-          : "B站渠道已保存，运行 `yarn bili:run` 接入。",
+      createPlatform.value === "qq-onebot"
+        ? "QQ 小号渠道已保存，运行 `yarn onebot:run` 接入。"
+        : "B站渠道已保存，运行 `yarn bili:run` 接入。",
     );
-    createForm.appId = "";
-    createForm.appSecret = "";
     createForm.displayName = "";
     onebotForm.qqNumber = "";
     onebotForm.wsUrl = "";
@@ -246,7 +233,7 @@ onMounted(loadConnections);
     <PageHeader
       eyebrow="系统管理 / 渠道管理"
       title="渠道接入"
-      description="把角色接到 QQ 官方机器人、QQ 小号（OneBot）或 B站。QQ 机器人走群聊 @/私聊对话；QQ 小号走 OneBot 协议挂个人号；B站 走自动值班刷视频 + 私信/评论回复。"
+      description="把角色接到 QQ 小号（OneBot）或 B站。QQ 小号走 OneBot 协议挂个人号，群聊与私聊都能回；B站 走自动值班刷视频 + 私信/评论回复。"
     >
       <template #actions>
         <button
@@ -295,7 +282,7 @@ onMounted(loadConnections);
     >
       <span class="halo"><el-icon><ChatDotRound /></el-icon></span>
       <h4>还没有渠道连接</h4>
-      <p>把角色接到 QQ 机器人、QQ 小号或 B站，这个页面就会出现连接卡片与绑定关系。</p>
+      <p>把角色接到 QQ 小号或 B站，这个页面就会出现连接卡片与绑定关系。</p>
       <button
         type="button"
         class="btn primary"
@@ -413,9 +400,6 @@ onMounted(loadConnections);
         v-model="createPlatform"
         style="margin-bottom:16px"
       >
-        <el-radio-button value="qq">
-          QQ 机器人
-        </el-radio-button>
         <el-radio-button value="qq-onebot">
           QQ 小号
         </el-radio-button>
@@ -425,33 +409,7 @@ onMounted(loadConnections);
       </el-radio-group>
 
       <el-form
-        v-if="createPlatform === 'qq'"
-        label-position="top"
-      >
-        <el-form-item label="AppID">
-          <el-input
-            v-model="createForm.appId"
-            placeholder="QQ 开放平台机器人 AppID"
-          />
-        </el-form-item>
-        <el-form-item label="AppSecret">
-          <el-input
-            v-model="createForm.appSecret"
-            type="password"
-            show-password
-            placeholder="QQ 开放平台机器人 AppSecret"
-          />
-        </el-form-item>
-        <el-form-item label="显示名（可选）">
-          <el-input
-            v-model="createForm.displayName"
-            placeholder="例如：我的 QQ 机器人"
-          />
-        </el-form-item>
-      </el-form>
-
-      <el-form
-        v-else-if="createPlatform === 'qq-onebot'"
+        v-if="createPlatform === 'qq-onebot'"
         label-position="top"
         class="dialog-scroll"
       >

@@ -2,12 +2,10 @@
 import type { Component } from "vue";
 import {
   DataAnalysis,
-  Bell,
   Cpu,
   Calendar,
   ChatDotRound,
   DataBoard,
-  Search,
   Setting,
   SwitchButton,
   User,
@@ -201,27 +199,8 @@ function isActive(item: NavigationItem) {
 
     <div class="app-main">
       <header class="topbar">
-        <div class="topbar-search">
-          <el-input
-            placeholder="搜索角色、记忆、阶段总结……"
-            aria-label="搜索角色、记忆、阶段总结"
-            clearable
-          >
-            <template #prefix>
-              <el-icon><Search /></el-icon>
-            </template>
-          </el-input>
-        </div>
         <div class="topbar-right">
           <span class="env-indicator"><span class="env-dot" />{{ isLocalDevIdentity ? "本地开发" : "已登录" }}</span>
-          <el-button
-            text
-            circle
-            aria-label="通知"
-          >
-            <el-icon><Bell /></el-icon>
-          </el-button>
-          <el-divider direction="vertical" />
           <div class="user-pill">
             <el-avatar :size="30">
               {{ avatarLetter }}

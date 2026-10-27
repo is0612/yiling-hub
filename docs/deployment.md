@@ -10,7 +10,8 @@ Yiling Hub 由两部分组成：
 - **后台进程**（独立运行，与 Web 服务解耦）：
   - `yarn scheduler:run`：按周期边界把快照/清理任务入队。
   - `yarn worker:run`：领取并执行记忆任务（调用模型）。
-  - `yarn channel:run`：QQ 渠道适配器（长连接收消息并回复）。
+  - `yarn onebot:run`：QQ 小号（OneBot v11）渠道适配器（长连接收消息并回复）。
+  - `yarn bili:run`：B站 值班适配器（谷时调度 + 被动回复）。
 
 这些后台进程可以与本机 Web 服务同机运行，也可以部署到独立主机/容器。它们之间通过 PostgreSQL 的任务队列协调，天然支持横向拆分。
 
@@ -64,9 +65,9 @@ server {
 - `POSTGRES_*`：仅本地 `docker compose` 使用。
 - `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL`：模型服务的默认回退（角色的 API Key 可单独在网页配置，加密保存）。
 - `AUTH_SESSION_TTL_HOURS`、`YILING_COOKIE_SECURE`、`YILING_ALLOW_REGISTRATION`、`YILING_ALLOW_DEV_OWNER_BYPASS`：鉴权相关。
-- `QQ_*`：QQ 渠道端点（默认官方值）。
+- `ONEBOT_*`、`QQ_*`：QQ 小号渠道端点覆盖项（默认值见 `qq-onebot-deploy.md`）。
 
-秘密（数据库密码、模型 Key、QQ AppSecret、加密密钥 `.data/credentials-encryption.key`）不得进入 Git 或镜像层，应通过 Secret 管理或受控的环境注入提供。
+秘密（数据库密码、模型 Key、OneBot WS/HTTP Token、加密密钥 `.data/credentials-encryption.key`）不得进入 Git 或镜像层，应通过 Secret 管理或受控的环境注入提供。
 
 ## 4. 监控与告警
 

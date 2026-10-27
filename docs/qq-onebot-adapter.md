@@ -2,23 +2,23 @@
 
 ## 1. 背景与定位
 
-yiling-hub 目前已有 **QQ 官方机器人** 渠道（`channel-adapter/qq.ts`，走 QQ 开放平台
-WebSocket Gateway + OAuth2 app token）。但用户最终想养的是「QQ 小号挂 AI」——即用一个
-**个人 QQ 号**（仿真群友 / 好友），而不是官方机器人号。
+yiling-hub 要养的是「QQ 小号挂 AI」——即用一个**个人 QQ 号**（仿真群友 / 好友），
+而不是官方机器人号。
 
 这种形态需要走 **OneBot v11 协议**：通过一个挂载在 QQ 客户端里的第三方网关（如
 SnowLuma），把 QQ 消息转成 OneBot v11 事件推送给 yiling-hub，yiling-hub 再通过 OneBot
 HTTP API 把回复发回 QQ。
 
-本方案**新增并行渠道** `qq-onebot`，**保留**官方机器人 `qq`，两者互不影响、可同时接
-不同的号。
+本方案是 **QQ 的唯一通道**：官方机器人 `qq` 已于 2026-10-27 下线，相关文件（`qq.ts` /
+`serve.ts` / `configure.ts` / `types.ts` / `route.ts`、`yarn channel:run`、
+`scripts/mock-qq-gateway.mjs`）全部删除。
 
 ## 2. 关键决策（已与用户确认）
 
 | 决策点 | 结论 |
 |--------|------|
-| 官方机器人如何处理 | **新增并行渠道**，不删除 `qq.ts` |
-| 平台标识 | **`qq-onebot`**，与官方 `qq` 区分，记忆/身份严格隔离 |
+| 与官方机器人的关系 | **取代**：官方机器人渠道已删除，只保留 `qq-onebot` |
+| 平台标识 | **`qq-onebot`**，与已下线的 `qq` 区分，记忆/身份严格隔离 |
 | 协议 | OneBot v11，**正向 WebSocket**（yiling-hub 作为 WS 客户端连网关） |
 | 网关 | SnowLuma（或任何兼容 OneBot v11 的实现），部署/登录由用户自理 |
 | 大脑 | **yiling-hub 自己的模型 + 记忆**（不复用 qq-bridge 的 DSH） |

@@ -39,7 +39,7 @@ AI 对话的检索范围按身份隔离：`resolveChatMemoryScopes()` 只放行�
 
 仍未完成的边界：密码重置（需 SMTP）、注册邮箱验证（需 SMTP）、渠道适配器的断线重连与主动消息、渠道按外部用户隔离私人记忆、公网部署加固（HTTPS、反向代理信任、备份演练）；真实模型端到端调用也需要开发者在本机配置 API 后验证。当前 CI 用仅监听回环地址的模拟模型服务验证完整数据流。模型未配置时任务必须留在队列，不得用规则摘要冒充 AI 输出。来源证据必须通过当前周期原始消息 ID 白名单校验；不要把未验证的模型推断当作确定事实自动写入长期记忆。每次代码修改后运行适用的类型检查、测试、lint 与构建；没有实际执行的检查不能声称通过。
 
-账号模型为「1 个管理员 + 邮箱注册普通用户」：`User.role` 只有 ADMIN/USER；业务接口按会话 `userId` 过滤，天然隔离；管理员接口 `/api/admin/*` 走 `requireAdminActor()`。QQ 渠道适配器（`server/utils/channel-adapter/*`）走官方开放平台 WebSocket 网关 + REST 发消息，AppSecret 加密入库，消息处理按角色绑定路由、幂等去重、回写平台；回归测试 `yarn test:channel`。
+账号模型为「1 个管理员 + 邮箱注册普通用户」：`User.role` 只有 ADMIN/USER；业务接口按会话 `userId` 过滤，天然隔离；管理员接口 `/api/admin/*` 走 `requireAdminActor()`。QQ 渠道只保留 OneBot 一条通道（`server/utils/channel-adapter/onebot/*`）：挂个人号，走 OneBot v11 网关的 WS 收消息 + HTTP API 发消息，WS/HTTP Token 加密入库，消息处理按角色绑定路由、幂等去重、回写平台；回归测试 `yarn test:onebot`。QQ 官方机器人渠道（AppID + AppSecret）已于 2026-10-27 下线，不要再恢复。
 
 ## 外部 Vue Skill 的 Nuxt 覆盖说明
 

@@ -6,8 +6,7 @@
  * API for sending replies. yiling-hub acts as a OneBot *client*: it connects to the gateway's
  * WS server and calls its HTTP API to send.
  *
- * Platform id is "qq-onebot", distinct from the official bot channel ("qq"), so the two
- * channels' memories and external identities never merge.
+ * Platform id is "qq-onebot". QQ 官方机器人渠道已下线，QQ 只保留这一条通道。
  */
 
 export const ONEBOT_PLATFORM = "qq-onebot";

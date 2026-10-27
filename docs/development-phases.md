@@ -75,6 +75,8 @@
 
 **已实现（2026-10-24）：** 接入 QQ 官方机器人开放平台（WebSocket 网关 + REST 发消息，AppID/AppSecret 加密入库）。适配器按角色绑定路由消息，检索角色全局记忆生成回复、持久化并回发；同一消息幂等去重；连接/错误状态回写 `platform_connections`。端到端测试 `yarn test:channel`（用 `scripts/mock-qq-gateway.mjs` 模拟官方网关）。仍待完成：按外部用户隔离私人记忆、断线重连与主动消息、渠道管理前端页面（当前仅有管理员 API）。
 
+> **2026-10-27 变更：** 官方机器人渠道已下线并删除（`qq.ts` / `serve.ts` / `configure.ts` / `types.ts` / `route.ts`、`yarn channel:run`、`scripts/mock-qq-gateway.mjs`、`yarn test:channel`）。QQ 只保留 OneBot 小号通道，见 [qq-onebot-adapter.md](qq-onebot-adapter.md)，验收命令改为 `yarn test:onebot`。
+
 ## Phase 6：部署和扩展
 **交付：** HTTPS、配置管理、备份恢复演练、监控、磁盘告警、日志轮转、数据删除策略与后续扩展说明。
 

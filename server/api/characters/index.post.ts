@@ -25,7 +25,8 @@ export default defineEventHandler(async (event) => {
       name,
       avatar: name.slice(0, 1),
       basePrompt: personality || "请补充角色的人设与行为规则。",
-      status: "PAUSED",
+      // 新建即可对话：停用是用户显式动作（角色管理 → 停用），不是默认态。
+      status: "ACTIVE",
       modelConfig: { alias, description, avatarTone },
       memoryScopes: {
         create: {

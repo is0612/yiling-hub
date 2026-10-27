@@ -7,61 +7,23 @@ import { getPrisma } from "../../../utils/prisma";
 /**
  * Creates or updates a channel connection.
  *
- * - QQ：AppSecret 用 AES-256-GCM 加密入库，AppID 兼作唯一账号键。
+ * - QQ OneBot：WS/HTTP 地址与 Token 用 AES-256-GCM 加密入库，QQ 号兼作唯一账号键。
  * - B站：无 AppID/AppSecret，值班设置（dataHome / biliBin / duty）写入 metadata；
  *        登录凭证沿用 bili-cli 自己的 credential.json，不随代码、不入库。
  */
 export default defineEventHandler(async (event) => {
   await requireAdminActor(event);
   const body = await readBody<Record<string, unknown>>(event);
-  const platform = readTrimmedString(body?.platform, "平台", 50) || "qq";
+  const platform = readTrimmedString(body?.platform, "平台", 50);
 
-  if (platform === "qq") {
-    return createQqConnection(body);
-  }
   if (platform === "qq-onebot") {
     return createOnebotConnection(body);
   }
   if (platform === "bili") {
     return createBiliConnection(body);
   }
-  throw createError({ statusCode: 400, statusMessage: "不支持该平台，目前支持 qq / qq-onebot / bili。" });
+  throw createError({ statusCode: 400, statusMessage: "不支持该平台，目前支持 qq-onebot / bili。" });
 });
-
-async function createQqConnection(body: Record<string, unknown>) {
-  const appId = readTrimmedString(body?.appId, "AppID", 100, { required: true });
-  const appSecret = readTrimmedString(body?.appSecret, "AppSecret", 500, { required: true });
-  const displayName = readTrimmedString(body?.displayName, "显示名", 120) || `QQ 机器人 ${appId}`;
-
-  const prisma = getPrisma();
-  const credentialsCiphertext = Buffer.from(await encryptApiKey(JSON.stringify({ appId, appSecret })), "utf8");
-
-  const connection = await prisma.platformConnection.upsert({
-    where: { platform_platformAccountKey: { platform: "qq", platformAccountKey: appId } },
-    create: {
-      platform: "qq",
-      platformAccountKey: appId,
-      displayName,
-      status: "DISCONNECTED",
-      credentialsCiphertext,
-      metadata: { appId },
-    },
-    update: {
-      displayName,
-      credentialsCiphertext,
-      metadata: { appId },
-    },
-    select: { id: true, platform: true, displayName: true, platformAccountKey: true, status: true },
-  });
-
-  return {
-    id: connection.id,
-    platform: connection.platform,
-    displayName: connection.displayName,
-    appId: connection.platformAccountKey,
-    status: connection.status,
-  };
-}
 
 async function createOnebotConnection(body: Record<string, unknown>) {
   const wsUrl = readTrimmedString(body?.wsUrl, "WS 地址", 500) || "ws://127.0.0.1:3001";

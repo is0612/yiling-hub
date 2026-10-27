@@ -288,19 +288,29 @@ paths:
           description: 仅管理员可访问
     post:
       tags: [Auth]
-      summary: 创建或更新 QQ 机器人连接（仅管理员）
-      description: AppSecret 使用 AES-256-GCM 加密后入库，只有渠道适配器可解密。
+      summary: 创建或更新渠道连接（仅管理员）
+      description: |
+        支持的平台只有 `qq-onebot`（QQ 小号，OneBot v11）与 `bili`（B站 值班）。
+        凭据与 Token 使用 AES-256-GCM 加密后入库，只有渠道适配器可解密，接口不回传。
+        QQ 官方机器人渠道（AppID + AppSecret）已于 2026-10-27 下线。
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [appId, appSecret]
+              required: [platform]
               properties:
-                appId: { type: string, maxLength: 100 }
-                appSecret: { type: string, maxLength: 500 }
+                platform: { type: string, enum: [qq-onebot, bili] }
                 displayName: { type: string, maxLength: 120 }
+                qqNumber: { type: string, maxLength: 100, description: 'qq-onebot 必填' }
+                wsUrl: { type: string, maxLength: 500, description: 'qq-onebot 可选，默认 ws://127.0.0.1:3001' }
+                httpUrl: { type: string, maxLength: 500, description: 'qq-onebot 可选，默认 http://127.0.0.1:3000' }
+                accessToken: { type: string, maxLength: 500, description: 'qq-onebot WS Token' }
+                httpToken: { type: string, maxLength: 500, description: 'qq-onebot HTTP Token' }
+                replyOnlyWhenMentioned: { type: boolean, description: 'qq-onebot 群聊仅被 @ 时回复' }
+                dataHome: { type: string, maxLength: 500, description: 'bili 可选，对应 bili-desk 的 DATA_HOME' }
+                biliBin: { type: string, maxLength: 500, description: 'bili 可选，bili 可执行文件路径' }
       responses:
         '200':
           description: 连接已保存

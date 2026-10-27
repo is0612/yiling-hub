@@ -1,12 +1,10 @@
 <script setup lang="ts">
-import { ArrowRight, CirclePlus, MoreFilled, Plus, Search, MagicStick, Close, Delete, User, Collection } from "@element-plus/icons-vue";
+import { ArrowRight, CirclePlus, MoreFilled, Plus, MagicStick, Delete, User, CopyDocument, VideoPause, VideoPlay } from "@element-plus/icons-vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import type { Character, CharacterStatus } from "~/utils/mock-data";
 
 const characters = ref<Character[]>([]);
 const loading = ref(true);
-const query = ref("");
-const statusFilter = ref<CharacterStatus | "全部状态">("全部状态");
 const dialogOpen = ref(false);
 const name = ref("");
 const description = ref("");
@@ -22,15 +20,6 @@ async function loadCharacters() {
     loading.value = false;
   }
 }
-
-const filtered = computed(() => characters.value.filter((character) => {
-  const textMatches = !query.value || `${character.name} ${character.description} ${character.alias}`.toLowerCase().includes(query.value.toLowerCase());
-  const statusMatches = statusFilter.value === "全部状态" || character.status === statusFilter.value;
-  return textMatches && statusMatches;
-}));
-const runningCount = computed(() => characters.value.filter((item) => item.status === "运行中").length);
-const totalMemories = computed(() => characters.value.reduce((sum, item) => sum + item.memoryCount, 0));
-const hasFilters = computed(() => Boolean(query.value) || statusFilter.value !== "全部状态");
 
 async function createCharacter() {
   const trimmed = name.value.trim();
@@ -62,9 +51,63 @@ async function createCharacter() {
   }
 }
 
-function resetFilters() { query.value = ""; statusFilter.value = "全部状态"; }
 function statusTone(status: CharacterStatus) {
   return status === "运行中" ? "pill-green" : status === "已暂停" ? "pill-amber" : "pill-gray";
+}
+
+function readError(error: unknown, fallback: string) {
+  if (error && typeof error === "object" && "statusMessage" in error) {
+    const message = String((error as { statusMessage?: unknown }).statusMessage ?? "");
+    if (message) return message;
+  }
+  return fallback;
+}
+
+/**
+ * 复制角色：只复制人设/简介/标签，不带记忆、会话、阶段总结与渠道绑定。
+ * 复制出来的角色是个「同名新生体」——记忆从零开始，避免两套记忆互相污染。
+ */
+async function duplicateCharacter(character: Character) {
+  try {
+    const copy = await $fetch<Character>("/api/characters", {
+      method: "POST",
+      body: {
+        name: character.name + " 副本",
+        alias: character.alias,
+        description: character.description,
+        personality: character.personality,
+        avatarTone: character.avatarTone,
+      },
+    });
+    characters.value.unshift(copy);
+    ElMessage.success(`已复制「${character.name}」。人设沿用，记忆从零开始。`);
+  } catch (error) {
+    ElMessage.error(readError(error, "复制失败，请稍后重试。"));
+  }
+}
+
+/** 停用 / 启用：停用后角色不再回复 AI 对话、渠道消息和 B站 值班。 */
+async function toggleCharacterStatus(character: Character) {
+  const pausing = character.status !== "已暂停";
+  if (pausing) {
+    const confirmed = await ElMessageBox.confirm(
+      `停用「${character.name}」后，它不再回复 AI 对话、渠道消息，也不跑 B站 值班。已有记忆和阶段总结不受影响，自动归档仍按记忆设置单独控制。`,
+      "停用角色",
+      { confirmButtonText: "停用", cancelButtonText: "取消", type: "warning" },
+    ).catch(() => false);
+    if (!confirmed) return;
+  }
+  try {
+    const updated = await $fetch<Character>(`/api/characters/${character.id}`, {
+      method: "PATCH",
+      body: { status: pausing ? "已暂停" : "运行中" },
+    });
+    const index = characters.value.findIndex((item) => item.id === character.id);
+    if (index >= 0) characters.value.splice(index, 1, updated);
+    ElMessage.success(pausing ? "角色已停用。" : "角色已启用。");
+  } catch (error) {
+    ElMessage.error(readError(error, pausing ? "停用失败，请稍后重试。" : "启用失败，请稍后重试。"));
+  }
 }
 
 async function deleteCharacter(character: Character) {
@@ -93,7 +136,7 @@ onMounted(() => void loadCharacters());
 </script>
 
 <template>
-  <div class="page-wrap">
+  <div class="page-wrap chars-a">
     <PageHeader
       eyebrow="工作空间 / 角色管理"
       title="你的角色档案"
@@ -108,85 +151,6 @@ onMounted(() => void loadCharacters());
         </el-button>
       </template>
     </PageHeader>
-
-    <!-- KPI：角色规模一眼看完 -->
-    <div class="kpi-row is-three">
-      <div class="kpi">
-        <div class="k">
-          <el-icon><User /></el-icon>全部角色
-        </div>
-        <div class="v">
-          {{ characters.length }}<small>个</small>
-        </div>
-        <div class="foot">
-          角色档案保存在本地数据库
-        </div>
-      </div>
-      <div class="kpi">
-        <div class="k">
-          <el-icon><MagicStick /></el-icon>正在运行
-        </div>
-        <div class="v">
-          {{ runningCount }}<small>个</small>
-        </div>
-        <div class="foot">
-          {{ characters.length - runningCount }} 个已暂停或未连接
-        </div>
-      </div>
-      <div class="kpi">
-        <div class="k">
-          <el-icon><Collection /></el-icon>已保存记忆
-        </div>
-        <div class="v">
-          {{ totalMemories }}<small>条</small>
-        </div>
-        <div class="foot">
-          所有角色加总的记忆条目
-        </div>
-      </div>
-    </div>
-
-    <div class="filter-bar">
-      <el-input
-        v-model="query"
-        class="filter-grow"
-        placeholder="搜索角色名称、简介或标签……"
-        clearable
-      >
-        <template #prefix>
-          <el-icon><Search /></el-icon>
-        </template>
-      </el-input>
-      <el-select
-        v-model="statusFilter"
-        aria-label="筛选角色状态"
-        style="width:150px"
-      >
-        <el-option
-          label="全部状态"
-          value="全部状态"
-        />
-        <el-option
-          label="运行中"
-          value="运行中"
-        />
-        <el-option
-          label="已暂停"
-          value="已暂停"
-        />
-        <el-option
-          label="未连接"
-          value="未连接"
-        />
-      </el-select>
-      <el-button
-        v-if="hasFilters"
-        @click="resetFilters"
-      >
-        <el-icon><Close /></el-icon>重置
-      </el-button>
-      <span class="filter-count">找到 <strong>{{ filtered.length }}</strong> / {{ characters.length }} 个</span>
-    </div>
 
     <div
       v-if="loading"
@@ -216,11 +180,11 @@ onMounted(() => void loadCharacters());
       </div>
     </div>
     <div
-      v-else-if="filtered.length"
+      v-else-if="characters.length"
       class="card-grid"
     >
       <div
-        v-for="character in filtered"
+        v-for="character in characters"
         :key="character.id"
         class="character-card-wrap"
       >
@@ -253,7 +217,7 @@ onMounted(() => void loadCharacters());
             class="character-description"
             :class="{ 'is-empty': !character.description }"
           >
-            {{ character.description || "还没有写简介，点开档案补一句吧。" }}
+            {{ character.description || "还没有写简介" }}
           </p>
           <div class="meta-row">
             <span>{{ character.intervalDays }} 天归档周期</span>
@@ -283,6 +247,15 @@ onMounted(() => void loadCharacters());
               <el-dropdown-item @click="navigateTo('/characters/' + character.id + '/settings/memory')">
                 记忆设置
               </el-dropdown-item>
+              <el-dropdown-item @click="duplicateCharacter(character)">
+                <el-icon><CopyDocument /></el-icon>复制角色
+              </el-dropdown-item>
+              <el-dropdown-item @click="toggleCharacterStatus(character)">
+                <el-icon>
+                  <VideoPause v-if="character.status !== '已暂停'" />
+                  <VideoPlay v-else />
+                </el-icon>{{ character.status === "已暂停" ? "启用角色" : "停用角色" }}
+              </el-dropdown-item>
               <el-dropdown-item
                 divided
                 @click="deleteCharacter(character)"
@@ -303,22 +276,9 @@ onMounted(() => void loadCharacters());
           <User />
         </el-icon>
       </div>
-      <h4>{{ characters.length ? "没有符合条件的角色" : "还没有角色" }}</h4>
-      <p>
-        {{ characters.length
-          ? "换个关键词或重置筛选条件再试一次。"
-          : "创建第一个角色，开始积累它独立的记忆与经历。" }}
-      </p>
+      <h4>还没有角色</h4>
+      <p>创建第一个角色，开始积累它独立的记忆与经历。</p>
       <button
-        v-if="characters.length"
-        class="btn"
-        type="button"
-        @click="resetFilters"
-      >
-        重置筛选
-      </button>
-      <button
-        v-else
         class="btn primary"
         type="button"
         @click="dialogOpen = true"
@@ -365,7 +325,7 @@ onMounted(() => void loadCharacters());
           />
         </el-form-item>
         <div class="info-callout">
-          <el-icon><MagicStick /></el-icon><span>角色将保存到本地 PostgreSQL；请勿在未完成认证前将开发接口公开到网络。</span>
+          <el-icon><MagicStick /></el-icon><span>创建后可在角色设置里补模型 API 和归档周期，配好就能开始对话。</span>
         </div>
         <div class="dialog-actions">
           <el-button @click="dialogOpen = false">
@@ -379,45 +339,122 @@ onMounted(() => void loadCharacters());
         </div>
       </el-form>
     </el-dialog>
-    <p class="footer-note">
-      角色列表和档案创建已接入本地数据库；阶段总结、时间线和任务执行仍处于后续开发阶段。
-    </p>
   </div>
 </template>
 
 <style scoped>
-/* 概览：三格 KPI，把首屏让给角色列表 */
-.kpi-row.is-three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+/* ══════════════════════════════════════════════════════════════
+   沿用总览页 A 套「色块平铺」：一张白台面，零描边零阴影，
+   层次只靠明度差 + 间距，颜色只给状态。
+   L0 画布（--bg）→ L1 白砖 #fff → L2 卡内分节靠留白 → L3 状态药丸上色
+   统一写 `.chars-a .xxx`：锁住本页，同时靠 (0,3,0) 压过
+   main.css 里 .card / .kpi / .pill / .btn / .surface 的 (0,1,0)。
+   ══════════════════════════════════════════════════════════════ */
 
-/* 筛选条：一行搞定，不做成卡片 */
-.filter-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 14px; }
-.filter-bar .filter-grow { flex: 1; min-width: 220px; }
-.filter-count { margin-left: auto; color: var(--dim); font-size: 12px; }
-.filter-count strong { color: var(--text-2); }
+/* 卡片网格：16px 缝，跟画布留出呼吸。
+   角色基本只有 1 个，会看到一张卡靠左 —— 那是内容少，不是布局错，别为此拉宽成横条 */
+.chars-a .card-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.chars-a .character-card-wrap { position: relative; display: flex; }
 
-.card-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
-.character-card-wrap { position: relative; display: flex; }
-.char-card { display: flex; width: 100%; flex-direction: column; padding: 16px 18px 14px; }
-.char-card:hover .card-cta { color: var(--brand-strong); }
-.card-more { position: absolute; top: 8px; right: 8px; z-index: 2; }
-.card-more :deep(.el-button) { color: var(--faint); }
-.card-more :deep(.el-button:hover) { background: var(--surface-3); color: var(--text-2); }
-/* 卡片不再放独立按钮：整卡即入口，右下只留视觉提示 */
-.card-cta { display: inline-flex; align-items: center; gap: 3px; color: var(--faint); font-size: 12px; font-weight: 600; transition: color .16s var(--ease); }
-.character-description { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; min-height: 40px; }
-.character-description.is-empty { color: var(--faint); }
-.character-footer { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-top: 14px; border-top: 1px solid var(--line); padding-top: 11px; }
-.character-footer .muted-note { display: inline-flex; align-items: baseline; gap: 4px; }
-.character-footer strong { color: var(--text-2); font-size: 12px; font-weight: 600; }
+/* 白砖：零描边零阴影。整卡即入口，hover 只让文字回应，不给整卡铺底
+   （白卡在 #f4f6f9 画布上，铺 --surface-2 反而更亮，会看成"往上飘"） */
+.chars-a .surface,
+.chars-a .char-card {
+  border: 0;
+  box-shadow: none;
+  background: var(--surface);
+  border-radius: 10px;
+}
+.chars-a .char-card {
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  padding: 18px 18px 15px;
+}
+.chars-a .char-card:hover .character-name,
+.chars-a .char-card:hover .card-cta { color: var(--brand-strong); }
+
+.chars-a .card-more { position: absolute; top: 8px; right: 8px; z-index: 2; }
+.chars-a .card-more :deep(.el-button) { color: var(--faint); }
+.chars-a .card-more :deep(.el-button:hover) { background: var(--surface-3); color: var(--text-2); }
+
+/* 卡头：头像 48px 刚好压住「名称 16 + 别名 12」两行 */
+.chars-a .character-avatar { width: 48px; height: 48px; font-size: 17px; }
+.chars-a .character-name { color: var(--text); font-size: 16px; font-weight: 700; letter-spacing: -.01em; }
+/* 别名是身份信息，不能落在 --faint（2.52:1）上 */
+.chars-a .character-alias { margin-top: 3px; color: var(--dim); font-size: 12px; }
+
+/* 描述：最多两行，不锁最小高度。main.css 给这个类写了 min-height:40px，
+   会把一行占位文案撑成两行高，在描述和元信息之间留出一段假空隙、把一组信息拆成两块 */
+.chars-a .character-description {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  min-height: 0;
+  margin-top: 12px;
+  color: var(--dim);
+  font-size: 14px;
+  line-height: 1.6;
+}
+.chars-a .character-description.is-empty { color: var(--dim); }
+
+/* 元信息成一组：描述→meta 16，meta→底栏 6 —— 组间距必须明显大于组内 */
+.chars-a .meta-row { gap: 10px; margin-top: 16px; color: var(--dim); font-size: 12px; }
+.chars-a .character-footer {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 6px;
+  border-top: 0;
+  padding-top: 0;
+}
+.chars-a .character-footer .muted-note { display: inline-flex; align-items: baseline; gap: 4px; color: var(--dim); }
+.chars-a .character-footer strong { color: var(--text-2); font-size: 12px; font-weight: 600; }
+.chars-a .card-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--dim);
+  font-size: 12px;
+  font-weight: 600;
+  transition: color .16s var(--ease);
+}
+
+/* 状态药丸：无描边；正常态软底深字，文字按浅底实测加深 */
+.chars-a .pill { border: 0; }
+.chars-a .pill-green { color: #0b7a54; }
+.chars-a .pill-amber { color: #8f5c05; }
+.chars-a .pill-gray { color: var(--text-2); }
+
+/* 空态：虚线框和渐变光晕都去掉，跟总览的引导块同一块白砖 */
+.chars-a .empty-block {
+  min-height: 260px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--surface);
+  padding: 34px 24px 30px;
+}
+.chars-a .empty-block .halo {
+  width: 44px;
+  height: 44px;
+  margin-bottom: 12px;
+  border-radius: 50%;
+  background: var(--brand-soft);
+  box-shadow: none;
+  color: var(--brand);
+  font-size: 20px;
+}
+.chars-a .empty-block h4 { margin: 0 0 7px; color: var(--text); font-size: 16px; font-weight: 600; }
+.chars-a .empty-block p { max-width: 460px; margin: 0 0 16px; color: var(--dim); font-size: 14px; line-height: 1.7; }
 
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+
 @media (max-width: 1100px) {
-  .card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .kpi-row.is-three { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .chars-a .card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 700px) {
-  .card-grid { grid-template-columns: minmax(0, 1fr); }
-  .kpi-row.is-three { grid-template-columns: minmax(0, 1fr); }
-  .filter-count { margin-left: 0; }
+  .chars-a .card-grid { grid-template-columns: minmax(0, 1fr); }
 }
 </style>

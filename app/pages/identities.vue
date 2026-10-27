@@ -35,7 +35,10 @@ function readErrorMessage(error: unknown, fallback: string) {
 }
 
 function platformLabel(platform: string) {
-  return platform === "bili" ? "B站" : platform === "qq" ? "QQ" : platform === "wechat" ? "微信" : platform;
+  if (platform === "bili") return "B站";
+  if (platform === "qq-onebot") return "QQ 小号";
+  if (platform === "wechat") return "微信";
+  return platform;
 }
 
 function formatDateTime(value: string | null) {

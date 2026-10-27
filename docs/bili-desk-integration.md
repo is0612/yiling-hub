@@ -58,7 +58,7 @@ channel-adapter/
     configure.ts             # loadBiliConnections（复用 loadQqConnections 模式）
 ```
 
-新增脚本（对齐现有 `channel:run`）：
+新增脚本（对齐现有 `onebot:run`）：
 
 - `yarn bili:run` → `scripts/run-bili-adapter.ts`（长驻：调度 + 被动回复）
 - `yarn bili:scheduler:run` / `--watch`
@@ -193,3 +193,60 @@ bili-desk 的 `data/`（config.json / seen.md / out/ / workspace/AGENTS.md / hum
 - [ ] 值班实现：先脚本化（B）还是直接工具循环（A）？建议先 B。
 - [ ] 迁移 bili-desk 现有 `data/` 里的历史（人设/札记/判重/报告），还是从零开始？
 - [ ] 值班任务是否复用现有 `MemoryJob` 队列，还是新增独立的 `BiliJob` 队列？
+
+## 11. 实现状态（2026-10-27）
+
+脚本化流水线（方案 B）已补齐第 5.1 节列的全部步骤。此前只有「找候选 → 逐条判标题 → 写报告」，
+缺「看懂」「投递」，且调度与被动回复都是断的。
+
+### 11.1 一轮的实际步骤
+
+| 步骤 | 实现 | 说明 |
+| --- | --- | --- |
+| 读判重 + 额度 | ✅ | 7 天内看过的不再进来；额度按自然日算 |
+| 找候选 | ✅ | `feed recommend` + `hot rank` + `search video --order new`，去重后最多 25 条 |
+| 粗筛 | ✅ | 把标题/简介/推荐理由/播放量交给模型，返回 BV 数组，最多 `min(5, 剩余额度+2)` 条 |
+| 看懂 | ✅ | 对入选的逐条 `video watch --comments 5 --max-chars 1200 --frames <设置>` |
+| 终判 | ✅ | 基于看懂的正文判「值得/跳过」，同时产出理由与一句评论 |
+| 投递 | ✅ | 私信汇总成一条 `dm send owner --file`；评论 `comment post <BV> --file --at` |
+| 收尾 | ✅ | 报告（`### BV`）、判重表、人格札记（长期记忆） |
+
+**为什么两级筛**：`video watch` 会拉字幕、可能触发语音转写，是整条链路最贵的操作
+（单条最慢几十分钟）。先用列表元数据粗筛，只对入选的付出 watch 的代价。
+
+### 11.2 踩过的坑（都已修）
+
+1. **UP 主名字恒为空** —— 列表命令返回的 `author` 是**对象** `{mid, name}`，不是字符串；
+   `typeof author === "string"` 永远 false。而 `video watch` 用的是 `owner: {mid, name}`。
+   现在统一走 `cards.ts` 的 `readAuthor()`，字符串/对象/`uname`/嵌套都认。
+2. **`search video --order pubdate` 是非法参数** —— 合法值只有
+   `default / views / new / danmaku / favorites / comments`。传非法值 CLI 直接抛
+   `invalid_argument`，而旧代码不检查返回码，错误被静默吞掉 → 关键词搜索整条路径全废。
+   现已改用 `new`，并且所有命令都过 `readBiliError()`。
+3. **`hot rank` 根本没被调用** —— 提示词里写了，脚本里漏了。已补上，这是最稳的来源
+   （不依赖账号的推荐画像）。
+4. **判词误判** —— 旧实现 `reply.includes("值得")` 会把「不**值得**」判成挑中。
+   现改为取最早出现的判词定性，判不出来一律跳过。
+5. **谷时窗口每分钟触发一次** —— `refreshState()` 里 `windowsRun` 写死 `[]`，
+   而窗口判断恰恰靠它。现在从 `BiliRoundReport.createdAt` 反推窗口标记，重启也不丢。
+6. **跨午夜一个夜算两轮** —— 夜间窗口 18:00–09:00 跨自然日，当晚和次日凌晨会各跑一次。
+   加了 `windowDayKey()`：凌晨 0–9 点归到前一天。
+7. **被动回复字段全错位** —— `dm list` 返回会话卡片（`uid` / `last_message.text` / `from`），
+   `feed replies` 返回 `content` / `user.mid` / `on.bvid` / `rpid`，旧代码读的是
+   `item.id` / `item.text`，导致每条消息都被当 `missing_fields` 丢掉。
+   另外 `{ok,data:{items}}` 的封装要先剥 `data` 再取 `items`。
+8. **回复别人的评论用了 `comment post`** —— 那是发新根评论。已改为
+   `comment reply <BV> <rpid> [--root]`，才是楼中楼。
+
+### 11.3 已知限制
+
+- **私信粒度是会话级**：`dm list` 只给每个会话的「最后一条消息」，同一会话连发两条
+  只能看到后一条。要更细得改成 `dm read <uid>`（每会话多一次调用）。
+- **投递失败不重试**：`rate_limited` 直接放弃本轮投递并写进日志，`risk_control` /
+  `captcha_required` / `auth_expired` 立即停手。这是 CLI 的设计约束，不要绕过。
+- **私信汇总成一条**：多挑中几条时按编号汇总，超 500 字会自动少报几条，
+  而不是拆成多条连发（避免撞 10 秒/次、20 次/小时的本地限流）。
+- **watch 单条超时 10 分钟**：超时记为该条跳过，不会拖住整轮。
+- **未做端到端验证**：本机 B站凭证已 `auth_expired`，且数据库里还没有 B站渠道连接与
+  角色绑定，模型侧也没配 API Key。逻辑层由 `test:bili-duty` / `test:bili-cards` 覆盖；
+  真跑一轮需要先扫码登录、建好连接并绑定角色、配好模型。

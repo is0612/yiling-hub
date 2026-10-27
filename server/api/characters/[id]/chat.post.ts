@@ -41,6 +41,7 @@ export default defineEventHandler(async (event) => {
       id: true,
       name: true,
       basePrompt: true,
+      status: true,
       modelConfig: true,
       memoryScopes: {
         select: {
@@ -54,6 +55,9 @@ export default defineEventHandler(async (event) => {
     },
   });
   if (!character) throw createError({ statusCode: 404, statusMessage: "角色不存在。" });
+  if (character.status !== "ACTIVE") {
+    throw createError({ statusCode: 409, statusMessage: "角色已停用，无法继续对话。请先在「角色管理」里重新启用。" });
+  }
 
   // A stable client requestKey prevents duplicate model calls and duplicate conversation creation on retries.
   const staleBefore = new Date(Date.now() - 10 * 60 * 1000);

@@ -29,7 +29,6 @@
     "test:memory-ai-request": "tsx scripts/test-memory-ai-request.ts",
     "worker:run": "tsx scripts/run-memory-worker.ts",
     "worker:watch": "tsx scripts/run-memory-worker.ts --watch",
-    "channel:run": "tsx scripts/run-channel-adapter.ts",
     "onebot:run": "tsx scripts/run-onebot-adapter.ts",
     "bili:run": "tsx scripts/run-bili-adapter.ts",
     "bili:import": "tsx scripts/import-bili-desk.ts",
@@ -41,13 +40,13 @@
     "test:chat-request-idempotency-db": "tsx scripts/test-chat-request-idempotency-db.ts",
     "test:auth": "tsx scripts/test-auth.ts",
     "test:auth-db": "tsx scripts/test-auth-db.ts",
-    "test:channel": "tsx scripts/test-qq-adapter.ts",
     "test:onebot": "tsx scripts/test-onebot-adapter.ts",
     "test:bili-runner": "tsx scripts/test-bili-runner.ts",
     "test:bili-db": "tsx scripts/test-bili-db.ts",
     "test:bili-duty": "tsx scripts/test-bili-duty.ts",
+    "test:bili-cards": "tsx scripts/test-bili-cards.ts",
     "test:identity": "tsx scripts/test-identity.ts",
-    "verify:local": "yarn run db:validate && yarn run db:generate && yarn nuxt prepare && yarn run typecheck && yarn run test:scheduler && yarn run test:scheduler-db && yarn run test:memory-ai && yarn run test:memory-retrieval && yarn run test:chat-model-config && yarn run test:chat-reply && yarn run test:chat-private-memory && yarn run test:chat-private-memory-db && yarn run test:auth && yarn run test:auth-db && yarn run lint && yarn run build"
+    "verify:local": "yarn run db:validate && yarn run db:generate && yarn nuxt prepare && yarn run typecheck && yarn run test:scheduler && yarn run test:scheduler-db && yarn run test:memory-ai && yarn run test:memory-ai-request && yarn run test:memory-retrieval && yarn run test:chat-model-config && yarn run test:chat-reply && yarn run test:chat-private-memory && yarn run test:chat-private-memory-db && yarn run test:chat-request-idempotency-db && yarn run test:auth && yarn run test:auth-db && yarn run test:identity && yarn run test:onebot && yarn run test:bili-cards && yarn run test:bili-duty && yarn run test:bili-runner && yarn run test:bili-db && yarn run lint && yarn run build"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",
