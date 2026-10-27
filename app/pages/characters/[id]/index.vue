@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ArrowRight, Calendar, Collection, Files, Search, Setting, MagicStick, Delete } from "@element-plus/icons-vue";
+import { ArrowRight, Calendar, Collection, Files, Search, Edit, Cpu, MagicStick, Delete } from "@element-plus/icons-vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { initialCharacters, type Character, type Snapshot, type TimelineEntry, type TimelineType } from "~/utils/mock-data";
 
@@ -144,8 +144,8 @@ async function loadCharacter() {
   }
 }
 
-/** 角色设置（资料 + 模型参数）由共享弹窗自己提交，这里只接结果 */
-function onSettingsSaved(updated: Character) {
+/** 资料弹窗自己提交，这里只接结果刷新页面数据 */
+function onProfileSaved(updated: Character) {
   currentCharacter.value = updated;
 }
 
@@ -469,7 +469,14 @@ watch(id, () => void loadCharacter());
           class="btn"
           @click="editOpen = true"
         >
-          <el-icon><Setting /></el-icon>角色设置
+          <el-icon><Edit /></el-icon>编辑资料
+        </button>
+        <button
+          type="button"
+          class="btn"
+          @click="navigateTo('/characters/' + character.id + '/settings/model')"
+        >
+          <el-icon><Cpu /></el-icon>模型设置
         </button>
         <button
           type="button"
@@ -1017,10 +1024,10 @@ watch(id, () => void loadCharacter());
       </template>
     </el-dialog>
 
-    <CharacterSettingsDialog
+    <CharacterProfileDialog
       v-model="editOpen"
       :character="character"
-      @saved="onSettingsSaved"
+      @saved="onProfileSaved"
     />
   </div>
 </template>

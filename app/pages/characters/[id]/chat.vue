@@ -1,7 +1,6 @@
 <script setup lang="ts">
-import { ChatDotRound, Clock, CopyDocument, Download, Plus, Promotion, Refresh, Reading, Search, Setting, User, Warning } from "@element-plus/icons-vue";
+import { ChatDotRound, Clock, CopyDocument, Download, Plus, Promotion, Refresh, Reading, Search, Cpu, User, Warning } from "@element-plus/icons-vue";
 import { ElMessage, ElMessageBox } from "element-plus";
-import type { Character } from "~/utils/mock-data";
 
 type ChatCharacter = {
   id: string;
@@ -72,7 +71,6 @@ const pendingRequestKey = ref<string | null>(null);
 const pendingRequestContent = ref<string | null>(null);
 const pendingRequestConversationId = ref<string | null>(null);
 const exporting = ref(false);
-const settingsOpen = ref(false);
 const messagePanel = ref<HTMLElement | null>(null);
 const activeConversation = computed(() => conversations.value.find((item) => item.id === conversationId.value) ?? null);
 
@@ -111,12 +109,6 @@ async function scrollToLatest() {
 
 async function loadCharacter() {
   character.value = await $fetch<ChatCharacter>("/api/characters/" + encodeURIComponent(id.value));
-}
-
-/** 角色设置（含模型参数）由共享弹窗提交，这里只接结果 */
-function onSettingsSaved(updated: Character) {
-  character.value = { ...(character.value ?? updated), ...updated } as ChatCharacter;
-  modelConfigured.value = Boolean(updated.chatApiKeyConfigured) || updated.chatApiKeySource === "character" || updated.chatApiKeySource === "environment";
 }
 
 async function renameConversation(item: ConversationSummary) {
@@ -362,7 +354,7 @@ async function sendMessage() {
     return;
   }
   if (!modelConfigured.value) {
-    ElMessage.warning("请先打开右上角「角色设置」，填写并保存 API 地址、API Key 和模型名称。");
+    ElMessage.warning("请先到右上角「模型设置」，填写并保存 API 地址、API Key 和模型名称。");
     return;
   }
 
@@ -434,9 +426,9 @@ onMounted(() => void reload());
           type="button"
           class="btn"
           :disabled="loading || sending || !character"
-          @click="settingsOpen = true"
+          @click="navigateTo('/characters/' + id + '/settings/model?from=chat')"
         >
-          <el-icon><Setting /></el-icon>角色设置
+          <el-icon><Cpu /></el-icon>模型设置
         </button>
         <button
           type="button"
@@ -455,7 +447,7 @@ onMounted(() => void reload());
     >
       <el-icon><Warning /></el-icon>
       <span>
-        <b>模型尚未配置。</b>在右上角「角色设置」里填写兼容 OpenAI Chat Completions 的 API 地址、Key 与模型名称。配置随角色保存在服务端，Key 加密存储，不会回传给网页。
+        <b>模型尚未配置。</b>到右上角「模型设置」里填写兼容 OpenAI Chat Completions 的 API 地址、Key 与模型名称。配置随角色保存在服务端，Key 加密存储，不会回传给网页。
       </span>
     </div>
 
@@ -689,12 +681,6 @@ onMounted(() => void reload());
         </div>
       </section>
     </div>
-
-    <CharacterSettingsDialog
-      v-model="settingsOpen"
-      :character="character"
-      @saved="onSettingsSaved"
-    />
   </div>
 </template>
 

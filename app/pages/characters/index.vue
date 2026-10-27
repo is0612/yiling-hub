@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ArrowRight, CirclePlus, MoreFilled, Plus, MagicStick, Delete, User, CopyDocument, VideoPause, VideoPlay, Edit } from "@element-plus/icons-vue";
+import { ArrowRight, CirclePlus, MoreFilled, Plus, MagicStick, Delete, User, CopyDocument, VideoPause, VideoPlay, Edit, Cpu } from "@element-plus/icons-vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import type { Character, CharacterStatus } from "~/utils/mock-data";
 
@@ -10,11 +10,8 @@ const name = ref("");
 const description = ref("");
 const personality = ref("");
 
-const editDialogOpen = ref(false);
-const editTarget = ref<Character | null>(null);
-const editName = ref("");
-const editDescription = ref("");
-const editPersonality = ref("");
+const profileOpen = ref(false);
+const profileTarget = ref<Character | null>(null);
 
 async function loadCharacters() {
   loading.value = true;
@@ -69,38 +66,20 @@ function readError(error: unknown, fallback: string) {
   return fallback;
 }
 
-function openEdit(character: Character) {
-  editTarget.value = character;
-  editName.value = character.name;
-  editDescription.value = character.description;
-  editPersonality.value = character.personality;
-  editDialogOpen.value = true;
+/**
+ * 「编辑资料」= 角色名称/简介/人设的弹窗；模型参数走独立的设置页。
+ * 弹窗曾经把九字段（资料 + 服务商 + Key + 模型 + 温度 + Token）全装进去，
+ * 在 1440×900 上一屏放不下，而 el-dialog 滚的是整层遮罩，保存按钮会跑到视野外。
+ */
+function openProfile(character: Character) {
+  profileTarget.value = character;
+  profileOpen.value = true;
 }
 
-async function saveEdit() {
-  const target = editTarget.value;
-  if (!target) return;
-  const trimmed = editName.value.trim();
-  if (!trimmed) {
-    ElMessage.warning("请先填写角色名称。");
-    return;
-  }
-  try {
-    const updated = await $fetch<Character>(`/api/characters/${target.id}`, {
-      method: "PATCH",
-      body: {
-        name: trimmed,
-        description: editDescription.value.trim(),
-        personality: editPersonality.value.trim(),
-      },
-    });
-    const index = characters.value.findIndex((item) => item.id === target.id);
-    if (index >= 0) characters.value.splice(index, 1, updated);
-    editDialogOpen.value = false;
-    ElMessage.success("角色资料已更新。");
-  } catch (error) {
-    ElMessage.error(readError(error, "保存失败，请稍后重试。"));
-  }
+/** 弹窗自己负责提交，列表这里只把结果回写，避免再发一次请求 */
+function onProfileSaved(updated: Character) {
+  const index = characters.value.findIndex((item) => item.id === updated.id);
+  if (index >= 0) characters.value.splice(index, 1, updated);
 }
 
 /**
@@ -228,10 +207,9 @@ onMounted(() => void loadCharacters());
         :key="character.id"
         class="character-card-wrap"
       >
-        <NuxtLink
-          :to="'/characters/' + character.id"
-          class="surface surface-hover char-card"
-        >
+        <!-- 整卡不是链接：卡片本身不可点，只有底部的「查看档案」是唯一跳转入口。
+             之前整块包在 NuxtLink 里，卡片任何空白处都会跳走，误触成本太高。 -->
+        <div class="surface char-card">
           <div class="character-card-head">
             <div
               class="avatar character-avatar"
@@ -262,12 +240,23 @@ onMounted(() => void loadCharacters());
           <div class="meta-row">
             <span>{{ character.intervalDays }} 天归档周期</span>
             <span>{{ character.memoryCount }} 条记忆</span>
+            <!-- 模型名是状态，不该只在「模型设置」页里才看得到 -->
+            <span
+              class="meta-model"
+              :class="{ 'is-missing': !character.chatModel }"
+            >{{ character.chatModel || "未配置模型" }}</span>
           </div>
           <div class="character-footer">
             <span class="muted-note">最近归档 <strong>{{ character.latestSnapshot }}</strong></span>
-            <span class="card-cta">查看档案<el-icon><ArrowRight /></el-icon></span>
+            <NuxtLink
+              :to="'/characters/' + character.id"
+              class="card-cta"
+              :aria-label="`查看 ${character.name} 的档案`"
+            >
+              查看档案<el-icon><ArrowRight /></el-icon>
+            </NuxtLink>
           </div>
-        </NuxtLink>
+        </div>
         <el-dropdown
           class="card-more"
           trigger="click"
@@ -281,11 +270,14 @@ onMounted(() => void loadCharacters());
           </el-button>
           <template #dropdown>
             <el-dropdown-menu>
-              <el-dropdown-item @click="openEdit(character)">
-                <el-icon><Edit /></el-icon>编辑角色
+              <el-dropdown-item @click="openProfile(character)">
+                <el-icon><Edit /></el-icon>编辑资料
               </el-dropdown-item>
               <el-dropdown-item @click="navigateTo('/characters/' + character.id)">
                 打开驾驶舱
+              </el-dropdown-item>
+              <el-dropdown-item @click="navigateTo('/characters/' + character.id + '/settings/model')">
+                <el-icon><Cpu /></el-icon>模型设置
               </el-dropdown-item>
               <el-dropdown-item @click="navigateTo('/characters/' + character.id + '/settings/memory')">
                 记忆设置
@@ -368,7 +360,7 @@ onMounted(() => void loadCharacters());
           />
         </el-form-item>
         <div class="info-callout">
-          <el-icon><MagicStick /></el-icon><span>创建后可在角色设置里补模型 API 和归档周期，配好就能开始对话。</span>
+          <el-icon><MagicStick /></el-icon><span>创建后到「模型设置」里配服务商与 API Key，到「记忆设置」里调归档周期，配好就能开始对话。</span>
         </div>
         <div class="dialog-actions">
           <el-button @click="dialogOpen = false">
@@ -383,55 +375,11 @@ onMounted(() => void loadCharacters());
       </el-form>
     </el-dialog>
 
-    <el-dialog
-      v-model="editDialogOpen"
-      title="编辑角色"
-      width="min(560px, 94vw)"
-      destroy-on-close
-    >
-      <el-form
-        label-position="top"
-        @submit.prevent="saveEdit"
-      >
-        <el-form-item
-          label="角色名称"
-          required
-        >
-          <el-input
-            v-model="editName"
-            placeholder="例如：星海旅人"
-            maxlength="40"
-            show-word-limit
-          />
-        </el-form-item>
-        <el-form-item label="角色简介">
-          <el-input
-            v-model="editDescription"
-            type="textarea"
-            :rows="2"
-            placeholder="用一句话描述角色的个性或定位。"
-          />
-        </el-form-item>
-        <el-form-item label="基础人设">
-          <el-input
-            v-model="editPersonality"
-            type="textarea"
-            :rows="3"
-            placeholder="角色的性格、说话方式、行为规则……"
-          />
-        </el-form-item>
-        <div class="dialog-actions">
-          <el-button @click="editDialogOpen = false">
-            取消
-          </el-button><el-button
-            type="primary"
-            @click="saveEdit"
-          >
-            保存修改
-          </el-button>
-        </div>
-      </el-form>
-    </el-dialog>
+    <CharacterProfileDialog
+      v-model="profileOpen"
+      :character="profileTarget"
+      @saved="onProfileSaved"
+    />
   </div>
 </template>
 
@@ -464,8 +412,9 @@ onMounted(() => void loadCharacters());
   flex-direction: column;
   padding: 18px 18px 15px;
 }
-.chars-a .char-card:hover .character-name,
-.chars-a .char-card:hover .card-cta { color: var(--brand-strong); }
+/* hover 反馈只给「查看档案」：整卡不可点，若名字也跟着变色，就等于在暗示整块可点 */
+.chars-a .card-cta:hover,
+.chars-a .card-cta:focus-visible { color: var(--brand-strong); }
 
 .chars-a .card-more { position: absolute; top: 8px; right: 8px; z-index: 2; }
 .chars-a .card-more :deep(.el-button) { color: var(--faint); }
@@ -494,6 +443,16 @@ onMounted(() => void loadCharacters());
 
 /* 元信息成一组：描述→meta 16，meta→底栏 6 —— 组间距必须明显大于组内 */
 .chars-a .meta-row { gap: 10px; margin-top: 16px; color: var(--dim); font-size: 12px; }
+/* 模型名是配置标识，不是叙述文字：稍作区分，别跟「8 天归档周期」混成一句。
+   名字可能很长（MiniMax-M2.7-highspeed），留一行省略，别把元信息行撑成两行 */
+.chars-a .meta-model {
+  overflow: hidden;
+  max-width: 100%;
+  color: var(--text-2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chars-a .meta-model.is-missing { color: var(--rose); }
 .chars-a .character-footer {
   display: flex;
   align-items: baseline;

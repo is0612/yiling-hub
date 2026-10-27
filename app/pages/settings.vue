@@ -38,7 +38,7 @@ import { Bell, Coin, Monitor } from "@element-plus/icons-vue";
             </div><span class="pill pill-gray">规划中</span>
           </div>
           <div class="info-callout callout-gap">
-            <el-icon><Monitor /></el-icon><span>不要将数据库密码、模型 API Key 或渠道 Token 放入前端配置；模型 API Key 在角色设置页加密保存。</span>
+            <el-icon><Monitor /></el-icon><span>不要将数据库密码、模型 API Key 或渠道 Token 放入前端配置；模型 API Key 在模型设置页加密保存。</span>
           </div>
         </section>
       </div>

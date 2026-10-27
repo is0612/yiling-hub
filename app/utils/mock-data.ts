@@ -15,7 +15,7 @@ export type Character = {
   memoryCount: number;
   latestSnapshot: string;
   personality: string;
-  // 模型参数：接口一直有返回，之前类型里漏了，导致「角色设置」拿不到。
+  // 模型参数：接口一直有返回，之前类型里漏了，导致「模型设置」拿不到。
   // 全部可选 —— 列表接口和详情接口返回的字段并不完全一致。
   chatModel?: string;
   chatTemperature?: number;

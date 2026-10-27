@@ -184,7 +184,7 @@ async function handleRefresh() {
       </p>
       <ol class="guide-steps">
         <li><span>1</span>新建角色，填人设</li>
-        <li><span>2</span>在角色设置里填模型 API</li>
+        <li><span>2</span>在模型设置里填模型 API</li>
         <li><span>3</span>开始对话，8 天后自动归档</li>
       </ol>
       <button
