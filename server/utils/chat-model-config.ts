@@ -108,6 +108,13 @@ export function buildChatCompletionsEndpoint(baseUrl: string): URL {
   return new URL(normalized + "/chat/completions");
 }
 
+/** `GET /models` 端点：OpenAI 兼容规范，用来拉服务商的可用模型列表 */
+export function buildModelsEndpoint(baseUrl: string): URL {
+  const normalized = validateChatApiBaseUrl(baseUrl);
+  if (!normalized) throw new Error("请先填写 API Base URL。");
+  return new URL(normalized + "/models");
+}
+
 /** API Key is accepted for saving but must be encrypted before it reaches modelConfig. */
 export function readChatModelSettingsPatch(body: Record<string, unknown>): ChatModelSettingsPatch {
   const patch: ChatModelSettingsPatch = {};

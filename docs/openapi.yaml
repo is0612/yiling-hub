@@ -723,6 +723,35 @@ paths:
           description: 模型调用失败或返回格式无效
         '503':
           description: 模型尚未配置
+  /characters/{characterId}/chat/models:
+    parameters:
+      - $ref: '#/components/parameters/CharacterId'
+    get:
+      tags: [Characters]
+      operationId: listCharacterChatModels
+      summary: 拉取角色所配服务商的可用模型
+      description: 本地开发功能。使用角色保存的 API Base URL 与已加密 API Key 请求 `GET {baseUrl}/models`，只读，不写入任何配置。服务商没有模型列表接口（404/405/501）时返回 ok=false 且 unsupported=true，界面据此回落到内置模型目录。只认已保存的配置，因此界面会先保存再调用。
+      responses:
+        '200':
+          description: 模型列表拉取结果（业务失败也返回 200，由 ok 区分）
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, models, message]
+                properties:
+                  ok: { type: boolean }
+                  models:
+                    type: array
+                    maxItems: 200
+                    items: { type: string }
+                  message: { type: string }
+                  unsupported: { type: boolean }
+                  provider: { type: string }
+        '403':
+          description: 浏览器请求的 Origin / Sec-Fetch-Site 与当前主机不一致，或未登录
+        '404':
+          $ref: '#/components/responses/NotFound'
   /characters/{characterId}/chat/test-connection:
     parameters:
       - $ref: '#/components/parameters/CharacterId'

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import {
   buildChatCompletionsEndpoint,
+  buildModelsEndpoint,
   readChatModelSettingsPatch,
   resolveChatModelSettings,
   validateChatApiBaseUrl,
@@ -92,6 +93,11 @@ assert.throws(() => validateChatApiBaseUrl("https://api.example.com/v1/chat/comp
 assert.equal(validateChatApiBaseUrl("http://127.0.0.1:4010/v1/"), "http://127.0.0.1:4010/v1");
 assert.equal(validateChatApiBaseUrl("http://[::1]:4010/v1/"), "http://[::1]:4010/v1", "Development should retain local IPv6 loopback support.");
 assert.equal(buildChatCompletionsEndpoint("https://api.example.com/v1").href, "https://api.example.com/v1/chat/completions");
+// 模型列表接口：尾斜杠要被吃掉，根地址要直接拼 /models
+assert.equal(buildModelsEndpoint("https://api.deepseek.com/").href, "https://api.deepseek.com/models");
+assert.equal(buildModelsEndpoint("https://api.example.com/v1").href, "https://api.example.com/v1/models");
+assert.throws(() => buildModelsEndpoint(""), /请先填写 API Base URL/);
+assert.throws(() => buildModelsEndpoint("https://api.example.com/v1/chat/completions"), /不要填写 \/chat\/completions/);
 
 const encryptionKey = randomBytes(32);
 const plaintextKey = "api-key-must-not-be-stored-in-plain-text";
