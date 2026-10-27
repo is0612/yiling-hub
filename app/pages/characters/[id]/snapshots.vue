@@ -181,7 +181,7 @@ watch(id, () => {
 <template>
   <div class="page-wrap">
     <PageHeader
-      :eyebrow="`角色管理 / ${character.name} / 阶段总结`"
+      :eyebrow="`AI 角色管理 / ${character.name} / 阶段总结`"
       title="阶段总结档案"
       description="自动归档会调用配置的 AI 模型提炼对话、事实与偏好变化；手动归档保留当下记录。每份自动记忆变化都应能追溯到原始消息。"
     >

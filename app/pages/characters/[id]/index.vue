@@ -483,7 +483,7 @@ watch(id, () => void loadCharacter());
 <template>
   <div class="page-wrap">
     <PageHeader
-      eyebrow="工作空间 / 角色管理 / 记忆驾驶舱"
+      eyebrow="工作空间 / AI 角色管理 / 记忆驾驶舱"
       title="记忆驾驶舱"
       description="查看角色对话、阶段总结与长期记忆。启用自动归档后，周期 Worker 会提炼事实与偏好变化，并保留原始消息来源。"
     >

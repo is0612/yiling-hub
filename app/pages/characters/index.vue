@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ArrowRight, CirclePlus, MoreFilled, Plus, MagicStick, Delete, User, CopyDocument, VideoPause, VideoPlay } from "@element-plus/icons-vue";
+import { ArrowRight, CirclePlus, MoreFilled, Plus, MagicStick, Delete, User, CopyDocument, VideoPause, VideoPlay, Edit } from "@element-plus/icons-vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import type { Character, CharacterStatus } from "~/utils/mock-data";
 
@@ -9,6 +9,12 @@ const dialogOpen = ref(false);
 const name = ref("");
 const description = ref("");
 const personality = ref("");
+
+const editDialogOpen = ref(false);
+const editTarget = ref<Character | null>(null);
+const editName = ref("");
+const editDescription = ref("");
+const editPersonality = ref("");
 
 async function loadCharacters() {
   loading.value = true;
@@ -61,6 +67,40 @@ function readError(error: unknown, fallback: string) {
     if (message) return message;
   }
   return fallback;
+}
+
+function openEdit(character: Character) {
+  editTarget.value = character;
+  editName.value = character.name;
+  editDescription.value = character.description;
+  editPersonality.value = character.personality;
+  editDialogOpen.value = true;
+}
+
+async function saveEdit() {
+  const target = editTarget.value;
+  if (!target) return;
+  const trimmed = editName.value.trim();
+  if (!trimmed) {
+    ElMessage.warning("请先填写角色名称。");
+    return;
+  }
+  try {
+    const updated = await $fetch<Character>(`/api/characters/${target.id}`, {
+      method: "PATCH",
+      body: {
+        name: trimmed,
+        description: editDescription.value.trim(),
+        personality: editPersonality.value.trim(),
+      },
+    });
+    const index = characters.value.findIndex((item) => item.id === target.id);
+    if (index >= 0) characters.value.splice(index, 1, updated);
+    editDialogOpen.value = false;
+    ElMessage.success("角色资料已更新。");
+  } catch (error) {
+    ElMessage.error(readError(error, "保存失败，请稍后重试。"));
+  }
 }
 
 /**
@@ -138,8 +178,8 @@ onMounted(() => void loadCharacters());
 <template>
   <div class="page-wrap chars-a">
     <PageHeader
-      eyebrow="工作空间 / 角色管理"
-      title="你的角色档案"
+      eyebrow="工作空间 / AI 角色管理"
+      title="你的 AI 角色"
       description="集中管理不同的人设、模型配置与记忆周期。每个角色都拥有独立的经历和记忆。"
     >
       <template #actions>
@@ -241,6 +281,9 @@ onMounted(() => void loadCharacters());
           </el-button>
           <template #dropdown>
             <el-dropdown-menu>
+              <el-dropdown-item @click="openEdit(character)">
+                <el-icon><Edit /></el-icon>编辑角色
+              </el-dropdown-item>
               <el-dropdown-item @click="navigateTo('/characters/' + character.id)">
                 打开驾驶舱
               </el-dropdown-item>
@@ -335,6 +378,56 @@ onMounted(() => void loadCharacters());
             @click="createCharacter"
           >
             <el-icon><CirclePlus /></el-icon>创建角色
+          </el-button>
+        </div>
+      </el-form>
+    </el-dialog>
+
+    <el-dialog
+      v-model="editDialogOpen"
+      title="编辑角色"
+      width="min(560px, 94vw)"
+      destroy-on-close
+    >
+      <el-form
+        label-position="top"
+        @submit.prevent="saveEdit"
+      >
+        <el-form-item
+          label="角色名称"
+          required
+        >
+          <el-input
+            v-model="editName"
+            placeholder="例如：星海旅人"
+            maxlength="40"
+            show-word-limit
+          />
+        </el-form-item>
+        <el-form-item label="角色简介">
+          <el-input
+            v-model="editDescription"
+            type="textarea"
+            :rows="2"
+            placeholder="用一句话描述角色的个性或定位。"
+          />
+        </el-form-item>
+        <el-form-item label="基础人设">
+          <el-input
+            v-model="editPersonality"
+            type="textarea"
+            :rows="3"
+            placeholder="角色的性格、说话方式、行为规则……"
+          />
+        </el-form-item>
+        <div class="dialog-actions">
+          <el-button @click="editDialogOpen = false">
+            取消
+          </el-button><el-button
+            type="primary"
+            @click="saveEdit"
+          >
+            保存修改
           </el-button>
         </div>
       </el-form>

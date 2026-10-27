@@ -53,7 +53,7 @@ const navigation = computed<NavigationItem[]>(() => {
   const id = activeCharacterId.value;
   const items: NavigationItem[] = [
     { key: "home", label: "总览", href: "/", icon: DataBoard, section: "工作空间" },
-    { key: "characters", label: "角色管理", href: "/characters", icon: User },
+    { key: "characters", label: "AI 角色管理", href: "/characters", icon: User },
     {
       key: "memory",
       label: "记忆驾驶舱",
