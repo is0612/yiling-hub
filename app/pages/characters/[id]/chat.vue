@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ChatDotRound, Clock, CopyDocument, Download, Plus, Promotion, Refresh, Reading, Search, Setting, User, Warning } from "@element-plus/icons-vue";
 import { ElMessage, ElMessageBox } from "element-plus";
+import type { Character } from "~/utils/mock-data";
 
 type ChatCharacter = {
   id: string;
@@ -71,15 +72,7 @@ const pendingRequestKey = ref<string | null>(null);
 const pendingRequestContent = ref<string | null>(null);
 const pendingRequestConversationId = ref<string | null>(null);
 const exporting = ref(false);
-const modelSettingsOpen = ref(false);
-const modelSettingsSaving = ref(false);
-const draftChatModel = ref("");
-const draftChatTemperature = ref(0.7);
-const draftChatMaxTokens = ref(1800);
-const draftChatApiBaseUrl = ref("https://api.openai.com/v1");
-const draftChatApiKey = ref("");
-const clearSavedApiKey = ref(false);
-const testingApi = ref(false);
+const settingsOpen = ref(false);
 const messagePanel = ref<HTMLElement | null>(null);
 const activeConversation = computed(() => conversations.value.find((item) => item.id === conversationId.value) ?? null);
 
@@ -120,67 +113,10 @@ async function loadCharacter() {
   character.value = await $fetch<ChatCharacter>("/api/characters/" + encodeURIComponent(id.value));
 }
 
-function openModelSettings() {
-  draftChatModel.value = character.value?.chatModel ?? "";
-  draftChatTemperature.value = character.value?.chatTemperature ?? 0.7;
-  draftChatMaxTokens.value = character.value?.chatMaxTokens ?? 1800;
-  draftChatApiBaseUrl.value = character.value?.chatApiBaseUrl ?? "https://api.openai.com/v1";
-  draftChatApiKey.value = "";
-  clearSavedApiKey.value = false;
-  modelSettingsOpen.value = true;
-}
-
-async function saveModelSettings(keepOpen = false): Promise<boolean> {
-  if (modelSettingsSaving.value || !character.value) return false;
-  modelSettingsSaving.value = true;
-  try {
-    character.value = await $fetch<ChatCharacter>("/api/characters/" + encodeURIComponent(id.value), {
-      method: "PATCH",
-      body: {
-        chatModel: draftChatModel.value.trim(),
-        chatTemperature: draftChatTemperature.value,
-        chatMaxTokens: draftChatMaxTokens.value,
-        chatApiBaseUrl: draftChatApiBaseUrl.value.trim(),
-        chatApiKey: draftChatApiKey.value,
-        clearApiKey: clearSavedApiKey.value && !draftChatApiKey.value.trim(),
-      },
-    });
-    draftChatApiKey.value = "";
-    clearSavedApiKey.value = false;
-    await loadHistory(conversationId.value);
-    if (!keepOpen) {
-      modelSettingsOpen.value = false;
-      ElMessage.success("本角色 API 与模型参数已保存。API Key 已由服务端加密保存，不会回传到网页。");
-    }
-    return true;
-  } catch (error) {
-    ElMessage.error(getErrorMessage(error, "保存 API 与模型参数失败。"));
-    return false;
-  } finally {
-    modelSettingsSaving.value = false;
-  }
-}
-
-async function testApiConnection() {
-  if (testingApi.value || modelSettingsSaving.value) return;
-  testingApi.value = true;
-  try {
-    const saved = await saveModelSettings(true);
-    if (!saved) return;
-    const result = await $fetch<{ ok: boolean; message: string; model?: string; provider?: string; elapsedMs?: number }>(
-      "/api/characters/" + encodeURIComponent(id.value) + "/chat/test-connection",
-      { method: "POST" },
-    );
-    if (result.ok) {
-      ElMessage.success(result.message + (result.elapsedMs !== undefined ? "（" + result.elapsedMs + " ms）" : ""));
-    } else {
-      ElMessage.error(result.message || "API 连通性测试失败。");
-    }
-  } catch (error) {
-    ElMessage.error(getErrorMessage(error, "API 连通性测试失败，请检查地址、Key 和模型名称。"));
-  } finally {
-    testingApi.value = false;
-  }
+/** 角色设置（含模型参数）由共享弹窗提交，这里只接结果 */
+function onSettingsSaved(updated: Character) {
+  character.value = { ...(character.value ?? updated), ...updated } as ChatCharacter;
+  modelConfigured.value = Boolean(updated.chatApiKeyConfigured) || updated.chatApiKeySource === "character" || updated.chatApiKeySource === "environment";
 }
 
 async function renameConversation(item: ConversationSummary) {
@@ -426,7 +362,7 @@ async function sendMessage() {
     return;
   }
   if (!modelConfigured.value) {
-    ElMessage.warning("请先点击右上角“模型参数”，填写并保存 API 地址、API Key 和模型名称。");
+    ElMessage.warning("请先打开右上角「角色设置」，填写并保存 API 地址、API Key 和模型名称。");
     return;
   }
 
@@ -498,9 +434,9 @@ onMounted(() => void reload());
           type="button"
           class="btn"
           :disabled="loading || sending || !character"
-          @click="openModelSettings"
+          @click="settingsOpen = true"
         >
-          <el-icon><Setting /></el-icon>模型参数
+          <el-icon><Setting /></el-icon>角色设置
         </button>
         <button
           type="button"
@@ -519,7 +455,7 @@ onMounted(() => void reload());
     >
       <el-icon><Warning /></el-icon>
       <span>
-        <b>模型尚未配置。</b>在右上角「模型参数」里填写兼容 OpenAI Chat Completions 的 API 地址、Key 与模型名称。配置随角色保存在服务端，Key 加密存储，不会回传给网页。
+        <b>模型尚未配置。</b>在右上角「角色设置」里填写兼容 OpenAI Chat Completions 的 API 地址、Key 与模型名称。配置随角色保存在服务端，Key 加密存储，不会回传给网页。
       </span>
     </div>
 
@@ -754,105 +690,17 @@ onMounted(() => void reload());
       </section>
     </div>
 
-    <el-dialog
-      v-model="modelSettingsOpen"
-      title="本角色 API 设置"
-      width="560px"
-      destroy-on-close
-    >
-      <el-form label-position="top">
-        <el-form-item
-          label="API Base URL"
-          required
-        >
-          <el-input
-            v-model="draftChatApiBaseUrl"
-            maxlength="500"
-            placeholder="https://api.deepseek.com/v1"
-          />
-          <p class="model-settings-hint">
-            填写 API 根地址，不要追加 /chat/completions。必须使用 HTTPS；HTTP 仅允许本机地址。
-          </p>
-        </el-form-item>
-        <el-form-item label="API Key">
-          <el-input
-            v-model="draftChatApiKey"
-            type="password"
-            show-password
-            autocomplete="new-password"
-            maxlength="8192"
-            :placeholder="character?.chatApiKeySource === 'character' ? '已加密保存；留空表示保持不变' : character?.chatApiKeySource === 'environment' ? '当前使用服务端默认 Key；填写可覆盖' : '请填写 API Key'"
-          />
-          <p class="model-settings-hint">
-            {{ character?.chatApiKeySource === "character" ? "此角色已保存 API Key。留空可保持现有 Key，不会在网页中显示原文。" : character?.chatApiKeySource === "environment" ? "当前使用服务端默认 Key。输入新 Key 后会为本角色单独保存。" : "Key 只会提交到本机服务端，并使用 AES-256-GCM 加密后保存；不会回传给网页。" }}
-          </p>
-          <el-checkbox
-            v-if="character?.chatApiKeySource === 'character'"
-            v-model="clearSavedApiKey"
-          >
-            移除此角色单独保存的 API Key
-          </el-checkbox>
-        </el-form-item>
-        <el-form-item
-          label="模型名称"
-          required
-        >
-          <el-input
-            v-model="draftChatModel"
-            maxlength="120"
-            show-word-limit
-            placeholder="例如 deepseek-chat、gpt-4o-mini"
-          />
-        </el-form-item>
-        <el-form-item label="温度（Temperature）">
-          <el-slider
-            v-model="draftChatTemperature"
-            :min="0"
-            :max="2"
-            :step="0.1"
-            show-input
-          />
-        </el-form-item>
-        <el-form-item label="最大输出 Token">
-          <el-input-number
-            v-model="draftChatMaxTokens"
-            :min="256"
-            :max="8192"
-            :step="256"
-          />
-          <p class="model-settings-hint">
-            数值越大，回复可能越长，也会增加单次请求的消耗。
-          </p>
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="modelSettingsOpen = false">
-          取消
-        </el-button>
-        <el-button
-          :loading="testingApi"
-          :disabled="modelSettingsSaving || testingApi"
-          @click="void testApiConnection()"
-        >
-          保存并测试 API
-        </el-button>
-        <el-button
-          type="primary"
-          :loading="modelSettingsSaving"
-          :disabled="testingApi"
-          @click="void saveModelSettings()"
-        >
-          保存设置
-        </el-button>
-      </template>
-    </el-dialog>
+    <CharacterSettingsDialog
+      v-model="settingsOpen"
+      :character="character"
+      @saved="onSettingsSaved"
+    />
   </div>
 </template>
 
 <style scoped>
 /* 提示条嵌在面板里时贴边，需要自己补横向间距 */
 .composer-notice{margin:10px 18px 0}
-.model-settings-hint{margin:6px 0 0;color:var(--faint);font-size:12px;line-height:1.7}
 .chat-layout{display:grid;grid-template-columns:minmax(240px,288px) minmax(0,1fr);gap:18px;min-height:640px}
 
 /* ── 会话列表 ────────────────────────────────────────── */

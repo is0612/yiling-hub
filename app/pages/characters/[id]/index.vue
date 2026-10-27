@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ArrowRight, Cpu, Calendar, Collection, Files, Search, Setting, MagicStick, Delete } from "@element-plus/icons-vue";
+import { ArrowRight, Calendar, Collection, Files, Search, Setting, MagicStick, Delete } from "@element-plus/icons-vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { initialCharacters, type Character, type Snapshot, type TimelineEntry, type TimelineType } from "~/utils/mock-data";
 
@@ -88,8 +88,6 @@ const activeFilter = ref("全部记录");
 const channelFilter = ref("全部渠道");
 const query = ref("");
 const editOpen = ref(false);
-const draftName = ref("");
-const draftPersonality = ref("");
 const filterOptions = [
   { label: "全部记录", type: undefined },
   { label: "对话记录", type: "message" as TimelineType },
@@ -146,31 +144,9 @@ async function loadCharacter() {
   }
 }
 
-watch([editOpen, character], ([open]) => {
-  if (open) {
-    draftName.value = character.value.name;
-    draftPersonality.value = character.value.personality || "";
-  }
-});
-
-async function saveProfile() {
-  try {
-    const updated = await $fetch<Character>(`/api/characters/${encodeURIComponent(id.value)}`, {
-      method: "PATCH",
-      body: {
-        name: draftName.value.trim() || character.value.name,
-        personality: draftPersonality.value.trim() || character.value.personality,
-      },
-    });
-    currentCharacter.value = updated;
-    editOpen.value = false;
-    ElMessage.success("角色信息已保存到本地数据库。");
-  } catch (error) {
-    const message = error && typeof error === "object" && "statusMessage" in error
-      ? String(error.statusMessage)
-      : "保存失败，请检查数据库连接。";
-    ElMessage.error(message);
-  }
+/** 角色设置（资料 + 模型参数）由共享弹窗自己提交，这里只接结果 */
+function onSettingsSaved(updated: Character) {
+  currentCharacter.value = updated;
 }
 
 async function saveMemory() {
@@ -488,19 +464,13 @@ watch(id, () => void loadCharacter());
       description="查看角色对话、阶段总结与长期记忆。启用自动归档后，周期 Worker 会提炼事实与偏好变化，并保留原始消息来源。"
     >
       <template #actions>
-        <el-tooltip
-          content="编辑角色资料"
-          placement="top"
+        <button
+          type="button"
+          class="btn"
+          @click="editOpen = true"
         >
-          <button
-            type="button"
-            class="icon-btn"
-            aria-label="编辑角色资料"
-            @click="editOpen = true"
-          >
-            <el-icon><Setting /></el-icon>
-          </button>
-        </el-tooltip>
+          <el-icon><Setting /></el-icon>角色设置
+        </button>
         <button
           type="button"
           class="btn"
@@ -1047,40 +1017,11 @@ watch(id, () => void loadCharacter());
       </template>
     </el-dialog>
 
-    <el-dialog
+    <CharacterSettingsDialog
       v-model="editOpen"
-      title="编辑角色"
-      width="min(560px, 94vw)"
-    >
-      <el-form label-position="top">
-        <el-form-item label="角色名称">
-          <el-input
-            v-model="draftName"
-            maxlength="40"
-          />
-        </el-form-item>
-        <el-form-item label="基础人设">
-          <el-input
-            v-model="draftPersonality"
-            type="textarea"
-            :rows="5"
-          />
-        </el-form-item>
-        <div class="info-callout">
-          <el-icon><Cpu /></el-icon><span>角色资料会写入本地数据库。聊天渠道导入和真实模型生成仍未接入，时间线只展示已经保存的记录。</span>
-        </div>
-      </el-form>
-      <template #footer>
-        <el-button @click="editOpen = false">
-          取消
-        </el-button><el-button
-          type="primary"
-          @click="saveProfile"
-        >
-          保存修改
-        </el-button>
-      </template>
-    </el-dialog>
+      :character="character"
+      @saved="onSettingsSaved"
+    />
   </div>
 </template>
 
