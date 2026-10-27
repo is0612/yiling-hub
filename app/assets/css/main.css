@@ -720,13 +720,128 @@ button, input, textarea, select { font: inherit; }
 .el-input__inner { font-size: 14px; }
 .el-form-item__label { color: var(--text-2); font-size: 12px; font-weight: 500; }
 .el-tag { border-radius: var(--radius-xs); font-size: 12px; }
-.el-dialog { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; --el-dialog-padding-primary: 0px; box-shadow: 0 18px 46px -26px rgba(16, 24, 40, .34); }
-.el-dialog__header { margin: 0; border-bottom: 1px solid var(--line); padding: 14px 18px; }
-.el-dialog__title { color: var(--text); font-size: 16px; font-weight: 700; }
-.el-dialog__body { padding: 18px; }
-.el-dialog__footer { border-top: 1px solid var(--line); padding: 12px 18px; }
-.el-dialog__headerbtn { top: 12px; right: 12px; width: 30px; height: 30px; border-radius: var(--radius-sm); }
-.el-dialog__headerbtn:hover { background: var(--surface-3); }
+/* ── 弹窗（Element Plus）─────────────────────────────────────
+   选择器一律写成 `.el-overlay .el-dialog__xxx` 双类：(0,2,0) 压过 Element
+   自己那套 (0,1,0)，跟 CSS 加载顺序无关。
+   ⚠️ 只写单个 `.el-dialog` 会被 Element 的样式盖掉 —— 上一版就是这么失效的：
+   圆角、标题字号、关闭按钮尺寸全没吃上，页面上跑的还是默认值。
+   视觉语言跟 A 套一致：零描边，靠阴影和留白分层，标题栏/底栏不画分隔线。 */
+/* 遮罩压暗用冷调深蓝而不是纯黑，和 #f4f6f9 画布同一色系 */
+.el-overlay.el-overlay { background-color: rgba(16, 24, 40, .42); }
+
+.el-overlay .el-dialog {
+  display: flex;
+  max-height: 84vh;
+  /* 有几个弹窗写死了 width="500px"，390 视口下会横向溢出，这里兜住 */
+  max-width: calc(100vw - 32px);
+  flex-direction: column;
+  border: 0;
+  border-radius: 10px;
+  background: var(--surface);
+  padding: 0;
+  box-shadow:
+    0 32px 72px -24px rgba(16, 24, 40, .30),
+    0 6px 18px -8px rgba(16, 24, 40, .10);
+}
+.el-overlay .el-dialog__header {
+  flex: none;
+  margin: 0;
+  border: 0;
+  /* 右内边距会停在 32px（Element 用 padding-inline-end 给关闭键留位，特异性更高，
+     简写压不住）。这是好事：长标题会提前换行，不会钻到 × 底下 */
+  padding: 20px 24px 0;
+}
+.el-overlay .el-dialog__title {
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -.01em;
+  line-height: 24px;
+}
+/* 关闭键：28px 热区贴右上，和 16px 标题基线对齐；hover 才出底 */
+.el-overlay .el-dialog__headerbtn {
+  top: 16px;
+  right: 16px;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-xs);
+}
+.el-overlay .el-dialog__headerbtn:hover { background: var(--surface-3); }
+.el-overlay .el-dialog__headerbtn .el-dialog__close { color: var(--dim); font-size: 16px; }
+.el-overlay .el-dialog__headerbtn:hover .el-dialog__close { color: var(--text); }
+
+.el-overlay .el-dialog__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 20px 24px 8px;
+  color: var(--text-2);
+  font-size: 14px;
+  /* 内容超高时在 body 内滚，6px 细滚动条不抢视觉（默认 15px 会横穿整个表单） */
+  scrollbar-width: thin;
+  scrollbar-color: rgba(16, 24, 40, .11) transparent;
+}
+.el-overlay .el-dialog__body::-webkit-scrollbar { width: 6px; height: 6px; }
+.el-overlay .el-dialog__body::-webkit-scrollbar-track { background: transparent; }
+.el-overlay .el-dialog__body::-webkit-scrollbar-thumb { border-radius: 3px; background: rgba(16, 24, 40, .11); }
+.el-overlay .el-dialog__body::-webkit-scrollbar-thumb:hover { background: rgba(16, 24, 40, .24); }
+/* 字数统计默认是偏蓝的灰，在粉色体系里像另一个品牌 —— 收到 --dim */
+.el-overlay .el-dialog .el-input__count,
+.el-overlay .el-dialog .el-input__count-inner { background: transparent; color: var(--dim); }
+
+.el-overlay .el-dialog__footer {
+  flex: none;
+  border: 0;
+  padding: 8px 24px 20px;
+}
+/* 弹窗内按钮统一 36px（项目 --ctl-h），和页面主按钮同高；
+   少了这条，走 footer slot 的弹窗是 36、走页面自定义 .dialog-actions 的是 32，两种高度混在一套界面里 */
+.el-overlay .el-dialog .el-button { min-height: 36px; padding: 0 16px; }
+.el-overlay .el-dialog__footer .el-button + .el-button { margin-left: 8px; }
+
+/* ── 确认框（MessageBox）跟 dialog 同一套外形 ──────────────────
+   结构没有 header/footer 分栏，只有一个 padding 包住全部内容。 */
+.el-overlay.is-message-box .el-message-box {
+  width: 420px;
+  max-width: calc(100vw - 32px);
+  border: 0;
+  border-radius: 10px;
+  background: var(--surface);
+  padding: 20px 24px;
+  box-shadow:
+    0 32px 72px -24px rgba(16, 24, 40, .30),
+    0 6px 18px -8px rgba(16, 24, 40, .10);
+}
+.el-overlay.is-message-box .el-message-box__header { padding: 0 0 10px; }
+.el-overlay.is-message-box .el-message-box__title {
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -.01em;
+  line-height: 24px;
+}
+.el-overlay.is-message-box .el-message-box__headerbtn {
+  top: 14px;
+  right: 14px;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-xs);
+}
+.el-overlay.is-message-box .el-message-box__headerbtn:hover { background: var(--surface-3); }
+.el-overlay.is-message-box .el-message-box__content {
+  padding: 0;
+  color: var(--dim);
+  font-size: 14px;
+  line-height: 1.7;
+}
+.el-overlay.is-message-box .el-message-box__message { color: var(--dim); }
+/* 图标和正文顶端对齐：默认是垂直居中，两行文案时会飘到中间 */
+.el-overlay.is-message-box .el-message-box__container { align-items: flex-start; }
+.el-overlay.is-message-box .el-message-box__status { margin-top: 2px; font-size: 20px; }
+.el-overlay.is-message-box .el-message-box__btns { padding: 20px 0 0; }
+.el-overlay.is-message-box .el-message-box__btns .el-button { min-height: 36px; padding: 0 16px; }
+.el-overlay.is-message-box .el-message-box__btns .el-button + .el-button { margin-left: 8px; }
+
 .el-table { --el-table-border-color: var(--line); --el-table-header-bg-color: var(--surface-2); --el-table-row-hover-bg-color: var(--surface-2); font-size: 14px; }
 .el-table th.el-table__cell { color: var(--dim); font-size: 12px; font-weight: 600; }
 .el-table .cell { line-height: 1.6; }
