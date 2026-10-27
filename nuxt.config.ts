@@ -5,6 +5,21 @@ export default defineNuxtConfig({
   devServer: { host: "127.0.0.1" },
   css: ["~/assets/css/main.css"],
   modules: ["@element-plus/nuxt"],
+  vite: {
+    ssr: {
+      // SSR 侧不外部化 element-plus。外部化时它走预构建产物，模块 id 是 /@id/ 形式，
+      // 而 SSR 收集 CSS 时又按文件路径 /@fs/ 记一遍 —— 同一个 el-*.css 被算成两个模块，
+      // <head> 里就出两个 <link>。
+      noExternal: ["element-plus"],
+    },
+    optimizeDeps: {
+      // 配合上一条：element-plus 不预构建。
+      // 实测 <head> 里样式表从 97 个降到 43 个（多的那些是同一文件被拆成 3-9 份）。
+      // 剩下每个 el-*.css 仍是 @fs + @id 各一份 —— 那是 Vite 在 Windows 下把 `E:/…`
+      // 这种盘符路径当成裸模块 id 造成的，配置层修不掉，只在 dev 存在（生产由 rollup 合并）。
+      exclude: ["element-plus"],
+    },
+  },
   typescript: {
     strict: true,
     // 默认关闭 vite-plugin-checker。开启时它会在 dev 里跑全量类型检查，每次 HMR 都重跑：
