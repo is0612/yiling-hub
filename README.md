@@ -85,6 +85,7 @@ Worker 配置模型后会调用 LLM 对周期对话进行结构化总结，验�
 - [产品与技术开发方案 V1.2](docs/product-and-technical-plan.md)
 - [本地开发与数据迁移规范](docs/local-development-and-data-migration.md)
 - [记忆系统与周期快照规则](docs/memory-system.md)
+- [忆泡设计构想（未实现）](docs/忆泡设计构想.md)
 - [数据模型设计](docs/data-model.md)
 - [Prisma Schema](prisma/schema.prisma)
 - [Phase 0 审查清单](docs/phase-0-review-checklist.md)
