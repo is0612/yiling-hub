@@ -113,10 +113,10 @@ async function saveSettings() {
   if (retentionBecomesMoreDestructive) {
     const archiveWarning = autoSnapshot.value
       ? ""
-      : "\n\n注意：当前自动归档处于关闭状态，历史原文可能没有对应的周期快照。";
+      : "\n\n注意：当前自动归档处于关闭状态，历史原文可能没有对应的阶段总结。";
     try {
       await ElMessageBox.confirm(
-        `此设置会允许系统在下一次调度后排队删除超过 ${nextRetention} 天的原始消息。原文删除不可恢复；已有快照、长期记忆和来源追溯记录会保留。${archiveWarning}\n\n确认启用该保留期限吗？`,
+        `此设置会允许系统在下一次调度后排队删除超过 ${nextRetention} 天的原始消息。原文删除不可恢复；已有阶段总结、长期记忆和来源追溯记录会保留。${archiveWarning}\n\n确认启用该保留期限吗？`,
         "确认原始消息自动清理",
         {
           confirmButtonText: "确认并保存",
@@ -271,7 +271,7 @@ watch(id, () => void loadSettings());
             <div class="interval-top">
               <div>
                 <div class="interval-label">
-                  快照生成间隔
+                  归档间隔
                 </div><p class="form-help">
                   周期可设为 1–365 天；默认值为 8 天。
                 </p>
@@ -357,7 +357,7 @@ watch(id, () => void loadSettings());
                     :value="0"
                   />
                 </el-select><div class="form-help">
-                  {{ Number(retention) === 0 ? "永久保留；保存后不会再排入原始消息清理任务。" : savedRetentionCleanupEnabled ? "自动清理已获授权；缩短保留期时会再次要求确认。较早的快照任务尚未完成时，Worker 会延后清理。" : "当前期限仅为配置，自动清理尚未获授权。保存时需要明确确认；未确认前不会排入清理任务。" }}
+                  {{ Number(retention) === 0 ? "永久保留；保存后不会再排入原始消息清理任务。" : savedRetentionCleanupEnabled ? "自动清理已获授权；缩短保留期时会再次要求确认。较早的归档任务尚未完成时，Worker 会延后清理。" : "当前期限仅为配置，自动清理尚未获授权。保存时需要明确确认；未确认前不会排入清理任务。" }}
                 </div>
               </el-form-item>
               <el-form-item label="修改何时生效">
@@ -376,8 +376,8 @@ watch(id, () => void loadSettings());
           <el-divider />
           <div class="toggle-row">
             <div>
-              <strong>自动生成周期快照</strong><p class="form-help">
-                关闭后保留历史归档，停止自动创建新的周期快照。
+              <strong>自动生成阶段总结</strong><p class="form-help">
+                关闭后保留历史归档，停止自动生成新的阶段总结。
               </p>
             </div><el-switch v-model="autoSnapshot" />
           </div>
@@ -410,10 +410,10 @@ watch(id, () => void loadSettings());
             记忆与归档说明
           </h2>
           <p class="section-description side-desc">
-            这些规则影响角色如何归档阶段经历，不会自动清理历史快照。
+            这些规则影响角色如何归档阶段经历，不会自动清理历史归档。
           </p>
           <div class="rule-item">
-            <span class="rule-number">01</span><div><strong>快照是阶段记录</strong><p>每隔 N 天生成一份总结，不代表只保留最近 N 天的消息。</p></div>
+            <span class="rule-number">01</span><div><strong>阶段总结记录的是一段时间</strong><p>每隔 N 天生成一份总结，不代表只保留最近 N 天的消息。</p></div>
           </div>
           <div class="rule-item">
             <span class="rule-number">02</span><div><strong>历史版本不会覆盖</strong><p>手动重新生成会产生新版本，旧版本仍可查看与追溯。</p></div>
@@ -458,7 +458,7 @@ watch(id, () => void loadSettings());
       </aside>
     </div>
     <p class="footer-note">
-      记忆周期、时区、锚点与原始消息保留期限已写入数据库。清理任务会删除截止时间之前的原始消息，并保留快照与来源追溯记录。
+      记忆周期、时区、锚点与原始消息保留期限已写入数据库。清理任务会删除截止时间之前的原始消息，并保留阶段总结与来源追溯记录。
     </p>
   </div>
 </template>

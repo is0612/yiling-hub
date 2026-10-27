@@ -18,16 +18,16 @@ export default defineEventHandler(async (event) => {
   let sourceSnapshotId: string | undefined;
   if (body?.snapshotId !== undefined) {
     if (typeof body.snapshotId !== "string") {
-      throw createError({ statusCode: 400, statusMessage: "快照 ID 格式无效。" });
+      throw createError({ statusCode: 400, statusMessage: "阶段总结 ID 格式无效。" });
     }
-    sourceSnapshotId = requireUuid(body.snapshotId, "快照");
+    sourceSnapshotId = requireUuid(body.snapshotId, "阶段总结");
   }
 
   if (body?.mode !== undefined && body.mode !== "ai") {
-    throw createError({ statusCode: 400, statusMessage: "快照操作模式无效。" });
+    throw createError({ statusCode: 400, statusMessage: "归档操作模式无效。" });
   }
   if (body?.mode === "ai" && !sourceSnapshotId) {
-    throw createError({ statusCode: 400, statusMessage: "AI 重新提炼必须指定一份已有的自动快照。" });
+    throw createError({ statusCode: 400, statusMessage: "AI 重新提炼必须指定一份已有的自动归档。" });
   }
 
   const prisma = getPrisma();
@@ -61,12 +61,12 @@ export default defineEventHandler(async (event) => {
     : null;
 
   if (sourceSnapshotId && !sourceSnapshot) {
-    throw createError({ statusCode: 404, statusMessage: "快照不存在。" });
+    throw createError({ statusCode: 404, statusMessage: "阶段总结不存在。" });
   }
 
   if (body?.mode === "ai") {
     if (!sourceSnapshot || sourceSnapshot.kind !== "AUTOMATIC") {
-      throw createError({ statusCode: 409, statusMessage: "只有自动 AI 快照支持 AI 重新提炼；手动快照请使用普通的版本复制操作。" });
+      throw createError({ statusCode: 409, statusMessage: "只有自动 AI 归档支持 AI 重新提炼；手动归档请使用普通的版本复制操作。" });
     }
     if (!isMemoryModelConfigured()) {
       throw createError({ statusCode: 503, statusMessage: "尚未配置 AI 模型。请先在服务端 .env 填写 LLM_API_KEY 和 LLM_MODEL。" });
@@ -149,8 +149,8 @@ export default defineEventHandler(async (event) => {
   if (activeItems.length) summaryParts.push(`关联 ${activeItems.length} 条长期记忆`);
   if (sourceMessages.length) summaryParts.push(`关联 ${sourceMessages.length} 条周期内消息/事件`);
   const summary = summaryParts.length
-    ? `人工快照：${summaryParts.join("，")}。尚未调用大模型生成自然语言总结。`
-    : "人工快照：周期内没有已保存的消息或长期记忆。尚未调用大模型生成自然语言总结。";
+    ? `人工归档：${summaryParts.join("，")}。尚未调用大模型生成自然语言总结。`
+    : "人工归档：周期内没有已保存的消息或长期记忆。尚未调用大模型生成自然语言总结。";
   const structuredContent = {
     generatedBy: "manual",
     capturedAt: now.toISOString(),

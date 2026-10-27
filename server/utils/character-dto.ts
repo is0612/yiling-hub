@@ -77,15 +77,21 @@ function formatDate(value: Date, timeZone = "Asia/Shanghai"): string {
   }
 }
 
+const AVATAR_TONES = ["purple", "peach", "mint", "blue"] as const;
+
+/** 头像配色：优先用角色配置，没有就按名字首字稳定派生，保证同一角色每次颜色一致。 */
+export function resolveAvatarTone(name: string, config: Record<string, unknown>): CharacterDto["avatarTone"] {
+  const configuredTone = config.avatarTone;
+  return AVATAR_TONES.includes(configuredTone as (typeof AVATAR_TONES)[number])
+    ? (configuredTone as CharacterDto["avatarTone"])
+    : (AVATAR_TONES[name.codePointAt(0)! % AVATAR_TONES.length] ?? "purple");
+}
+
 export function toCharacterDto(input: unknown): CharacterDto {
   const character = input as CharacterRecord;
   const config = asConfig(character.modelConfig);
   const chatSettings = resolveChatModelSettings(config);
-  const tones = ["purple", "peach", "mint", "blue"] as const;
-  const configuredTone = config.avatarTone;
-  const avatarTone = tones.includes(configuredTone as (typeof tones)[number])
-    ? (configuredTone as (typeof tones)[number])
-    : (tones[character.name.codePointAt(0)! % tones.length] ?? "purple");
+  const avatarTone = resolveAvatarTone(character.name, config);
   const setting = character.memorySetting;
   const snapshots = character.memoryScopes.flatMap((scope) => scope.snapshots.map((snapshot) => snapshot.createdAt));
   const latestSnapshot = snapshots.sort((a, b) => b.getTime() - a.getTime())[0];
@@ -120,7 +126,7 @@ export function toCharacterDto(input: unknown): CharacterDto {
     intervalDays: setting?.snapshotIntervalDays ?? 8,
     nextSnapshot,
     memoryCount: character.memoryScopes.reduce((total, scope) => total + scope.memoryItems.length, 0),
-    latestSnapshot: latestSnapshot ? formatDate(latestSnapshot, setting?.timezone) : "暂无快照",
+    latestSnapshot: latestSnapshot ? formatDate(latestSnapshot, setting?.timezone) : "暂无总结",
     personality: character.basePrompt,
     chatModel: chatSettings.model,
     chatTemperature: chatSettings.temperature,

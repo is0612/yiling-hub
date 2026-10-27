@@ -37,7 +37,7 @@ function saveSettings() {
                 maxlength="60"
               />
             </el-form-item>
-            <el-form-item label="默认记忆快照周期">
+            <el-form-item label="默认记忆归档周期">
               <div class="interval-input">
                 <el-input-number
                   v-model="defaultInterval"

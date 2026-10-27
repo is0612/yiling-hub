@@ -120,7 +120,7 @@ export function validateMemoryAiOutput(
   const validIds = new Set(validSourceMessageIds);
   const existingIds = new Set(existingMemoryIds);
   const summary = asText(root.summary, 8000);
-  if (!summary) throw new Error("LLM_INVALID_RESPONSE: 模型没有返回有效的周期总结。");
+  if (!summary) throw new Error("LLM_INVALID_RESPONSE: 模型没有返回有效的阶段总结。");
 
   const importantEvents = evidenceList(root.importantEvents, validIds, (entry, ids) => {
     const title = asText(entry.title, 300);
@@ -222,7 +222,7 @@ function systemPrompt(): string {
       relationshipChanges: [{ description: "关系变化", evidenceMessageIds: ["原始消息ID"] }],
       goalsAndCommitments: [{ description: "目标或承诺", status: "进行中|已完成|取消|未明确", evidenceMessageIds: ["原始消息ID"] }],
       unresolvedTopics: [{ description: "未解决话题", evidenceMessageIds: ["原始消息ID"] }],
-      differencesFromPrevious: ["相较上一快照的变化"],
+      differencesFromPrevious: ["相较上一份总结的变化"],
       memoryChanges: [{
         action: "ADD|UPDATE|INVALIDATE",
         category: "FACT|PREFERENCE|RELATIONSHIP|COMMITMENT|GOAL|EVENT|SUMMARY|OTHER",

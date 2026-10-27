@@ -70,7 +70,7 @@ const navigation = computed<NavigationItem[]>(() => {
     },
     {
       key: "snapshots",
-      label: "周期快照",
+      label: "阶段总结",
       href: id ? `/characters/${id}/snapshots` : "/characters",
       icon: Calendar,
     },
@@ -203,8 +203,8 @@ function isActive(item: NavigationItem) {
       <header class="topbar">
         <div class="topbar-search">
           <el-input
-            placeholder="搜索角色、记忆、快照……"
-            aria-label="搜索角色、记忆、快照"
+            placeholder="搜索角色、记忆、阶段总结……"
+            aria-label="搜索角色、记忆、阶段总结"
             clearable
           >
             <template #prefix>

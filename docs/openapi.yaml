@@ -1495,6 +1495,164 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /overview:
+    get:
+      tags: [Overview]
+      operationId: getOverview
+      summary: 工作台总览的聚合数据
+      description: |
+        一次返回总览页所需的全部数据，避免前端按角色逐个请求（N+1）。
+        数据范围严格限制在当前会话用户拥有的角色；`admin` 字段仅对管理员返回，其他用户为 null。
+        所有时间点都由服务端按角色时区格式化为 `*Label`，客户端不再自行格式化，以免 SSR 与浏览器时区不一致。
+        `cycle` 由该角色自己的 `memorySetting.nextSnapshotAt` 与 `snapshotIntervalDays` 推导；
+        未开启自动归档或没有排期时返回 null，页面据此不展示周期进度，不使用估算值。
+      responses:
+        '200':
+          description: 总览数据
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [generatedAt, characters, tasks, nextSnapshot, cycle, latestSnapshot, events, admin]
+                properties:
+                  generatedAt: { type: string, format: date-time }
+                  characters:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, name, avatar, avatarTone, status, channels, intervalDays, autoSnapshotEnabled, nextSnapshotAt, nextSnapshotLabel, latestSnapshotAt, latestSnapshotLabel, latestSnapshotVersion, memoryCount, cycle, cycleMessageCount, cycleMemoryCount, chatModel, chatApiKeyConfigured, failedTaskCount, pendingTaskCount]
+                      properties:
+                        id: { type: string, format: uuid }
+                        name: { type: string }
+                        avatar: { type: string }
+                        avatarTone: { type: string, enum: [purple, peach, mint, blue] }
+                        status: { type: string, enum: ["运行中", "已暂停", "未连接"] }
+                        channels: { type: array, items: { type: string } }
+                        intervalDays: { type: integer, minimum: 1 }
+                        autoSnapshotEnabled: { type: boolean }
+                        nextSnapshotAt: { type: string, nullable: true, format: date-time }
+                        nextSnapshotLabel: { type: string, description: "MM-DD HH:mm，或「已暂停」「尚未计划」" }
+                        latestSnapshotAt: { type: string, nullable: true, format: date-time }
+                        latestSnapshotLabel: { type: string, description: "MM-DD，或「暂无快照」" }
+                        latestSnapshotVersion: { type: integer, nullable: true }
+                        memoryCount: { type: integer, minimum: 0, description: 活跃长期记忆条数（含角色全局与私人范围） }
+                        cycle:
+                          nullable: true
+                          type: object
+                          required: [startISO, endISO, dayIndex, totalDays, missed]
+                          properties:
+                            startISO: { type: string, format: date-time }
+                            endISO: { type: string, format: date-time }
+                            dayIndex: { type: integer, minimum: 1 }
+                            totalDays: { type: integer, minimum: 1 }
+                            missed: { type: boolean, description: 已过 nextSnapshotAt 但快照未生成 }
+                        cycleMessageCount: { type: integer, minimum: 0, description: 本周期内的原始消息条数 }
+                        cycleMemoryCount: { type: integer, minimum: 0, description: 本周期内新增的活跃记忆条数 }
+                        chatModel: { type: string }
+                        chatApiKeyConfigured: { type: boolean, description: false 时该角色的快照任务会留在队列中不执行 }
+                        failedTaskCount: { type: integer, minimum: 0, description: FAILED + RETRY_WAIT }
+                        pendingTaskCount: { type: integer, minimum: 0, description: QUEUED + RUNNING }
+                  tasks:
+                    type: object
+                    required: [pending, failed, items]
+                    properties:
+                      pending: { type: integer, minimum: 0 }
+                      failed: { type: integer, minimum: 0 }
+                      items:
+                        type: array
+                        items:
+                          type: object
+                          required: [id, type, status, typeLabel, statusLabel, characterId, characterName, createdAt]
+                          properties:
+                            id: { type: string, format: uuid }
+                            type: { type: string, enum: [GENERATE_SNAPSHOT, REGENERATE_SNAPSHOT, UPDATE_LONG_TERM_MEMORY, CLEAN_EXPIRED_MESSAGES] }
+                            status: { type: string, enum: [QUEUED, RUNNING, SUCCEEDED, FAILED, SKIPPED, RETRY_WAIT, CANCELLED] }
+                            typeLabel: { type: string }
+                            statusLabel: { type: string }
+                            characterId: { type: string, format: uuid }
+                            characterName: { type: string }
+                            lastError: { type: string, nullable: true }
+                            createdAt: { type: string, format: date-time }
+                  nextSnapshot:
+                    nullable: true
+                    type: object
+                    description: 所有开启自动归档的角色中最早的一次
+                    required: [characterId, characterName, atISO, atLabel, remainingMs]
+                    properties:
+                      characterId: { type: string, format: uuid }
+                      characterName: { type: string }
+                      atISO: { type: string, format: date-time }
+                      atLabel: { type: string }
+                      remainingMs: { type: integer, description: 距该时刻的毫秒数，负数表示已逾期 }
+                  cycle:
+                    nullable: true
+                    type: object
+                    description: 以 nextSnapshot 对应角色为准；没有进行中的周期时为 null
+                    required: [messageCount, dayIndex, totalDays, endISOLabel]
+                    properties:
+                      messageCount: { type: integer, minimum: 0, description: 全部角色本周期消息之和 }
+                      dayIndex: { type: integer, minimum: 1 }
+                      totalDays: { type: integer, minimum: 1 }
+                      endISOLabel: { type: string }
+                  latestSnapshot:
+                    nullable: true
+                    type: object
+                    required: [id, characterId, characterName, atISO, atLabel, dateLabel, version]
+                    properties:
+                      id: { type: string, format: uuid }
+                      characterId: { type: string, format: uuid }
+                      characterName: { type: string }
+                      atISO: { type: string, format: date-time }
+                      atLabel: { type: string }
+                      dateLabel: { type: string, description: "MM-DD" }
+                      version: { type: integer, minimum: 1 }
+                  events:
+                    type: array
+                    description: 任务与快照事件按时间倒序合并，最多 8 条
+                    items:
+                      type: object
+                      required: [id, kind, tone, title, meta, atLabel, atISO]
+                      properties:
+                        id: { type: string }
+                        kind: { type: string, enum: [task, snapshot] }
+                        tone: { type: string, enum: [ok, err, wait, run, mute] }
+                        title: { type: string }
+                        meta: { type: string }
+                        atLabel: { type: string }
+                        atISO: { type: string, format: date-time }
+                  admin:
+                    nullable: true
+                    type: object
+                    description: 仅管理员返回，其他用户为 null
+                    required: [database, jobs, channels, recentAudits]
+                    properties:
+                      database: { type: string, enum: [up, down] }
+                      jobs:
+                        type: object
+                        required: [queued, running, failed, succeeded]
+                        properties:
+                          queued: { type: integer, minimum: 0 }
+                          running: { type: integer, minimum: 0 }
+                          failed: { type: integer, minimum: 0 }
+                          succeeded: { type: integer, minimum: 0 }
+                      channels:
+                        type: object
+                        required: [total, online]
+                        properties:
+                          total: { type: integer, minimum: 0 }
+                          online: { type: integer, minimum: 0 }
+                      recentAudits:
+                        type: array
+                        items:
+                          type: object
+                          required: [id, action, entityType, atLabel]
+                          properties:
+                            id: { type: string, format: uuid }
+                            action: { type: string }
+                            entityType: { type: string }
+                            atLabel: { type: string }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /tasks:
     get:
       tags: [Tasks]

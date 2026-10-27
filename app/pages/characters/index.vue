@@ -70,7 +70,7 @@ function statusTone(status: CharacterStatus) {
 async function deleteCharacter(character: Character) {
   try {
     await ElMessageBox.confirm(
-      `确定删除角色「${character.name}」吗？该角色下的所有会话、记忆、快照都会被一并删除，且无法恢复。`,
+      `确定删除角色「${character.name}」吗？该角色下的所有会话、记忆、阶段总结都会被一并删除，且无法恢复。`,
       "删除角色",
       { confirmButtonText: "删除", cancelButtonText: "取消", type: "warning" },
     );
@@ -256,11 +256,11 @@ onMounted(() => void loadCharacters());
             {{ character.description || "还没有写简介，点开档案补一句吧。" }}
           </p>
           <div class="meta-row">
-            <span>{{ character.intervalDays }} 天快照周期</span>
+            <span>{{ character.intervalDays }} 天归档周期</span>
             <span>{{ character.memoryCount }} 条记忆</span>
           </div>
           <div class="character-footer">
-            <span class="muted-note">最近快照 <strong>{{ character.latestSnapshot }}</strong></span>
+            <span class="muted-note">最近归档 <strong>{{ character.latestSnapshot }}</strong></span>
             <span class="card-cta">查看档案<el-icon><ArrowRight /></el-icon></span>
           </div>
         </NuxtLink>
@@ -380,7 +380,7 @@ onMounted(() => void loadCharacters());
       </el-form>
     </el-dialog>
     <p class="footer-note">
-      角色列表和档案创建已接入本地数据库；快照、时间线和任务执行仍处于后续开发阶段。
+      角色列表和档案创建已接入本地数据库；阶段总结、时间线和任务执行仍处于后续开发阶段。
     </p>
   </div>
 </template>

@@ -1,80 +1,102 @@
 <script setup lang="ts">
-import { Calendar, Clock, DataAnalysis, Files, MagicStick, User, ChatDotRound, ArrowRight } from "@element-plus/icons-vue";
-import { ElMessage } from "element-plus";
-import { initialTimeline } from "~/utils/mock-data";
+import {
+  ArrowRight,
+  Calendar,
+  ChatDotRound,
+  Clock,
+  Cpu,
+  Files,
+  Refresh,
+  User,
+} from "@element-plus/icons-vue";
+import { characterUrgency, describeCountdown, type OverviewCharacter, type OverviewPayload } from "~/utils/overview";
 
-const characters = useCharacterList();
+const { isAdmin } = useAuthSession();
+
+// SSR 阶段必须转发 cookie，否则总览会以匿名身份请求并触发 401。
+const request = import.meta.server ? useRequestFetch() : $fetch;
+const { data: overview, pending, refresh } = await useAsyncData(
+  "overview",
+  () => request<OverviewPayload>("/api/overview"),
+);
+
+const characters = computed(() => overview.value?.characters ?? []);
 const primaryCharacter = computed(() => characters.value[0] ?? null);
-const timeline = initialTimeline;
-const weeks = [
-  { day: "周一", value: 44 }, { day: "周二", value: 62 }, { day: "周三", value: 51 },
-  { day: "周四", value: 76 }, { day: "周五", value: 58 }, { day: "周六", value: 86 }, { day: "周日", value: 68 },
-];
-const weekMax = Math.max(...weeks.map((w) => w.value));
-const weekAvg = Math.round(weeks.reduce((sum, w) => sum + w.value, 0) / weeks.length);
-const weekPeak = weeks.reduce((a, b) => (a.value >= b.value ? a : b));
-const weekTotal = weeks.reduce((sum, w) => sum + w.value, 0);
-// 当前周期第 8 段（7 天已过，今天为第 8 天）
-const periodProgress = 87.5;
 
-// 后台任务：首页接入真实任务数据，失败/等待重试时在顶部告警。
-type RealTask = { id: string; type: string; status: string; characterName: string; createdAt: string };
-const taskTypeNames: Record<string, string> = {
-  GENERATE_SNAPSHOT: "周期快照生成",
-  REGENERATE_SNAPSHOT: "快照重新生成",
-  UPDATE_LONG_TERM_MEMORY: "长期记忆更新",
-  CLEAN_EXPIRED_MESSAGES: "清理过期消息",
-};
-const taskStatusLabels: Record<string, string> = {
-  QUEUED: "等待执行", RUNNING: "运行中", SUCCEEDED: "执行成功", FAILED: "执行失败",
-  SKIPPED: "已跳过", RETRY_WAIT: "等待重试", CANCELLED: "已取消",
-};
-const realTasks = ref<RealTask[]>([]);
-const failedCount = ref(0);
-const pendingCount = ref(0);
+/** 异常置顶：模型没配 / 任务失败 / 周期逾期 / 未连接，之后才是正常的。 */
+const sortedCharacters = computed(() =>
+  [...characters.value].sort((a, b) => {
+    const byUrgency = characterUrgency(a) - characterUrgency(b);
+    if (byUrgency !== 0) return byUrgency;
+    const left = a.nextSnapshotAt ? Date.parse(a.nextSnapshotAt) : Number.MAX_SAFE_INTEGER;
+    const right = b.nextSnapshotAt ? Date.parse(b.nextSnapshotAt) : Number.MAX_SAFE_INTEGER;
+    return left - right;
+  }),
+);
 
-function taskTone(status: string) {
-  if (status === "SUCCEEDED") return "ok";
-  if (status === "FAILED") return "err";
-  if (status === "QUEUED" || status === "RETRY_WAIT") return "wait";
-  if (status === "RUNNING") return "run";
-  return "mute";
-}
-function taskStatusLabel(status: string) {
-  return taskStatusLabels[status] ?? status;
-}
-function taskTypeLabel(type: string) {
-  return taskTypeNames[type] ?? type;
-}
-function formatTaskTime(value: string) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "";
-  const pad = (input: number) => String(input).padStart(2, "0");
-  return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
-}
-async function loadTasks() {
-  try {
-    const data = await $fetch<{ items: RealTask[]; statusCounts: Record<string, number> }>("/api/tasks?limit=5");
-    realTasks.value = data.items;
-    failedCount.value = (data.statusCounts.FAILED ?? 0) + (data.statusCounts.RETRY_WAIT ?? 0);
-    pendingCount.value = (data.statusCounts.QUEUED ?? 0) + (data.statusCounts.RUNNING ?? 0);
-  } catch {
-    // 保持空值，首页不因任务接口失败而报错。
-  }
-}
-
-// 与布局共用同一份角色数据，首屏直接渲染真实角色。
-await useCharacterListData();
-
-onMounted(() => {
-  if (!characters.value.length) {
-    ElMessage.warning("角色数据暂不可用；请完成本地数据库初始化后刷新页面。");
-  }
-  loadTasks();
+const alerts = computed(() => {
+  const data = overview.value;
+  if (!data) return [] as string[];
+  const list: string[] = [];
+  if (data.tasks.failed > 0) list.push(`${data.tasks.failed} 个后台任务失败或等待重试`);
+  const unconfigured = data.characters.filter((item) => !item.chatApiKeyConfigured).length;
+  if (unconfigured > 0) list.push(`${unconfigured} 个角色未配置模型，归档任务会留在队列里不执行`);
+  const missed = data.characters.filter((item) => item.cycle?.missed).length;
+  if (missed > 0) list.push(`${missed} 个角色的归档已逾期`);
+  const disconnected = data.characters.filter((item) => item.status === "未连接").length;
+  if (disconnected > 0) list.push(`${disconnected} 个角色没有可用渠道`);
+  return list;
 });
 
-const memoryIcon = (type: string) =>
-  type === "snapshot" ? Files : type === "memory" ? MagicStick : type === "message" ? ChatDotRound : Clock;
+// 倒计时每 60 秒按本地时间重算一次：首次渲染用服务端 remainingMs，避免 SSR 与浏览器时区差异导致闪烁。
+const localNow = ref(0);
+let ticker: ReturnType<typeof setInterval> | undefined;
+
+const countdown = computed(() => {
+  const next = overview.value?.nextSnapshot;
+  if (!next) return null;
+  const remaining = localNow.value ? Date.parse(next.atISO) - localNow.value : next.remainingMs;
+  return { ...describeCountdown(remaining), characterName: next.characterName, atLabel: next.atLabel };
+});
+
+onMounted(() => {
+  ticker = setInterval(() => {
+    localNow.value = Date.now();
+  }, 60_000);
+});
+onBeforeUnmount(() => {
+  if (ticker) clearInterval(ticker);
+});
+
+function roleFacts(character: OverviewCharacter) {
+  const lastText = `上次归档 ${character.latestSnapshotLabel}`;
+  const nextText = character.nextSnapshotAt
+    ? `下次 ${character.nextSnapshotLabel}`
+    : character.autoSnapshotEnabled
+      ? "尚未排期"
+      : "自动归档已关闭";
+  return [
+    character.channels.length ? character.channels.join(" / ") : "未接渠道",
+    `${character.intervalDays} 天周期`,
+    lastText,
+    nextText,
+  ].join(" · ");
+}
+
+function cyclePercent(character: OverviewCharacter) {
+  if (!character.cycle) return 0;
+  return Math.round((character.cycle.dayIndex / character.cycle.totalDays) * 100);
+}
+
+function copyState() {
+  if (alerts.value.length > 0) return `${alerts.value.length} 项需要处理`;
+  if (countdown.value) return `一切正常 · ${countdown.value.characterName} 将在 ${countdown.value.atLabel} 归档`;
+  return "一切正常 · 暂无归档计划";
+}
+
+async function handleRefresh() {
+  await refresh();
+}
 </script>
 
 <template>
@@ -82,10 +104,17 @@ const memoryIcon = (type: string) =>
     <PageHeader
       eyebrow="工作空间 / 总览"
       title="今天的工作台"
-      description="角色近期活动、记忆归档与后台任务，一屏看完。"
+      description="异常、进度和最近发生的事，一屏看完。"
     >
       <template #actions>
-        <DemoTag />
+        <button
+          class="btn"
+          type="button"
+          :disabled="pending"
+          @click="handleRefresh"
+        >
+          <el-icon><Refresh /></el-icon>{{ pending ? "刷新中" : "刷新" }}
+        </button>
         <button
           class="btn"
           type="button"
@@ -105,246 +134,402 @@ const memoryIcon = (type: string) =>
     </PageHeader>
 
     <div
-      v-if="failedCount > 0"
-      class="task-alert"
+      v-if="alerts.length"
+      class="alert-bar"
     >
-      <el-icon><Clock /></el-icon>
-      <span>有 {{ failedCount }} 个后台任务失败或等待重试。</span>
+      <span class="alert-dot" />
+      <div class="alert-body">
+        <span
+          v-for="alert in alerts"
+          :key="alert"
+          class="alert-item"
+        >{{ alert }}</span>
+      </div>
       <button
         class="card-link"
         type="button"
-        @click="navigateTo('/tasks')"
+        @click="navigateTo(isAdmin ? '/tasks' : '/characters')"
       >
-        去任务监控处理
+        去处理<el-icon><ArrowRight /></el-icon>
       </button>
     </div>
+    <div
+      v-else-if="characters.length"
+      class="alert-bar is-quiet"
+    >
+      <span class="alert-dot is-ok" />
+      <span>{{ copyState() }}</span>
+    </div>
 
-    <!-- KPI 四格：今天怎么样 -->
-    <div class="kpi-row">
-      <div class="kpi">
-        <div class="k">
-          <el-icon><Calendar /></el-icon>当前周期
-        </div>
-        <div class="v">
-          {{ periodProgress }}<small>%</small>
-        </div>
-        <div class="bar">
-          <i :style="{ width: periodProgress + '%' }" />
-        </div>
-        <div class="foot">
-          周期进度 · 10 月 21 日 — 10 月 29 日
-        </div>
+    <!-- 空状态：还没建角色时，总览应该告诉人第一步做什么 -->
+    <div
+      v-if="overview && !characters.length"
+      class="guide"
+    >
+      <div class="guide-icon">
+        <el-icon><User /></el-icon>
       </div>
-
-      <div class="kpi">
-        <div class="k">
-          <el-icon><MagicStick /></el-icon>长期记忆
-        </div>
-        <div class="v">
-          238<small>条</small>
-        </div>
-        <div class="foot">
-          较上周期 <em>+12</em>
-        </div>
-      </div>
-
-      <div class="kpi">
-        <div class="k">
-          <el-icon><Files /></el-icon>周期快照
-        </div>
-        <div class="v">
-          13<small>份</small>
-        </div>
-        <div class="foot">
-          覆盖全部角色 · 第 13 份正在生成
-        </div>
-      </div>
-
+      <h3>还没有角色</h3>
+      <p class="guide-note">
+        忆灵小窝把「对话 → 阶段总结 → 长期记忆」串成一条线。建一个角色，配好模型，就能开始积累记忆。
+      </p>
+      <ol class="guide-steps">
+        <li><span>1</span>新建角色，填人设</li>
+        <li><span>2</span>在角色设置里填模型 API</li>
+        <li><span>3</span>开始对话，8 天后自动归档</li>
+      </ol>
       <button
-        class="kpi is-action"
+        class="btn primary lg"
         type="button"
-        title="打开任务监控"
-        @click="navigateTo('/tasks')"
+        @click="navigateTo('/characters')"
       >
-        <div class="k">
-          <el-icon><Clock /></el-icon>待处理任务
-        </div>
-        <div class="v">
-          {{ pendingCount }}<small>项</small>
-        </div>
-        <div class="foot">
-          <span v-if="failedCount > 0">{{ failedCount }} 个失败待处理</span>
-          <span v-else>暂无异常</span>
-        </div>
+        去建第一个角色
       </button>
     </div>
 
-    <!-- 左：记忆活动 / 最近记忆　右：最近任务 -->
-    <div class="home-cols">
-      <div>
-        <div class="sec-h">
-          <h2>记忆活动</h2>
-          <span class="sub">近 7 天被记录的消息与事件</span>
-        </div>
-        <div class="card">
-          <div class="chart-in">
-            <div class="chart-head">
-              <strong>{{ weekTotal }}</strong>
-              <span class="chart-delta"><el-icon><DataAnalysis /></el-icon>本周合计</span>
-              <span class="chart-vs">日均 {{ weekAvg }} 条 · 峰值 {{ weekPeak.day }} {{ weekPeak.value }} 条</span>
-            </div>
-            <div class="week-chart">
-              <div
-                v-for="(item, index) in weeks"
-                :key="item.day"
-                class="week-column"
-              >
-                <div class="week-bar-area">
-                  <div
-                    class="week-bar"
-                    :class="{ featured: index === 5 }"
-                    :style="{ height: (item.value / weekMax) * 100 + '%' }"
-                    :title="`${item.day} ${item.value} 条`"
-                  />
-                </div>
-                <span :class="{ featured: index === 5 }">{{ item.day }}</span>
-              </div>
-            </div>
+    <template v-else-if="overview">
+      <!-- 四格：都是「时点」，不是累计总量 -->
+      <div class="kpi-row">
+        <button
+          class="kpi is-action"
+          type="button"
+          :disabled="!overview.nextSnapshot"
+          @click="overview.nextSnapshot && navigateTo(`/characters/${overview.nextSnapshot.characterId}/snapshots`)"
+        >
+          <div class="k">
+            <el-icon><Calendar /></el-icon>距下次归档
           </div>
-        </div>
-
-        <div class="sec-h">
-          <h2>最近记忆</h2>
-          <span class="sub">刚刚发生的记录</span>
-          <button
-            class="more"
-            type="button"
-            @click="navigateTo('/characters')"
-          >
-            全部<el-icon><ArrowRight /></el-icon>
-          </button>
-        </div>
-        <div class="card">
-          <NuxtLink
-            v-for="entry in timeline.slice(0, 4)"
-            :key="entry.id"
-            :to="'/characters/' + (characters[0]?.id || '')"
-            class="mem-row"
-          >
-            <span class="mem-icon">
-              <el-icon><component :is="memoryIcon(entry.type)" /></el-icon>
-            </span>
-            <span class="mem-body">
-              <span class="mem-title">{{ entry.title }}</span>
-              <span class="mem-meta">{{ entry.channel }} · {{ entry.time }}</span>
-            </span>
-            <el-icon class="arw">
-              <ArrowRight />
-            </el-icon>
-          </NuxtLink>
-        </div>
-      </div>
-
-      <div>
-        <div class="sec-h">
-          <h2>最近任务</h2>
-          <span class="sub">{{ pendingCount + failedCount }} 项待处理</span>
-          <button
-            class="more"
-            type="button"
-            @click="navigateTo('/tasks')"
-          >
-            全部<el-icon><ArrowRight /></el-icon>
-          </button>
-        </div>
-        <div class="card">
           <div
-            v-for="task in realTasks.slice(0, 5)"
-            :key="task.id"
-            class="task-row"
+            class="v"
+            :class="{ 'is-overdue': countdown?.tone === 'overdue', 'is-warn': countdown?.tone === 'warn' }"
           >
+            <template v-if="countdown">
+              {{ countdown.value }}<small v-if="countdown.unit">{{ countdown.unit }}</small>
+            </template>
             <span
-              class="task-dot"
-              :class="taskTone(task.status)"
-            />
-            <div class="task-body">
-              <div class="task-title">
-                {{ taskTypeLabel(task.type) }}
-              </div>
-              <div class="task-meta">
-                {{ task.characterName }} · {{ taskStatusLabel(task.status) }}
-              </div>
-            </div>
-            <span class="task-time">{{ formatTaskTime(task.createdAt) }}</span>
+              v-else
+              class="na"
+            >—</span>
           </div>
-          <div
-            v-if="!realTasks.length"
-            class="card-empty"
-          >
-            <el-icon><Clock /></el-icon>
-            <span>还没有后台任务</span>
-            <span>跑一次周期快照或记忆更新，这里就会出现执行记录</span>
+          <div class="foot">
+            <template v-if="countdown">
+              {{ countdown.atLabel }} · {{ countdown.characterName }}
+            </template>
+            <template v-else>
+              没有开启自动归档的角色
+            </template>
+          </div>
+        </button>
+
+        <div class="kpi">
+          <div class="k">
+            <el-icon><ChatDotRound /></el-icon>本周期消息
+          </div>
+          <div class="v">
+            {{ overview.cycle?.messageCount ?? 0 }}<small>条</small>
+          </div>
+          <div class="foot">
+            <template v-if="overview.cycle">
+              第 {{ overview.cycle.dayIndex }} / {{ overview.cycle.totalDays }} 天 · {{ overview.cycle.endISOLabel }} 归档
+            </template>
+            <template v-else>
+              暂无进行中的周期
+            </template>
           </div>
         </div>
 
-        <div class="sec-h">
-          <h2>角色进度</h2>
-        </div>
-        <div class="card">
-          <div
-            v-for="character in characters.slice(0, 3)"
-            :key="character.id"
-            class="role-line"
-          >
-            <div
-              class="avatar"
-              :class="'avatar-' + character.avatarTone"
+        <button
+          class="kpi is-action"
+          type="button"
+          :disabled="!overview.latestSnapshot"
+          @click="overview.latestSnapshot && navigateTo(`/characters/${overview.latestSnapshot.characterId}/snapshots`)"
+        >
+          <div class="k">
+            <el-icon><Files /></el-icon>最近一次归档
+          </div>
+          <div class="v">
+            <template v-if="overview.latestSnapshot">
+              {{ overview.latestSnapshot.dateLabel }}<small>v{{ overview.latestSnapshot.version }}</small>
+            </template>
+            <span
+              v-else
+              class="na"
+            >—</span>
+          </div>
+          <div class="foot">
+            <template v-if="overview.latestSnapshot">
+              {{ overview.latestSnapshot.characterName }} · {{ overview.latestSnapshot.atLabel }} 生成
+            </template>
+            <template v-else>
+              还没有归档过
+            </template>
+          </div>
+        </button>
+
+        <button
+          class="kpi is-action"
+          type="button"
+          @click="navigateTo(isAdmin ? '/tasks' : '/characters')"
+        >
+          <div class="k">
+            <el-icon><Clock /></el-icon>待处理任务
+          </div>
+          <div class="v">
+            {{ overview.tasks.pending }}<small>项</small>
+          </div>
+          <div class="foot">
+            <span v-if="overview.tasks.failed > 0">{{ overview.tasks.failed }} 个失败待处理</span>
+            <span v-else>暂无异常</span>
+          </div>
+        </button>
+      </div>
+
+      <div class="home-cols">
+        <!-- 左：角色，异常置顶 -->
+        <div>
+          <div class="sec-h">
+            <h2>角色</h2>
+            <span class="sub">异常优先，其余按归档时间</span>
+            <button
+              class="more"
+              type="button"
+              @click="navigateTo('/characters')"
             >
-              {{ character.avatar }}
-            </div>
-            <div class="role-line-body">
-              <div class="role-line-head">
-                <span class="role-line-name">{{ character.name }}</span>
-                <span
-                  class="pill"
-                  :class="character.status === '已暂停' ? 'pill-gray' : 'pill-green'"
-                >{{ character.status }}</span>
+              全部<el-icon><ArrowRight /></el-icon>
+            </button>
+          </div>
+          <div class="card">
+            <div
+              v-for="character in sortedCharacters"
+              :key="character.id"
+              class="role-card"
+            >
+              <div
+                class="avatar"
+                :class="'avatar-' + character.avatarTone"
+              >
+                {{ character.avatar }}
               </div>
-              <div class="role-line-track">
-                <div
-                  class="role-line-fill"
-                  :class="{ paused: character.status === '已暂停' }"
-                  :style="{ width: character.status === '已暂停' ? '100%' : (character.memoryCount % 2 ? '87.5%' : '25%') }"
-                />
+              <div class="role-body">
+                <div class="role-head">
+                  <NuxtLink
+                    class="role-name"
+                    :to="`/characters/${character.id}`"
+                  >
+                    {{ character.name }}
+                  </NuxtLink>
+                  <span
+                    v-if="!character.chatApiKeyConfigured"
+                    class="pill pill-rose"
+                  >模型未配置</span>
+                  <span
+                    v-else-if="character.failedTaskCount > 0"
+                    class="pill pill-rose"
+                  >{{ character.failedTaskCount }} 个任务失败</span>
+                  <span
+                    v-else-if="character.cycle?.missed"
+                    class="pill pill-amber"
+                  >归档逾期</span>
+                  <span
+                    class="pill"
+                    :class="character.status === '运行中' ? 'pill-green' : 'pill-gray'"
+                  >{{ character.status }}</span>
+                </div>
+                <div class="role-facts">
+                  {{ roleFacts(character) }}
+                </div>
+                <div class="role-cycle">
+                  <div
+                    v-if="character.cycle"
+                    class="role-track"
+                  >
+                    <i
+                      :class="{ paused: character.status === '已暂停', overdue: character.cycle?.missed }"
+                      :style="{ width: cyclePercent(character) + '%' }"
+                    />
+                  </div>
+                  <span class="role-cycle-text">
+                    <template v-if="character.cycle">
+                      第 {{ character.cycle.dayIndex }}/{{ character.cycle.totalDays }} 天 · 本周期 {{ character.cycleMessageCount }} 条消息
+                    </template>
+                    <template v-else>
+                      共 {{ character.memoryCount }} 条长期记忆
+                    </template>
+                  </span>
+                </div>
               </div>
-              <div class="role-line-meta">
-                {{ character.memoryCount }} 条记忆 · 下次归档 {{ character.nextSnapshot }}
+              <div class="role-links">
+                <NuxtLink :to="`/characters/${character.id}/chat`">
+                  <el-icon><ChatDotRound /></el-icon>对话
+                </NuxtLink>
+                <NuxtLink :to="`/characters/${character.id}`">
+                  <el-icon><Cpu /></el-icon>记忆
+                </NuxtLink>
+                <NuxtLink :to="`/characters/${character.id}/snapshots`">
+                  <el-icon><Calendar /></el-icon>归档
+                </NuxtLink>
               </div>
             </div>
           </div>
-          <div
-            v-if="!characters.length"
-            class="card-empty"
-          >
-            <el-icon><User /></el-icon>
-            <span>还没有角色</span>
-            <span>先从「角色管理」建一个，再回来看看</span>
+        </div>
+
+        <!-- 右：最近发生 + 最近任务 -->
+        <div>
+          <div class="sec-h">
+            <h2>最近发生</h2>
+            <span class="sub">任务与归档</span>
+            <button
+              v-if="isAdmin"
+              class="more"
+              type="button"
+              @click="navigateTo('/tasks')"
+            >
+              任务监控<el-icon><ArrowRight /></el-icon>
+            </button>
+          </div>
+          <div class="card">
+            <div
+              v-for="event in overview.events"
+              :key="event.id"
+              class="event-row"
+            >
+              <span
+                class="event-dot"
+                :class="event.tone"
+              />
+              <div class="event-body">
+                <div class="event-title">
+                  {{ event.title }}
+                </div>
+                <div class="event-meta">
+                  {{ event.meta }}
+                </div>
+              </div>
+              <span class="event-time">{{ event.atLabel }}</span>
+            </div>
+            <div
+              v-if="!overview.events.length"
+              class="card-empty"
+            >
+              <el-icon><Clock /></el-icon>
+              <span>还没有执行记录</span>
+              <span>跑一次阶段总结或记忆更新，这里就会出现</span>
+            </div>
+          </div>
+
+          <div class="sec-h">
+            <h2>最近任务</h2>
+            <span class="sub">{{ overview.tasks.pending + overview.tasks.failed }} 项未结束</span>
+          </div>
+          <div class="card">
+            <div
+              v-for="task in overview.tasks.items.slice(0, 4)"
+              :key="task.id"
+              class="task-row"
+            >
+              <span
+                class="task-dot"
+                :class="{
+                  ok: task.status === 'SUCCEEDED',
+                  err: task.status === 'FAILED',
+                  wait: task.status === 'QUEUED' || task.status === 'RETRY_WAIT',
+                  run: task.status === 'RUNNING',
+                }"
+              />
+              <div class="task-body">
+                <div class="task-title">
+                  {{ task.typeLabel }}
+                </div>
+                <div class="task-meta">
+                  {{ task.characterName }} · {{ task.statusLabel }}
+                </div>
+              </div>
+            </div>
+            <div
+              v-if="!overview.tasks.items.length"
+              class="card-empty"
+            >
+              <el-icon><Clock /></el-icon>
+              <span>还没有后台任务</span>
+              <span>开启自动归档后，到点会自动排进队列</span>
+            </div>
           </div>
         </div>
       </div>
-    </div>
 
-    <p class="footer-note">
-      角色档案与后台任务已接入本地数据库；记忆活动周概览与最近记忆时间线仍为演示数据。
-    </p>
+      <!-- 仅管理员：数据库、队列与渠道的即时状态 -->
+      <div
+        v-if="isAdmin && overview.admin"
+        class="admin-wrap"
+      >
+        <div class="sec-h">
+          <h2>系统状况</h2>
+          <span class="sub">仅管理员可见</span>
+        </div>
+        <div class="card">
+          <div class="admin-grid">
+            <div class="admin-cell">
+              <span class="admin-label">数据库</span>
+              <b :class="overview.admin.database === 'up' ? 'is-ok' : 'is-err'">
+                {{ overview.admin.database === "up" ? "正常" : "连接异常" }}
+              </b>
+            </div>
+            <div class="admin-cell">
+              <span class="admin-label">任务队列</span>
+              <b>{{ overview.admin.jobs.queued }} 等待 / {{ overview.admin.jobs.running }} 运行 / {{ overview.admin.jobs.failed }} 失败</b>
+            </div>
+            <div class="admin-cell">
+              <span class="admin-label">渠道</span>
+              <b>{{ overview.admin.channels.online }} / {{ overview.admin.channels.total }} 在线</b>
+            </div>
+          </div>
+          <div
+            v-if="overview.admin.recentAudits.length"
+            class="audit-list"
+          >
+            <div class="audit-caption">
+              最近操作
+            </div>
+            <div
+              v-for="audit in overview.admin.recentAudits"
+              :key="audit.id"
+              class="audit-row"
+            >
+              <span class="audit-action">{{ audit.action }}</span>
+              <span class="audit-entity">{{ audit.entityType }}</span>
+              <span class="audit-time">{{ audit.atLabel }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </template>
+
+    <div
+      v-else
+      class="loading-hint"
+    >
+      <template v-if="pending">
+        正在读取工作台数据…
+      </template>
+      <template v-else>
+        工作台数据暂时读不到，<button
+          class="card-link"
+          type="button"
+          @click="handleRefresh"
+        >
+          重试
+        </button>
+      </template>
+    </div>
   </div>
 </template>
 
 <style scoped>
-.task-alert {
+/* 异常条：有问题时整条醒目，没问题时退成一行浅色文字 */
+.alert-bar {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 10px;
   margin-bottom: 14px;
   border: 1px solid var(--red-soft);
   border-radius: var(--radius);
@@ -353,45 +538,167 @@ const memoryIcon = (type: string) =>
   color: #8e2739;
   font-size: 12px;
 }
-.task-alert .card-link { margin-left: auto; }
+.alert-bar.is-quiet {
+  border-color: var(--line);
+  background: var(--surface);
+  color: var(--dim);
+}
+.alert-dot {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--red);
+}
+.alert-dot.is-ok {
+  background: var(--green);
+}
+.alert-body {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  min-width: 0;
+  flex: 1;
+}
+.alert-item {
+  white-space: nowrap;
+}
+.alert-bar .card-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: none;
+}
+.alert-bar .card-link .el-icon {
+  font-size: 12px;
+}
+
+/* 空状态引导 */
+.guide {
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: 34px 24px 30px;
+  text-align: center;
+}
+.guide-icon {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  margin: 0 auto 12px;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--brand-soft);
+  color: var(--brand);
+  font-size: 20px;
+}
+.guide h3 {
+  margin: 0;
+  color: var(--text);
+  font-size: 18px;
+  font-weight: 600;
+}
+.guide-note {
+  max-width: 460px;
+  margin: 8px auto 0;
+  color: var(--dim);
+  font-size: 13px;
+  line-height: 1.7;
+}
+.guide-steps {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 18px 0 20px;
+  padding: 0;
+  list-style: none;
+}
+.guide-steps li {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 6px 13px 6px 7px;
+  color: var(--text-2);
+  font-size: 12px;
+}
+.guide-steps li span {
+  display: grid;
+  width: 18px;
+  height: 18px;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--surface-3);
+  color: var(--dim);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* KPI */
+.kpi .v.is-overdue { color: var(--red); font-size: 18px; }
+.kpi .v.is-warn { color: var(--amber); }
 
 /* 两栏 */
-.home-cols { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); gap: 22px; align-items: start; }
-
-/* 记忆活动 */
-.chart-in { padding: 14px 16px 16px; }
-.chart-head { display: flex; align-items: baseline; gap: 10px; }
-.chart-head strong { color: var(--text); font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -.02em; line-height: 1.15; }
-.chart-delta { display: inline-flex; align-items: center; gap: 3px; color: var(--brand-strong); font-size: 12px; font-weight: 600; }
-.chart-vs { margin-left: auto; color: var(--faint); font-size: 12px; }
-.week-chart {
+.home-cols {
   display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
-  gap: 12px;
-  height: 150px;
-  margin-top: 16px;
-  border-bottom: 1px solid var(--line);
-  padding-bottom: 4px;
+  grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr);
+  gap: 22px;
+  align-items: start;
 }
-.week-column { display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 7px; color: var(--faint); font-size: 12px; }
-.week-bar-area { display: flex; width: 100%; height: 100%; align-items: flex-end; justify-content: center; }
-.week-bar { width: 100%; max-width: 32px; border-radius: 5px 5px 2px 2px; background: var(--brand-soft); transition: opacity .15s var(--ease); }
-.week-bar:hover { opacity: .72; }
-.week-bar.featured { background: var(--brand); }
-.week-column span.featured { color: var(--brand-strong); font-weight: 600; }
 
-/* 最近记忆 */
-.mem-row { display: flex; align-items: center; gap: 11px; border-bottom: 1px solid var(--line); padding: 11px 14px; transition: background .13s var(--ease); }
-.mem-row:last-child { border-bottom: 0; }
-.mem-row:hover { background: var(--surface-2); }
-.mem-icon { display: grid; width: 28px; height: 28px; flex: none; place-items: center; border-radius: var(--radius-xs); background: var(--surface-3); color: var(--dim); }
-.mem-body { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 2px; }
-.mem-title { overflow: hidden; color: var(--text-2); font-size: 14px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
-.mem-meta { color: var(--faint); font-size: 12px; }
-.mem-row .arw { flex: none; color: #cbd1db; font-size: 12px; }
+/* 角色卡 */
+.role-card {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  gap: 11px;
+  align-items: start;
+  border-bottom: 1px solid var(--line);
+  padding: 13px 14px;
+}
+.role-card:last-child { border-bottom: 0; }
+.role-card .avatar { width: 34px; height: 34px; font-size: 14px; }
+.role-body { min-width: 0; }
+.role-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.role-name { color: var(--text); font-size: 14px; font-weight: 600; }
+.role-name:hover { color: var(--brand-strong); }
+.role-facts { margin-top: 4px; color: var(--faint); font-size: 12px; line-height: 1.5; }
+.role-cycle { display: flex; align-items: center; gap: 9px; margin-top: 7px; }
+.role-track { height: 5px; width: 96px; flex: none; overflow: hidden; border-radius: 3px; background: var(--surface-3); }
+.role-track i { display: block; height: 100%; border-radius: 3px; background: linear-gradient(90deg, #e86b92, var(--brand)); }
+.role-track i.paused { background: #d5d9df; }
+.role-track i.overdue { background: var(--amber); }
+.role-cycle-text { color: var(--faint); font-size: 12px; }
+.role-links { display: flex; gap: 2px; flex: none; }
+.role-links a {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  border-radius: var(--radius-xs);
+  padding: 5px 7px;
+  color: var(--dim);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.role-links a:hover { background: var(--surface-2); color: var(--brand-strong); }
+.role-links .el-icon { font-size: 12px; }
+
+/* 事件流 */
+.event-row { display: flex; align-items: flex-start; gap: 9px; border-bottom: 1px solid var(--line); padding: 10px 14px; }
+.event-row:last-child { border-bottom: 0; }
+.event-dot { width: 6px; height: 6px; margin-top: 6px; flex: none; border-radius: 50%; background: var(--faint); }
+.event-dot.ok { background: var(--green); }
+.event-dot.err { background: var(--red); }
+.event-dot.wait { background: var(--amber); }
+.event-dot.run { background: var(--blue); }
+.event-body { min-width: 0; flex: 1; }
+.event-title { overflow: hidden; color: var(--text-2); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.event-meta { overflow: hidden; margin-top: 2px; color: var(--faint); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.event-time { flex: none; color: var(--faint); font-size: 12px; font-variant-numeric: tabular-nums; }
 
 /* 最近任务 */
-.task-row { display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--line); padding: 11px 14px; }
+.task-row { display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--line); padding: 10px 14px; }
 .task-row:last-child { border-bottom: 0; }
 .task-dot { width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--faint); }
 .task-dot.ok { background: var(--green); }
@@ -399,26 +706,32 @@ const memoryIcon = (type: string) =>
 .task-dot.wait { background: var(--amber); }
 .task-dot.run { background: var(--blue); }
 .task-body { min-width: 0; flex: 1; }
-.task-title { overflow: hidden; color: var(--text-2); font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
+.task-title { overflow: hidden; color: var(--text-2); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
 .task-meta { margin-top: 2px; color: var(--faint); font-size: 12px; }
-.task-time { flex: none; color: var(--faint); font-size: 12px; font-variant-numeric: tabular-nums; }
 
-/* 角色进度行 */
-.role-line { display: flex; align-items: center; gap: 11px; border-bottom: 1px solid var(--line); padding: 11px 14px; }
-.role-line:last-child { border-bottom: 0; }
-.role-line .avatar { width: 30px; height: 30px; font-size: 12px; }
-.role-line-body { min-width: 0; flex: 1; }
-.role-line-head { display: flex; align-items: center; gap: 8px; }
-.role-line-name { color: var(--text-2); font-size: 14px; font-weight: 600; }
-.role-line-track { height: 5px; margin-top: 6px; overflow: hidden; border-radius: 3px; background: var(--surface-3); }
-.role-line-fill { height: 100%; border-radius: 3px; background: linear-gradient(90deg, #e86b92, var(--brand)); }
-.role-line-fill.paused { background: #d5d9df; }
-.role-line-meta { margin-top: 5px; color: var(--faint); font-size: 12px; }
+/* 管理员块 */
+.admin-wrap { margin-top: 8px; }
+.admin-grid { display: flex; flex-wrap: wrap; gap: 10px 26px; border-bottom: 1px solid var(--line); padding: 13px 14px; }
+.admin-cell { display: flex; align-items: center; gap: 7px; font-size: 12px; }
+.admin-label { color: var(--faint); }
+.admin-cell b { color: var(--text-2); font-weight: 600; font-variant-numeric: tabular-nums; }
+.admin-cell b.is-ok { color: var(--green); }
+.admin-cell b.is-err { color: var(--red); }
+.audit-list { padding: 8px 14px 12px; }
+.audit-caption { margin-bottom: 3px; color: var(--faint); font-size: 12px; }
+.audit-row { display: flex; align-items: center; gap: 10px; padding: 4px 0; font-size: 12px; }
+.audit-action { color: var(--text-2); font-family: Consolas, monospace; }
+.audit-entity { color: var(--faint); }
+.audit-time { margin-left: auto; color: var(--faint); font-variant-numeric: tabular-nums; }
+
+.loading-hint { padding: 40px 0; color: var(--faint); font-size: 13px; text-align: center; }
 
 @media (max-width: 1150px) {
   .home-cols { grid-template-columns: minmax(0, 1fr); }
 }
-@media (max-width: 640px) {
-  .week-chart { gap: 5px; height: 120px; }
+@media (max-width: 720px) {
+  .role-card { grid-template-columns: 34px minmax(0, 1fr); }
+  .role-links { grid-column: 2; margin-top: 2px; }
+  .kpi-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 </style>

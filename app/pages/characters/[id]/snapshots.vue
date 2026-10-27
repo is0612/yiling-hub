@@ -41,7 +41,7 @@ async function loadSnapshots(selectedId?: string) {
   } catch {
     items.value = [];
     detail.value = null;
-    ElMessage.error("快照数据加载失败，请确认本地数据库已迁移。");
+    ElMessage.error("阶段总结加载失败，请确认本地数据库已迁移。");
   } finally {
     loading.value = false;
   }
@@ -92,9 +92,9 @@ function memoryChangeLabel(action: string, result: string) {
 async function createSnapshot() {
   try {
     await ElMessageBox.confirm(
-      "生成一份手动快照，保存当前时间范围内的消息来源与长期记忆。手动快照不会调用模型；自动周期任务会在配置模型后执行 AI 提炼。是否继续？",
-      "生成快照",
-      { confirmButtonText: "保存快照", cancelButtonText: "取消", type: "info" },
+      "生成一份手动归档，保存当前时间范围内的消息来源与长期记忆。手动归档不会调用模型；自动周期任务会在配置模型后执行 AI 提炼。是否继续？",
+      "生成阶段总结",
+      { confirmButtonText: "确认归档", cancelButtonText: "取消", type: "info" },
     );
   } catch {
     return;
@@ -104,7 +104,7 @@ async function createSnapshot() {
   try {
     const result = await $fetch<{ id: string }>(`/api/characters/${encodeURIComponent(id.value)}/snapshots`, { method: "POST" });
     await loadSnapshots(result.id);
-    ElMessage.success("手动快照已保存到 PostgreSQL，并关联周期内可用的消息来源。");
+    ElMessage.success("手动已归档到 PostgreSQL，并关联周期内可用的消息来源。");
   } catch (error) {
     ElMessage.error(errorMessage(error));
   } finally {
@@ -115,8 +115,8 @@ async function createSnapshot() {
 async function regenerateWithAi(snapshot: Snapshot) {
   try {
     await ElMessageBox.confirm(
-      "系统会对这份自动快照覆盖的历史周期重新调用模型，并创建同一快照档案的新版本。旧版本会保留；为避免历史重放改写当前长期记忆，本次提出的长期记忆变化只展示供审核，不会自动应用。",
-      "AI 重新提炼快照",
+      "系统会对这份自动归档覆盖的历史周期重新调用模型，并创建同一阶段总结档案的新版本。旧版本会保留；为避免历史重放改写当前长期记忆，本次提出的长期记忆变化只展示供审核，不会自动应用。",
+      "AI 重新提炼",
       { confirmButtonText: "排入重新提炼任务", cancelButtonText: "取消", type: "warning" },
     );
   } catch {
@@ -131,8 +131,8 @@ async function regenerateWithAi(snapshot: Snapshot) {
     );
     ElMessage.success(
       result.duplicate
-        ? "这份快照已有等待中的 AI 重新提炼任务，无需重复排队。"
-        : "AI 重新提炼任务已排队。请到“后台任务”运行 Worker，并查看新生成的快照版本。",
+        ? "这份阶段总结已有等待中的 AI 重新提炼任务，无需重复排队。"
+        : "AI 重新提炼任务已排队。请到“后台任务”运行 Worker，并查看新生成的总结版本。",
     );
   } catch (error) {
     ElMessage.error(errorMessage(error));
@@ -143,8 +143,8 @@ async function regenerateWithAi(snapshot: Snapshot) {
 async function regenerate(snapshot: Snapshot) {
   try {
     await ElMessageBox.confirm(
-      "为第 " + snapshot.number + " 份快照创建新版本？旧版本会保留，并标记为已被替代。",
-      "重新生成快照",
+      "为第 " + snapshot.number + " 份阶段总结创建新版本？旧版本会保留，并标记为已被替代。",
+      "重新生成阶段总结",
       { confirmButtonText: "创建新版本", cancelButtonText: "取消", type: "info" },
     );
   } catch {
@@ -181,9 +181,9 @@ watch(id, () => {
 <template>
   <div class="page-wrap">
     <PageHeader
-      :eyebrow="`角色管理 / ${character.name} / 周期快照`"
-      title="周期快照档案"
-      description="自动周期快照会调用配置的 AI 模型提炼对话、事实与偏好变化；手动快照保留当下记录。每份自动记忆变化都应能追溯到原始消息。"
+      :eyebrow="`角色管理 / ${character.name} / 阶段总结`"
+      title="阶段总结档案"
+      description="自动归档会调用配置的 AI 模型提炼对话、事实与偏好变化；手动归档保留当下记录。每份自动记忆变化都应能追溯到原始消息。"
     >
       <template #actions>
         <button
@@ -199,7 +199,7 @@ watch(id, () => {
           :disabled="creating"
           @click="createSnapshot"
         >
-          <el-icon><MagicStick /></el-icon>{{ creating ? "生成中…" : "生成快照" }}
+          <el-icon><MagicStick /></el-icon>{{ creating ? "生成中…" : "生成阶段总结" }}
         </button>
       </template>
     </PageHeader>
@@ -207,7 +207,7 @@ watch(id, () => {
     <div class="kpi-row is-three">
       <div class="kpi">
         <div class="k">
-          历史快照
+          历史归档
         </div>
         <div class="v">
           {{ items.length }}<small>份</small>
@@ -235,7 +235,7 @@ watch(id, () => {
           {{ items[0] ? items[0].date.slice(5, 10) : "—" }}
         </div>
         <div class="foot">
-          {{ items[0] ? items[0].date.slice(0, 4) + " 年归档" : "还没有生成过快照" }}
+          {{ items[0] ? items[0].date.slice(0, 4) + " 年归档" : "还没有归档过" }}
         </div>
       </div>
     </div>
@@ -246,7 +246,7 @@ watch(id, () => {
           <el-input
             v-model="query"
             clearable
-            placeholder="搜索快照总结、时间段或编号……"
+            placeholder="搜索阶段总结、时间段或编号……"
           >
             <template #prefix>
               <el-icon><Search /></el-icon>
@@ -294,7 +294,7 @@ watch(id, () => {
             @click="detail = snapshot"
           >
             <div class="snapshot-title">
-              <span>第 {{ snapshot.number }} 份快照 <span class="snapshot-version">· v{{ snapshot.version }}</span></span><span
+              <span>第 {{ snapshot.number }} 份阶段总结 <span class="snapshot-version">· v{{ snapshot.version }}</span></span><span
                 class="pill"
                 :class="statusTone(snapshot.status)"
               >{{ snapshot.status }}</span>
@@ -322,15 +322,15 @@ watch(id, () => {
             class="card-empty"
           >
             <el-icon><Files /></el-icon>
-            <span>{{ hasFilters ? "没有符合条件的快照" : "还没有快照档案" }}</span>
-            <span>{{ hasFilters ? "换个搜索词或把状态筛选切回全部" : "点右上角「生成快照」手动归档当前周期" }}</span>
+            <span>{{ hasFilters ? "没有符合条件的阶段总结" : "还没有归档记录" }}</span>
+            <span>{{ hasFilters ? "换个搜索词或把状态筛选切回全部" : "点右上角「生成阶段总结」手动归档当前周期" }}</span>
           </div>
         </div>
       </div>
 
       <div>
         <div class="sec-h">
-          <h2>快照详情</h2>
+          <h2>阶段总结详情</h2>
           <span class="sub">{{ detail ? "v" + detail.version : "未选择" }}</span>
         </div>
         <div class="card detail-card">
@@ -338,9 +338,9 @@ watch(id, () => {
             <div class="detail-heading">
               <div>
                 <div class="mini-label">
-                  SNAPSHOT DETAIL
+                  阶段总结详情
                 </div><h2 class="detail-title">
-                  第 {{ detail.number }} 份记忆快照
+                  第 {{ detail.number }} 份阶段总结
                 </h2>
               </div><span
                 class="pill"
@@ -375,7 +375,7 @@ watch(id, () => {
                 <span class="pill pill-blue">{{ detail.sourceMessages?.length || 0 }} 条</span>
               </div>
               <p class="source-hint">
-                下面这些消息是实际关联到本份快照的原始记录；AI 分析条目里的「来源消息」编号可以和它们对应。
+                下面这些消息是实际关联到本份阶段总结的原始记录；AI 分析条目里的「来源消息」编号可以和它们对应。
               </p>
               <div
                 v-if="detail.sourceMessages?.length"
@@ -507,7 +507,7 @@ watch(id, () => {
                 v-if="detail.analysis.differencesFromPrevious.length"
                 class="analysis-block"
               >
-                <h3>相较上一快照</h3>
+                <h3>相较上一份总结</h3>
                 <ul>
                   <li
                     v-for="(item, index) in detail.analysis.differencesFromPrevious"
@@ -537,7 +537,7 @@ watch(id, () => {
               v-else
               class="info-callout detail-callout"
             >
-              <el-icon><Files /></el-icon><span>这是一份手动或旧版快照，当前保存的是结构化记录；自动周期快照的 AI 分析会显示在这里。</span>
+              <el-icon><Files /></el-icon><span>这是一份手动或旧版总结，当前保存的是结构化记录；自动归档的 AI 分析会显示在这里。</span>
             </div>
             <div
               v-if="detail.kind === 'AUTOMATIC'"
@@ -580,14 +580,14 @@ watch(id, () => {
             class="card-empty"
           >
             <el-icon><Files /></el-icon>
-            <span>还没有选中的快照</span>
-            <span>从左侧时间线点一份快照，这里会展开总结、来源消息与 AI 提炼结果</span>
+            <span>还没有选中的总结</span>
+            <span>从左侧时间线点一份阶段总结，这里会展开总结、来源消息与 AI 提炼结果</span>
           </div>
         </div>
       </div>
     </div>
     <p class="footer-note">
-      自动周期快照由独立 Worker 调用模型生成；模型输出中的消息来源会先校验再采纳。手动归档与旧版快照不代表 AI 总结。
+      自动归档由独立 Worker 调用模型生成；模型输出中的消息来源会先校验再采纳。手动归档与旧版总结不代表 AI 总结。
     </p>
   </div>
 </template>
@@ -611,7 +611,7 @@ watch(id, () => {
 .snapshot-meta span{display:flex;align-items:center;gap:5px}
 .snap-skeleton{display:flex;flex-direction:column;gap:8px;padding:14px 18px}
 
-/* ── 快照详情 ──────────────────────────────────────── */
+/* ── 阶段总结详情 ──────────────────────────────────────── */
 .detail-card{padding:16px 20px 18px}
 .mini-label{color:var(--faint);font:400 12px/1 Consolas,monospace;letter-spacing:.03em}
 .detail-title{margin:6px 0 0;color:var(--text);font-size:16px;font-weight:700;line-height:1.35}

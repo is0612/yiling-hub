@@ -25,7 +25,7 @@ export default defineEventHandler(async (event) => {
 
   const interval = Number(body.snapshotIntervalDays);
   if (!Number.isInteger(interval) || interval < 1 || interval > 365) {
-    throw createError({ statusCode: 400, statusMessage: "快照周期必须为 1–365 天的整数。" });
+    throw createError({ statusCode: 400, statusMessage: "归档周期必须为 1–365 天的整数。" });
   }
 
   if (typeof body.timezone !== "string" || body.timezone.length > 100) {

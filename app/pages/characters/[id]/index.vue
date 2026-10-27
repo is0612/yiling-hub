@@ -82,7 +82,7 @@ const channelOptions = computed(() => [...new Set(timelineEntries.value.map((ent
 const character = computed(() => currentCharacter.value || {
   ...initialCharacters[0], id: id.value, name: "角色加载中", alias: "数据库档案",
   description: "正在读取角色数据。", status: "已暂停" as const,
-  channels: [], intervalDays: 8, nextSnapshot: "尚未计划", memoryCount: 0, latestSnapshot: "暂无快照",
+  channels: [], intervalDays: 8, nextSnapshot: "尚未计划", memoryCount: 0, latestSnapshot: "暂无总结",
 });
 const activeFilter = ref("全部记录");
 const channelFilter = ref("全部渠道");
@@ -95,7 +95,7 @@ const filterOptions = [
   { label: "对话记录", type: "message" as TimelineType },
   { label: "重要事件", type: "event" as TimelineType },
   { label: "长期记忆", type: "memory" as TimelineType },
-  { label: "周期快照", type: "snapshot" as TimelineType },
+  { label: "阶段总结", type: "snapshot" as TimelineType },
 ];
 const filteredEntries = computed(() => {
   const type = filterOptions.find((option) => option.label === activeFilter.value)?.type;
@@ -130,7 +130,7 @@ async function loadSnapshots() {
     snapshots.value = await $fetch<Snapshot[]>(`/api/characters/${encodeURIComponent(id.value)}/snapshots`);
   } catch {
     snapshots.value = [];
-    ElMessage.error("快照数据加载失败，请确认本地数据库已迁移。");
+    ElMessage.error("阶段总结加载失败，请确认本地数据库已迁移。");
   }
 }
 
@@ -250,7 +250,7 @@ async function saveEditedMemory() {
     });
     memoryEditDialogOpen.value = false;
     await loadCharacter();
-    ElMessage.success("长期记忆已更新。已有快照会保留生成时的历史内容。");
+    ElMessage.success("长期记忆已更新。已有阶段总结会保留生成时的历史内容。");
   } catch (error) {
     const message = error && typeof error === "object" && "statusMessage" in error
       ? String(error.statusMessage)
@@ -268,7 +268,7 @@ async function setMemoryStatus(entry: TimelineEntry, status: "active" | "archive
   const actionLabel = status === "archived" ? "归档" : status === "invalidated" ? "标记失效" : "恢复为有效";
   try {
     await ElMessageBox.confirm(
-      `确定将这条记忆“${actionLabel}”吗？此操作会保留历史记录，不会删除已有快照。`,
+      `确定将这条记忆“${actionLabel}”吗？此操作会保留历史记录，不会删除已有阶段总结。`,
       "维护长期记忆",
       { confirmButtonText: "确认", cancelButtonText: "取消", type: "warning" },
     );
@@ -330,7 +330,7 @@ async function moveMemoryToTrash(entry: TimelineEntry) {
   if (!memoryId) return;
   try {
     await ElMessageBox.confirm(
-      "这条记忆将从主时间线和当前长期记忆集合中移出，但不会被立即永久删除。你可以在回收站中恢复。已有快照会保留生成时的历史副本。",
+      "这条记忆将从主时间线和当前长期记忆集合中移出，但不会被立即永久删除。你可以在回收站中恢复。已有阶段总结会保留生成时的历史副本。",
       "移入记忆回收站",
       { confirmButtonText: "移入回收站", cancelButtonText: "取消", type: "warning" },
     );
@@ -369,7 +369,7 @@ async function permanentlyDeleteMemory(memory: RecycleBinEntry) {
   if (recycleBinBusyIds.value.includes(memory.id)) return;
   try {
     await ElMessageBox.confirm(
-      "这会永久删除当前长期记忆条目，且无法从回收站恢复。为保护历史追溯，已有快照中的生成时副本和来源记录仍会保留；因此历史快照里仍可能出现这段内容。",
+      "这会永久删除当前长期记忆条目，且无法从回收站恢复。为保护历史追溯，已有阶段总结中的生成时副本和来源记录仍会保留；因此历史归档里仍可能出现这段内容。",
       "永久删除记忆条目",
       { confirmButtonText: "永久删除条目", cancelButtonText: "取消", type: "error" },
     );
@@ -381,7 +381,7 @@ async function permanentlyDeleteMemory(memory: RecycleBinEntry) {
       { method: "DELETE" },
     );
     await Promise.all([loadRecycleBin(), loadCharacter()]);
-    ElMessage.success(`当前记忆条目已永久删除；保留了 ${result.preservedSnapshotReferences} 条历史来源记录，既有快照未被改写。`);
+    ElMessage.success(`当前记忆条目已永久删除；保留了 ${result.preservedSnapshotReferences} 条历史来源记录，既有阶段总结未被改写。`);
   } catch (error) {
     const message = error && typeof error === "object" && "statusMessage" in error
       ? String(error.statusMessage)
@@ -465,11 +465,11 @@ async function manualSnapshot() {
   try {
     await $fetch(`/api/characters/${encodeURIComponent(id.value)}/snapshots`, { method: "POST" });
     await Promise.all([loadSnapshots(), loadTimeline()]);
-    ElMessage.success("快照已保存。已关联周期内的消息/事件与长期记忆来源；尚未调用大模型生成总结。");
+    ElMessage.success("已归档。已关联周期内的消息/事件与长期记忆来源；尚未调用大模型生成总结。");
   } catch (error) {
     const message = error && typeof error === "object" && "statusMessage" in error
       ? String(error.statusMessage)
-      : "快照保存失败，请检查数据库连接。";
+      : "归档保存失败，请检查数据库连接。";
     ElMessage.error(message);
   } finally {
     snapshotCreating.value = false;
@@ -485,7 +485,7 @@ watch(id, () => void loadCharacter());
     <PageHeader
       eyebrow="工作空间 / 角色管理 / 记忆驾驶舱"
       title="记忆驾驶舱"
-      description="查看角色对话、周期总结与长期记忆。启用自动归档后，周期 Worker 会提炼事实与偏好变化，并保留原始消息来源。"
+      description="查看角色对话、阶段总结与长期记忆。启用自动归档后，周期 Worker 会提炼事实与偏好变化，并保留原始消息来源。"
     >
       <template #actions>
         <el-tooltip
@@ -753,7 +753,7 @@ watch(id, () => void loadCharacter());
               class="btn"
               @click="navigateTo('/characters/' + character.id + '/snapshots')"
             >
-              <el-icon><Files /></el-icon>查看全部快照
+              <el-icon><Files /></el-icon>查看全部阶段总结
             </button>
             <button
               type="button"
@@ -771,7 +771,7 @@ watch(id, () => void loadCharacter());
         </div>
         <div class="card stat-box">
           <p class="stat-note">
-            启用自动快照并配置模型后，周期 Worker 会自动总结对话并维护长期记忆。
+            启用自动归档并配置模型后，周期 Worker 会自动总结对话并维护长期记忆。
           </p>
           <div class="metric-row">
             <span>已记录对话消息</span><span class="metric-value">{{ recordedMessageCount }} 条</span>
@@ -788,7 +788,7 @@ watch(id, () => void loadCharacter());
         </div>
 
         <div class="sec-h">
-          <h2>最近快照</h2>
+          <h2>最近归档</h2>
           <span class="sub">{{ snapshots.length }} 份</span>
           <button
             type="button"
@@ -806,7 +806,7 @@ watch(id, () => void loadCharacter());
             class="snap-row"
           >
             <span class="snap-top">
-              <span>第 {{ snapshot.number }} 份快照</span>
+              <span>第 {{ snapshot.number }} 份阶段总结</span>
               <span class="muted-note">v{{ snapshot.version }}</span>
             </span>
             <span class="snap-sum">{{ snapshot.summary }}</span>
@@ -816,7 +816,7 @@ watch(id, () => void loadCharacter());
             class="card-empty"
           >
             <el-icon><Files /></el-icon>
-            <span>还没有保存的快照</span>
+            <span>还没有保存的总结</span>
             <span>手动归档一次或等周期 Worker 跑完，这里会出现版本记录</span>
           </div>
         </div>
@@ -919,7 +919,7 @@ watch(id, () => void loadCharacter());
           />
         </el-form-item>
         <div class="info-callout">
-          <span>修改只更新当前长期记忆。已经生成的快照会保留生成时的历史副本。</span>
+          <span>修改只更新当前长期记忆。已经生成的阶段总结会保留生成时的历史副本。</span>
         </div>
       </el-form>
       <template #footer>
@@ -985,7 +985,7 @@ watch(id, () => void loadCharacter());
       :close-on-click-modal="false"
     >
       <p class="recycle-intro">
-        已移出当前记忆集合的条目。恢复会回到移入回收站前的状态；永久删除仅移除当前长期记忆条目，历史快照仍保留生成时的副本。
+        已移出当前记忆集合的条目。恢复会回到移入回收站前的状态；永久删除仅移除当前长期记忆条目，历史归档仍保留生成时的副本。
       </p>
       <div
         v-if="recycleBinLoading"
@@ -1123,7 +1123,7 @@ watch(id, () => void loadCharacter());
 .stat-box{padding:0 18px 6px}
 .stat-note{margin:12px 0 0;padding-bottom:10px;border-bottom:1px solid var(--line);color:var(--dim);font-size:12px;line-height:1.75;text-wrap:pretty}
 
-/* ── 右栏：最近快照 ────────────────────────────────── */
+/* ── 右栏：最近归档 ────────────────────────────────── */
 .snap-row{display:block;padding:12px 18px;border-bottom:1px solid var(--line);transition:background .14s var(--ease)}
 .snap-row:last-child{border-bottom:0}
 .snap-row:hover{background:var(--surface-2)}

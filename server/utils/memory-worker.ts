@@ -178,11 +178,11 @@ export async function processNextMemoryJob(
           lockedAt: null,
           lockedBy: null,
           completedAt: null,
-          lastError: "仍有更早的快照任务待处理，清理已延后。",
+          lastError: "仍有更早的归档任务待处理，清理已延后。",
         },
       });
       if (deferred.count === 1) {
-        deferredCleanupResult ??= { processed: true, jobId: candidate.id, status: "RETRY_WAIT", message: "仍有过期区间的快照任务待处理，已延后清理。" };
+        deferredCleanupResult ??= { processed: true, jobId: candidate.id, status: "RETRY_WAIT", message: "仍有过期区间的归档任务待处理，已延后清理。" };
       }
       continue;
     }
@@ -241,7 +241,7 @@ export async function processNextMemoryJob(
         });
         return deleted.count;
       });
-      return { processed: true, jobId: candidate.id, status: "SUCCEEDED", message: `原始消息清理完成，删除 ${deletedCount} 条过期消息；快照与来源记录已保留。` };
+      return { processed: true, jobId: candidate.id, status: "SUCCEEDED", message: `原始消息清理完成，删除 ${deletedCount} 条过期消息；阶段总结与来源记录已保留。` };
     } catch (error) {
       if (error instanceof Error && error.message === "CLEANUP_POLICY_CHANGED") {
         const message = "清理策略已变更或尚未授权；该任务已取消，未删除原始消息。";
@@ -339,7 +339,7 @@ export async function processNextMemoryJob(
   if (configuredCandidates.length === 0 && candidates.length > 0) {
     return {
       processed: false,
-      message: "待处理快照关联的角色尚未配置模型 API。请打开该角色的 AI 对话 → 模型参数填写 API 地址、Key 和模型名称；任务会保留在队列中。",
+      message: "待处理阶段总结关联的角色尚未配置模型 API。请打开该角色的 AI 对话 → 模型参数填写 API 地址、Key 和模型名称；任务会保留在队列中。",
     };
   }
 
@@ -376,7 +376,7 @@ export async function processNextMemoryJob(
     }
   }
 
-  if (!claimedJobId) return { processed: false, message: "当前没有可领取的周期快照任务。" };
+  if (!claimedJobId) return { processed: false, message: "当前没有可领取的周期归档任务。" };
 
   try {
     const job = await prisma.memoryJob.findUnique({
@@ -405,19 +405,19 @@ export async function processNextMemoryJob(
     let logicalSnapshotKey = job.idempotencyKey;
 
     if (isRegeneration) {
-      if (!job.snapshotId) throw new Error("AI 快照重新提炼任务缺少原始快照 ID。");
+      if (!job.snapshotId) throw new Error("AI 重新提炼任务缺少原始总结 ID。");
       const regenerationTarget = await prisma.memorySnapshot.findFirst({
         where: { id: job.snapshotId, memoryScopeId: job.memoryScopeId },
         select: { id: true, snapshotKey: true, kind: true, periodStart: true, periodEnd: true },
       });
       if (!regenerationTarget || regenerationTarget.kind !== "AUTOMATIC") {
-        throw new Error("AI 快照重新提炼只能针对仍保留在数据库中的自动快照。");
+        throw new Error("AI 重新提炼只能针对仍保留在数据库中的自动归档。");
       }
       if (
         regenerationTarget.periodStart.getTime() !== job.periodStart.getTime() ||
         regenerationTarget.periodEnd.getTime() !== job.periodEnd.getTime()
       ) {
-        throw new Error("重新提炼任务的周期范围与原始快照不一致。");
+        throw new Error("重新提炼任务的周期范围与原始总结不一致。");
       }
       logicalSnapshotKey = regenerationTarget.snapshotKey;
     } else {
@@ -431,7 +431,7 @@ export async function processNextMemoryJob(
           where: { id: job.id, status: "RUNNING", lockedBy: workerId },
           data: { status: "SUCCEEDED", snapshotId: priorSnapshot.id, completedAt: now, lockedAt: null, lockedBy: null, lastError: null },
         });
-        return { processed: true, jobId: job.id, status: "SUCCEEDED", snapshotId: priorSnapshot.id, message: "检测到相同周期已有快照，已复用历史结果。" };
+        return { processed: true, jobId: job.id, status: "SUCCEEDED", snapshotId: priorSnapshot.id, message: "检测到相同周期已有总结，已复用历史结果。" };
       }
     }
     const messageWhere = {
@@ -514,7 +514,7 @@ export async function processNextMemoryJob(
           lockedBy: null,
         },
       });
-      return { processed: true, jobId: job.id, status: "SKIPPED", message: "周期内无已保存活动，已跳过快照生成。" };
+      return { processed: true, jobId: job.id, status: "SKIPPED", message: "周期内无已保存活动，已跳过总结生成。" };
     }
 
     // Keep the oldest and newest source messages in long periods, instead of silently
@@ -576,7 +576,7 @@ export async function processNextMemoryJob(
             where: { id: job.id },
             data: { status: "SUCCEEDED", snapshotId: racedSnapshot.id, completedAt: now, lockedAt: null, lockedBy: null, lastError: null },
           });
-          return { status: "SUCCEEDED" as const, snapshotId: racedSnapshot.id, message: "同一周期已由其他执行完成，复用已有快照。" };
+          return { status: "SUCCEEDED" as const, snapshotId: racedSnapshot.id, message: "同一周期已由其他执行完成，复用已有总结。" };
         }
       }
 
@@ -874,8 +874,8 @@ export async function processNextMemoryJob(
         status: "SUCCEEDED" as const,
         snapshotId: snapshot.id,
         message: isRegeneration
-          ? `AI 快照重新提炼完成，已创建版本 ${nextSnapshotVersion}；长期记忆变化仅供审核，未自动应用。`
-          : `AI 周期总结已生成；应用 ${appliedChanges.length} 项长期记忆变化。`
+          ? `AI 重新提炼完成，已创建版本 ${nextSnapshotVersion}；长期记忆变化仅供审核，未自动应用。`
+          : `AI 阶段总结已生成；应用 ${appliedChanges.length} 项长期记忆变化。`
       };
     });
 

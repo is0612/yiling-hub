@@ -150,13 +150,13 @@ export function toMemoryTimelineDtos(input: {
       entry: {
         id: "snapshot:" + snapshot.id,
         type: "snapshot",
-        title: "第 " + snapshot.number + " 份记忆快照 · v" + snapshot.version,
+        title: "第 " + snapshot.number + " 份阶段总结 · v" + snapshot.version,
         summary: snapshot.summary,
         time: snapshot.date,
         channel: "全部渠道",
         tag: snapshot.status,
         tagTone: snapshot.statusTone,
-        source: "快照版本 #" + snapshot.id.slice(0, 8),
+        source: "总结版本 #" + snapshot.id.slice(0, 8),
       },
     });
   }

@@ -390,7 +390,7 @@ async function exportConversation() {
         }
         for (const snapshot of sources.snapshots) {
           const scopeLabel = snapshot.scope === "private" ? "私人记忆" : "角色全局记忆";
-          lines.push("- " + scopeLabel + "快照 v" + snapshot.version + "（" + snapshot.periodStart + " — " + snapshot.periodEnd + "）：" + snapshot.summary + " [ID: " + snapshot.id + "]");
+          lines.push("- " + scopeLabel + "阶段总结 v" + snapshot.version + "（" + snapshot.periodStart + " — " + snapshot.periodEnd + "）：" + snapshot.summary + " [ID: " + snapshot.id + "]");
         }
         lines.push("");
       }
@@ -645,7 +645,7 @@ onMounted(() => void reload());
               <el-icon><Reading /></el-icon>
             </div>
             <h2>开始一段新对话</h2>
-            <p>发送一条消息，角色会参考自己的设定，并按当前话题检索相关记忆和历史快照。</p>
+            <p>发送一条消息，角色会参考自己的设定，并按当前话题检索相关记忆和历史归档。</p>
           </div>
           <article
             v-for="message in messages"
@@ -701,7 +701,7 @@ onMounted(() => void reload());
                   :key="source.id"
                   class="source-item"
                 >
-                  <span class="pill pill-blue">快照 v{{ source.version }}</span>
+                  <span class="pill pill-blue">总结 v{{ source.version }}</span>
                   <span
                     v-if="source.scope === 'private'"
                     class="pill pill-amber"

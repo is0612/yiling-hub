@@ -171,13 +171,13 @@ export const initialTimeline: TimelineEntry[] = [
   {
     id: "evt-4",
     type: "snapshot",
-    title: "第 12 份周期记忆快照已生成",
+    title: "第 12 份阶段总结已生成",
     summary: "本阶段共整理 46 条消息、5 个重要事件和 2 项需要继续跟进的约定。",
     time: "10 月 21 日 09:00",
     channel: "全部渠道",
-    tag: "周期快照",
+    tag: "阶段总结",
     tagTone: "amber",
-    source: "快照 #snap-0012 · 版本 1",
+    source: "阶段总结 #snap-0012 · 版本 1",
   },
   {
     id: "evt-5",
@@ -211,7 +211,7 @@ export const initialSnapshots: Snapshot[] = [
     version: 2,
     date: "2026-10-13 09:02",
     range: "10 月 5 日 — 10 月 13 日",
-    summary: "重新生成的第 11 份快照，修正了关于用户音乐偏好的描述，保留原版本供追溯。",
+    summary: "重新生成的第 11 份阶段总结，修正了关于用户音乐偏好的描述，保留原版本供追溯。",
     events: 4,
     messages: 39,
     status: "当前版本",
@@ -232,9 +232,9 @@ export const initialSnapshots: Snapshot[] = [
 ];
 
 export const initialTasks: DemoTask[] = [
-  { id: "job-204", name: "生成周期记忆快照", character: "大肥鱼", range: "10/21 09:00 — 10/29 09:00", status: "等待执行", tone: "amber", tries: 0, time: "计划于明天 09:00" },
+  { id: "job-204", name: "生成阶段总结", character: "大肥鱼", range: "10/21 09:00 — 10/29 09:00", status: "等待执行", tone: "amber", tries: 0, time: "计划于明天 09:00" },
   { id: "job-203", name: "整理长期记忆", character: "大肥鱼", range: "当前周期", status: "成功", tone: "green", tries: 1, time: "今天 08:45" },
-  { id: "job-202", name: "生成周期记忆快照", character: "龙娘", range: "10/20 20:00 — 11/03 20:00", status: "等待执行", tone: "amber", tries: 0, time: "计划于 11/03 20:00" },
+  { id: "job-202", name: "生成阶段总结", character: "龙娘", range: "10/20 20:00 — 11/03 20:00", status: "等待执行", tone: "amber", tries: 0, time: "计划于 11/03 20:00" },
   { id: "job-201", name: "同步外部事件", character: "大肥鱼", range: "B站内容摘要", status: "失败待重试", tone: "rose", tries: 2, time: "上次失败：10:14" },
   { id: "job-200", name: "检查周期活动", character: "星海旅人", range: "10/06 — 10/14", status: "跳过", tone: "gray", tries: 1, time: "10 月 14 日 09:00" },
 ];

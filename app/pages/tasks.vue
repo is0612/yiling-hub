@@ -91,8 +91,8 @@ function resetFilters() {
 
 function taskTypeText(type: MemoryTask["type"]) {
   const names: Record<MemoryTask["type"], string> = {
-    GENERATE_SNAPSHOT: "周期快照生成",
-    REGENERATE_SNAPSHOT: "快照重新生成",
+    GENERATE_SNAPSHOT: "生成阶段总结",
+    REGENERATE_SNAPSHOT: "重新生成总结",
     UPDATE_LONG_TERM_MEMORY: "长期记忆更新",
     CLEAN_EXPIRED_MESSAGES: "清理过期消息",
   };
