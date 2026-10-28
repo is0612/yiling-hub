@@ -40,17 +40,14 @@ type NavigationItem = {
   count?: string;
 };
 
-const activeCharacterId = useActiveCharacterId();
-
-// 首屏就取到角色列表，避免侧边栏角色入口先指向列表页再跳变。
+// 首屏就取到角色列表：角色管理页的卡片要用，别在这里等第二次请求。
 await useCharacterListData();
 
 /**
- * 角色相关的入口必须指向数据库里的真实角色 id；
- * 未取到角色时退回角色列表，由用户在列表里新建或选择。
+ * 三个角色级页面（记忆 / 对话 / 阶段总结）现在都是菜单页，
+ * 角色在页内下拉切换，所以侧栏不再需要拼 id。
  */
 const navigation = computed<NavigationItem[]>(() => {
-  const id = activeCharacterId.value;
   const items: NavigationItem[] = [
     { key: "home", label: "总览", href: "/", icon: DataBoard, section: "工作空间" },
     { key: "characters", label: "角色管理", href: "/characters", icon: User },
@@ -69,7 +66,7 @@ const navigation = computed<NavigationItem[]>(() => {
     {
       key: "snapshots",
       label: "阶段总结",
-      href: id ? `/characters/${id}/snapshots` : "/characters",
+      href: "/snapshots",
       icon: Calendar,
     },
   ];
@@ -98,7 +95,7 @@ function isActive(item: NavigationItem) {
     case "chat":
       return path === "/chat";
     case "snapshots":
-      return /^\/characters\/[^/]+\/snapshots$/.test(path);
+      return path === "/snapshots";
     case "bili":
       return path === "/bili" || path.startsWith("/bili/");
     default:

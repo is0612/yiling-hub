@@ -932,7 +932,7 @@ watch(id, (next, previous) => {
 .conv-row:hover{background:var(--surface-2)}
 .conv-row.on{background:var(--brand-soft)}
 .conv-open{display:block;min-width:0;border:0;border-radius:8px;background:none;padding:8px 0 8px 8px;text-align:left;cursor:pointer}
-.conv-title{display:block;overflow:hidden;color:var(--text);font-size:13px;font-weight:600;line-height:1.5;text-overflow:ellipsis;white-space:nowrap}
+.conv-title{display:block;overflow:hidden;color:var(--text);font-size:14px;font-weight:600;line-height:1.5;text-overflow:ellipsis;white-space:nowrap}
 .conv-row.on .conv-title{color:var(--brand-strong)}
 .conv-meta{display:block;margin-top:2px;color:var(--dim);font-size:12px;font-variant-numeric:tabular-nums}
 .conv-more{display:grid;width:24px;height:24px;place-items:center;border:0;border-radius:6px;background:none;color:var(--dim);font-size:14px;line-height:1;cursor:pointer;opacity:0;transition:opacity .14s var(--ease),color .14s var(--ease)}
@@ -947,7 +947,7 @@ watch(id, (next, previous) => {
 .chat-pane{display:flex;min-width:0;min-height:0;flex-direction:column;overflow:hidden}
 .chat-head{display:flex;flex:none;align-items:center;gap:12px;padding:14px 20px 12px}
 .chat-title{min-width:0;flex:1}
-.chat-title strong{display:block;overflow:hidden;color:var(--text);font-size:15px;font-weight:700;line-height:1.4;text-overflow:ellipsis;white-space:nowrap}
+.chat-title strong{display:block;overflow:hidden;color:var(--text);font-size:16px;font-weight:700;line-height:1.4;text-overflow:ellipsis;white-space:nowrap}
 .chat-title span{display:block;margin-top:2px;color:var(--dim);font-size:12px}
 .head-more{display:inline-flex;align-items:center;gap:2px;border:0;border-radius:6px;background:none;padding:4px 6px;color:var(--dim);font-size:12px;cursor:pointer;transition:color .14s var(--ease)}
 .head-more:hover{color:var(--text)}
@@ -959,7 +959,7 @@ watch(id, (next, previous) => {
 .chat-welcome{display:flex;flex:1;flex-direction:column;align-items:center;justify-content:center;padding:20px;text-align:center}
 .welcome-avatar{width:44px;height:44px;border-radius:12px;font-size:16px;font-weight:700}
 .chat-welcome h2{margin:14px 0 6px;color:var(--text);font-size:16px;font-weight:700}
-.chat-welcome p{max-width:372px;margin:0;color:var(--dim);font-size:13px;line-height:1.75}
+.chat-welcome p{max-width:400px;margin:0;color:var(--dim);font-size:14px;line-height:1.75}
 
 /* ── 消息 ──────────────────────────────────────────── */
 .msg-row{display:flex;gap:10px;flex:none}
@@ -974,14 +974,14 @@ watch(id, (next, previous) => {
 .msg-copy:hover{color:var(--brand-strong)}
 @media (hover:none){.msg-copy{opacity:1}}
 
-/* 回复是这页要读的东西：15px / 1.85，直接落在白砖上，不套气泡 */
-.msg-text{max-width:70ch;color:var(--text);font-size:15px;line-height:1.85;white-space:pre-wrap;overflow-wrap:anywhere}
+/* 回复是这页要读的东西：16px / 1.85，直接落在白砖上，不套气泡 */
+.msg-text{max-width:70ch;color:var(--text);font-size:16px;line-height:1.85;white-space:pre-wrap;overflow-wrap:anywhere}
 
 /* 自己的话右对齐、软底块：靠明度差和位置区分说话人，不画描边 */
 .msg-row.is-user{justify-content:flex-end}
 .msg-row.is-user .msg-main{display:flex;flex:0 1 auto;flex-direction:column;align-items:flex-end}
 .msg-row.is-user .msg-meta{margin-bottom:4px}
-.user-block{max-width:min(520px,100%);border-radius:10px;background:var(--accent-soft);padding:9px 13px;color:var(--text);font-size:14px;line-height:1.8;white-space:pre-wrap;overflow-wrap:anywhere}
+.user-block{max-width:min(520px,100%);border-radius:10px;background:var(--accent-soft);padding:9px 13px;color:var(--text);font-size:16px;line-height:1.8;white-space:pre-wrap;overflow-wrap:anywhere}
 
 /* ── 记忆来源（默认收起） ──────────────────────────── */
 .src-toggle{display:inline-flex;align-items:center;gap:4px;margin-top:8px;border:0;border-radius:6px;background:none;padding:2px 0;color:var(--brand-strong);font-size:12px;font-weight:600;cursor:pointer}
@@ -1014,7 +1014,7 @@ watch(id, (next, previous) => {
 .composer-note-link:hover{text-decoration:underline}
 .composer-footer{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:8px}
 .composer-hint{min-width:0;overflow:hidden;color:var(--dim);font-size:12px;text-overflow:ellipsis;white-space:nowrap}
-.send-btn{height:32px;padding:0 14px;font-size:13px;box-shadow:none}
+.send-btn{height:32px;padding:0 14px;font-size:14px;box-shadow:none}
 .send-btn:disabled{opacity:.5;cursor:not-allowed}
 
 /* ── 响应式 ────────────────────────────────────────── */

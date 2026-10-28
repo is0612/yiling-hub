@@ -787,7 +787,7 @@ watch(id, () => void loadCharacter());
           <button
             type="button"
             class="more"
-            @click="navigateTo('/characters/' + character.id + '/snapshots')"
+            @click="navigateTo('/snapshots?c=' + character.id)"
           >
             全部<el-icon><ArrowRight /></el-icon>
           </button>
@@ -796,7 +796,7 @@ watch(id, () => void loadCharacter());
           <NuxtLink
             v-for="snapshot in snapshots.slice(0, 2)"
             :key="snapshot.id"
-            :to="'/characters/' + character.id + '/snapshots'"
+            :to="'/snapshots?c=' + character.id"
             class="snap-row"
           >
             <span class="snap-top">

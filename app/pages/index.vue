@@ -254,7 +254,7 @@ async function handleRefresh() {
               记忆
             </NuxtLink>
             <NuxtLink
-              :to="`/characters/${singleCharacter.id}/snapshots`"
+              :to="`/snapshots?c=${singleCharacter.id}`"
               :aria-label="`查看 ${singleCharacter.name} 的归档`"
             >
               归档
@@ -342,7 +342,7 @@ async function handleRefresh() {
           class="kpi is-action"
           type="button"
           :disabled="!overview.nextSnapshot"
-          @click="overview.nextSnapshot && navigateTo(`/characters/${overview.nextSnapshot.characterId}/snapshots`)"
+          @click="overview.nextSnapshot && navigateTo(`/snapshots?c=${overview.nextSnapshot.characterId}`)"
         >
           <div class="k">
             <el-icon><Calendar /></el-icon>距下次归档
@@ -390,7 +390,7 @@ async function handleRefresh() {
           class="kpi is-action"
           type="button"
           :disabled="!overview.latestSnapshot"
-          @click="overview.latestSnapshot && navigateTo(`/characters/${overview.latestSnapshot.characterId}/snapshots`)"
+          @click="overview.latestSnapshot && navigateTo(`/snapshots?c=${overview.latestSnapshot.characterId}`)"
         >
           <div class="k">
             <el-icon><Files /></el-icon>最近一次归档
@@ -532,7 +532,7 @@ async function handleRefresh() {
                   <el-icon><Cpu /></el-icon>记忆
                 </NuxtLink>
                 <NuxtLink
-                  :to="`/characters/${character.id}/snapshots`"
+                  :to="`/snapshots?c=${character.id}`"
                   :aria-label="`查看 ${character.name} 的归档`"
                 >
                   <el-icon><Calendar /></el-icon>归档

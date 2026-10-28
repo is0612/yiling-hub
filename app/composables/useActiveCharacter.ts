@@ -48,13 +48,13 @@ const LEGACY_CHARACTER_COOKIE = "memory_last_character";
 const CHARACTER_COOKIE_MAX_AGE = 60 * 60 * 24 * 30;
 
 /**
- * 菜单页（/memory、/chat）的「当前角色」选择逻辑。
+ * 菜单页（/memory、/chat、/snapshots）的「当前角色」选择逻辑。
  *
  * 真值是地址栏的 `?c=`：分享链接、从别处带 `c=` 进来都以链接为准；
  * cookie 只负责「下次打开还记得上次选了谁」，再没有就回退到列表第一个。
  *
- * 两个菜单页共用同一个 cookie，切了角色就一起走 —— 否则侧栏的
- * 「角色记忆 / AI 对话」会各记各的，点过去发现是另一个角色。
+ * 三个菜单页共用同一个 cookie，切了角色就一起走 —— 否则在这页选了 A、
+ * 点侧栏去另一页还是 B。
  *
  * @param path 切换角色后要停留的页面路径（如 "/memory"）
  */
@@ -97,31 +97,4 @@ export function useCharacterSelection(path: string) {
   }
 
   return { id, remember, go };
-}
-
-/**
- * 当前上下文里的角色 id：
- * 1. 角色相关页面取路由参数 [id]；
- * 2. 菜单页（/memory、/chat）用 ?c= 记住用户选中的角色；
- * 3. 其余页面回退到角色列表的第一个角色；
- * 4. 没有任何角色时返回 null，调用方应退回 /characters。
- */
-export function useActiveCharacterId() {
-  const route = useRoute();
-  const characters = useCharacterList();
-  // 只读：菜单页里选过谁记在这里，侧栏要跟着走
-  const stored = useCookie<string | null>(CHARACTER_COOKIE);
-
-  return computed<string | null>(() => {
-    const param = route.params.id;
-    if (typeof param === "string" && param) return param;
-    // 在 /memory 或 /chat 里换了角色之后，侧栏的「阶段总结」应该跟着走
-    const selected = route.query.c;
-    if (typeof selected === "string" && selected) return selected;
-    const remembered = String(stored.value || "");
-    if (remembered && (!characters.value.length || characters.value.some((item) => item.id === remembered))) {
-      return remembered;
-    }
-    return characters.value[0]?.id ?? null;
-  });
 }
