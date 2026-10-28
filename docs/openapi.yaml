@@ -271,8 +271,9 @@ paths:
       summary: 列出渠道连接（仅管理员）
       description: |
         返回平台连接与角色绑定信息。
-        qq-onebot 的 `credentials`（wsUrl / httpUrl / accessToken / httpToken）解密后回显给管理员核对；
-        解不开时为 null。角色模型 API Key 不在此列，永不回传。
+        默认**不带**凭据明文（首屏 SSR 会把返回值写进页面 HTML）。
+        加 `?withCredentials=1` 才解密回显 qq-onebot 的 wsUrl / httpUrl / accessToken / httpToken
+        供管理员核对，解不开时为 null。角色模型 API Key 不在此列，永不回传。
       responses:
         '200':
           description: 渠道连接列表

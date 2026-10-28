@@ -31,6 +31,9 @@ async function readCredentials(ciphertext: Uint8Array | null): Promise<Record<st
 
 export default defineEventHandler(async (event) => {
   await requireAdminActor(event);
+  // 明文只在打开「连接设置」时单独取（?withCredentials=1）：默认不返回，
+  // 免得首屏 SSR 把 token 写进页面 HTML —— 查看源代码就能看到的东西不算「只有管理员可见」。
+  const withCredentials = getQuery(event).withCredentials === "1";
   const prisma = getPrisma();
 
   const connections = await prisma.platformConnection.findMany({
@@ -64,7 +67,7 @@ export default defineEventHandler(async (event) => {
       createdAt: connection.createdAt.toISOString(),
       metadata: connection.metadata,
       /** 管理员页回看明文：只是本机协议端的访问令牌，方便核对填没填对。模型的 API Key 仍然只存不读。 */
-      credentials: await readCredentials(connection.credentialsCiphertext),
+      credentials: withCredentials ? await readCredentials(connection.credentialsCiphertext) : null,
       bindings: connection.characterBindings.map((binding) => ({
         id: binding.id,
         characterId: binding.characterId,

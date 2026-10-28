@@ -186,7 +186,57 @@ try {
     /LLM_INVALID_RESPONSE: 模型服务没有返回有效的 JSON 响应。/,
     "Malformed provider JSON should become a safe, predictable model error.",
   );
-  console.log("Chat reply tests passed: prompt credential isolation, source ID validation, and malformed provider response handling.");
+
+  // 模型抽风吐了非 JSON：再要一次就能拿到，不该把整条消息咽掉（QQ 上就是「她没理我」）。
+  const replyOnce = (content: string) => JSON.stringify({
+    choices: [{ message: { content }, finish_reason: "stop" }],
+    usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+  });
+  let calls = 0;
+  globalThis.fetch = async (): Promise<Response> => {
+    calls += 1;
+    const body = calls === 1
+      ? "抱歉，我刚刚走神了（这不是 JSON）"
+      : replyOnce(JSON.stringify({ reply: "重试后拿到了", usedMemoryIds: [], usedSnapshotIds: [] }));
+    return new Response(body, { status: 200, headers: { "content-type": "application/json" } });
+  };
+  const retried = await generateConversationReply({
+    characterName: "测试角色",
+    characterPrompt: "温柔地回复。",
+    model: "test-chat-model",
+    apiKey: secretApiKey,
+    apiBaseUrl: privateProviderUrl,
+    currentMessage: "在吗",
+    recentMessages: [],
+    memories: [],
+    snapshots: [],
+  });
+  assert.equal(retried.reply, "重试后拿到了", "第一次格式不对，重试后要能正常回。");
+  assert.equal(calls, 2, "只多要一次，不能无限重试。");
+
+  // 一直抽风：两次就停手。
+  calls = 0;
+  globalThis.fetch = async (): Promise<Response> => {
+    calls += 1;
+    return new Response("not-json", { status: 200, headers: { "content-type": "application/json" } });
+  };
+  await assert.rejects(
+    generateConversationReply({
+      characterName: "测试角色",
+      characterPrompt: "温柔地回复。",
+      model: "test-chat-model",
+      apiKey: secretApiKey,
+      apiBaseUrl: privateProviderUrl,
+      currentMessage: "还是不行",
+      recentMessages: [],
+      memories: [],
+      snapshots: [],
+    }),
+    /LLM_INVALID_RESPONSE/,
+  );
+  assert.equal(calls, 2, "重试上限是一次。");
+
+  console.log("Chat reply tests passed: prompt credential isolation, source ID validation, malformed provider response handling, and one retry for malformed model output.");
   console.log("对话示例注入：拼进 characterPrompt、带边界、不新增顶层字段 —— 通过");
 } finally {
   globalThis.fetch = originalFetch;

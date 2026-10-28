@@ -150,12 +150,22 @@ function openEdit(connection: QqConnection) {
   form.qqNumber = connection.appId || "";
   form.displayName = connection.appId ? connection.displayName : "";
   form.replyOnlyWhenMentioned = readMentionOnly(connection);
-  // 凭据已回显，直接填回表单：看得见才敢改，也免得「留空沿用」被浏览器自动填充钻空子。
-  form.wsUrl = connection.credentials?.wsUrl ?? "";
-  form.httpUrl = connection.credentials?.httpUrl ?? "";
-  form.accessToken = connection.credentials?.accessToken ?? "";
-  form.httpToken = connection.credentials?.httpToken ?? "";
   editVisible.value = true;
+
+  /**
+   * 明文凭据不跟着列表下发（SSR 会把它写进页面 HTML），打开弹窗时才单独取一次。
+   * 取失败就保持空 —— 留空保存 = 沿用原值，不会把 token 清掉。
+   */
+  try {
+    const detail = await request<{ connections: QqConnection[] }>("/api/admin/channels?withCredentials=1");
+    const found = detail.connections.find((item) => item.id === connection.id);
+    form.wsUrl = found?.credentials?.wsUrl ?? "";
+    form.httpUrl = found?.credentials?.httpUrl ?? "";
+    form.accessToken = found?.credentials?.accessToken ?? "";
+    form.httpToken = found?.credentials?.httpToken ?? "";
+  } catch {
+    // 忽略：列表还在，表单留空也能保存。
+  }
 }
 
 async function submitConnection() {

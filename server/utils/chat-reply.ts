@@ -194,69 +194,91 @@ export async function generateConversationReply(input: ConversationReplyInput): 
     })),
   };
 
-  let response: Response;
-  try {
-    response = await fetch(endpoint, {
-      method: "POST",
-      redirect: "error",
-      headers: { authorization: "Bearer " + apiKey, "content-type": "application/json" },
-      body: JSON.stringify({
-        model,
-        temperature,
-        max_tokens: maxTokens,
-        response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: systemPrompt(emojiFaces.length > 0, Boolean(userAddress)) },
-          { role: "user", content: JSON.stringify(promptInput) },
-        ],
-      }),
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-  } catch (error) {
-    if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) {
-      throw new Error("LLM_TIMEOUT: 模型请求超时，请检查 LLM_TIMEOUT_MS 或模型服务状态。");
+  /**
+   * 发一次请求并把结果解析出来。外面那层只重试「解析不出约定 JSON」这一种瞬时抽风。
+   */
+  const requestReply = async (): Promise<ConversationReplyResult> => {
+    let response: Response;
+    try {
+      response = await fetch(endpoint, {
+        method: "POST",
+        redirect: "error",
+        headers: { authorization: "Bearer " + apiKey, "content-type": "application/json" },
+        body: JSON.stringify({
+          model,
+          temperature,
+          max_tokens: maxTokens,
+          response_format: { type: "json_object" },
+          messages: [
+            { role: "system", content: systemPrompt(emojiFaces.length > 0, Boolean(userAddress)) },
+            { role: "user", content: JSON.stringify(promptInput) },
+          ],
+        }),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+    } catch (error) {
+      if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) {
+        throw new Error("LLM_TIMEOUT: 模型请求超时，请检查 LLM_TIMEOUT_MS 或模型服务状态。");
+      }
+      throw new Error("LLM_NETWORK_ERROR: " + (error instanceof Error ? error.message : String(error)));
     }
-    throw new Error("LLM_NETWORK_ERROR: " + (error instanceof Error ? error.message : String(error)));
-  }
 
-  if (!response.ok) {
-    throw new Error("LLM_HTTP_ERROR: 模型服务返回 HTTP " + response.status + "。请检查 API 地址、Key 和模型权限。");
-  }
+    if (!response.ok) {
+      throw new Error("LLM_HTTP_ERROR: 模型服务返回 HTTP " + response.status + "。请检查 API 地址、Key 和模型权限。");
+    }
 
-  let responsePayload: unknown;
-  try {
-    responsePayload = await response.json();
-  } catch {
-    throw new Error("LLM_INVALID_RESPONSE: 模型服务没有返回有效的 JSON 响应。");
-  }
-  const payload = asRecord(responsePayload);
-  const choices = payload && Array.isArray(payload.choices) ? payload.choices : [];
-  const firstChoice = asRecord(choices[0]);
-  const assistantMessage = asRecord(firstChoice?.message);
-  const responseText = typeof assistantMessage?.content === "string" ? assistantMessage.content : "";
-  let parsed: Record<string, unknown> | null = null;
-  try {
-    parsed = asRecord(JSON.parse(responseText));
-  } catch {
-    parsed = null;
-  }
-  if (!parsed) throw new Error("LLM_INVALID_RESPONSE: 模型没有返回符合约定的 JSON 对象。");
+    let responsePayload: unknown;
+    try {
+      responsePayload = await response.json();
+    } catch {
+      throw new Error("LLM_INVALID_RESPONSE: 模型服务没有返回有效的 JSON 响应。");
+    }
+    const payload = asRecord(responsePayload);
+    const choices = payload && Array.isArray(payload.choices) ? payload.choices : [];
+    const firstChoice = asRecord(choices[0]);
+    const assistantMessage = asRecord(firstChoice?.message);
+    const responseText = typeof assistantMessage?.content === "string" ? assistantMessage.content : "";
+    let parsed: Record<string, unknown> | null = null;
+    try {
+      parsed = asRecord(JSON.parse(responseText));
+    } catch {
+      parsed = null;
+    }
+    if (!parsed) throw new Error("LLM_INVALID_RESPONSE: 模型没有返回符合约定的 JSON 对象。");
 
-  const reply = typeof parsed.reply === "string" ? parsed.reply.trim().slice(0, 12_000) : "";
-  if (!reply) throw new Error("LLM_INVALID_RESPONSE: 模型没有返回有效的 reply 文本。");
+    const reply = typeof parsed.reply === "string" ? parsed.reply.trim().slice(0, 12_000) : "";
+    if (!reply) throw new Error("LLM_INVALID_RESPONSE: 模型没有返回有效的 reply 文本。");
 
-  const validMemoryIds = new Set(input.memories.map((memory) => memory.id));
-  const validSnapshotIds = new Set(input.snapshots.map((snapshot) => snapshot.id));
-  const validFaceIds = new Set(emojiFaces.map((face) => face.id));
-  const responseModel = typeof payload?.model === "string" ? payload.model : model;
-  return {
-    reply,
-    usedMemoryIds: readIdList(parsed.usedMemoryIds, validMemoryIds),
-    usedSnapshotIds: readIdList(parsed.usedSnapshotIds, validSnapshotIds),
-    faceIds: readIdList(parsed.faces, validFaceIds, 1),
-    model: responseModel.slice(0, 200),
-    provider: endpoint.hostname,
-    promptTemplateVersion: PROMPT_TEMPLATE_VERSION,
-    usage: readUsage(payload?.usage),
+    const validMemoryIds = new Set(input.memories.map((memory) => memory.id));
+    const validSnapshotIds = new Set(input.snapshots.map((snapshot) => snapshot.id));
+    const validFaceIds = new Set(emojiFaces.map((face) => face.id));
+    const responseModel = typeof payload?.model === "string" ? payload.model : model;
+    return {
+      reply,
+      usedMemoryIds: readIdList(parsed.usedMemoryIds, validMemoryIds),
+      usedSnapshotIds: readIdList(parsed.usedSnapshotIds, validSnapshotIds),
+      faceIds: readIdList(parsed.faces, validFaceIds, 1),
+      model: responseModel.slice(0, 200),
+      provider: endpoint.hostname,
+      promptTemplateVersion: PROMPT_TEMPLATE_VERSION,
+      usage: readUsage(payload?.usage),
+    };
   };
+
+  /**
+   * 模型偶尔会吐一段不是 JSON 的东西（实测 deepseek-flash 约 9 条里 2 条）—— 再来一次就够了。
+   * HTTP 错误 / 超时 / 网络错误不重试：重试只会更慢，而且那些错误本身就该让人看见。
+   * 失败那次的用量不记账（只返回成功那次的 usage），省得为了几 token 把接口改复杂。
+   */
+  let parseError: Error | null = null;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      return await requestReply();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "";
+      if (!message.startsWith("LLM_INVALID_RESPONSE")) throw error;
+      parseError = error instanceof Error ? error : new Error(String(error));
+    }
+  }
+  throw parseError ?? new Error("LLM_INVALID_RESPONSE: 模型没有返回符合约定的 JSON 对象。");
 }
