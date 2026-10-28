@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ArrowRight, ArrowDown, Calendar, Collection, Files, Search, Edit, Cpu, MagicStick, Delete } from "@element-plus/icons-vue";
+import { ArrowRight, ArrowDown, Collection, Files, Search, MagicStick, Delete } from "@element-plus/icons-vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { initialCharacters, type Character, type Snapshot, type TimelineEntry, type TimelineType } from "~/utils/mock-data";
 
@@ -100,7 +100,6 @@ const character = computed(() => currentCharacter.value || {
 const activeFilter = ref("全部记录");
 const channelFilter = ref("全部渠道");
 const query = ref("");
-const editOpen = ref(false);
 const filterOptions = [
   { label: "全部记录", type: undefined },
   { label: "对话记录", type: "message" as TimelineType },
@@ -170,11 +169,6 @@ async function loadCharacter() {
     timelineEntries.value = [];
     ElMessage.error("加载角色失败，请确认角色仍存在且本地数据库已初始化。");
   }
-}
-
-/** 资料弹窗自己提交，这里只接结果刷新页面数据 */
-function onProfileSaved(updated: Character) {
-  currentCharacter.value = updated;
 }
 
 async function saveMemory() {
@@ -574,7 +568,15 @@ watch(id, () => void loadCharacter());
       <div class="ms-cell">
         <span class="ms-k">归档周期</span>
         <span class="ms-v">{{ character.intervalDays }}<small>天</small></span>
-        <span class="ms-f">下一次 {{ character.nextSnapshot }}</span>
+        <span class="ms-f">
+          下一次 {{ character.nextSnapshot }} ·
+          <button
+            type="button"
+            class="ms-link"
+            :disabled="!character.id"
+            @click="navigateTo('/characters/' + character.id + '/settings/memory')"
+          >调整</button>
+        </span>
       </div>
       <div class="ms-cell">
         <span class="ms-k">已记录对话</span>
@@ -632,6 +634,13 @@ watch(id, () => void loadCharacter());
                 :value="channel"
               />
             </el-select>
+            <button
+              type="button"
+              class="tool-link"
+              @click="openRecycleBin"
+            >
+              <el-icon><Delete /></el-icon>回收站
+            </button>
           </div>
           <div class="timeline">
             <div
@@ -741,46 +750,6 @@ watch(id, () => void loadCharacter());
       </section>
 
       <aside class="side-col">
-        <div class="sec-h">
-          <h2>角色档案</h2>
-        </div>
-        <!-- 头像/名字/状态已经在顶部切换条里，这里只说「她是谁」和常用入口 -->
-        <div class="card char-box">
-          <p class="char-desc">
-            {{ character.description }}
-          </p>
-          <div class="quick-actions">
-            <button
-              type="button"
-              class="btn"
-              @click="editOpen = true"
-            >
-              <el-icon><Edit /></el-icon>编辑资料
-            </button>
-            <button
-              type="button"
-              class="btn"
-              @click="navigateTo('/characters/' + character.id + '/settings/model')"
-            >
-              <el-icon><Cpu /></el-icon>模型设置
-            </button>
-            <button
-              type="button"
-              class="btn"
-              @click="navigateTo('/characters/' + character.id + '/settings/memory')"
-            >
-              <el-icon><Calendar /></el-icon>记忆周期
-            </button>
-            <button
-              type="button"
-              class="btn"
-              @click="openRecycleBin"
-            >
-              <el-icon><Delete /></el-icon>记忆回收站
-            </button>
-          </div>
-        </div>
-
         <div class="sec-h">
           <h2>最近归档</h2>
           <span class="sub">{{ snapshots.length }} 份</span>
@@ -1040,12 +1009,6 @@ watch(id, () => void loadCharacter());
         </el-button>
       </template>
     </el-dialog>
-
-    <CharacterProfileDialog
-      v-model="editOpen"
-      :character="character"
-      @saved="onProfileSaved"
-    />
   </div>
 </template>
 
@@ -1081,6 +1044,10 @@ watch(id, () => void loadCharacter());
 .ms-v{color:var(--text);font-size:18px;font-weight:700;font-variant-numeric:tabular-nums;letter-spacing:-.01em;line-height:1.25}
 .ms-v small{margin-left:3px;color:var(--dim);font-size:12px;font-weight:500;letter-spacing:0}
 .ms-f{overflow:hidden;color:var(--dim);font-size:12px;line-height:1.5;text-overflow:ellipsis;white-space:nowrap}
+/* 「调整」：挂在归档周期格里的行内按钮，跟 ms-f 同字号，不抢视觉 */
+.ms-link{padding:0;border:0;background:none;color:var(--brand-strong);font:inherit;font-weight:600;cursor:pointer}
+.ms-link:hover{text-decoration:underline}
+.ms-link:disabled{color:var(--faint);cursor:not-allowed}
 
 /* 时间线下面两栏：左时间线 + 右角色栏，比例与概览页一致 */
 .panel-grid{margin-top:0}
@@ -1090,6 +1057,10 @@ watch(id, () => void loadCharacter());
 .tl-tools{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
 .tl-search{min-width:170px;flex:1}
 .tl-select{width:132px;flex:none}
+/* 回收站是「管这批记忆」的工具，排在搜索/渠道后面，不做成第三个控件的样子 */
+.tool-link{display:inline-flex;flex:none;align-items:center;gap:4px;height:32px;padding:0 6px;border:0;background:none;color:var(--dim);font-size:12px;font-weight:600;cursor:pointer}
+.tool-link:hover{color:var(--brand-strong)}
+.tool-link .el-icon{font-size:14px}
 .tl-loading{padding:34px 0;color:var(--dim);font-size:12px;text-align:center}
 .timeline-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:9px}
 /* 时间是信息，不能落在 --faint(2.55:1) 上 */
@@ -1130,15 +1101,8 @@ watch(id, () => void loadCharacter());
 .pill-gray{color:var(--text-2)}
 
 /* ── 右栏 ──────────────────────────────────────────── */
-/* 左栏 20 条是长卷，右栏只有两块：让它跟着滚，别留 1000px 空白 */
+/* 右栏现在只剩「最近归档」一块，跟着滚，别在下面留一大片空白 */
 .side-col{position:sticky;top:72px;align-self:start}
-
-.char-box{padding:16px 18px 18px}
-.char-desc{margin:0 0 14px;color:var(--dim);font-size:14px;line-height:1.7}
-/* 快捷操作：2×2 等宽，比原来三行叠起来矮一半 */
-.quick-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}
-.quick-actions .btn{width:100%;height:32px;justify-content:flex-start;padding:0 10px;font-size:12px}
-.quick-actions .btn .el-icon{color:var(--faint)}
 
 /* ── 最近归档 ──────────────────────────────────────── */
 .snap-card{padding:6px}
@@ -1168,6 +1132,5 @@ watch(id, () => void loadCharacter());
   .char-bar{padding:10px 12px;gap:8px}
   .char-select{width:auto;flex:1;min-width:0}
   .char-bar-note{display:none}
-  .quick-actions{grid-template-columns:minmax(0,1fr)}
 }
 </style>

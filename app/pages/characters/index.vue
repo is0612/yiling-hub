@@ -397,6 +397,9 @@ function runCharacterCommand(command: string) {
             <el-button @click="openProfile(selected)">
               <el-icon><Edit /></el-icon>编辑资料
             </el-button>
+            <el-button @click="navigateTo(`/characters/${selected.id}/settings/model?from=characters`)">
+              <el-icon><Cpu /></el-icon>模型设置
+            </el-button>
             <el-dropdown
               trigger="click"
               placement="bottom-end"
@@ -532,13 +535,6 @@ function runCharacterCommand(command: string) {
             <div class="d-group">
               <div class="d-group-h">
                 模型
-                <button
-                  class="d-link"
-                  type="button"
-                  @click="navigateTo(`/characters/${selected.id}/settings/model`)"
-                >
-                  设置
-                </button>
               </div>
               <dl class="d-rows">
                 <div class="d-row">
@@ -752,9 +748,6 @@ function runCharacterCommand(command: string) {
 .chars-a .d-group-h { display: flex; align-items: baseline; gap: 8px; color: var(--dim); font-size: 12px; font-weight: 700; }
 /* 人设写得长时左栏会很高，右栏跟着吸顶，别在下半页留 400px 空白 */
 .chars-a .detail-side { position: sticky; top: 72px; align-self: start; }
-/* 「设置」是 12px 文字链接：品牌色只有 #bf3a63 这一档够 AA */
-.chars-a .d-link { margin-left: auto; border: 0; background: none; padding: 0; color: #bf3a63; font-size: 12px; font-weight: 600; cursor: pointer; }
-.chars-a .d-link:hover { text-decoration: underline; }
 .chars-a .d-rows { display: flex; flex-direction: column; gap: var(--sp-3); margin-top: var(--sp-3); }
 .chars-a .d-row { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-4); font-size: 12px; line-height: 20px; }
 /* 图标比标签低一档（--faint）：同样面积下图标比汉字「重」得多，同色会反压标签一头（§2.7.1），

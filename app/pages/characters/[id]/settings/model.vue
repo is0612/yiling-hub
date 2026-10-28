@@ -28,10 +28,17 @@ const draftProviderKey = ref("deepseek");
 /** 本页「获取模型」拉回来的列表；换地址就作废 */
 const fetchedModels = ref<string[]>([]);
 
-const backTarget = computed(() => route.query.from === "chat"
-  ? `/chat?c=${id.value}`
-  : `/memory?c=${id.value}`);
-const backLabel = computed(() => route.query.from === "chat" ? "返回对话" : "返回角色记忆");
+/** 三个入口各回各家：对话页、角色管理页、角色记忆页 */
+const backTarget = computed(() => {
+  if (route.query.from === "chat") return `/chat?c=${id.value}`;
+  if (route.query.from === "characters") return "/characters";
+  return `/memory?c=${id.value}`;
+});
+const backLabel = computed(() => {
+  if (route.query.from === "chat") return "返回对话";
+  if (route.query.from === "characters") return "返回角色管理";
+  return "返回角色记忆";
+});
 
 const apiKeySource = computed(() => character.value?.chatApiKeySource ?? "missing");
 const apiKeyPlaceholder = computed(() => {
