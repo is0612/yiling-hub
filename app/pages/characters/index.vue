@@ -1,27 +1,78 @@
 <script setup lang="ts">
-import { ArrowRight, CirclePlus, MoreFilled, Plus, MagicStick, Delete, User, CopyDocument, VideoPause, VideoPlay, Edit, Cpu } from "@element-plus/icons-vue";
+import {
+  ArrowDown,
+  Calendar,
+  ChatDotRound,
+  ChatLineSquare,
+  Clock,
+  Collection,
+  Connection,
+  CopyDocument,
+  Cpu,
+  Delete,
+  Document,
+  Edit,
+  Key,
+  Odometer,
+  Plus,
+  Timer,
+  User,
+  VideoPause,
+  VideoPlay,
+  Warning,
+} from "@element-plus/icons-vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import type { Character, CharacterStatus } from "~/utils/mock-data";
 
-const characters = ref<Character[]>([]);
-const loading = ref(true);
+/**
+ * 上列表 + 下档案：点上面的卡片切换下面看谁。
+ * 数据走 useCharacterListData（SSR 转发 cookie，和侧边栏共用同一份），
+ * 所以档案里的简介 / 人设 / 模型 / 周期全部来自列表接口，不需要为选中项再打一次请求。
+ */
+const characters = useCharacterList();
+const loadErrorMessage = useCharacterListError();
+const { pending: loading } = await useCharacterListData();
+
+const selectedId = ref("");
+/**
+ * 默认看第一个角色。选中的角色被删除后，find 落空会自动回落到第一个，
+ * 不需要 watch 去修 selectedId，也就不会出现「选中了不存在的人」的中间态。
+ */
+const selected = computed(
+  () => characters.value.find((item) => item.id === selectedId.value) ?? characters.value[0] ?? null,
+);
+
+const savedAt = computed(() => formatSavedAt(selected.value?.updatedAt));
+
 const dialogOpen = ref(false);
 const name = ref("");
 const description = ref("");
 const personality = ref("");
+const examples = ref("");
 
 const profileOpen = ref(false);
 const profileTarget = ref<Character | null>(null);
 
-async function loadCharacters() {
-  loading.value = true;
-  try {
-    characters.value = await $fetch<Character[]>("/api/characters");
-  } catch {
-    ElMessage.error("读取角色失败。请先完成本地数据库迁移与开发用户初始化。");
-  } finally {
-    loading.value = false;
-  }
+async function reload() {
+  await loadCharacters();
+}
+
+function selectCharacter(character: Character) {
+  selectedId.value = character.id;
+}
+
+/** 方向键切换：卡片是 tab 语义，键盘用户不该被迫去摸鼠标 */
+function onTabsKeydown(event: KeyboardEvent) {
+  if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
+  const total = characters.value.length;
+  if (total < 2) return;
+  event.preventDefault();
+  const current = characters.value.findIndex((item) => item.id === selected.value?.id);
+  const step = event.key === "ArrowRight" ? 1 : -1;
+  const next = characters.value[(current + step + total) % total];
+  if (!next) return;
+  selectedId.value = next.id;
+  if (import.meta.client) document.getElementById(`char-tab-${next.id}`)?.focus();
 }
 
 async function createCharacter() {
@@ -38,19 +89,20 @@ async function createCharacter() {
         name: trimmed,
         description: description.value.trim(),
         personality: personality.value.trim(),
+        examples: examples.value.trim(),
       },
     });
     characters.value.unshift(item);
+    // 刚建完就该看到他，而不是让人回列表里再找一次
+    selectedId.value = item.id;
     dialogOpen.value = false;
     name.value = "";
     description.value = "";
     personality.value = "";
+    examples.value = "";
     ElMessage.success("角色已保存到本地数据库。");
   } catch (error) {
-    const message = error && typeof error === "object" && "statusMessage" in error
-      ? String(error.statusMessage)
-      : "创建失败，请检查数据库连接和本地开发配置。";
-    ElMessage.error(message);
+    ElMessage.error(readError(error, "创建失败，请检查数据库连接和本地开发配置。"));
   }
 }
 
@@ -66,6 +118,19 @@ function readError(error: unknown, fallback: string) {
   return fallback;
 }
 
+function formatSavedAt(value?: string) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "";
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "long",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(date);
+}
+
 /**
  * 「编辑资料」= 角色名称/简介/人设的弹窗；模型参数走独立的设置页。
  * 弹窗曾经把九字段（资料 + 服务商 + Key + 模型 + 温度 + Token）全装进去，
@@ -76,7 +141,7 @@ function openProfile(character: Character) {
   profileOpen.value = true;
 }
 
-/** 弹窗自己负责提交，列表这里只把结果回写，避免再发一次请求 */
+/** 弹窗自己负责提交，这里只把结果回写，避免再发一次请求 */
 function onProfileSaved(updated: Character) {
   const index = characters.value.findIndex((item) => item.id === updated.id);
   if (index >= 0) characters.value.splice(index, 1, updated);
@@ -99,6 +164,7 @@ async function duplicateCharacter(character: Character) {
       },
     });
     characters.value.unshift(copy);
+    selectedId.value = copy.id;
     ElMessage.success(`已复制「${character.name}」。人设沿用，记忆从零开始。`);
   } catch (error) {
     ElMessage.error(readError(error, "复制失败，请稍后重试。"));
@@ -142,178 +208,91 @@ async function deleteCharacter(character: Character) {
   try {
     await $fetch(`/api/characters/${character.id}`, { method: "DELETE" });
     characters.value = characters.value.filter((c) => c.id !== character.id);
+    if (selectedId.value === character.id) selectedId.value = "";
     ElMessage.success("角色已删除。");
   } catch (error) {
-    const message = error && typeof error === "object" && "statusMessage" in error
-      ? String(error.statusMessage)
-      : "删除失败，请稍后重试。";
-    ElMessage.error(message);
+    ElMessage.error(readError(error, "删除失败，请稍后重试。"));
   }
 }
 
-onMounted(() => void loadCharacters());
+/** 档案头部的「更多」：只放低频和破坏性操作，改资料和跳转都摆在明面上 */
+function runCharacterCommand(command: string) {
+  const character = selected.value;
+  if (!character) return;
+  if (command === "duplicate") void duplicateCharacter(character);
+  else if (command === "toggle") void toggleCharacterStatus(character);
+  else if (command === "delete") void deleteCharacter(character);
+}
 </script>
 
 <template>
   <div class="page-wrap chars-a">
     <PageHeader
-      eyebrow="工作空间 / AI 角色管理"
+      eyebrow="工作空间 / 角色管理"
       title="你的 AI 角色"
       description="集中管理不同的人设、模型配置与记忆周期。每个角色都拥有独立的经历和记忆。"
     >
       <template #actions>
-        <el-button
-          type="primary"
-          @click="dialogOpen = true"
-        >
+        <!-- 页头只放集合级动作（低频），实心主按钮留给内容区的「开始对话」——
+             一屏两个实心粉按钮等于没有主次（Refactoring UI · 每页一个主按钮） -->
+        <el-button @click="dialogOpen = true">
           <el-icon><Plus /></el-icon>创建角色
         </el-button>
       </template>
     </PageHeader>
 
     <div
-      v-if="loading"
-      class="card-grid"
+      v-if="loading && !characters.length"
+      class="char-tabs"
     >
       <div
         v-for="i in 3"
         :key="i"
-        class="surface char-card"
+        class="char-tab is-skeleton"
       >
         <div
           class="sk"
-          style="height:44px;width:44px;border-radius:8px;margin-bottom:14px"
+          style="width:38px;height:38px;border-radius:8px"
         />
-        <div
-          class="sk"
-          style="height:14px;width:56%;margin-bottom:10px"
-        />
-        <div
-          class="sk"
-          style="height:12px;width:88%;margin-bottom:10px"
-        />
-        <div
-          class="sk"
-          style="height:12px;width:64%"
-        />
-      </div>
-    </div>
-    <div
-      v-else-if="characters.length"
-      class="card-grid"
-    >
-      <div
-        v-for="character in characters"
-        :key="character.id"
-        class="character-card-wrap"
-      >
-        <!-- 整卡不是链接：卡片本身不可点，只有底部的「查看档案」是唯一跳转入口。
-             之前整块包在 NuxtLink 里，卡片任何空白处都会跳走，误触成本太高。 -->
-        <div class="surface char-card">
-          <div class="character-card-head">
-            <div
-              class="avatar character-avatar"
-              :class="'avatar-' + character.avatarTone"
-            >
-              {{ character.avatar }}
-            </div>
-            <div class="character-info">
-              <div class="character-name-row">
-                <h2 class="character-name">
-                  {{ character.name }}
-                </h2><span
-                  class="pill"
-                  :class="statusTone(character.status)"
-                >{{ character.status }}</span>
-              </div>
-              <div class="character-alias">
-                {{ character.alias }}
-              </div>
-            </div>
-          </div>
-          <p
-            class="character-description"
-            :class="{ 'is-empty': !character.description }"
-          >
-            {{ character.description || "还没有写简介" }}
-          </p>
-          <div class="meta-row">
-            <span>{{ character.intervalDays }} 天归档周期</span>
-            <span>{{ character.memoryCount }} 条记忆</span>
-            <!-- 模型名是状态，不该只在「模型设置」页里才看得到 -->
-            <span
-              class="meta-model"
-              :class="{ 'is-missing': !character.chatModel }"
-            >{{ character.chatModel || "未配置模型" }}</span>
-          </div>
-          <div class="character-footer">
-            <span class="muted-note">最近归档 <strong>{{ character.latestSnapshot }}</strong></span>
-            <NuxtLink
-              :to="'/characters/' + character.id"
-              class="card-cta"
-              :aria-label="`查看 ${character.name} 的档案`"
-            >
-              查看档案<el-icon><ArrowRight /></el-icon>
-            </NuxtLink>
-          </div>
+        <div style="flex:1">
+          <div
+            class="sk"
+            style="height:14px;width:58%;margin-bottom:8px"
+          />
+          <div
+            class="sk"
+            style="height:12px;width:82%"
+          />
         </div>
-        <el-dropdown
-          class="card-more"
-          trigger="click"
-        >
-          <el-button
-            text
-            circle
-            aria-label="角色更多操作"
-          >
-            <el-icon><MoreFilled /></el-icon>
-          </el-button>
-          <template #dropdown>
-            <el-dropdown-menu>
-              <el-dropdown-item @click="openProfile(character)">
-                <el-icon><Edit /></el-icon>编辑资料
-              </el-dropdown-item>
-              <el-dropdown-item @click="navigateTo('/characters/' + character.id)">
-                打开驾驶舱
-              </el-dropdown-item>
-              <el-dropdown-item @click="navigateTo('/characters/' + character.id + '/settings/model')">
-                <el-icon><Cpu /></el-icon>模型设置
-              </el-dropdown-item>
-              <el-dropdown-item @click="navigateTo('/characters/' + character.id + '/settings/memory')">
-                记忆设置
-              </el-dropdown-item>
-              <el-dropdown-item @click="duplicateCharacter(character)">
-                <el-icon><CopyDocument /></el-icon>复制角色
-              </el-dropdown-item>
-              <el-dropdown-item @click="toggleCharacterStatus(character)">
-                <el-icon>
-                  <VideoPause v-if="character.status !== '已暂停'" />
-                  <VideoPlay v-else />
-                </el-icon>{{ character.status === "已暂停" ? "启用角色" : "停用角色" }}
-              </el-dropdown-item>
-              <el-dropdown-item
-                divided
-                @click="deleteCharacter(character)"
-              >
-                <el-icon><Delete /></el-icon>删除角色
-              </el-dropdown-item>
-            </el-dropdown-menu>
-          </template>
-        </el-dropdown>
       </div>
     </div>
     <div
-      v-else
+      v-else-if="!characters.length"
       class="empty-block"
     >
       <div class="halo">
         <el-icon :size="22">
-          <User />
+          <Warning v-if="loadErrorMessage" />
+          <User v-else />
         </el-icon>
       </div>
-      <h4>还没有角色</h4>
-      <p>创建第一个角色，开始积累它独立的记忆与经历。</p>
+      <h4>{{ loadErrorMessage ? "读取角色失败" : "还没有角色" }}</h4>
+      <p v-if="loadErrorMessage">
+        {{ loadErrorMessage }} 请先完成本地数据库迁移与开发用户初始化，再重试。
+      </p>
+      <p v-else>
+        创建第一个角色，开始积累它独立的记忆与经历。
+      </p>
       <button
+        v-if="loadErrorMessage"
+        class="btn primary"
+        type="button"
+        @click="reload"
+      >
+        重试
+      </button>
+      <button
+        v-else
         class="btn primary"
         type="button"
         @click="dialogOpen = true"
@@ -322,57 +301,308 @@ onMounted(() => void loadCharacters());
       </button>
     </div>
 
+    <template v-else>
+      <!-- 这里不再有「角色 / N 个 / 点卡片切换」的标题行：页头已经写了「你的 AI 角色」，
+           选中态本身就是提示，再标一遍只是噪音 -->
+      <div
+        class="char-tabs"
+        role="tablist"
+        aria-label="角色列表"
+        @keydown="onTabsKeydown"
+      >
+        <button
+          v-for="character in characters"
+          :id="`char-tab-${character.id}`"
+          :key="character.id"
+          type="button"
+          role="tab"
+          class="char-tab"
+          :class="{ 'is-on': selected?.id === character.id }"
+          :aria-selected="selected?.id === character.id"
+          @click="selectCharacter(character)"
+        >
+          <span
+            class="avatar"
+            :class="'avatar-' + character.avatarTone"
+          >{{ character.avatar }}</span>
+          <span class="tab-body">
+            <span class="tab-line">
+              <span class="tab-name">{{ character.name }}</span>
+              <span
+                class="pill"
+                :class="statusTone(character.status)"
+              >{{ character.status }}</span>
+            </span>
+            <span class="tab-facts">{{ character.alias }} · {{ character.memoryCount }} 条记忆</span>
+          </span>
+        </button>
+      </div>
+
+      <section
+        v-if="selected"
+        :id="`char-detail-${selected.id}`"
+        class="detail"
+        role="tabpanel"
+        :aria-labelledby="`char-tab-${selected.id}`"
+      >
+        <header class="detail-head">
+          <div
+            class="avatar detail-avatar"
+            :class="'avatar-' + selected.avatarTone"
+          >
+            {{ selected.avatar }}
+          </div>
+          <div class="detail-id">
+            <div class="detail-name-row">
+              <h2 class="detail-name">
+                {{ selected.name }}
+              </h2>
+              <span
+                class="pill"
+                :class="statusTone(selected.status)"
+              >{{ selected.status }}</span>
+              <span
+                v-if="!selected.chatModel"
+                class="pill pill-rose"
+              >未配置模型</span>
+            </div>
+            <div class="detail-sub">
+              <span class="detail-alias">{{ selected.alias }}</span>
+              <span
+                v-if="selected.channels.length"
+                class="detail-meta"
+              >
+                <el-icon><Connection /></el-icon>{{ selected.channels.join(" · ") }}
+              </span>
+              <span
+                v-if="savedAt"
+                class="detail-meta"
+              >
+                <el-icon><Clock /></el-icon>上次保存 {{ savedAt }}
+              </span>
+            </div>
+          </div>
+          <div class="detail-actions">
+            <el-button
+              type="primary"
+              @click="navigateTo(`/chat?c=${selected.id}`)"
+            >
+              <el-icon><ChatDotRound /></el-icon>开始对话
+            </el-button>
+            <el-button @click="navigateTo(`/characters/${selected.id}`)">
+              <el-icon><Collection /></el-icon>角色记忆
+            </el-button>
+            <el-button @click="openProfile(selected)">
+              <el-icon><Edit /></el-icon>编辑资料
+            </el-button>
+            <el-dropdown
+              trigger="click"
+              placement="bottom-end"
+              @command="runCharacterCommand(String($event))"
+            >
+              <el-button>
+                更多<el-icon><ArrowDown /></el-icon>
+              </el-button>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item command="duplicate">
+                    <el-icon><CopyDocument /></el-icon>复制角色
+                  </el-dropdown-item>
+                  <el-dropdown-item command="toggle">
+                    <el-icon>
+                      <VideoPause v-if="selected.status !== '已暂停'" />
+                      <VideoPlay v-else />
+                    </el-icon>{{ selected.status === "已暂停" ? "启用角色" : "停用角色" }}
+                  </el-dropdown-item>
+                  <el-dropdown-item
+                    divided
+                    command="delete"
+                  >
+                    <el-icon><Delete /></el-icon>删除角色
+                  </el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
+          </div>
+        </header>
+
+        <div class="detail-body">
+          <div class="detail-main">
+            <div class="d-field">
+              <div class="d-field-h">
+                <el-icon><Document /></el-icon>
+                <h3>简介</h3>
+              </div>
+              <p
+                v-if="selected.description"
+                class="d-prose"
+              >
+                {{ selected.description }}
+              </p>
+              <p
+                v-else
+                class="d-empty"
+              >
+                还没有写简介。一句话说明她是什么类型的角色，方便以后自己认人。
+              </p>
+            </div>
+
+            <div class="d-field">
+              <div class="d-field-h">
+                <el-icon><User /></el-icon>
+                <h3>人设</h3>
+                <span
+                  v-if="selected.personality"
+                  class="d-count"
+                >{{ selected.personality.length }} 字</span>
+              </div>
+              <p
+                v-if="selected.personality"
+                class="d-prose"
+              >
+                {{ selected.personality }}
+              </p>
+              <p
+                v-else
+                class="d-empty"
+              >
+                还没有写人设。人设是「她是谁」，对话、QQ 和 B站 被动回复都用同一份。
+              </p>
+            </div>
+
+            <div class="d-field">
+              <div class="d-field-h">
+                <el-icon><ChatLineSquare /></el-icon>
+                <h3>对话示例</h3>
+                <span
+                  v-if="selected.examples"
+                  class="d-count"
+                >{{ selected.examples.length }} 字</span>
+              </div>
+              <p
+                v-if="selected.examples"
+                class="d-prose"
+              >
+                {{ selected.examples }}
+              </p>
+              <p
+                v-else
+                class="d-empty"
+              >
+                还没有写对话示例。示例只对齐语气，给两三句就能明显稳住口吻。
+              </p>
+            </div>
+          </div>
+
+          <aside class="detail-side">
+            <div class="d-group">
+              <div class="d-group-h">
+                档案
+              </div>
+              <dl class="d-rows">
+                <div class="d-row">
+                  <dt>
+                    <el-icon><Collection /></el-icon>长期记忆
+                  </dt>
+                  <dd>{{ selected.memoryCount }} 条</dd>
+                </div>
+                <div class="d-row">
+                  <dt>
+                    <el-icon><Calendar /></el-icon>归档周期
+                  </dt>
+                  <dd>{{ selected.intervalDays }} 天</dd>
+                </div>
+                <div class="d-row">
+                  <dt>
+                    <el-icon><Clock /></el-icon>最近归档
+                  </dt>
+                  <dd>{{ selected.latestSnapshot }}</dd>
+                </div>
+                <div class="d-row">
+                  <dt>
+                    <el-icon><Timer /></el-icon>下次归档
+                  </dt>
+                  <dd>{{ selected.nextSnapshot }}</dd>
+                </div>
+              </dl>
+            </div>
+
+            <div class="d-group">
+              <div class="d-group-h">
+                模型
+                <button
+                  class="d-link"
+                  type="button"
+                  @click="navigateTo(`/characters/${selected.id}/settings/model`)"
+                >
+                  设置
+                </button>
+              </div>
+              <dl class="d-rows">
+                <div class="d-row">
+                  <dt>
+                    <el-icon><Cpu /></el-icon>对话模型
+                  </dt>
+                  <dd :class="{ 'is-missing': !selected.chatModel }">
+                    {{ selected.chatModel || "未配置" }}
+                  </dd>
+                </div>
+                <div class="d-row">
+                  <dt>
+                    <el-icon><Odometer /></el-icon>温度 / 输出上限
+                  </dt>
+                  <dd>{{ selected.chatTemperature ?? "—" }} / {{ selected.chatMaxTokens ?? "—" }}</dd>
+                </div>
+                <div class="d-row">
+                  <dt>
+                    <el-icon><Key /></el-icon>API Key
+                  </dt>
+                  <dd :class="{ 'is-missing': !selected.chatApiKeyConfigured }">
+                    {{ selected.chatApiKeyConfigured ? "已配置" : "未配置" }}
+                  </dd>
+                </div>
+              </dl>
+            </div>
+          </aside>
+        </div>
+      </section>
+    </template>
+
     <el-dialog
       v-model="dialogOpen"
       title="创建角色"
-      width="min(560px, 94vw)"
+      width="min(1160px, 96vw)"
       destroy-on-close
     >
       <el-form
         label-position="top"
         @submit.prevent="createCharacter"
       >
-        <el-form-item
-          label="角色名称"
-          required
-        >
-          <el-input
-            v-model="name"
-            placeholder="例如：星海旅人"
-            maxlength="40"
-            show-word-limit
-          />
-        </el-form-item>
-        <el-form-item label="角色简介">
-          <el-input
-            v-model="description"
-            type="textarea"
-            :rows="2"
-            placeholder="用一句话描述角色的个性或定位。"
-          />
-        </el-form-item>
-        <el-form-item label="基础人设">
-          <el-input
-            v-model="personality"
-            type="textarea"
-            :rows="3"
-            placeholder="角色的性格、说话方式、行为规则……"
-          />
-        </el-form-item>
-        <div class="info-callout">
-          <el-icon><MagicStick /></el-icon><span>创建后到「模型设置」里配服务商与 API Key，到「记忆设置」里调归档周期，配好就能开始对话。</span>
-        </div>
-        <div class="dialog-actions">
-          <el-button @click="dialogOpen = false">
-            取消
-          </el-button><el-button
-            type="primary"
-            @click="createCharacter"
-          >
-            <el-icon><CirclePlus /></el-icon>创建角色
-          </el-button>
-        </div>
+        <!-- 和「编辑角色资料」共用同一份字段区，版式只维护一处 -->
+        <CharacterProfileFields
+          v-model:name="name"
+          v-model:description="description"
+          v-model:personality="personality"
+          v-model:examples="examples"
+        />
       </el-form>
+
+      <template #footer>
+        <div class="create-foot">
+          <span class="create-foot-note">创建后到「模型设置」配服务商与 API Key、到「记忆设置」调归档周期，配好就能开始对话。</span>
+          <span class="create-foot-actions">
+            <el-button @click="dialogOpen = false">
+              取消
+            </el-button>
+            <el-button
+              type="primary"
+              @click="createCharacter"
+            >
+              创建角色
+            </el-button>
+          </span>
+        </div>
+      </template>
     </el-dialog>
 
     <CharacterProfileDialog
@@ -392,93 +622,126 @@ onMounted(() => void loadCharacters());
    main.css 里 .card / .kpi / .pill / .btn / .surface 的 (0,1,0)。
    ══════════════════════════════════════════════════════════════ */
 
-/* 卡片网格：16px 缝，跟画布留出呼吸。
-   角色基本只有 1 个，会看到一张卡靠左 —— 那是内容少，不是布局错，别为此拉宽成横条 */
-.chars-a .card-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
-.chars-a .character-card-wrap { position: relative; display: flex; }
-
-/* 白砖：零描边零阴影。整卡即入口，hover 只让文字回应，不给整卡铺底
-   （白卡在 #f4f6f9 画布上，铺 --surface-2 反而更亮，会看成"往上飘"） */
-.chars-a .surface,
-.chars-a .char-card {
-  border: 0;
-  box-shadow: none;
-  background: var(--surface);
-  border-radius: 10px;
+/* ── 角色选择卡 ─────────────────────────────────────── */
+/* auto-fill 而不是 auto-fit：只有一个角色时卡片保持一列宽，
+   不会因为"右边空"就被拉成 1000px 的横条 */
+.chars-a .char-tabs {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(224px, 1fr));
+  gap: var(--sp-3); /* 卡片之间 */
 }
-.chars-a .char-card {
+.chars-a .char-tab {
   display: flex;
-  width: 100%;
-  flex-direction: column;
-  padding: 18px 18px 15px;
+  min-width: 0;
+  align-items: center;
+  gap: var(--sp-3);
+  border: 0;
+  border-radius: 10px;
+  background: var(--surface);
+  padding: var(--sp-3) var(--sp-4);
+  text-align: left;
+  cursor: pointer;
+  transition: background .14s var(--ease), box-shadow .14s var(--ease);
 }
-/* hover 反馈只给「查看档案」：整卡不可点，若名字也跟着变色，就等于在暗示整块可点 */
-.chars-a .card-cta:hover,
-.chars-a .card-cta:focus-visible { color: var(--brand-strong); }
-
-.chars-a .card-more { position: absolute; top: 8px; right: 8px; z-index: 2; }
-.chars-a .card-more :deep(.el-button) { color: var(--faint); }
-.chars-a .card-more :deep(.el-button:hover) { background: var(--surface-3); color: var(--text-2); }
-
-/* 卡头：头像 48px 刚好压住「名称 16 + 别名 12」两行 */
-.chars-a .character-avatar { width: 48px; height: 48px; font-size: 17px; }
-.chars-a .character-name { color: var(--text); font-size: 16px; font-weight: 700; letter-spacing: -.01em; }
-/* 别名是身份信息，不能落在 --faint（2.52:1）上 */
-.chars-a .character-alias { margin-top: 3px; color: var(--dim); font-size: 12px; }
-
-/* 描述：最多两行，不锁最小高度。main.css 给这个类写了 min-height:40px，
-   会把一行占位文案撑成两行高，在描述和元信息之间留出一段假空隙、把一组信息拆成两块 */
-.chars-a .character-description {
-  display: -webkit-box;
-  overflow: hidden;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  min-height: 0;
-  margin-top: 12px;
-  color: var(--dim);
-  font-size: 14px;
-  line-height: 1.6;
+.chars-a .char-tab:hover { background: var(--surface-2); }
+/* 选中：极淡品牌底 + 左侧 3px 品牌条。
+   底和名字颜色的差别都属于「颜色通道」，色弱/灰度下会消失，所以必须再加一个形状通道 ——
+   左侧竖条和侧栏 `.sidebar-link.active::before` 是同一套「当前项」语汇，灰度下照样看得见 */
+.chars-a .char-tab.is-on,
+.chars-a .char-tab.is-on:hover {
+  background: #fff8fa;
+  box-shadow: inset 0 0 0 1px var(--brand-line), inset 3px 0 0 var(--brand);
 }
-.chars-a .character-description.is-empty { color: var(--dim); }
-
-/* 元信息成一组：描述→meta 16，meta→底栏 6 —— 组间距必须明显大于组内 */
-.chars-a .meta-row { gap: 10px; margin-top: 16px; color: var(--dim); font-size: 12px; }
-/* 模型名是配置标识，不是叙述文字：稍作区分，别跟「8 天归档周期」混成一句。
-   名字可能很长（MiniMax-M2.7-highspeed），留一行省略，别把元信息行撑成两行 */
-.chars-a .meta-model {
+.chars-a .char-tab:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+.chars-a .char-tab.is-skeleton { cursor: default; }
+.chars-a .char-tab .avatar { width: 38px; height: 38px; font-size: 15px; }
+.chars-a .tab-body { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 4px; }
+.chars-a .tab-line { display: flex; min-width: 0; align-items: center; gap: var(--sp-2); }
+.chars-a .tab-name {
   overflow: hidden;
-  max-width: 100%;
   color: var(--text-2);
+  font-size: 14px;
+  font-weight: 700;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.chars-a .meta-model.is-missing { color: var(--rose); }
-.chars-a .character-footer {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 10px;
-  margin-top: 6px;
-  border-top: 0;
-  padding-top: 0;
-}
-.chars-a .character-footer .muted-note { display: inline-flex; align-items: baseline; gap: 4px; color: var(--dim); }
-.chars-a .character-footer strong { color: var(--text-2); font-size: 12px; font-weight: 600; }
-.chars-a .card-cta {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
+.chars-a .char-tab.is-on .tab-name { color: var(--text); }
+/* 别名和条数是身份信息，不能落在 --faint（2.52:1）上 */
+.chars-a .tab-facts {
+  overflow: hidden;
   color: var(--dim);
   font-size: 12px;
-  font-weight: 600;
-  transition: color .16s var(--ease);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-/* 状态药丸：无描边；正常态软底深字，文字按浅底实测加深 */
+/* 状态药丸：无描边；文字按浅底实测加深 */
 .chars-a .pill { border: 0; }
 .chars-a .pill-green { color: #0b7a54; }
 .chars-a .pill-amber { color: #8f5c05; }
 .chars-a .pill-gray { color: var(--text-2); }
+
+/* ── 档案详情 ───────────────────────────────────────── */
+/* 选择卡和档案是上下两个平级块，不是一张卡的两段：间距要大于卡内 16（页头到卡片是 18），
+   三者若都在 12~18 之间，页面会读成三条等距的带子，看不出谁跟着谁 */
+.chars-a .detail {
+  margin-top: var(--sp-5);
+  border-radius: 10px;
+  background: var(--surface);
+  padding: var(--sp-5);
+}
+.chars-a .detail-head { display: flex; align-items: flex-start; gap: var(--sp-4); }
+.chars-a .detail-avatar { width: 56px; height: 56px; border-radius: 10px; font-size: 22px; }
+.chars-a .detail-id { min-width: 0; flex: 1; }
+.chars-a .detail-name-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.chars-a .detail-name { color: var(--text); font-size: 18px; font-weight: 700; letter-spacing: -.01em; line-height: 26px; }
+/* 身份行：别名 · 渠道 · 上次保存。都带 13px 图标，一眼分得清哪些是"标识"、哪些是"时间" */
+.chars-a .detail-sub { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-1) var(--sp-4); margin-top: var(--sp-1); color: var(--dim); font-size: 12px; }
+.chars-a .detail-meta { display: inline-flex; align-items: center; gap: var(--sp-1); }
+.chars-a .detail-meta .el-icon { color: var(--faint); font-size: 14px; }
+.chars-a .detail-actions { display: flex; flex: none; flex-wrap: wrap; align-items: center; gap: 8px; }
+/* Element 给相邻按钮加 12px margin-left，「更多」外面还套了 el-dropdown 不受影响，
+   三颗按钮的间距会变成 20 / 8 两种。统一交给 gap */
+.chars-a .detail-actions :deep(.el-button + .el-button) { margin-left: 0; }
+
+/* 两栏：左是「她是谁」（要读的正文），右是「她现在什么状态」（要扫的数值）。
+   卡内分组线用最淡的 --surface-3，不是 --line。 */
+.chars-a .detail-body {
+  display: grid;
+  /* 右栏只装数字，给 288 上限就够；剩下的宽度留给正文，
+     但正文自己再卡 576（≈41 汉字/行），别让它横着拉满 700px 读不动 */
+  grid-template-columns: minmax(0, 1fr) minmax(232px, 288px);
+  gap: var(--sp-7);
+  margin-top: var(--sp-5);
+  border-top: 1px solid var(--surface-3);
+  padding-top: var(--sp-5);
+}
+/* 字段之间不再只靠留白：加一条最淡的分隔线 + 18px 内边距，
+   人设本身常带空行，光有间距的话「人设到哪结束、示例从哪开始」看不出来 */
+.chars-a .d-field + .d-field { margin-top: var(--sp-4); border-top: 1px solid var(--surface-3); padding-top: var(--sp-4); }
+/* 分节标题 12px：和正文只差 2px，靠字重和明度分层，不靠字号；左侧图标再补一个形状锚点 */
+.chars-a .d-field-h { display: flex; align-items: center; gap: var(--sp-2); color: var(--dim); font-size: 12px; font-weight: 700; }
+.chars-a .d-field-h .el-icon { color: var(--faint); font-size: 16px; }
+.chars-a .d-field-h h3 { margin: 0; font: inherit; }
+.chars-a .d-count { color: var(--dim); font-weight: 400; }
+.chars-a .d-prose { margin-top: var(--sp-2); max-width: 576px; color: var(--text-2); font-size: 14px; line-height: 1.8; overflow-wrap: anywhere; white-space: pre-wrap; }
+.chars-a .d-empty { margin-top: var(--sp-2); max-width: 576px; color: var(--dim); font-size: 14px; line-height: 1.8; }
+
+.chars-a .d-group + .d-group { margin-top: var(--sp-4); border-top: 1px solid var(--surface-3); padding-top: var(--sp-4); }
+.chars-a .d-group-h { display: flex; align-items: baseline; gap: 8px; color: var(--dim); font-size: 12px; font-weight: 700; }
+/* 人设写得长时左栏会很高，右栏跟着吸顶，别在下半页留 400px 空白 */
+.chars-a .detail-side { position: sticky; top: 72px; align-self: start; }
+/* 「设置」是 12px 文字链接：品牌色只有 #bf3a63 这一档够 AA */
+.chars-a .d-link { margin-left: auto; border: 0; background: none; padding: 0; color: #bf3a63; font-size: 12px; font-weight: 600; cursor: pointer; }
+.chars-a .d-link:hover { text-decoration: underline; }
+.chars-a .d-rows { display: flex; flex-direction: column; gap: var(--sp-3); margin-top: var(--sp-3); }
+.chars-a .d-row { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-4); font-size: 12px; line-height: 20px; }
+/* 图标比标签低一档（--faint）：同样面积下图标比汉字「重」得多，同色会反压标签一头（§2.7.1），
+   而 --faint 在契约里正好只给图标/分隔符用，不承载信息 */
+.chars-a .d-row dt { display: flex; flex: none; align-items: center; gap: var(--sp-2); color: var(--dim); }
+.chars-a .d-row dt .el-icon { color: var(--faint); font-size: 14px; }
+.chars-a .d-row dd { margin: 0; color: var(--text-2); font-weight: 600; text-align: right; overflow-wrap: anywhere; }
+.chars-a .d-row dd.is-missing { color: var(--rose); }
 
 /* 空态：虚线框和渐变光晕都去掉，跟总览的引导块同一块白砖 */
 .chars-a .empty-block {
@@ -486,7 +749,7 @@ onMounted(() => void loadCharacters());
   border: 0;
   border-radius: 10px;
   background: var(--surface);
-  padding: 34px 24px 30px;
+  padding: var(--sp-6) var(--sp-5);
 }
 .chars-a .empty-block .halo {
   width: 44px;
@@ -498,15 +761,27 @@ onMounted(() => void loadCharacters());
   color: var(--brand);
   font-size: 20px;
 }
-.chars-a .empty-block h4 { margin: 0 0 7px; color: var(--text); font-size: 16px; font-weight: 600; }
+.chars-a .empty-block h4 { margin: 0 0 var(--sp-2); color: var(--text); font-size: 16px; font-weight: 600; }
 .chars-a .empty-block p { max-width: 460px; margin: 0 0 16px; color: var(--dim); font-size: 14px; line-height: 1.7; }
 
-.dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+/* 创建弹窗页脚：和「编辑角色资料」同一套（左说明、右动作）。
+   文案和按钮是两处唯一不同的地方，所以版式写在各自文件里，字段区才走共用组件。 */
+.create-foot { display: flex; gap: 12px; align-items: center; justify-content: space-between; }
+.create-foot-note { color: var(--dim); font-size: 12px; }
+.create-foot-actions { display: flex; }
 
-@media (max-width: 1100px) {
-  .chars-a .card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (max-width: 1020px) {
+  .chars-a .detail-body { grid-template-columns: minmax(0, 1fr); gap: 22px; }
+  .chars-a .detail-head { flex-wrap: wrap; }
+  .chars-a .detail-actions { width: 100%; }
+  /* 单列时右栏在正文之下，吸顶会把档案钉在视口里挡住内容 */
+  .chars-a .detail-side { position: static; }
+  /* 值挤到 900px 宽的行尾会离标签太远，改成两列短行 */
+  .chars-a .d-rows { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-3) var(--sp-5); }
 }
-@media (max-width: 700px) {
-  .chars-a .card-grid { grid-template-columns: minmax(0, 1fr); }
+@media (max-width: 620px) {
+  .chars-a .detail { padding: 16px; }
+  .chars-a .char-tabs { grid-template-columns: minmax(0, 1fr); }
+  .chars-a .d-rows { grid-template-columns: minmax(0, 1fr); }
 }
 </style>

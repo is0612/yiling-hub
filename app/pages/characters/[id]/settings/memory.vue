@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ArrowLeft, Calendar, InfoFilled, RefreshLeft, Lock, Select } from "@element-plus/icons-vue";
+import { Calendar, InfoFilled, RefreshLeft, Lock, Select } from "@element-plus/icons-vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { initialCharacters, type Character } from "~/utils/mock-data";
 
@@ -235,20 +235,12 @@ watch(id, () => void loadSettings());
 <template>
   <div class="page-wrap">
     <PageHeader
-      :eyebrow="'AI 角色管理 / ' + character.name + ' / 记忆设置'"
+      :eyebrow="'角色管理 / ' + character.name + ' / 记忆设置'"
       title="记忆周期设置"
       description="控制角色多久归档一次阶段记忆。设置保存到 PostgreSQL，由 Scheduler 生成到期任务，再由 Worker 调用角色模型完成 AI 提炼。"
-    >
-      <template #actions>
-        <button
-          type="button"
-          class="btn"
-          @click="navigateTo('/characters/' + character.id)"
-        >
-          <el-icon><ArrowLeft /></el-icon>返回驾驶舱
-        </button>
-      </template>
-    </PageHeader>
+      :back-to="'/memory?c=' + character.id"
+      back-label="返回角色记忆"
+    />
 
     <div class="settings-grid">
       <div>

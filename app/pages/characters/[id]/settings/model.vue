@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ArrowLeft, Connection, Cpu, InfoFilled, Refresh, Select } from "@element-plus/icons-vue";
+import { Connection, Cpu, InfoFilled, Refresh, Select } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
 import type { Character } from "~/utils/mock-data";
 import { MODEL_PROVIDERS, buildModelOptions, providerByBaseUrl, providerByKey } from "~/utils/model-catalog";
@@ -29,9 +29,9 @@ const draftProviderKey = ref("deepseek");
 const fetchedModels = ref<string[]>([]);
 
 const backTarget = computed(() => route.query.from === "chat"
-  ? `/characters/${id.value}/chat`
-  : `/characters/${id.value}`);
-const backLabel = computed(() => route.query.from === "chat" ? "返回对话" : "返回驾驶舱");
+  ? `/chat?c=${id.value}`
+  : `/memory?c=${id.value}`);
+const backLabel = computed(() => route.query.from === "chat" ? "返回对话" : "返回角色记忆");
 
 const apiKeySource = computed(() => character.value?.chatApiKeySource ?? "missing");
 const apiKeyPlaceholder = computed(() => {
@@ -191,20 +191,12 @@ watch(id, () => void loadCharacter());
 <template>
   <div class="page-wrap">
     <PageHeader
-      :eyebrow="'AI 角色管理 / ' + (character?.name ?? '角色') + ' / 模型设置'"
+      :eyebrow="'角色管理 / ' + (character?.name ?? '角色') + ' / 模型设置'"
       title="模型设置"
       description="决定这个角色用哪家模型对话。配置写入 PostgreSQL，API Key 加密保存、不回传给网页；测试连接与拉取模型都基于已保存的配置。"
-    >
-      <template #actions>
-        <button
-          type="button"
-          class="btn"
-          @click="navigateTo(backTarget)"
-        >
-          <el-icon><ArrowLeft /></el-icon>{{ backLabel }}
-        </button>
-      </template>
-    </PageHeader>
+      :back-to="backTarget"
+      :back-label="backLabel"
+    />
 
     <div
       v-if="!loading && !character"
