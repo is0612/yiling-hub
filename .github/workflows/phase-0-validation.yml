@@ -143,6 +143,9 @@ jobs:
       - name: B站 值班窗口与判重测试
         run: yarn run test:bili-duty
 
+      - name: B站 值班模型调用测试
+        run: yarn run test:bili-llm
+
       - name: B站 数据库集成测试
         run: yarn run test:bili-db
 

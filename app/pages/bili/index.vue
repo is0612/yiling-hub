@@ -23,6 +23,12 @@ type BiliAccount = {
     keywords: string[]; zone: string; frames: number;
     autoComment: boolean; commentPerRound: number; mentionName: string;
     dmMode: "only" | "both" | "off";
+    /** 私信收件人 UID，空 = 主人（bili CLI 的 owner）。 */
+    dmTargetUid: string;
+    /** 允许给陌生人发第一条私信（CLI 的 --allow-new）。 */
+    dmAllowNew: boolean;
+    /** 刷站口味（自由文本），只作用于 B站 值班，不影响聊天与 QQ。 */
+    taste: string;
   };
   nextWindow: "noon" | "night" | null;
   bindings: BiliBinding[];
@@ -589,7 +595,7 @@ const subtitle = computed(() => {
   if (totalRounds.value) bits.push(`今天跑了 ${totalRounds.value} 轮`);
   bits.push(`判重表已记 ${totalSeenToday.value} 条`);
   const home = dashboard.value.accounts.find((a) => a.dataHome)?.dataHome;
-  if (home) bits.push(`数据在 ${home}`);
+  if (home) bits.push(`配置在 ${home}`);
   return bits.join(" · ");
 });
 
@@ -646,8 +652,15 @@ const dutyForm = reactive({
   perDay: 5, peakValley: true, noon: true, night: true,
   keywordsText: "", zone: "all", frames: 0,
   dmMode: "only" as "only" | "both" | "off",
+  dmTargetMode: "owner" as "owner" | "uid",
+  dmTargetUid: "",
+  dmAllowNew: false,
   autoComment: false, commentPerRound: 1, mentionName: "",
+  taste: "",
 });
+
+/** 口味文本上限，和服务器 parseDutyInput 的截断保持一致。 */
+const TASTE_MAX = 2000;
 
 function openDutySettings(account: BiliAccount) {
   dutyTarget.value = account;
@@ -660,14 +673,28 @@ function openDutySettings(account: BiliAccount) {
   dutyForm.zone = duty.zone || "all";
   dutyForm.frames = duty.frames ?? 0;
   dutyForm.dmMode = duty.dmMode ?? "only";
+  dutyForm.dmTargetMode = duty.dmTargetUid ? "uid" : "owner";
+  dutyForm.dmTargetUid = duty.dmTargetUid ?? "";
+  dutyForm.dmAllowNew = duty.dmAllowNew ?? false;
   dutyForm.autoComment = duty.autoComment ?? false;
   dutyForm.commentPerRound = duty.commentPerRound ?? 1;
   dutyForm.mentionName = duty.mentionName ?? "";
+  dutyForm.taste = duty.taste ?? "";
+  // 主人存在 bili CLI 自己的配置里，每次打开都现读，避免显示上一个账号的昵称
+  ownerInfo.value = null;
+  ownerError.value = "";
+  ownerInput.value = "";
+  void loadOwner(account.connectionId);
   dutyVisible.value = true;
 }
 
 async function saveDuty() {
   if (!dutyTarget.value) return;
+  const dmTargetUid = dutyForm.dmTargetMode === "uid" ? dutyForm.dmTargetUid.replace(/\D/g, "") : "";
+  if (dutyForm.dmTargetMode === "uid" && !dmTargetUid) {
+    ElMessage.warning("选了「指定 UID」就要把收件人 UID 填上（只填数字）。");
+    return;
+  }
   dutySaving.value = true;
   try {
     await $fetch("/api/admin/bili/duty", {
@@ -683,9 +710,12 @@ async function saveDuty() {
           zone: dutyForm.zone,
           frames: dutyForm.frames,
           dmMode: dutyForm.dmMode,
+          dmTargetUid,
+          dmAllowNew: dutyForm.dmAllowNew,
           autoComment: dutyForm.autoComment,
           commentPerRound: dutyForm.commentPerRound,
           mentionName: dutyForm.mentionName.trim(),
+          taste: dutyForm.taste.trim().slice(0, TASTE_MAX),
         },
       },
     });
@@ -697,6 +727,71 @@ async function saveDuty() {
   } finally {
     dutySaving.value = false;
   }
+}
+
+// ── 主人（bili CLI 的 owner） ──────────────────────────────
+/**
+ * 主人不在我们库里，它是 bili CLI 自己的一份配置：
+ * `dm send owner` 和 `comment post --at owner` 都认它。所以这里只做「读」和「改」的转发，
+ * 不缓存、不复制一份到 metadata —— 两份真值迟早会打架。
+ */
+type BiliOwner = { mid: string; name: string };
+
+const ownerInfo = ref<BiliOwner | null>(null);
+const ownerLoading = ref(false);
+const ownerSaving = ref(false);
+const ownerError = ref("");
+const ownerInput = ref("");
+
+async function loadOwner(connectionId: string) {
+  ownerLoading.value = true;
+  ownerError.value = "";
+  try {
+    const result = await $fetch<{ ok: boolean; owner: BiliOwner | null; error?: string }>(
+      "/api/admin/bili/owner",
+      { query: { connectionId } },
+    );
+    ownerInfo.value = result.owner ?? null;
+    if (!result.ok) ownerError.value = result.error || "读不到主人信息。";
+  } catch (error) {
+    ownerInfo.value = null;
+    ownerError.value = readErrorMessage(error, "读不到主人信息。");
+  } finally {
+    ownerLoading.value = false;
+  }
+}
+
+async function saveOwner() {
+  if (!dutyTarget.value) return;
+  const uid = ownerInput.value.trim();
+  if (!uid) {
+    ElMessage.warning("填个 UID 或昵称。");
+    return;
+  }
+  ownerSaving.value = true;
+  try {
+    const result = await $fetch<{ ok: boolean; owner: BiliOwner | null; error?: string }>("/api/admin/bili/owner", {
+      method: "PUT",
+      body: { connectionId: dutyTarget.value.connectionId, uid },
+    });
+    if (!result.ok) {
+      ownerError.value = result.error || "设置主人失败。";
+      ElMessage.warning(ownerError.value);
+      return;
+    }
+    ownerInfo.value = result.owner ?? null;
+    ownerError.value = "";
+    ownerInput.value = "";
+    ElMessage.success(`主人已设为 ${result.owner?.name ?? uid}。`);
+  } catch (error) {
+    ElMessage.error(readErrorMessage(error, "设置主人失败。"));
+  } finally {
+    ownerSaving.value = false;
+  }
+}
+
+function refreshOwner() {
+  if (dutyTarget.value) void loadOwner(dutyTarget.value.connectionId);
 }
 
 // ── 现在跑一轮 ─────────────────────────────────────────────
@@ -711,15 +806,21 @@ async function runRound() {
   }
   running.value = binding.bindingId;
   try {
-    const result = await $fetch<{ ok: boolean; seconds: number; picked: number; skipped: number; error?: string }>(
+    const result = await $fetch<{
+      ok: boolean; seconds: number; picked: number; skipped: number; error?: string; notes?: string[];
+    }>(
       "/api/admin/bili/run-round",
       { method: "POST", body: { connectionId: account.connectionId, bindingId: binding.bindingId } },
     );
     lastRoundSeconds.value = result.seconds;
-    if (result.ok) {
-      ElMessage.success(`跑完了（${result.seconds}s），挑中 ${result.picked} 条、跳过 ${result.skipped} 条。`);
-    } else {
+    const notes = result.notes ?? [];
+    if (!result.ok) {
       ElMessage.warning(result.error || "这一轮没跑成。");
+    } else if (result.picked === 0 && notes.length) {
+      // 一条都没挑中时，「为什么」比「跑完了」有用 —— 否则只能对着「跳过 N 条」猜
+      ElMessage.warning(`跑完了（${result.seconds}s），一条没挑中：${notes[0]}`);
+    } else {
+      ElMessage.success(`跑完了（${result.seconds}s），挑中 ${result.picked} 条、跳过 ${result.skipped} 条。`);
     }
     await loadDashboard();
   } catch (error) {
@@ -874,8 +975,13 @@ function windowActiveLabel(account: BiliAccount) {
   return account.nextWindow ? `下次窗口 ${windowLabel(account.nextWindow)}` : "当前不在谷时窗口内";
 }
 
+/** 报告正文里「过程记录」的分隔标记，和服务端 duty-pipeline 落库时写的保持一致。 */
+const REPORT_NOTES_MARK = "--- 过程记录 ---";
+
 function parsePickedVideos(content: string): Array<{ bvid: string; text: string }> {
-  const blocks = content.split(/\n(?=###\s)/).filter((block) => block.trim());
+  // 先切掉过程记录，否则它会粘在最后一条视频的正文后面
+  const body = content.split(REPORT_NOTES_MARK)[0] ?? content;
+  const blocks = body.split(/\n(?=###\s)/).filter((block) => block.trim());
   const result: Array<{ bvid: string; text: string }> = [];
   for (const block of blocks) {
     const match = block.match(/^###\s*(\S+)\s*([\s\S]*)$/);
@@ -883,6 +989,17 @@ function parsePickedVideos(content: string): Array<{ bvid: string; text: string 
     result.push({ bvid: match[1]!, text: match[2]!.trim() });
   }
   return result;
+}
+
+/** 这一轮为什么一条都没挑中 —— 报告里附的过程记录（风控、限流、模型报错等）。 */
+function parseReportNotes(content: string): string[] {
+  const index = content.indexOf(REPORT_NOTES_MARK);
+  if (index < 0) return [];
+  return content
+    .slice(index + REPORT_NOTES_MARK.length)
+    .split("\n")
+    .map((line) => line.replace(/^[-*]\s*/, "").trim())
+    .filter(Boolean);
 }
 
 function isPicked(result: string) {
@@ -1363,6 +1480,17 @@ function isPicked(result: string) {
                       >
                         这一轮没有挑中的视频。
                       </p>
+                      <ul
+                        v-if="parseReportNotes(report.content).length"
+                        class="bd-report-notes"
+                      >
+                        <li
+                          v-for="(note, index) in parseReportNotes(report.content)"
+                          :key="index"
+                        >
+                          {{ note }}
+                        </li>
+                      </ul>
                     </article>
                     <div
                       v-if="!recentReports.length"
@@ -1455,8 +1583,13 @@ function isPicked(result: string) {
                   <div class="bd-account-row">
                     <span class="bd-account-name">{{ account.displayName }}</span>
                     <span class="bd-badge mute">{{ windowActiveLabel(account) }}</span>
+                    <span
+                      class="bd-badge"
+                      :class="account.duty.taste ? 'ok' : 'mute'"
+                      :title="account.duty.taste ? '刷站口味已设置，点「值班设置」可改' : '还没写刷站口味，她会按通用尺度挑'"
+                    >口味{{ account.duty.taste ? "已设" : "未设" }}</span>
                     <span class="bd-account-meta">
-                      数据目录 {{ account.dataHome || "（默认）" }} · 每天上限 {{ account.duty.perDay }} 条
+                      配置目录 {{ account.dataHome || "（默认）" }} · 每天上限 {{ account.duty.perDay }} 条
                     </span>
                     <button
                       class="bd-btn is-sm"
@@ -1602,6 +1735,17 @@ function isPicked(result: string) {
                     >
                       这一轮没有挑中的视频。
                     </p>
+                    <ul
+                      v-if="parseReportNotes(report.content).length"
+                      class="bd-report-notes"
+                    >
+                      <li
+                        v-for="(note, index) in parseReportNotes(report.content)"
+                        :key="index"
+                      >
+                        {{ note }}
+                      </li>
+                    </ul>
                   </article>
                 </div>
               </template>
@@ -1971,24 +2115,6 @@ function isPicked(result: string) {
               :xs="24"
               :sm="12"
             >
-              <el-form-item label="投递方式">
-                <el-radio-group v-model="dutyForm.dmMode">
-                  <el-radio-button value="only">
-                    只私信
-                  </el-radio-button>
-                  <el-radio-button value="both">
-                    私信 + 评论
-                  </el-radio-button>
-                  <el-radio-button value="off">
-                    都不发
-                  </el-radio-button>
-                </el-radio-group>
-              </el-form-item>
-            </el-col>
-            <el-col
-              :xs="24"
-              :sm="12"
-            >
               <el-form-item label="热门分区">
                 <el-select
                   v-model="dutyForm.zone"
@@ -2019,6 +2145,110 @@ function isPicked(result: string) {
                 />
               </el-form-item>
             </el-col>
+            <el-col :span="24">
+              <div class="bd-form-sec">
+                <h3>主人</h3>
+                <span>私信和 @ 都挂在 bili CLI 的「主人」上</span>
+              </div>
+            </el-col>
+            <el-col :span="24">
+              <div class="bd-owner">
+                <div class="bd-owner-line">
+                  <span class="k">当前主人</span>
+                  <span
+                    v-if="ownerLoading"
+                    class="v is-empty"
+                  >读取中…</span>
+                  <span
+                    v-else-if="ownerInfo"
+                    class="v"
+                  >{{ ownerInfo.name }}<em>UID {{ ownerInfo.mid }}</em></span>
+                  <span
+                    v-else
+                    class="v is-empty"
+                  >{{ ownerError || "还没设置主人" }}</span>
+                </div>
+                <div class="bd-owner-ops">
+                  <el-input
+                    v-model="ownerInput"
+                    size="small"
+                    placeholder="UID / 昵称"
+                    @keyup.enter="saveOwner"
+                  />
+                  <el-button
+                    size="small"
+                    :loading="ownerSaving"
+                    @click="saveOwner"
+                  >
+                    设为主人
+                  </el-button>
+                  <el-button
+                    size="small"
+                    text
+                    @click="refreshOwner"
+                  >
+                    重新读取
+                  </el-button>
+                </div>
+              </div>
+              <p class="bd-form-tip">
+                主人写进 bili CLI 自己的配置（<code>bili owner set</code>），当面生效，不随下面的「保存」提交。
+                换号登录后要重设一次，否则私信还认上一个人。
+              </p>
+            </el-col>
+            <el-col
+              :xs="24"
+              :sm="12"
+            >
+              <el-form-item label="投递方式">
+                <el-radio-group v-model="dutyForm.dmMode">
+                  <el-radio-button value="only">
+                    只私信
+                  </el-radio-button>
+                  <el-radio-button value="both">
+                    私信 + 评论
+                  </el-radio-button>
+                  <el-radio-button value="off">
+                    都不发
+                  </el-radio-button>
+                </el-radio-group>
+              </el-form-item>
+            </el-col>
+            <el-col
+              :xs="24"
+              :sm="12"
+            >
+              <el-form-item label="私信发给谁">
+                <el-radio-group v-model="dutyForm.dmTargetMode">
+                  <el-radio-button value="owner">
+                    主人
+                  </el-radio-button>
+                  <el-radio-button value="uid">
+                    指定 UID
+                  </el-radio-button>
+                </el-radio-group>
+              </el-form-item>
+            </el-col>
+            <el-col
+              v-if="dutyForm.dmTargetMode === 'uid'"
+              :xs="24"
+              :sm="12"
+            >
+              <el-form-item label="收件人 UID（只填数字）">
+                <el-input
+                  v-model="dutyForm.dmTargetUid"
+                  placeholder="例如：308940936"
+                />
+              </el-form-item>
+            </el-col>
+            <el-col
+              :xs="24"
+              :sm="12"
+            >
+              <el-form-item label="允许给陌生人发第一条私信">
+                <el-switch v-model="dutyForm.dmAllowNew" />
+              </el-form-item>
+            </el-col>
             <el-col
               :xs="24"
               :sm="12"
@@ -2035,7 +2265,7 @@ function isPicked(result: string) {
               <el-form-item label="@ 谁（留空 = 不 @ 任何人）">
                 <el-input
                   v-model="dutyForm.mentionName"
-                  placeholder="例如：没有喵i"
+                  placeholder="owner（= 主人），或完整昵称"
                 />
               </el-form-item>
             </el-col>
@@ -2055,6 +2285,12 @@ function isPicked(result: string) {
               </el-form-item>
             </el-col>
             <el-col :span="24">
+              <div class="bd-form-sec">
+                <h3>刷站口味</h3>
+                <span>只作用于这个账号的值班，不会影响聊天和 QQ 渠道</span>
+              </div>
+            </el-col>
+            <el-col :span="24">
               <el-form-item label="关注关键词（每行一个，可留空；留空则只看热榜和推荐流）">
                 <el-input
                   v-model="dutyForm.keywordsText"
@@ -2062,6 +2298,22 @@ function isPicked(result: string) {
                   :rows="3"
                   placeholder="例如：DeepSeek&#10;AI 绘画"
                 />
+              </el-form-item>
+            </el-col>
+            <el-col :span="24">
+              <el-form-item label="刷站口味（自由发挥，可留空）">
+                <el-input
+                  v-model="dutyForm.taste"
+                  type="textarea"
+                  :autosize="{ minRows: 5, maxRows: 12 }"
+                  :maxlength="TASTE_MAX"
+                  show-word-limit
+                  placeholder="写清「爱看什么 / 一律跳过什么 / 跳过理由怎么写」。例如：&#10;- 只看米哈游相关：原神、星穹铁道、绝区零&#10;- 标题或标签里有「争议 / 退坑 / 互撕 / 剧透」，标题就判，不点进去&#10;- 跳过理由统一写两个字：负面。"
+                />
+                <p class="bd-form-tip">
+                  人设（她是谁、什么性格）在角色设置里，聊天 / QQ / B站 三端共用一份；
+                  这里只写「在这台 B站 账号上怎么刷」。命中的规则在粗筛阶段就会生效，不用白看一遍视频。
+                </p>
               </el-form-item>
             </el-col>
           </el-row>
@@ -2811,6 +3063,9 @@ function isPicked(result: string) {
   font-size: 12px;
 }
 .bd-report .bd-muted { margin: 0; font-size: 14px; color: var(--bd-dim); line-height: 1.8; }
+/* 过程记录：一条没挑中时给出原因，12px 用 --bd-dim 承载信息（--bd-faint 只够给图标） */
+.bd-report-notes { margin: 8px 0 0; padding-left: 16px; color: var(--bd-dim); font-size: 12px; line-height: 1.75; }
+.bd-report-notes li { list-style: disc; }
 
 /* 快速开始 */
 .bd-qlist { padding: 5px; }
@@ -3087,6 +3342,48 @@ function isPicked(result: string) {
 
 /* ── 弹窗 ─────────────────────────────────────────────── */
 .bd-dialog-body { max-height: 58vh; overflow-y: auto; padding-right: 4px; }
+/* 弹窗里的分节标题：12px 是硬下限，所以靠字重 + 明度 + 上分隔线拉开层级 */
+.bd-form-sec {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 4px 0 12px;
+  padding-top: 14px;
+  border-top: 1px solid var(--bd-line);
+}
+.bd-form-sec h3 { margin: 0; font-size: 12px; font-weight: 600; letter-spacing: .06em; color: var(--bd-text-2); }
+.bd-form-sec span { font-size: 12px; color: var(--bd-dim); }
+.bd-form-tip { margin: 6px 0 0; font-size: 12px; line-height: 1.65; color: var(--bd-dim); }
+.bd-form-tip code {
+  border-radius: 4px;
+  background: var(--bd-surface-3);
+  padding: 1px 5px;
+  color: var(--bd-text-2);
+  font: 12px/1.5 Consolas, monospace;
+}
+/* 主人：当前是谁 + 换人。信息在上、操作在下，避免一行挤四个控件 */
+.bd-owner {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border-radius: var(--bd-radius-sm);
+  background: var(--bd-surface-3);
+  padding: 12px;
+}
+.bd-owner-line { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; }
+.bd-owner-line .k { color: var(--bd-dim); font-size: 12px; }
+.bd-owner-line .v { color: var(--bd-text); font-size: 14px; font-weight: 600; }
+.bd-owner-line .v em {
+  margin-left: 6px;
+  color: var(--bd-dim);
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 400;
+}
+.bd-owner-line .v.is-empty { color: var(--bd-dim); font-weight: 400; }
+.bd-owner-ops { display: flex; align-items: center; gap: 8px; }
+.bd-owner-ops :deep(.el-input) { width: 180px; }
 .bd-login { display: flex; flex-direction: column; align-items: center; padding: 6px 0; }
 .bd-login-qr { display: flex; flex-direction: column; align-items: center; gap: 14px; }
 .bd-login-qrimg { width: 220px; height: 220px; border: 1px solid var(--bd-line); border-radius: var(--bd-radius-sm); }

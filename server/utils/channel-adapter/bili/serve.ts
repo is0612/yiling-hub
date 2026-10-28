@@ -23,6 +23,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getPrisma } from "../../prisma";
 import type { BiliConnectionRecord, BiliBindingRecord } from "./configure";
+import { biliOptions } from "./configure";
 import { handleChannelMessage } from "../pipeline";
 import { runBili } from "./runner";
 import { readBiliMessageId, readBiliMessageText, type BiliMessageEventType } from "./types";
@@ -76,10 +77,8 @@ export function createBiliMessageHandler(record: BiliConnectionRecord, binding: 
       return { status: "ignored", reason: "missing_fields" };
     }
 
-    const options = {
-      bin: record.biliBin || undefined,
-      env: record.dataHome ? { BILI_DESK_HOME: record.dataHome } : undefined,
-    };
+    // 数据目录跟账号走：CLI 只认 BILI_CLI_HOME，统一由 biliOptions 拼
+    const options = biliOptions(record);
 
     await getPrisma()
       .platformConnection.update({ where: { id: record.id }, data: { lastEventAt: new Date() } })
@@ -149,8 +148,7 @@ export async function pollBiliInbox(
   binding: BiliBindingRecord,
   handler: ReturnType<typeof createBiliMessageHandler>,
 ): Promise<number> {
-  const env = record.dataHome ? { BILI_DESK_HOME: record.dataHome } : undefined;
-  const bin = record.biliBin || undefined;
+  const { bin, env } = biliOptions(record);
   let handled = 0;
 
   // 收私信。`dm list` 返回的是会话卡片，只有「最后一条消息」，所以粒度是会话级的：

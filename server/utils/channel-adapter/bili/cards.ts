@@ -410,3 +410,19 @@ export function isFatalBiliError(code: string): boolean {
 export function isRateLimited(code: string): boolean {
   return code === "rate_limited";
 }
+
+/**
+ * `bili owner show` / `owner set` 的返回：`{ ok: true, data: { owner: { mid, name } } }`。
+ * 没设过主人时 CLI 也可能回 `owner: null`，所以读不到就返回 null，不要造一个空壳。
+ */
+export type BiliOwner = { mid: string; name: string };
+
+export function parseBiliOwner(json: unknown): BiliOwner | null {
+  const data = asRecord(unwrapBiliData(json));
+  const owner = asRecord(data?.owner);
+  if (!owner) return null;
+  const mid = pickId(owner.mid) || pickId(owner.uid);
+  const name = pickString(owner.name) || pickString(owner.uname);
+  if (!mid && !name) return null;
+  return { mid, name: name || mid };
+}

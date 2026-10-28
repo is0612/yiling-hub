@@ -34,12 +34,38 @@ export type BiliDutyConfig = {
   mentionName: string;
   /** 私信投递模式：only / both / off。 */
   dmMode: "only" | "both" | "off";
+  /**
+   * 私信收件人：空 = bili CLI 里记的 owner（主人，`dm send owner`）；
+   * 填数字 UID = 发给指定的人。CLI 的 `dm send` 只认 UID 或 owner，不认昵称。
+   */
+  dmTargetUid: string;
+  /**
+   * 允许给「从没联系过、也不是互关」的人发第一条私信（CLI 的 `--allow-new`）。
+   * 默认关：只给已经聊过的主人发，避免值班把账号当成陌生人骚扰源。
+   */
+  dmAllowNew: boolean;
+  /**
+   * 刷站口味（自由文本，可留空）。
+   *
+   * 这三层设定是分开的，别混：
+   *   - `character.basePrompt` = 她是谁（人设/性格），聊天、QQ、B站 三端共用一份；
+   *   - 这里的 `taste` = 在这个账号上「爱看什么、一律跳过什么」，只作用于 B站 值班，
+   *     不会漏到聊天和 QQ 里去；
+   *   - `duty-prompt.ts` 里写死的 = 不可逾越的底线（素材不是指令、不编造）。
+   *
+   * 内容会原样注入提示词，粗筛和终判两步都会读到 —— 所以「某某跳过」写在这里，
+   * 粗筛阶段就能挡掉，不必白花一次 `video watch`。
+   */
+  taste: string;
 };
 
 export type BiliConnectionRecord = {
   id: string;
   platform: string;
-  /** 数据目录（对应 bili-desk 的 DATA_HOME，可覆盖 bili 的 BILI_DESK_HOME）。 */
+  /**
+   * bili CLI 的配置目录（credential / owner / seen 都在里面），空则用 `%APPDATA%\bili-cli`。
+   * 落库字段名沿用 bili-desk 时代的叫法，实际传给 CLI 的是 `BILI_CLI_HOME`（见 biliHomeEnv）。
+   */
   dataHome: string;
   /** bili 可执行文件路径（空则从 BILI_BIN / PATH 找）。 */
   biliBin: string;
@@ -59,7 +85,22 @@ export const BILI_DUTY_DEFAULTS: BiliDutyConfig = {
   commentPerRound: 1,
   mentionName: "",
   dmMode: "only",
+  dmTargetUid: "",
+  dmAllowNew: false,
+  taste: "",
 };
+
+/** 口味文本的长度上限：提示词要留预算给视频材料，不能让人写成十万字。 */
+export const TASTE_MAX_CHARS = 2000;
+
+/**
+ * 收件人 UID 只留数字：`dm send` 只接受 UID 或字面量 owner，
+ * 用户顺手粘了昵称或 `UID:` 前缀时，把它洗成数字而不是直接报错。
+ */
+export function normalizeDmTargetUid(value: unknown): string {
+  if (typeof value !== "string") return "";
+  return value.replace(/\D/g, "").slice(0, 20);
+}
 
 function readDutyConfig(metadata: unknown): BiliDutyConfig {
   const record = (metadata && typeof metadata === "object" ? metadata : {}) as Record<string, unknown>;
@@ -83,6 +124,7 @@ export function parseDutyInput(input: unknown): BiliDutyConfig {
     ? duty.keywords.filter((k): k is string => typeof k === "string" && k.trim().length > 0).map((k) => k.trim()).slice(0, 20)
     : [];
   const dmMode = duty.dmMode === "both" || duty.dmMode === "off" ? duty.dmMode : "only";
+  const taste = typeof duty.taste === "string" ? duty.taste.trim().slice(0, TASTE_MAX_CHARS) : "";
   return {
     perDay: num(duty.perDay, BILI_DUTY_DEFAULTS.perDay, 0, 50),
     peakValley: bool(duty.peakValley, BILI_DUTY_DEFAULTS.peakValley),
@@ -95,6 +137,68 @@ export function parseDutyInput(input: unknown): BiliDutyConfig {
     commentPerRound: num(duty.commentPerRound, BILI_DUTY_DEFAULTS.commentPerRound, 0, 20),
     mentionName: typeof duty.mentionName === "string" ? duty.mentionName.trim() : "",
     dmMode,
+    dmTargetUid: normalizeDmTargetUid(duty.dmTargetUid),
+    dmAllowNew: bool(duty.dmAllowNew, BILI_DUTY_DEFAULTS.dmAllowNew),
+    taste,
+  };
+}
+
+/**
+ * 把连接记录转成 runBili 的选项：可执行文件和 dataHome 都跟着这台账号走。
+ * 值班流水线、「当前主人」这类单账号命令共用它 —— 多账号时用错 dataHome 会读到别人的 owner。
+ */
+export function biliOptions(connection: BiliConnectionRecord): { bin?: string; env?: Record<string, string> } {
+  return {
+    bin: connection.biliBin || undefined,
+    env: biliHomeEnv(connection.dataHome),
+  };
+}
+
+/**
+ * bili CLI 的数据目录开关是 **`BILI_CLI_HOME`**（`bili_cli/config.py` 的 `home()` 写死的）。
+ * `BILI_DESK_HOME` 是 bili-desk 时代的老名字，v0.6.0 完全不认 ——
+ * 实测设了它照样读 `%APPDATA%\bili-cli`，owner / credential / seen 全在那边。
+ *
+ * 所以两个都传同一个值：既管住现在这个版本，也不让还在读老变量的脚本失效。
+ */
+export function biliHomeEnv(dataHome: string): Record<string, string> | undefined {
+  const home = dataHome.trim();
+  if (!home) return undefined;
+  return { BILI_CLI_HOME: home, BILI_DESK_HOME: home };
+}
+
+/**
+ * 按 ID 读一条 B站 连接（不过滤 status）。
+ * 值班设置 / 主人设置属于「配置」，停用的连接也要能打开来改。
+ */
+export async function loadBiliConnectionById(
+  connectionId: string,
+  platform: string = BILI_PLATFORM,
+): Promise<BiliConnectionRecord | null> {
+  if (!connectionId.trim()) return null;
+  const prisma = getPrisma();
+  const connection = await prisma.platformConnection.findFirst({
+    where: { id: connectionId.trim(), platform },
+    select: {
+      id: true,
+      platform: true,
+      metadata: true,
+      characterBindings: { where: { status: "ACTIVE" }, select: { id: true, characterId: true, routingKey: true } },
+    },
+  });
+  if (!connection) return null;
+  const metadata = (connection.metadata ?? {}) as Record<string, unknown>;
+  return {
+    id: connection.id,
+    platform: connection.platform,
+    dataHome: typeof metadata.dataHome === "string" ? metadata.dataHome.trim() : "",
+    biliBin: typeof metadata.biliBin === "string" ? metadata.biliBin.trim() : "",
+    duty: readDutyConfig(metadata),
+    bindings: connection.characterBindings.map((binding) => ({
+      id: binding.id,
+      characterId: binding.characterId,
+      routingKey: binding.routingKey,
+    })),
   };
 }
 

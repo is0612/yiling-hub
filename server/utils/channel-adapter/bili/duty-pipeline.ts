@@ -10,7 +10,7 @@
  *   3. 粗筛：把候选的标题/简介/推荐理由/播放量交给模型挑出值得细看的
  *   4. 看懂：对粗筛入选的逐条 `bili video watch`（信息+AI总结+字幕+热评）
  *   5. 终判：结合看懂的正文判断值不值得占主人的注意力
- *   6. 投递：私信主人（dm send owner）/ 公开评论（comment post --at）
+ *   6. 投递：私信（默认 `dm send owner`，值班设置里可换成指定 UID）/ 公开评论（comment post --at）
  *   7. 收尾：报告 / 判重 / 人格札记写库
  *
  * ⚠️ 所有写操作（私信/评论）都检查 CLI 的 `ok` 字段与 error.code：
@@ -24,10 +24,11 @@ import { join } from "node:path";
 import { getPrisma } from "../../prisma";
 import { runBili, type BiliRunResult } from "./runner";
 import { buildDutyPrompt, type BiliDutyRoundSettings } from "./duty-prompt";
-import { generateConversationReply } from "../../chat-reply";
+import { callBiliModel } from "./llm";
 import { resolveChatModelSettings } from "../../chat-model-config";
 import { resolveCharacterApiKey } from "../../credential-encryption";
 import type { BiliConnectionRecord, BiliDutyConfig } from "./configure";
+import { biliOptions } from "./configure";
 import { remainingQuota, toDayKey } from "./duty-scheduler";
 import {
   extractBvids,
@@ -86,6 +87,9 @@ type PickedVideo = {
   comment: string;
 };
 
+/** 跳过的候选也要带理由 —— 口味里规定了「跳过理由写两个字」时，这里就是它落地的地方。 */
+type SkippedVideo = { candidate: Candidate; reason: string };
+
 /** 把一段文本写进临时文件，交给 bili 的 `--file`（避免命令行被引号/换行切碎）。 */
 async function withTempText<T>(text: string, fn: (path: string) => Promise<T>): Promise<T> {
   const path = join(tmpdir(), `yiling-bili-${randomUUID()}.txt`);
@@ -95,13 +99,6 @@ async function withTempText<T>(text: string, fn: (path: string) => Promise<T>): 
   } finally {
     await unlink(path).catch(() => undefined);
   }
-}
-
-function biliOptions(record: BiliConnectionRecord) {
-  return {
-    bin: record.biliBin || undefined,
-    env: record.dataHome ? { BILI_DESK_HOME: record.dataHome } : undefined,
-  };
 }
 
 /** 执行一条 bili 命令并把错误收进 notes；返回解析后的 data。 */
@@ -181,7 +178,6 @@ async function shortlistCandidates(
   candidates: Candidate[],
   limit: number,
   model: {
-    characterName: string;
     characterPrompt: string;
     model: string;
     apiKey: string;
@@ -210,20 +206,16 @@ async function shortlistCandidates(
 
   let reply = "";
   try {
-    const result = await generateConversationReply({
-      characterName: model.characterName,
-      characterPrompt: model.characterPrompt,
+    reply = await callBiliModel({
+      systemPrompt: model.characterPrompt,
+      userPrompt: prompt,
       model: model.model,
       apiKey: model.apiKey,
       apiBaseUrl: model.apiBaseUrl,
       temperature: 0.3,
-      maxTokens: 512,
-      currentMessage: prompt,
-      recentMessages: [],
-      memories: [],
-      snapshots: [],
+      // 25 条候选的粗筛，思考型模型光思考就要 1500~2200 tokens；给低于这个数的预算会正文全空
+      maxTokens: 4096,
     });
-    reply = result.reply;
   } catch (error) {
     notes.push(`粗筛调用模型失败：${error instanceof Error ? error.message : String(error)}`);
     return [];
@@ -268,7 +260,6 @@ async function judgeVideo(
   candidate: Candidate,
   watched: BiliWatchedVideo,
   model: {
-    characterName: string;
     characterPrompt: string;
     model: string;
     apiKey: string;
@@ -289,26 +280,22 @@ async function judgeVideo(
     "判断：这条值不值得占主人的注意力？拿不准就跳过，别反复权衡。",
     "按下面三行回答，一行一个字段，不要用 JSON、不要加别的解释：",
     "判断：值得  或  判断：跳过",
-    "理由：一句话，30 字内，说清为什么",
+    "理由：一句话，30 字内，说清为什么。跳过也要写；口味里规定了写法的（比如只写两个字），按口味写",
     "评论：如果要公开评论，写一句 60 字内、像自己刷到随口说一句的话；不需要就写「无」",
   ].join("\n");
 
   let reply = "";
   try {
-    const result = await generateConversationReply({
-      characterName: model.characterName,
-      characterPrompt: model.characterPrompt,
+    reply = await callBiliModel({
+      systemPrompt: model.characterPrompt,
+      userPrompt: prompt,
       model: model.model,
       apiKey: model.apiKey,
       apiBaseUrl: model.apiBaseUrl,
       temperature: 0.4,
-      maxTokens: 400,
-      currentMessage: prompt,
-      recentMessages: [],
-      memories: [],
-      snapshots: [],
+      // 单条终判要输出三行 + 思考，3072 起步
+      maxTokens: 3072,
     });
-    reply = result.reply;
   } catch (error) {
     notes.push(`终判 ${candidate.bvid} 调用模型失败：${error instanceof Error ? error.message : String(error)}`);
     return { worth: false, reason: "", comment: "" };
@@ -349,15 +336,26 @@ function buildDmText(picked: PickedVideo[]): string {
 
 type DeliveryOutcome = { sent: boolean; fatal: boolean; note?: string };
 
-/** 私信主人。 */
+/** 私信收件人：空 = CLI 记的 owner（主人），否则是指定 UID。 */
+function dmRecipient(config: BiliDutyConfig): { arg: string; label: string } {
+  return config.dmTargetUid
+    ? { arg: config.dmTargetUid, label: `私信 UID ${config.dmTargetUid}` }
+    : { arg: "owner", label: "私信主人" };
+}
+
+/** 私信主人（或值班设置里指定的收件人）。 */
 async function deliverDm(record: BiliConnectionRecord, config: BiliDutyConfig, picked: PickedVideo[]): Promise<DeliveryOutcome> {
   if (config.dmMode === "off") return { sent: false, fatal: false };
   if (picked.length === 0) return { sent: false, fatal: false };
   const text = buildDmText(picked);
   if (!text.trim()) return { sent: false, fatal: false };
 
+  const recipient = dmRecipient(config);
   const outcome = await withTempText(text, async (path) => {
-    const result = await runBili(["dm", "send", "owner", "--file", path], biliOptions(record));
+    const argv = ["dm", "send", recipient.arg, "--file", path];
+    // 陌生收件人（没聊过、也不是互关）CLI 会直接拒发，要显式开 --allow-new
+    if (config.dmAllowNew) argv.push("--allow-new");
+    const result = await runBili(argv, biliOptions(record));
     return result;
   });
 
@@ -365,9 +363,9 @@ async function deliverDm(record: BiliConnectionRecord, config: BiliDutyConfig, p
   if (!error && outcome.code === 0) return { sent: true, fatal: false };
   const code = error?.code ?? (outcome.timedOut ? "timeout" : "unknown_error");
   const detail = error?.message || outcome.stderr.slice(0, 120);
-  if (isFatalBiliError(code)) return { sent: false, fatal: true, note: `私信主人失败（${code}）：${detail}` };
+  if (isFatalBiliError(code)) return { sent: false, fatal: true, note: `${recipient.label}失败（${code}）：${detail}` };
   if (isRateLimited(code)) return { sent: false, fatal: false, note: `私信被本地限流，这轮放弃投递：${detail}` };
-  return { sent: false, fatal: false, note: `私信主人失败（${code}）：${detail}` };
+  return { sent: false, fatal: false, note: `${recipient.label}失败（${code}）：${detail}` };
 }
 
 /** 发一条公开评论（有 @ 目标时用真正的 --at，对方会收到提醒）。 */
@@ -483,6 +481,7 @@ export async function runDutyRound(record: BiliConnectionRecord, binding: { id: 
     autoComment: config.autoComment,
     commentPerRound: config.commentPerRound,
     mentionName: config.mentionName,
+    dmTarget: config.dmTargetUid,
     watchLimit: Math.min(MAX_WATCH_PER_ROUND, Math.max(remaining, 1) + 2),
   };
   const dutyPrompt = buildDutyPrompt(config, settings);
@@ -497,8 +496,10 @@ export async function runDutyRound(record: BiliConnectionRecord, binding: { id: 
   const memoryLines = activeMemories.slice(0, 8).map((m) => `- [${m.category}] ${m.content.slice(0, 200)}`);
 
   const model = {
-    characterName: character.name,
-    // 粗筛和终判共用同一份人设 + 值班准则，避免两步的尺度不一致
+    // 粗筛和终判共用同一份人设 + 值班准则，避免两步的尺度不一致。
+    // ⚠️ 这里**故意不注入** `styleExamples`（对话示例）：一轮最多 30 次调用，
+    //    每条候选都白带一遍示例，而且示例教的是聊天的语气，会把 30 字理由带成碎碎念。
+    //    她说话的口吻由 basePrompt 里「性格 / 说话风格」那几段兜住。
     characterPrompt: `${character.basePrompt.slice(0, 12_000)}\n\n${dutyPrompt}`,
     model: modelSettings.model,
     apiKey,
@@ -512,7 +513,7 @@ export async function runDutyRound(record: BiliConnectionRecord, binding: { id: 
 
   // 5. 看懂 + 终判
   const picked: PickedVideo[] = [];
-  const skipped: Candidate[] = [];
+  const skipped: SkippedVideo[] = [];
   let watchedCount = 0;
 
   for (const bvid of shortlist) {
@@ -523,7 +524,7 @@ export async function runDutyRound(record: BiliConnectionRecord, binding: { id: 
     const watched = await watchVideo(record, config, bvid, notes);
     if (!watched) {
       // 看不懂就不硬判 —— 记为跳过，理由写清楚，别假装看过
-      skipped.push(candidate);
+      skipped.push({ candidate, reason: "看不懂内容" });
       continue;
     }
     watchedCount += 1;
@@ -535,7 +536,7 @@ export async function runDutyRound(record: BiliConnectionRecord, binding: { id: 
     if (verdict.worth && picked.length < remaining) {
       picked.push({ candidate, watched, reason: verdict.reason, comment: verdict.comment });
     } else {
-      skipped.push(candidate);
+      skipped.push({ candidate, reason: verdict.reason });
     }
 
     // 风控一旦出现，本轮立刻停止继续 watch
@@ -545,7 +546,7 @@ export async function runDutyRound(record: BiliConnectionRecord, binding: { id: 
   // 没进粗筛的候选也算"看过"，写进判重表，避免下一轮反复出现在候选里
   const shortlistSet = new Set(shortlist);
   for (const candidate of candidates) {
-    if (!shortlistSet.has(candidate.bvid)) skipped.push(candidate);
+    if (!shortlistSet.has(candidate.bvid)) skipped.push({ candidate, reason: "粗筛没留" });
   }
 
   // 6. 投递
@@ -579,6 +580,12 @@ export async function runDutyRound(record: BiliConnectionRecord, binding: { id: 
     })
     .join("\n\n");
 
+  // 过程记录跟着报告一起落库：一条都没挑中时，「为什么」比「没挑中」重要得多。
+  // 以前 notes 只在内存里返回、接口也没透出去，页面只剩「本轮没有挑中的视频」，
+  // 排查「全跳过」时完全无从下手（2026-10-28 就是这么踩的）。
+  const notesBlock = notes.length ? `--- 过程记录 ---\n${notes.map((note) => `- ${note}`).join("\n")}` : "";
+  const contentToStore = [reportContent || "（本轮没有挑中的视频）", notesBlock].filter(Boolean).join("\n\n");
+
   // 人格札记：替换掉 bili-desk 的 human-world.md，落成角色长期记忆。
   // 只在挑中视频时写 —— 「刷了 5 条一条没挑」不值得占用长期记忆，那种情况值班台
   // 自己的 BiliRoundReport 已经记着了。
@@ -597,7 +604,7 @@ export async function runDutyRound(record: BiliConnectionRecord, binding: { id: 
         day: today,
         roundIndex,
         pickedCount: picked.length,
-        content: reportContent || "（本轮没有挑中的视频）",
+        content: contentToStore,
       },
       select: { id: true },
     });
@@ -627,19 +634,17 @@ export async function runDutyRound(record: BiliConnectionRecord, binding: { id: 
     // 判重表：用 createMany + skipDuplicates 批量写。
     // 原来是逐条 create 再 catch 掉唯一冲突 —— 但在 Postgres 事务里，一条语句失败
     // 会让整个事务进入 aborted 状态，后面写的东西（包括上面那条记忆）跟着一起回滚。
-    const seenRows = [...picked, ...skipped].map((entry) => {
-      const isPicked = "candidate" in entry;
-      const candidate = isPicked ? entry.candidate : entry;
-      const reason = isPicked ? entry.reason : "";
-      return {
-        bindingId: binding.id,
-        bvid: candidate.bvid,
-        title: candidate.title,
-        author: candidate.author.name,
-        result: isPicked ? "picked" : "skipped",
-        reason: isPicked ? reason || "值得" : "跳过",
-      };
-    });
+    const seenRows = [
+      ...picked.map((item) => ({ candidate: item.candidate, result: "picked", reason: item.reason || "值得" })),
+      ...skipped.map((item) => ({ candidate: item.candidate, result: "skipped", reason: item.reason || "跳过" })),
+    ].map(({ candidate, result, reason }) => ({
+      bindingId: binding.id,
+      bvid: candidate.bvid,
+      title: candidate.title,
+      author: candidate.author.name,
+      result,
+      reason,
+    }));
     if (seenRows.length) {
       await tx.biliSeenVideo.createMany({ data: seenRows, skipDuplicates: true });
     }

@@ -2,6 +2,7 @@ import { createError, readBody } from "h3";
 import { requireAdminActor } from "../../../utils/auth";
 import { encryptApiKey } from "../../../utils/credential-encryption";
 import { readTrimmedString } from "../../../utils/local-api";
+import { parseDutyInput } from "../../../utils/channel-adapter/bili/configure";
 import { getPrisma } from "../../../utils/prisma";
 
 /**
@@ -74,28 +75,23 @@ async function createBiliConnection(body: Record<string, unknown>) {
   const biliBin = readTrimmedString(body?.biliBin, "bili 可执行文件路径", 500);
   const displayName = readTrimmedString(body?.displayName, "显示名", 120) || "B站 账号";
 
-  // 值班设置（可选，缺省用 BILI_DUTY_DEFAULTS）
-  const dutyRaw = (body?.duty && typeof body.duty === "object" ? body.duty : {}) as Record<string, unknown>;
-  const duty = {
-    perDay: readDutyNumber(dutyRaw.perDay, 5, 0, 50),
-    peakValley: typeof dutyRaw.peakValley === "boolean" ? dutyRaw.peakValley : true,
-    noon: typeof dutyRaw.noon === "boolean" ? dutyRaw.noon : true,
-    night: typeof dutyRaw.night === "boolean" ? dutyRaw.night : true,
-    keywords: Array.isArray(dutyRaw.keywords)
-      ? dutyRaw.keywords.filter((k): k is string => typeof k === "string" && k.trim().length > 0).map((k) => k.trim()).slice(0, 20)
-      : [],
-    zone: readTrimmedString(dutyRaw.zone, "分区", 50) || "all",
-    frames: readDutyNumber(dutyRaw.frames, 0, 0, 30),
-    autoComment: typeof dutyRaw.autoComment === "boolean" ? dutyRaw.autoComment : false,
-    commentPerRound: readDutyNumber(dutyRaw.commentPerRound, 1, 0, 20),
-    mentionName: readTrimmedString(dutyRaw.mentionName, "提及", 100),
-    dmMode: dutyRaw.dmMode === "both" || dutyRaw.dmMode === "off" ? dutyRaw.dmMode : "only",
-  };
-
   const prisma = getPrisma();
   // B站连接没有唯一的 platformAccountKey 来源，用 dataHome 或生成稳定键。
   // 用 displayName 作为账号键容易重复，改用 dataHome（若提供）否则用固定单例键。
   const accountKey = dataHome || "bili-default";
+
+  // 值班设置（可选，缺省用 BILI_DUTY_DEFAULTS）：
+  // 这个接口同时承担「改连接信息」，所以必须和库里已有的 duty 合并后再规范化。
+  // 早期这里是照着表单重新拼一份 duty，把没在表单里的字段（frames / taste /
+  // 私信收件人）直接冲成了默认值 —— 从渠道管理点一次保存，值班台上填过的东西就没了。
+  const existing = await prisma.platformConnection.findUnique({
+    where: { platform_platformAccountKey: { platform: "bili", platformAccountKey: accountKey } },
+    select: { metadata: true },
+  });
+  const oldMetadata = (existing?.metadata && typeof existing.metadata === "object" ? existing.metadata : {}) as Record<string, unknown>;
+  const oldDuty = (oldMetadata.duty && typeof oldMetadata.duty === "object" ? oldMetadata.duty : {}) as Record<string, unknown>;
+  const dutyRaw = (body?.duty && typeof body.duty === "object" ? body.duty : {}) as Record<string, unknown>;
+  const duty = parseDutyInput({ ...oldDuty, ...dutyRaw });
 
   const connection = await prisma.platformConnection.upsert({
     where: { platform_platformAccountKey: { platform: "bili", platformAccountKey: accountKey } },
@@ -104,11 +100,11 @@ async function createBiliConnection(body: Record<string, unknown>) {
       platformAccountKey: accountKey,
       displayName,
       status: "DISCONNECTED",
-      metadata: { dataHome, biliBin, duty },
+      metadata: { ...oldMetadata, dataHome, biliBin, duty },
     },
     update: {
       displayName,
-      metadata: { dataHome, biliBin, duty },
+      metadata: { ...oldMetadata, dataHome, biliBin, duty },
     },
     select: { id: true, platform: true, displayName: true, platformAccountKey: true, status: true },
   });
@@ -120,9 +116,4 @@ async function createBiliConnection(body: Record<string, unknown>) {
     appId: connection.platformAccountKey,
     status: connection.status,
   };
-}
-
-function readDutyNumber(value: unknown, fallback: number, min: number, max: number): number {
-  const n = typeof value === "number" && Number.isFinite(value) ? Math.round(value) : fallback;
-  return Math.max(min, Math.min(max, n));
 }

@@ -8,6 +8,7 @@ import {
   parseVerdict,
   parseVideoCards,
   parseWatchedVideo,
+  parseBiliOwner,
   readAuthor,
   readBiliError,
 } from "../server/utils/channel-adapter/bili/cards";
@@ -129,12 +130,23 @@ async function main() {
   assert.equal(isFatalBiliError("rate_limited"), false);
   assert.equal(isFatalBiliError("invalid_argument"), false);
 
+  // owner show 的真实返回：mid 是数字，别被当成字符串读丢
+  assert.deepEqual(parseBiliOwner({ ok: true, data: { owner: { mid: 308940936, name: "没有喵i" } } }), {
+    mid: "308940936",
+    name: "没有喵i",
+  });
+  // 没设过主人：CLI 可能回 owner: null，不能造空壳
+  assert.equal(parseBiliOwner({ ok: true, data: { owner: null } }), null);
+  assert.equal(parseBiliOwner({ ok: false, error: { code: "not_logged_in" } }), null);
+  assert.equal(parseBiliOwner(null), null);
+
   console.log("✅ test-bili-cards 全部通过");
   console.log("   author 四种形态（对象/字符串/别名/嵌套）：通过");
   console.log("   列表卡片解析（feed / search / 裸数组）：通过");
   console.log("   watch 解析（owner.name / 字幕 / 热评）：通过");
   console.log("   判词否定优先（「不值得」不再判成值得）：通过");
   console.log("   宽松 JSON / BV 提取 / 错误码：通过");
+  console.log("   当前主人解析（mid 数字 / owner 为 null）：通过");
 }
 
 main().catch((error) => {

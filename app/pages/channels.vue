@@ -471,10 +471,10 @@ onMounted(loadConnections);
             placeholder="例如：我的 B站 账号"
           />
         </el-form-item>
-        <el-form-item label="数据目录（可选，对应 bili-desk 的 DATA_HOME）">
+        <el-form-item label="配置目录（可选，bili CLI 的 credential / owner 所在处）">
           <el-input
             v-model="biliForm.dataHome"
-            placeholder="留空则用 bili-cli 默认目录"
+            placeholder="留空 = %APPDATA%\bili-cli（多账号要各填一个目录）"
           />
         </el-form-item>
         <el-form-item label="bili 可执行文件路径（可选）">

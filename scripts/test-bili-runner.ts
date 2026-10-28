@@ -2,6 +2,7 @@ import "dotenv/config";
 import assert from "node:assert/strict";
 import { runBili, biliJson, resolveBiliBin } from "../server/utils/channel-adapter/bili/runner";
 import { BILI_CATALOG, findBiliCatalogItem } from "../server/utils/channel-adapter/bili/catalog";
+import { biliHomeEnv, biliOptions, type BiliConnectionRecord } from "../server/utils/channel-adapter/bili/configure";
 
 async function main() {
   // 1. 空命令：应返回 code=2，不抛异常
@@ -42,9 +43,26 @@ async function main() {
   const hotRank = findBiliCatalogItem("hot.rank");
   assert.ok(hotRank?.params?.some((param) => param.key === "zone" && param.type === "select"));
 
+  // 8. 配置目录：CLI 只认 BILI_CLI_HOME（bili_cli/config.py 的 home()），
+  //    BILI_DESK_HOME 是老名字、v0.6.0 不认 —— 只传老变量等于没传，多账号会共用一个 profile。
+  assert.deepEqual(biliHomeEnv("D:/bili-profiles/a"), {
+    BILI_CLI_HOME: "D:/bili-profiles/a",
+    BILI_DESK_HOME: "D:/bili-profiles/a",
+  });
+  assert.equal(biliHomeEnv("   "), undefined, "空目录不该往子进程里塞环境变量");
+
+  const record = {
+    id: "c1", platform: "bili", dataHome: "D:/bili-profiles/a", biliBin: "D:/bili.exe",
+    duty: {} as BiliConnectionRecord["duty"], bindings: [],
+  } satisfies BiliConnectionRecord;
+  const opts = biliOptions(record);
+  assert.equal(opts.bin, "D:/bili.exe");
+  assert.equal(opts.env?.BILI_CLI_HOME, "D:/bili-profiles/a", "必须传 BILI_CLI_HOME，否则等于没隔离");
+
   console.log("✅ test-bili-runner 全部通过");
   console.log(`   命令目录：${BILI_CATALOG.length} 组，共 ${BILI_CATALOG.flatMap((g) => g.items).length} 条命令`);
   console.log(`   写操作命令：${writeIds.size} 条（默认 --dry-run）`);
+  console.log("   配置目录环境变量（BILI_CLI_HOME）：通过");
 }
 
 main().catch((error) => {

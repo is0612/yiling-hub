@@ -52,5 +52,8 @@ export default defineEventHandler(async (event) => {
     seenVideos: result.seenVideos,
     reportId: result.reportId,
     error: result.error,
+    // 过程记录要透出去：一条都没挑中时，前端要把「为什么」摆在人脸上，
+    // 而不是只弹一句「挑中 0 条」让人对着报告猜。
+    notes: result.notes,
   };
 });

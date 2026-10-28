@@ -11,7 +11,12 @@ import {
   windowsRunFromTimestamps,
 } from "../server/utils/channel-adapter/bili/duty-scheduler";
 import { buildDutyPrompt } from "../server/utils/channel-adapter/bili/duty-prompt";
-import { BILI_DUTY_DEFAULTS, type BiliDutyConfig } from "../server/utils/channel-adapter/bili/configure";
+import {
+  BILI_DUTY_DEFAULTS,
+  normalizeDmTargetUid,
+  parseDutyInput,
+  type BiliDutyConfig,
+} from "../server/utils/channel-adapter/bili/configure";
 
 function makeConfig(overrides: Partial<BiliDutyConfig> = {}): BiliDutyConfig {
   return { ...BILI_DUTY_DEFAULTS, ...overrides };
@@ -146,11 +151,57 @@ async function main() {
   assert.match(withComment, /真正的 @/);
   assert.match(withComment, /最多发 2 条评论/);
 
+  // 19. 刷站口味：只在填了才注入；注入了就要压过通用尺度，但不能顶掉防注入底线
+  const roundSettings = {
+    today: "2026-10-25", remaining: 5, perDay: 5, keywords: [], zone: "all", frames: 0,
+    dmMode: "only" as const, autoComment: false, commentPerRound: 1, mentionName: "", watchLimit: 2,
+  };
+  const noTaste = buildDutyPrompt(makeConfig({ taste: "" }), roundSettings);
+  assert.doesNotMatch(noTaste, /这个账号的口味/, "没填口味时不该出现口味段");
+
+  const withTaste = buildDutyPrompt(
+    makeConfig({ taste: "只看米哈游相关。\n标题里有「鸣潮」就跳过，理由写：鸣潮" }),
+    roundSettings,
+  );
+  assert.match(withTaste, /这个账号的口味/, "填了口味就要有独立一段");
+  assert.match(withTaste, /只看米哈游相关/);
+  assert.match(withTaste, /理由写：鸣潮/);
+  assert.match(withTaste, /以口味为准/, "口味与通用尺度冲突时以口味为准");
+  assert.match(withTaste, /不受口味影响/, "防注入底线不能被口味顶掉");
+
+  // 20. 私信收件人：留空 = 主人；指定 UID 时口径要跟着换，别再说「私信给主人」
+  const toOwner = buildDutyPrompt(makeConfig({ dmMode: "only" }), roundSettings);
+  assert.match(toOwner, /只发私信给主人/);
+
+  const toUid = buildDutyPrompt(makeConfig({ dmTargetUid: "308940936" }), {
+    ...roundSettings,
+    dmTarget: "308940936",
+  });
+  assert.match(toUid, /指定收件人（UID 308940936）/);
+  assert.doesNotMatch(toUid, /私信给主人/, "指定收件人后不该还写「私信给主人」");
+
+  // 21. parseDutyInput：收件人只留数字，陌生放行默认关
+  assert.equal(normalizeDmTargetUid("UID: 308940936"), "308940936");
+  assert.equal(normalizeDmTargetUid("没有喵i"), "");
+  assert.equal(normalizeDmTargetUid(undefined), "");
+
+  const parsedCustom = parseDutyInput({ dmTargetUid: "3089 40936", dmAllowNew: true });
+  assert.equal(parsedCustom.dmTargetUid, "308940936");
+  assert.equal(parsedCustom.dmAllowNew, true);
+
+  const parsedDefault = parseDutyInput({});
+  assert.equal(parsedDefault.dmTargetUid, "", "没填收件人 = 发给主人");
+  assert.equal(parsedDefault.dmAllowNew, false, "默认不给陌生人发私信");
+  // 老数据（没有这两个字段）读回来也不能变成「发给 UID 空字符串」
+  assert.equal(parseDutyInput({ taste: "只看米哈游" }).dmTargetUid, "");
+
   console.log("✅ test-bili-duty 全部通过");
   console.log("   谷时窗口判断（含跨午夜）：通过");
   console.log("   跨午夜归一 / 从报告重建窗口标记：通过");
   console.log("   额度 / 去重 / 运行态判断：通过");
   console.log("   值班章程提示词：通过");
+  console.log("   刷站口味注入（空/有/底线不被顶掉）：通过");
+  console.log("   私信收件人（主人 / 指定 UID）与陌生放行：通过");
 }
 
 main().catch((error) => {
