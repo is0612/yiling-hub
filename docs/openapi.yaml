@@ -309,7 +309,7 @@ paths:
                 accessToken: { type: string, maxLength: 500, description: 'qq-onebot WS Token' }
                 httpToken: { type: string, maxLength: 500, description: 'qq-onebot HTTP Token' }
                 replyOnlyWhenMentioned: { type: boolean, description: 'qq-onebot 群聊仅被 @ 时回复' }
-                dataHome: { type: string, maxLength: 500, description: 'bili 可选，对应 bili-desk 的 DATA_HOME' }
+                dataHome: { type: string, maxLength: 500, description: 'bili 可选，bili CLI 的配置目录（credential / owner / seen 所在，等价 BILI_CLI_HOME；留空用 %APPDATA%\\bili-cli）' }
                 biliBin: { type: string, maxLength: 500, description: 'bili 可选，bili 可执行文件路径' }
       responses:
         '200':
@@ -2177,7 +2177,11 @@ components:
       properties:
         name: { type: string, minLength: 1, maxLength: 100 }
         avatar: { type: string, nullable: true }
-        basePrompt: { type: string, maxLength: 50000 }
+        basePrompt: { type: string, maxLength: 50000, description: '线上字段名 personality（基础人设）' }
+        styleExamples:
+          type: string
+          maxLength: 8000
+          description: '线上字段名 examples。对话示例，只用来对齐语气：聊天与 QQ/B站 被动回复注入，B站 值班判断不注入。'
         modelConfig:
           type: object
           additionalProperties: true
@@ -2188,7 +2192,8 @@ components:
       properties:
         name: { type: string, minLength: 1, maxLength: 100 }
         avatar: { type: string, nullable: true }
-        basePrompt: { type: string, maxLength: 50000 }
+        basePrompt: { type: string, maxLength: 50000, description: '线上字段名 personality（基础人设）' }
+        styleExamples: { type: string, maxLength: 8000, description: '线上字段名 examples（对话示例）' }
         modelConfig:
           type: object
           additionalProperties: true

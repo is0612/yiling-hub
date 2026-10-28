@@ -41,6 +41,7 @@ export default defineEventHandler(async (event) => {
       id: true,
       name: true,
       basePrompt: true,
+      styleExamples: true,
       status: true,
       modelConfig: true,
       memoryScopes: {
@@ -56,7 +57,7 @@ export default defineEventHandler(async (event) => {
   });
   if (!character) throw createError({ statusCode: 404, statusMessage: "角色不存在。" });
   if (character.status !== "ACTIVE") {
-    throw createError({ statusCode: 409, statusMessage: "角色已停用，无法继续对话。请先在「AI 角色管理」里重新启用。" });
+    throw createError({ statusCode: 409, statusMessage: "角色已停用，无法继续对话。请先在「角色管理」里重新启用。" });
   }
 
   // A stable client requestKey prevents duplicate model calls and duplicate conversation creation on retries.
@@ -197,6 +198,7 @@ export default defineEventHandler(async (event) => {
     generated = await generateConversationReply({
       characterName: character.name,
       characterPrompt: character.basePrompt.slice(0, 12_000),
+      styleExamples: (character.styleExamples ?? "").slice(0, 8000),
       model: chatSettings.model,
       apiKey,
       apiBaseUrl: chatSettings.apiBaseUrl,

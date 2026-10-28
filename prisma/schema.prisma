@@ -153,6 +153,8 @@ model Character {
   name           String                   @db.VarChar(100)
   avatar         String?
   basePrompt     String                   @db.Text
+  /// 对话示例：只用来对齐语气和用词。聊天与 QQ/B站 被动回复会注入，B站 值班判断不注入。
+  styleExamples  String                   @default("") @db.Text
   modelConfig    Json                     @default("{}") @db.JsonB
   status         CharacterStatus          @default(ACTIVE)
   createdAt      DateTime                 @default(now()) @db.Timestamptz(6)

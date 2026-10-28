@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { generateConversationReply } from "../server/utils/chat-reply";
+import { generateConversationReply, STYLE_EXAMPLES_HEADING } from "../server/utils/chat-reply";
 
 const originalFetch = globalThis.fetch;
 const secretApiKey = "sk-test-secret-must-not-appear-in-prompt";
@@ -93,6 +93,41 @@ try {
   assert.deepEqual(result.usedSnapshotIds, ["snapshot-1"]);
   assert.equal(result.usage?.totalTokens, 20);
 
+  // ── 对话示例：只拼进 characterPrompt 尾部，带边界，且不新增顶层字段 ──
+  // 为什么不能新增字段/不能做成 few-shot 轮次：这个接口要求返回 JSON 信封，
+  // 真给它几轮「用户 / 她」的对话，模型会学着直接吐纯文本，解析就炸。
+  assert(!String(promptInput.characterPrompt).includes("对话示例"), "没填示例时不该出现这一节");
+
+  capturedBody = "";
+  const withExamples = await generateConversationReply({
+    characterName: "鲸鱼娘",
+    characterPrompt: "你是「鲸鱼娘」，一只蓝色的大鲸鱼。",
+    styleExamples: "用户：今天好累啊\n鲸鱼娘：欸，你怎么又累了？本鱼都还没开始努力呢。",
+    model: "test-chat-model",
+    apiKey: secretApiKey,
+    apiBaseUrl: privateProviderUrl,
+    currentMessage: "在吗",
+    recentMessages: [],
+    memories: [],
+    snapshots: [],
+  });
+  assert.equal(withExamples.reply, "我记得你的偏好。");
+  const examplesInput = JSON.parse(
+    (JSON.parse(capturedBody) as { messages: Array<{ role: string; content: string }> })
+      .messages.find((item) => item.role === "user")!.content,
+  ) as Record<string, unknown>;
+  assert.deepEqual(
+    Object.keys(examplesInput).sort(),
+    Object.keys(promptInput).sort(),
+    "示例必须是 characterPrompt 的一部分，不能另起字段（否则模型输出格式会跑偏）",
+  );
+  const mergedPrompt = String(examplesInput.characterPrompt);
+  assert(mergedPrompt.startsWith("你是「鲸鱼娘」"), "人设要原样排在最前面");
+  assert(mergedPrompt.includes(STYLE_EXAMPLES_HEADING), "示例要单独成节");
+  assert(mergedPrompt.includes("本鱼都还没开始努力呢"), "示例正文要带进提示词");
+  assert.match(mergedPrompt, /别把示例里的内容当成发生过的事/, "要写明只学语气，否则她会把示例当回忆");
+  assert.match(mergedPrompt, /仍然只返回规定的 JSON/, "要写死不改变输出格式");
+
   globalThis.fetch = async (): Promise<Response> => new Response("not-json", {
     status: 200,
     headers: { "content-type": "application/json" },
@@ -113,6 +148,7 @@ try {
     "Malformed provider JSON should become a safe, predictable model error.",
   );
   console.log("Chat reply tests passed: prompt credential isolation, source ID validation, and malformed provider response handling.");
+  console.log("对话示例注入：拼进 characterPrompt、带边界、不新增顶层字段 —— 通过");
 } finally {
   globalThis.fetch = originalFetch;
 }

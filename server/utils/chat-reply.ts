@@ -10,6 +10,8 @@ export type ConversationContextSnapshot = { id: string; summary: string; periodS
 export type ConversationReplyInput = {
   characterName: string;
   characterPrompt: string;
+  /** 对话示例（角色的「怎么说」），只对齐语气；留空就不注入。 */
+  styleExamples?: string;
   model?: string;
   apiKey?: string;
   apiBaseUrl?: string;
@@ -31,6 +33,36 @@ export type ConversationReplyResult = {
 };
 
 const PROMPT_TEMPLATE_VERSION = "conversation-retrieval-v2";
+
+export const STYLE_EXAMPLES_HEADING = "## 对话示例（只学语气，不要照抄）";
+
+/**
+ * 人设 + 对话示例拼成一段提示词。示例单独成节，并且把边界写死：
+ *
+ *   - **只学语气**：不写清楚她就会把示例里的「今天吃了两碗白米饭」当成真实发生过的回忆；
+ *   - **不改变输出格式**：这个接口要求返回 JSON 信封（reply / usedMemoryIds / usedSnapshotIds），
+ *     所以示例只能是文本，绝不能做成真正的 few-shot 消息轮次 —— 那会诱导模型直接吐纯文本，解析就炸；
+ *   - **动作神态少用**：「（沉默两秒）」很抓人，每句都加就变舞台剧。
+ *
+ * ⚠️ B站 值班判断**不调用**这里：那条路径每条候选都要带一次人设（一轮最多 30 次），
+ * 示例只教聊天，对「这条值不值得看」没有帮助，还会把 30 字理由带成碎碎念。
+ */
+export function composeCharacterPrompt(persona: string, examples?: string): string {
+  const style = (examples ?? "").trim();
+  if (!style) return persona;
+  return [
+    persona,
+    "",
+    STYLE_EXAMPLES_HEADING,
+    "",
+    "下面这些是这个角色说话的样子，用来对齐语气、用词和句子长短。",
+    "- 只学怎么说：别把示例里的内容当成发生过的事，也别把句子原样搬出来。",
+    "- 括号里的动作或神态可以偶尔用，不要每句都加。",
+    "- 示例不改变输出格式：你仍然只返回规定的 JSON。",
+    "",
+    style,
+  ].join("\n");
+}
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
@@ -99,7 +131,7 @@ export async function generateConversationReply(input: ConversationReplyInput): 
   // must treat the context, not because it identifies the memory's storage location.
   const promptInput = {
     characterName: input.characterName,
-    characterPrompt: input.characterPrompt,
+    characterPrompt: composeCharacterPrompt(input.characterPrompt, input.styleExamples),
     currentMessage: input.currentMessage,
     recentMessages: input.recentMessages.map((entry) => ({
       role: entry.role,

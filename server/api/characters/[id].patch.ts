@@ -22,6 +22,7 @@ export default defineEventHandler(async (event) => {
 
   if (body.name !== undefined) data.name = readTrimmedString(body.name, "角色名称", 100, { required: true });
   if (body.personality !== undefined) data.basePrompt = readTrimmedString(body.personality, "基础人设", 12000);
+  if (body.examples !== undefined) data.styleExamples = readTrimmedString(body.examples, "对话示例", 8000);
 
   if (body.status !== undefined) {
     const statusMap: Record<string, "ACTIVE" | "PAUSED" | "ARCHIVED"> = {
