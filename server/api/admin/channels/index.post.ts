@@ -38,8 +38,8 @@ async function createOnebotConnection(body: Record<string, unknown>) {
 
   const prisma = getPrisma();
 
-  // 凭据加密入库，接口不回显，所以编辑时填不出旧值。
   // 约定：地址/Token 留空 = 沿用已保存的值，否则改一次显示名就把 Token 清空了。
+  // 编辑页会回填明文，但仍要留这条兜底：凭据解不开时表单是空的，浏览器也可能自动填充。
   let oldCredentials: Record<string, unknown> = {};
   const existing = await prisma.platformConnection.findUnique({
     where: { platform_platformAccountKey: { platform: "qq-onebot", platformAccountKey: qqNumber } },

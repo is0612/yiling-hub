@@ -269,7 +269,10 @@ paths:
     get:
       tags: [Auth]
       summary: 列出渠道连接（仅管理员）
-      description: 返回平台连接与角色绑定信息；AppSecret 永不返回。
+      description: |
+        返回平台连接与角色绑定信息。
+        qq-onebot 的 `credentials`（wsUrl / httpUrl / accessToken / httpToken）解密后回显给管理员核对；
+        解不开时为 null。角色模型 API Key 不在此列，永不回传。
       responses:
         '200':
           description: 渠道连接列表
@@ -305,7 +308,7 @@ paths:
                 displayName: { type: string, maxLength: 120 }
                 qqNumber: { type: string, maxLength: 100, description: 'qq-onebot 必填' }
                 wsUrl: { type: string, maxLength: 500, description: 'qq-onebot 可选，默认 ws://127.0.0.1:3001' }
-                httpUrl: { type: string, maxLength: 500, description: 'qq-onebot 可选，默认 http://127.0.0.1:3000' }
+                httpUrl: { type: string, maxLength: 500, description: 'qq-onebot 可选，默认 http://127.0.0.1:3002' }
                 accessToken: { type: string, maxLength: 500, description: 'qq-onebot WS Token' }
                 httpToken: { type: string, maxLength: 500, description: 'qq-onebot HTTP Token' }
                 replyOnlyWhenMentioned: { type: boolean, description: 'qq-onebot 群聊仅被 @ 时回复' }
@@ -2117,6 +2120,16 @@ components:
         status: { type: string, enum: [CONNECTED, DISCONNECTED, ERROR, DISABLED] }
         lastEventAt: { type: string, format: date-time, nullable: true }
         createdAt: { type: string, format: date-time }
+        metadata: { type: object, additionalProperties: true, nullable: true }
+        credentials:
+          type: object
+          nullable: true
+          description: 'qq-onebot 解密后的明文凭据，供管理员核对；解不开时为 null'
+          properties:
+            wsUrl: { type: string }
+            httpUrl: { type: string }
+            accessToken: { type: string, description: 'WS Token' }
+            httpToken: { type: string, description: 'HTTP Token' }
         bindings:
           type: array
           items:

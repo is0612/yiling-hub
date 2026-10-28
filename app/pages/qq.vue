@@ -5,9 +5,12 @@ import { ElMessage, ElMessageBox } from "element-plus";
 useHead({ title: "QQ 渠道 · 忆灵小窝" });
 
 type ChannelBinding = { id: string; characterId: string; characterName: string; routingKey: string | null };
+/** 接口回显的明文凭据（管理员页可见）；解不开时为 null。 */
+type QqCredentials = { wsUrl?: string; httpUrl?: string; accessToken?: string; httpToken?: string };
 type QqConnection = {
   id: string; platform: string; displayName: string; appId: string | null; status: string;
   lastEventAt: string | null; createdAt: string; metadata: Record<string, unknown> | null;
+  credentials?: QqCredentials | null;
   bindings: ChannelBinding[];
 };
 
@@ -66,10 +69,12 @@ type ProxyPreset = {
   name: string;
   tagline: string;
   repo: string;
-  webui: string;
-  /** 两个端口在各自面板里叫什么，以及本站这边的默认值。 */
-  ports: string;
-  tokenHint: string;
+  /** 配置 OneBot 的那个页面地址，不是面板首页。 */
+  panel: string;
+  /** 一步一步点哪儿：每条一个动作，值直接写死在句子里。 */
+  steps: string[];
+  /** 最容易踩的那一处，单独高亮。 */
+  warn: string;
 };
 
 const PROXY_PRESETS: ProxyPreset[] = [
@@ -78,18 +83,31 @@ const PROXY_PRESETS: ProxyPreset[] = [
     name: "SnowLuma",
     tagline: "推荐：自带 WebUI，不用另外装面板；社区反馈不容易掉线。依赖已登录的 QQNT 客户端（Windows）。",
     repo: "https://github.com/SnowLuma/SnowLuma/releases",
-    webui: "http://127.0.0.1:5099",
-    ports: "WebSocket 服务端（3001）与 HTTP API —— HTTP 默认也是 3000，务必改成 3002：3000 是本站 dev server 的端口，撞上就一条消息都收不到。",
-    tokenHint: "SnowLuma 的 WS token 与 HTTP token 是两个不同的值，分别填进下面两个框；填反了握手直接 401。",
+    panel: "http://127.0.0.1:5099/config",
+    steps: [
+      "打开上面的地址，登录面板（首次的账号密码打印在协议端的启动日志里，只出现一次，登录后先改密码）。",
+      "左栏选中你的 QQ 小号那一栏。",
+      "右边「节点配置分类」切到「WS 服务端」：已有端口 3001 的节点（如 ws-default）就直接用它，别再新建 —— 两个节点抢同一个端口，后启动的起不来；列表空才点「新建」，弹窗里的默认值（端口 3001、数组、Universal）不用改，按「创建节点」。",
+      "再切到「HTTP API」：已有节点就把端口从默认的 3000 改成 3002 —— 3000 是本站 dev server 的端口，撞上就一条消息都发不出去；没有节点才「新建」一个端口 3002 的。",
+      "复制这两个节点的令牌（弹窗里授权 Token 旁的复制图标，之后点开节点也能复制）：WS 的填进下面「WS Token」，HTTP 的填「HTTP Token」。",
+      "保存，重启协议端。",
+    ],
+    warn: "⚠️ 端口和令牌都在 /config 页，不在 /settings（那里只有备份、存储、外观，翻不到任何 OneBot 项）。两个令牌是不一样的，填反了握手直接 401。",
   },
   {
     key: "napcat",
     name: "NapCatQQ",
     tagline: "备选：社区最大、资料最多。同样挂在 QQNT 客户端里跑，那个 QQ 窗口不能关。",
     repo: "https://github.com/NapNeko/NapCatQQ/releases",
-    webui: "http://127.0.0.1:6099/webui/",
-    ports: "正向 WebSocket（3001）与 HTTP API（3000）；HTTP 若和本站 dev server 冲突，改成 3002 并在下面填同一个端口。",
-    tokenHint: "NapCat 通常只有一个 Access Token，两个框填同一个值即可。",
+    panel: "http://127.0.0.1:6099/webui/",
+    steps: [
+      "打开上面的地址，用启动终端里显示的 token 登录。",
+      "「网络配置」→「新建」→ 类型选「HTTP 服务器」：端口填 3002（默认的 3000 会撞本站 dev server）。",
+      "再「新建」→ 类型选「WebSocket 服务器」：端口填 3001。",
+      "两个都设同一个 Access Token，记下来。",
+      "保存，重启 NapCat。",
+    ],
+    warn: "NapCat 通常只有一个 Access Token，下面两个框填同一个值即可。",
   },
 ];
 
@@ -132,6 +150,11 @@ function openEdit(connection: QqConnection) {
   form.qqNumber = connection.appId || "";
   form.displayName = connection.appId ? connection.displayName : "";
   form.replyOnlyWhenMentioned = readMentionOnly(connection);
+  // 凭据已回显，直接填回表单：看得见才敢改，也免得「留空沿用」被浏览器自动填充钻空子。
+  form.wsUrl = connection.credentials?.wsUrl ?? "";
+  form.httpUrl = connection.credentials?.httpUrl ?? "";
+  form.accessToken = connection.credentials?.accessToken ?? "";
+  form.httpToken = connection.credentials?.httpToken ?? "";
   editVisible.value = true;
 }
 
@@ -276,7 +299,7 @@ async function copyCommand(command: string) {
 
     <div class="notice info">
       <el-icon><ChatDotRound /></el-icon>
-      <span>WS / HTTP 地址与 Token 加密入库，只保存在本机数据库里；重新保存时这些字段留空 = 沿用已保存的值。</span>
+      <span>WS / HTTP 地址与 Token 加密存库，但管理员可以在「连接设置」里回看明文（方便核对填没填对）。模型的 API Key 不回显。</span>
     </div>
 
     <!-- 接入引导：从零到能收发的四步 -->
@@ -318,20 +341,36 @@ async function copyCommand(command: string) {
                 target="_blank"
                 rel="noopener noreferrer"
               >{{ proxy.name }} 下载页</a>
-              ，装好后用<strong>QQ 小号</strong>扫码登录。它靠注入 QQNT 客户端工作，那个 QQ 窗口不能关。
+              ，装好后在 <strong>QQ 官方客户端里登录小号</strong>，窗口别关 —— 两个协议端都是注入这个
+              已登录的客户端来收发消息，不是它们自己扫码。
+            </p>
+            <p class="qq-step-tip">
+              启动协议端后看它自己的日志：出现 <code>login detected … UIN=你的小号</code> 才算挂上了。
             </p>
           </div>
         </li>
         <li>
           <span class="qq-step-no">2</span>
           <div class="qq-step-body">
-            <h3>打开两个 OneBot 端口</h3>
-            <p>
-              浏览器进 <code>{{ proxy.webui }}</code>（首次密码在启动日志里），在设置里开启
-              {{ proxy.ports }}
+            <h3>在协议端里开两个 OneBot 端口</h3>
+            <p class="qq-step-lead">
+              面板地址：
+              <a
+                :href="proxy.panel"
+                target="_blank"
+                rel="noopener noreferrer"
+              ><code>{{ proxy.panel }}</code></a>
             </p>
+            <ol class="qq-mini-steps">
+              <li
+                v-for="(step, index) in proxy.steps"
+                :key="index"
+              >
+                {{ step }}
+              </li>
+            </ol>
             <p class="qq-step-warn">
-              {{ proxy.tokenHint }}
+              {{ proxy.warn }}
             </p>
           </div>
         </li>
@@ -340,7 +379,7 @@ async function copyCommand(command: string) {
           <div class="qq-step-body">
             <h3>在这里填连接并绑定角色</h3>
             <p>
-              点右上「添加 QQ 小号」，填 QQ 号、两个地址（默认 <code>ws://127.0.0.1:3001</code>，HTTP 按上一步填）和两个 Token，
+              点右上「添加 QQ 小号」，填 QQ 号、两个地址（WS 默认 <code>ws://127.0.0.1:3001</code>，HTTP 默认 <code>http://127.0.0.1:3002</code>，都按上一步的端口填）和两个 Token，
               保存后在这张卡片上「绑定角色」——不绑角色，消息进来没人回。
             </p>
           </div>
@@ -366,6 +405,7 @@ async function copyCommand(command: string) {
       </ol>
       <div class="qq-steps-foot">
         <span><strong>连不上？</strong>先确认协议端已登录、3001 和 HTTP 端口在监听、适配器在跑。</span>
+        <span><strong>端口设置翻不到？</strong>SnowLuma 在 <code>/config</code> 页，<code>/settings</code> 只有备份与存储。</span>
         <span><strong>HTTP 端口撞车？</strong>本站 dev server 占 3000，协议端那边换 3002，这里也填 3002。</span>
         <span><strong>连上不回？</strong>多半是没绑角色，或角色还没配模型 API Key。</span>
         <span><strong>群里太吵？</strong>把「仅被 @ 时回复」勾上。</span>
@@ -508,6 +548,7 @@ async function copyCommand(command: string) {
       <el-form
         label-position="top"
         class="qq-dialog"
+        autocomplete="off"
       >
         <el-form-item label="QQ 号（必填）">
           <el-input
@@ -534,19 +575,21 @@ async function copyCommand(command: string) {
             :placeholder="editingId ? '留空 = 沿用已保存的地址' : '默认 http://127.0.0.1:3002（别用 3000）'"
           />
         </el-form-item>
-        <el-form-item label="WS Token">
+        <el-form-item label="WS Token（收消息用）">
           <el-input
             v-model="form.accessToken"
             type="password"
             show-password
+            autocomplete="new-password"
             :placeholder="editingId ? '留空 = 沿用已保存的 Token' : '协议端里 WebSocket 的 token，没设就留空'"
           />
         </el-form-item>
-        <el-form-item label="HTTP Token">
+        <el-form-item label="HTTP Token（发消息用）">
           <el-input
             v-model="form.httpToken"
             type="password"
             show-password
+            autocomplete="new-password"
             :placeholder="editingId ? '留空 = 沿用已保存的 Token' : '协议端里 HTTP API 的 token；SnowLuma 与 WS token 不同，NapCat 通常相同'"
           />
         </el-form-item>
@@ -556,6 +599,22 @@ async function copyCommand(command: string) {
           </el-checkbox>
         </el-form-item>
       </el-form>
+      <p class="qq-form-tip">
+        Token 是密码框，浏览器可能自动填入你登录本站的账号密码 —— 那不是协议端的令牌，保存前先清掉再粘贴。
+      </p>
+      <p
+        v-if="editingId"
+        class="qq-form-tip"
+      >
+        下面这些是从本机数据库解密后回显的，改哪个就改哪个，不动的就是原值。
+        （模型的 API Key 不回显 —— 那个保存后只能覆盖，读不出来。）
+      </p>
+      <p
+        v-else
+        class="qq-form-tip"
+      >
+        两个 Token 都要填：WS Token 用来握手收消息，HTTP Token 用来发消息，缺一个就是「连得上但不回」或「回不出去」。
+      </p>
       <p class="qq-form-tip">
         同一个 QQ 号再保存一次就是更新这条连接，不会重复创建。改完记得重启 <code>yarn onebot:run</code>。
       </p>
@@ -650,6 +709,9 @@ async function copyCommand(command: string) {
 .qq-proxy-name{display:flex;align-items:center;gap:6px;color:var(--text);font-size:12px;font-weight:600}
 .qq-proxy-desc{color:var(--dim);font-size:12px;line-height:1.65}
 .qq-step-body .qq-step-warn{margin-top:6px;border-left:2px solid var(--amber-line);background:var(--amber-soft);padding:5px 8px;color:var(--amber)}
+.qq-step-body .qq-step-tip{margin-top:6px;border-left:2px solid var(--brand-line);background:var(--brand-soft);padding:5px 8px;color:var(--dim)}
+.qq-mini-steps{margin:7px 0 0;padding-left:18px;display:flex;flex-direction:column;gap:5px;color:var(--text);font-size:12.5px;line-height:1.7}
+.qq-mini-steps li::marker{color:var(--brand);font-weight:600}
 
 .qq-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;align-items:start}
 .qq-card{display:flex;flex-direction:column;padding:16px 18px}
