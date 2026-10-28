@@ -61,9 +61,10 @@ function selectCharacter(character: Character) {
   selectedId.value = character.id;
 }
 
-/** 方向键切换：卡片是 tab 语义，键盘用户不该被迫去摸鼠标 */
+/** 方向键在角色卡之间切换：键盘用户不该被迫去摸鼠标。创建卡的右键不该顺手切换选中项。 */
 function onTabsKeydown(event: KeyboardEvent) {
   if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
+  if ((event.target as HTMLElement | null)?.classList.contains("is-create")) return;
   const total = characters.value.length;
   if (total < 2) return;
   event.preventDefault();
@@ -231,15 +232,7 @@ function runCharacterCommand(command: string) {
       eyebrow="工作空间 / 角色管理"
       title="你的 AI 角色"
       description="集中管理不同的人设、模型配置与记忆周期。每个角色都拥有独立的经历和记忆。"
-    >
-      <template #actions>
-        <!-- 页头只放集合级动作（低频），实心主按钮留给内容区的「开始对话」——
-             一屏两个实心粉按钮等于没有主次（Refactoring UI · 每页一个主按钮） -->
-        <el-button @click="dialogOpen = true">
-          <el-icon><Plus /></el-icon>创建角色
-        </el-button>
-      </template>
-    </PageHeader>
+    />
 
     <div
       v-if="loading && !characters.length"
@@ -302,11 +295,12 @@ function runCharacterCommand(command: string) {
     </div>
 
     <template v-else>
-      <!-- 这里不再有「角色 / N 个 / 点卡片切换」的标题行：页头已经写了「你的 AI 角色」，
-           选中态本身就是提示，再标一遍只是噪音 -->
+      <!-- 卡片行里除角色之外还有「创建角色」：同一个格子、同一种尺寸，
+           入口不再挂在页头右上角。它是 div 不是 button —— 只是块面，
+           role="button" + tabindex 补回键盘可达（Enter / 空格都能开弹窗） -->
       <div
         class="char-tabs"
-        role="tablist"
+        role="group"
         aria-label="角色列表"
         @keydown="onTabsKeydown"
       >
@@ -315,10 +309,9 @@ function runCharacterCommand(command: string) {
           :id="`char-tab-${character.id}`"
           :key="character.id"
           type="button"
-          role="tab"
           class="char-tab"
           :class="{ 'is-on': selected?.id === character.id }"
-          :aria-selected="selected?.id === character.id"
+          :aria-pressed="selected?.id === character.id"
           @click="selectCharacter(character)"
         >
           <span
@@ -336,14 +329,23 @@ function runCharacterCommand(command: string) {
             <span class="tab-facts">{{ character.alias }} · {{ character.memoryCount }} 条记忆</span>
           </span>
         </button>
+
+        <div
+          class="char-tab is-create"
+          role="button"
+          tabindex="0"
+          @click="dialogOpen = true"
+          @keydown.enter.prevent="dialogOpen = true"
+          @keydown.space.prevent="dialogOpen = true"
+        >
+          <el-icon><Plus /></el-icon>创建角色
+        </div>
       </div>
 
       <section
         v-if="selected"
-        :id="`char-detail-${selected.id}`"
         class="detail"
-        role="tabpanel"
-        :aria-labelledby="`char-tab-${selected.id}`"
+        :aria-label="`${selected.name} 的档案`"
       >
         <header class="detail-head">
           <div
@@ -654,6 +656,25 @@ function runCharacterCommand(command: string) {
 }
 .chars-a .char-tab:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
 .chars-a .char-tab.is-skeleton { cursor: default; }
+/* 创建卡：虚线 + 透明底，就是为了和「真卡片是白砖」拉开 —— 一眼看出这格是空位而不是角色。
+   高度不用写，grid 的行高会把它拉成和旁边一样高 */
+.chars-a .char-tab.is-create {
+  justify-content: center;
+  gap: var(--sp-2);
+  border: 1px dashed var(--line-strong);
+  background: transparent;
+  color: var(--dim);
+  font-size: 14px;
+  font-weight: 600;
+  text-align: center;
+}
+.chars-a .char-tab.is-create .el-icon { font-size: 16px; }
+.chars-a .char-tab.is-create:hover,
+.chars-a .char-tab.is-create:focus-visible {
+  border-color: var(--brand-line);
+  background: #fff8fa;
+  color: var(--brand-strong);
+}
 .chars-a .char-tab .avatar { width: 38px; height: 38px; font-size: 15px; }
 .chars-a .tab-body { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 4px; }
 .chars-a .tab-line { display: flex; min-width: 0; align-items: center; gap: var(--sp-2); }
