@@ -24,7 +24,7 @@ export type OnebotOutgoingMessage = string | OnebotSegment[];
 export type OnebotConnectionConfig = {
   wsUrl: string;
   httpUrl: string;
-  /** WS auth token (Authorization: Bearer) — SnowLuma's WS token differs from its HTTP token. */
+  /** WS 鉴权 token，连接时拼成 `?access_token=`；SnowLuma 的 WS token 与 HTTP token 是两个不同的值。 */
   accessToken?: string;
   /** HTTP API auth token. */
   httpToken?: string;
@@ -89,6 +89,20 @@ export function resolveOnebotEvent(data: unknown): OnebotResolvedEvent | null {
 }
 
 /**
+ * 把 WS token 拼进 URL 查询串。
+ *
+ * OneBot v11 两种带法（`Authorization: Bearer` 头与 `?access_token=` 查询参数）SnowLuma 都认，
+ * 但 Node 内置的 WebSocket 不支持自定义握手头，所以只能走查询参数。
+ * 地址里已经自带 access_token（用户手填或网关给的）就不重复拼。
+ * ⚠️ 返回值里含明文 token，只能用来建连接，不许写日志、不许落库。
+ */
+function withWsAccessToken(url: string, token: string | undefined): string {
+  if (!token) return url;
+  if (/[?&]access_token=/.test(url)) return url;
+  return `${url}${url.includes("?") ? "&" : "?"}access_token=${encodeURIComponent(token)}`;
+}
+
+/**
  * Connects to the OneBot gateway and dispatches message events. Resolves with a `close`
  * function once the socket is open; the returned promise rejects on the first connection
  * failure so the caller can back off and retry. The socket auto-reconnects internally on
@@ -99,7 +113,7 @@ export function connectOnebot(
   handlers: OnebotHandlers,
 ): Promise<() => void> {
   return new Promise((resolve, reject) => {
-    const socket = new WebSocket(config.wsUrl);
+    const socket = new WebSocket(withWsAccessToken(config.wsUrl, config.accessToken));
     let probeTimer: ReturnType<typeof setInterval> | null = null;
     let settled = false;
     let closedByCaller = false;
@@ -171,9 +185,10 @@ export function connectOnebot(
       }
     };
 
-    socket.onclose = () => {
+    socket.onclose = (event) => {
       clearProbe();
-      handlers.onStatus?.("disconnected");
+      // 带上关闭码：1006 是网络/握手异常，1008 通常是鉴权或策略拒绝，两者排查方向完全不同。
+      handlers.onStatus?.("disconnected", `code=${event.code}${event.reason ? ` reason=${event.reason}` : ""}`);
       if (!settled) {
         settled = true;
         reject(new Error("ONEBOT_WS_CLOSED: OneBot WebSocket 在就绪前关闭。"));

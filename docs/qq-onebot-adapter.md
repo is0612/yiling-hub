@@ -126,14 +126,15 @@ QQ 是唯一支持表情段的渠道。链路：
 ```json
 {
   "wsUrl": "ws://127.0.0.1:3001",
-  "httpUrl": "http://127.0.0.1:3000",
+  "httpUrl": "http://127.0.0.1:3002",
   "accessToken": "ws-token",
   "httpToken": "http-token",
   "replyOnlyWhenMentioned": true
 }
 ```
 
-- `accessToken`：WS 鉴权（OneBot v11 里通常作为 `Authorization` 头，或实现自定义）。
+- `accessToken`：WS 鉴权。Node 内置的 WebSocket 不支持自定义握手头，所以拼成 `?access_token=`
+  查询参数（SnowLuma 对 `Authorization: Bearer` 与查询参数都认）。
 - `httpToken`：HTTP API 鉴权（SnowLuma 的 HTTP token 与 WS token 是**不同值**）。
 - 环境变量兜底：`ONEBOT_WS_URL` / `ONEBOT_HTTP_URL` / `ONEBOT_TOKEN`。
 

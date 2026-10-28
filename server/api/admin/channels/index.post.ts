@@ -3,6 +3,7 @@ import { requireAdminActor } from "../../../utils/auth";
 import { decryptApiKey, encryptApiKey } from "../../../utils/credential-encryption";
 import { readTrimmedString } from "../../../utils/local-api";
 import { parseDutyInput } from "../../../utils/channel-adapter/bili/configure";
+import { ONEBOT_DEFAULT_HTTP_URL, ONEBOT_DEFAULT_WS_URL } from "../../../utils/channel-adapter/onebot/configure";
 import { getPrisma } from "../../../utils/prisma";
 
 /**
@@ -57,8 +58,8 @@ async function createOnebotConnection(body: Record<string, unknown>) {
     return typeof oldCredentials[key] === "string" ? (oldCredentials[key] as string) : "";
   };
 
-  const wsUrl = reuse(submittedWsUrl, "wsUrl") || "ws://127.0.0.1:3001";
-  const httpUrl = reuse(submittedHttpUrl, "httpUrl") || "http://127.0.0.1:3000";
+  const wsUrl = reuse(submittedWsUrl, "wsUrl") || ONEBOT_DEFAULT_WS_URL;
+  const httpUrl = reuse(submittedHttpUrl, "httpUrl") || ONEBOT_DEFAULT_HTTP_URL;
   const accessToken = reuse(submittedAccessToken, "accessToken");
   const httpToken = reuse(submittedHttpToken, "httpToken");
 

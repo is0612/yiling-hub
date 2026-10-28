@@ -70,7 +70,7 @@ let bindingId = "";
 const children: ChildProcess[] = [];
 try {
   children.push(await spawnServer("scripts/mock-llm-server.mjs", { LLM_MOCK_PORT: "4010", LLM_MOCK_API_KEY: "ci-only" }, "mock-llm-ready"));
-  children.push(await spawnServer("scripts/mock-onebot-gateway.mjs", { ONEBOT_MOCK_HTTP_PORT: "4031", ONEBOT_MOCK_WS_PORT: "4030" }, "mock-onebot-ready"));
+  children.push(await spawnServer("scripts/mock-onebot-gateway.mjs", { ONEBOT_MOCK_HTTP_PORT: "4031", ONEBOT_MOCK_WS_PORT: "4030", ONEBOT_MOCK_REQUIRE_TOKEN: "mock-ws-token" }, "mock-onebot-ready"));
 
   // 1. Seed a character (with a global scope) and an OneBot connection + default binding.
   const user = await prisma.user.create({ data: { username: `onebot-test-${suffix}`, passwordHash: "x", role: "ADMIN" }, select: { id: true } });
@@ -110,9 +110,10 @@ try {
   bindingId = binding.id;
 
   // 2. The adapter discovers the connection and decrypts its credentials.
+  // 只按本用例自己建的 id 找：库里可能还躺着真实连接（本地联调用的那个），断言总数会被它带偏。
   const records = await loadOnebotConnections();
-  assert.equal(records.length, 1, "The adapter must discover the OneBot connection.");
-  const record = records[0]!;
+  const record = records.find((item) => item.id === connectionId);
+  assert(record, "The adapter must discover the OneBot connection.");
   assert.equal(record.config.wsUrl, "ws://127.0.0.1:4030");
   assert.equal(record.config.httpUrl, "http://127.0.0.1:4031");
   assert.equal(record.config.accessToken, "mock-ws-token");
@@ -141,6 +142,20 @@ try {
 
   const handler = createOnebotMessageHandler(record);
   const closeGateway = await connectOnebot(record.config, { onMessage: handler });
+
+  // 3b. WS 鉴权与握手次数：token 只能挂查询参数（Node 内置 WebSocket 加不了自定义头），
+  // 且一次连接只该有一次握手 —— 反复重连会在这条断言上炸。
+  const readHandshakes = async () => ((await (await fetch("http://127.0.0.1:4031/__mock/handshakes")).json()) as {
+    handshakes: Array<{ url: string; query: Record<string, string>; authorization: string | null; authorized: boolean }>;
+  }).handshakes;
+  const firstHandshakes = await readHandshakes();
+  assert.equal(firstHandshakes.length, 1, "连上一次就够，不能反复握手。");
+  assert.equal(firstHandshakes[0]!.authorized, true, "握手必须带上 WS token。");
+  assert.equal(
+    firstHandshakes[0]!.query.access_token,
+    "mock-ws-token",
+    "token 必须拼成 ?access_token= 查询参数。",
+  );
 
   // 4. Emit a group message event and wait for a reply.
   await fetch("http://127.0.0.1:4031/__mock/emit", {
@@ -266,15 +281,19 @@ try {
     "正文里不能残留任何段标记。",
   );
 
+  const stillOneHandshake = await readHandshakes();
+  assert.equal(stillOneHandshake.length, 1, "整个用例期间连接一直活着，不该再有第二次握手。");
+
   closeGateway();
 
-  console.log("OneBot 渠道端到端测试通过：事件接入、CQ 码解析、凭据解密、角色绑定路由、记忆检索、模型回复、表情段发送与冷却、消息持久化、外部身份 upsert、回发平台与幂等去重。");
+  console.log("OneBot 渠道端到端测试通过：WS token 鉴权与单次握手、事件接入、CQ 码解析、凭据解密、角色绑定路由、记忆检索、模型回复、表情段发送与冷却、消息持久化、外部身份 upsert、回发平台与幂等去重。");
 } finally {
   for (const child of children) child.kill();
   if (conversationId) await prisma.conversation.deleteMany({ where: { channelBindingId: bindingId } }).catch(() => undefined);
   await prisma.characterChannelBinding.deleteMany({ where: { connectionId } }).catch(() => undefined);
   await prisma.memoryScope.deleteMany({ where: { characterId } }).catch(() => undefined);
-  await prisma.externalIdentity.deleteMany({ where: { platform: "qq-onebot" } }).catch(() => undefined);
+  // 只删本用例造的假作者（111），别把真实连接的 external identity 一起端掉。
+  await prisma.externalIdentity.deleteMany({ where: { platform: "qq-onebot", platformUid: "111" } }).catch(() => undefined);
   await prisma.character.deleteMany({ where: { id: characterId } }).catch(() => undefined);
   await prisma.platformConnection.deleteMany({ where: { id: connectionId } }).catch(() => undefined);
   await prisma.user.deleteMany({ where: { username: { startsWith: "onebot-test-" } } }).catch(() => undefined);

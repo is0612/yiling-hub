@@ -22,9 +22,16 @@ export type OnebotConnectionRecord = {
   bindings: OnebotBindingRecord[];
 };
 
+/**
+ * HTTP 默认 3002 不是笔误：协议端默认都在 3000，而 3000 正是本站 dev server 的端口，
+ * 撞上就一条消息也发不出去。
+ */
+export const ONEBOT_DEFAULT_WS_URL = process.env.ONEBOT_WS_URL || "ws://127.0.0.1:3001";
+export const ONEBOT_DEFAULT_HTTP_URL = process.env.ONEBOT_HTTP_URL || "http://127.0.0.1:3002";
+
 const ONEBOT_CREDENTIAL_DEFAULTS = {
-  wsUrl: process.env.ONEBOT_WS_URL || "ws://127.0.0.1:3001",
-  httpUrl: process.env.ONEBOT_HTTP_URL || "http://127.0.0.1:3000",
+  wsUrl: ONEBOT_DEFAULT_WS_URL,
+  httpUrl: ONEBOT_DEFAULT_HTTP_URL,
 };
 
 function readConfig(credentials: string | null, accountKey: string | null): OnebotConnectionConfig {

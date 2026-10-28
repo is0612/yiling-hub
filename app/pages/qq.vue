@@ -55,6 +55,47 @@ function readMentionOnly(connection: QqConnection) {
   return connection.metadata?.replyOnlyWhenMentioned === true;
 }
 
+/**
+ * 协议端二选一：SnowLuma 与 NapCat 都是 OneBot v11，填的地址一样，差别只在「怎么装、开几个 token」。
+ * 默认选 SnowLuma —— NapCat 自己的 README 就推荐它做 GUI 替代，且自带 WebUI 省一步。
+ */
+type ProxyKind = "snowluma" | "napcat";
+
+type ProxyPreset = {
+  key: ProxyKind;
+  name: string;
+  tagline: string;
+  repo: string;
+  webui: string;
+  /** 两个端口在各自面板里叫什么，以及本站这边的默认值。 */
+  ports: string;
+  tokenHint: string;
+};
+
+const PROXY_PRESETS: ProxyPreset[] = [
+  {
+    key: "snowluma",
+    name: "SnowLuma",
+    tagline: "推荐：自带 WebUI，不用另外装面板；社区反馈不容易掉线。依赖已登录的 QQNT 客户端（Windows）。",
+    repo: "https://github.com/SnowLuma/SnowLuma/releases",
+    webui: "http://127.0.0.1:5099",
+    ports: "WebSocket 服务端（3001）与 HTTP API —— HTTP 默认也是 3000，务必改成 3002：3000 是本站 dev server 的端口，撞上就一条消息都收不到。",
+    tokenHint: "SnowLuma 的 WS token 与 HTTP token 是两个不同的值，分别填进下面两个框；填反了握手直接 401。",
+  },
+  {
+    key: "napcat",
+    name: "NapCatQQ",
+    tagline: "备选：社区最大、资料最多。同样挂在 QQNT 客户端里跑，那个 QQ 窗口不能关。",
+    repo: "https://github.com/NapNeko/NapCatQQ/releases",
+    webui: "http://127.0.0.1:6099/webui/",
+    ports: "正向 WebSocket（3001）与 HTTP API（3000）；HTTP 若和本站 dev server 冲突，改成 3002 并在下面填同一个端口。",
+    tokenHint: "NapCat 通常只有一个 Access Token，两个框填同一个值即可。",
+  },
+];
+
+const proxyKind = ref<ProxyKind>("snowluma");
+const proxy = computed(() => PROXY_PRESETS.find((item) => item.key === proxyKind.value) ?? PROXY_PRESETS[0]!);
+
 // ── 添加 / 编辑 ─────────────────────────────────────────────
 const editVisible = ref(false);
 const saving = ref(false);
@@ -212,7 +253,7 @@ async function copyCommand(command: string) {
     <PageHeader
       eyebrow="系统管理 / QQ 渠道"
       title="QQ 渠道"
-      description="用个人 QQ 小号挂 AI：NapCat 把 QQ 消息翻译成 OneBot v11 推给这里，角色带着记忆回复。"
+      description="用个人 QQ 小号挂 AI：协议端（SnowLuma / NapCat）把 QQ 消息翻译成 OneBot v11 推给这里，角色带着记忆回复。"
     >
       <template #actions>
         <button
@@ -248,10 +289,36 @@ async function copyCommand(command: string) {
         <li>
           <span class="qq-step-no">1</span>
           <div class="qq-step-body">
-            <h3>装 NapCat 并登录小号</h3>
+            <h3>装一个 OneBot 协议端，并登录小号</h3>
+            <p class="qq-step-lead">
+              两个都行，它们说的是同一套 OneBot v11，下面填的地址也一样。选一个装就好。
+            </p>
+            <div class="qq-proxy-pick">
+              <button
+                v-for="preset in PROXY_PRESETS"
+                :key="preset.key"
+                type="button"
+                class="qq-proxy-option"
+                :class="{ active: proxyKind === preset.key }"
+                @click="proxyKind = preset.key"
+              >
+                <span class="qq-proxy-name">
+                  {{ preset.name }}
+                  <span
+                    v-if="preset.key === 'snowluma'"
+                    class="pill pill-green"
+                  >推荐</span>
+                </span>
+                <span class="qq-proxy-desc">{{ preset.tagline }}</span>
+              </button>
+            </div>
             <p>
-              下 <code>NapCatQQ</code> 的 Windows 一键安装包，装好后用<strong>QQ 小号</strong>扫码登录。
-              它挂在 QQNT 客户端里跑，那个 QQ 窗口不能关。
+              <a
+                :href="proxy.repo"
+                target="_blank"
+                rel="noopener noreferrer"
+              >{{ proxy.name }} 下载页</a>
+              ，装好后用<strong>QQ 小号</strong>扫码登录。它靠注入 QQNT 客户端工作，那个 QQ 窗口不能关。
             </p>
           </div>
         </li>
@@ -260,8 +327,11 @@ async function copyCommand(command: string) {
           <div class="qq-step-body">
             <h3>打开两个 OneBot 端口</h3>
             <p>
-              浏览器进 <code>http://127.0.0.1:6099/webui/</code>（用终端里显示的 token 登录），在「网络配置」里开启
-              <strong>正向 WebSocket（3001）</strong> 与 <strong>HTTP API（3000）</strong>，设一个 Access Token 并记下来。
+              浏览器进 <code>{{ proxy.webui }}</code>（首次密码在启动日志里），在设置里开启
+              {{ proxy.ports }}
+            </p>
+            <p class="qq-step-warn">
+              {{ proxy.tokenHint }}
             </p>
           </div>
         </li>
@@ -270,7 +340,7 @@ async function copyCommand(command: string) {
           <div class="qq-step-body">
             <h3>在这里填连接并绑定角色</h3>
             <p>
-              点右上「添加 QQ 小号」，填 QQ 号、两个地址（默认就是 3001 / 3000）和刚才的 Token，
+              点右上「添加 QQ 小号」，填 QQ 号、两个地址（默认 <code>ws://127.0.0.1:3001</code>，HTTP 按上一步填）和两个 Token，
               保存后在这张卡片上「绑定角色」——不绑角色，消息进来没人回。
             </p>
           </div>
@@ -295,7 +365,8 @@ async function copyCommand(command: string) {
         </li>
       </ol>
       <div class="qq-steps-foot">
-        <span><strong>连不上？</strong>先确认 NapCat 已登录、3001/3000 在监听、适配器在跑。</span>
+        <span><strong>连不上？</strong>先确认协议端已登录、3001 和 HTTP 端口在监听、适配器在跑。</span>
+        <span><strong>HTTP 端口撞车？</strong>本站 dev server 占 3000，协议端那边换 3002，这里也填 3002。</span>
         <span><strong>连上不回？</strong>多半是没绑角色，或角色还没配模型 API Key。</span>
         <span><strong>群里太吵？</strong>把「仅被 @ 时回复」勾上。</span>
         <span><strong>想让她发表情？</strong>去「角色 → 模型设置」打开「QQ 渠道发表情」。</span>
@@ -325,7 +396,7 @@ async function copyCommand(command: string) {
     >
       <span class="halo"><el-icon><ChatDotRound /></el-icon></span>
       <h4>还没有 QQ 小号</h4>
-      <p>按上面四步做完 NapCat 那两步，再回这里添加连接，QQ 上的对话才会接到角色身上。</p>
+      <p>按上面四步把协议端跑起来，再回这里添加连接，QQ 上的对话才会接到角色身上。</p>
       <button
         type="button"
         class="btn primary"
@@ -460,7 +531,7 @@ async function copyCommand(command: string) {
         <el-form-item label="OneBot HTTP API 地址">
           <el-input
             v-model="form.httpUrl"
-            :placeholder="editingId ? '留空 = 沿用已保存的地址' : '默认 http://127.0.0.1:3000'"
+            :placeholder="editingId ? '留空 = 沿用已保存的地址' : '默认 http://127.0.0.1:3002（别用 3000）'"
           />
         </el-form-item>
         <el-form-item label="WS Token">
@@ -468,7 +539,7 @@ async function copyCommand(command: string) {
             v-model="form.accessToken"
             type="password"
             show-password
-            :placeholder="editingId ? '留空 = 沿用已保存的 Token' : 'NapCat 里设的 Access Token，没设就留空'"
+            :placeholder="editingId ? '留空 = 沿用已保存的 Token' : '协议端里 WebSocket 的 token，没设就留空'"
           />
         </el-form-item>
         <el-form-item label="HTTP Token">
@@ -476,7 +547,7 @@ async function copyCommand(command: string) {
             v-model="form.httpToken"
             type="password"
             show-password
-            :placeholder="editingId ? '留空 = 沿用已保存的 Token' : 'NapCat 里设的 Access Token，没设就留空'"
+            :placeholder="editingId ? '留空 = 沿用已保存的 Token' : '协议端里 HTTP API 的 token；SnowLuma 与 WS token 不同，NapCat 通常相同'"
           />
         </el-form-item>
         <el-form-item>
@@ -569,6 +640,17 @@ async function copyCommand(command: string) {
 .qq-steps-foot span{color:var(--faint);font-size:12px;line-height:1.7}
 .qq-steps-foot strong{margin-right:4px;color:var(--text-2);font-weight:600}
 
+/* 第 1 步塞了协议端选择器，独占一行，否则两列里挤成一团 */
+.qq-steps li:first-child{grid-column:1 / -1}
+.qq-step-body .qq-step-lead{margin-bottom:7px;color:var(--faint)}
+.qq-proxy-pick{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:6px 0 9px}
+.qq-proxy-option{display:flex;flex-direction:column;gap:3px;border:1px solid var(--line);border-radius:var(--radius-sm);background:var(--surface-2);padding:9px 11px;text-align:left;cursor:pointer;transition:border-color .15s,background .15s}
+.qq-proxy-option:hover{border-color:var(--brand)}
+.qq-proxy-option.active{border-color:var(--brand);background:var(--brand-soft)}
+.qq-proxy-name{display:flex;align-items:center;gap:6px;color:var(--text);font-size:12px;font-weight:600}
+.qq-proxy-desc{color:var(--dim);font-size:12px;line-height:1.65}
+.qq-step-body .qq-step-warn{margin-top:6px;border-left:2px solid var(--amber-line);background:var(--amber-soft);padding:5px 8px;color:var(--amber)}
+
 .qq-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;align-items:start}
 .qq-card{display:flex;flex-direction:column;padding:16px 18px}
 .qq-head{display:flex;align-items:flex-start;gap:11px}
@@ -590,5 +672,5 @@ async function copyCommand(command: string) {
 .qq-dialog{max-height:56vh;overflow-y:auto;padding-right:4px}
 .qq-form-tip{margin:0;color:var(--faint);font-size:12px;line-height:1.7}
 .qq-form-tip code{border-radius:4px;background:var(--surface-3);padding:1px 4px;font-family:var(--font-mono,ui-monospace,monospace)}
-@media(max-width:1100px){.qq-steps{grid-template-columns:1fr}.qq-grid{grid-template-columns:1fr}}
+@media(max-width:1100px){.qq-steps{grid-template-columns:1fr}.qq-proxy-pick{grid-template-columns:1fr}.qq-grid{grid-template-columns:1fr}}
 </style>
