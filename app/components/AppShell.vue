@@ -53,17 +53,17 @@ const navigation = computed<NavigationItem[]>(() => {
   const id = activeCharacterId.value;
   const items: NavigationItem[] = [
     { key: "home", label: "总览", href: "/", icon: DataBoard, section: "工作空间" },
-    { key: "characters", label: "AI 角色管理", href: "/characters", icon: User },
+    { key: "characters", label: "角色管理", href: "/characters", icon: User },
     {
       key: "memory",
-      label: "记忆驾驶舱",
-      href: id ? `/characters/${id}` : "/characters",
+      label: "角色记忆",
+      href: "/memory",
       icon: Cpu,
     },
     {
       key: "chat",
       label: "AI 对话",
-      href: id ? "/characters/" + id + "/chat" : "/characters",
+      href: "/chat",
       icon: ChatDotRound,
     },
     {
@@ -94,9 +94,9 @@ function isActive(item: NavigationItem) {
     case "characters":
       return path === "/characters";
     case "memory":
-      return /^\/characters\/[^/]+(\/settings\/memory)?$/.test(path);
+      return path === "/memory" || /^\/characters\/[^/]+\/settings\/memory$/.test(path);
     case "chat":
-      return path.startsWith("/characters/") && path.endsWith("/chat");
+      return path === "/chat";
     case "snapshots":
       return /^\/characters\/[^/]+\/snapshots$/.test(path);
     case "bili":

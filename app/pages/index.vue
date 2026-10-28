@@ -128,7 +128,7 @@ async function handleRefresh() {
           class="btn"
           type="button"
           :disabled="!primaryCharacter"
-          @click="primaryCharacter && navigateTo(`/characters/${primaryCharacter.id}/chat`)"
+          @click="primaryCharacter && navigateTo(`/chat?c=${primaryCharacter.id}`)"
         >
           {{ primaryCharacter ? `开始对话 · ${primaryCharacter.name}` : "开始对话" }}
         </button>
@@ -214,7 +214,7 @@ async function handleRefresh() {
             <div class="hero-name-row">
               <NuxtLink
                 class="hero-name"
-                :to="`/characters/${singleCharacter.id}`"
+                :to="`/memory?c=${singleCharacter.id}`"
               >
                 {{ singleCharacter.name }}
               </NuxtLink>
@@ -243,12 +243,12 @@ async function handleRefresh() {
             <button
               class="btn primary"
               type="button"
-              @click="navigateTo(`/characters/${singleCharacter.id}/chat`)"
+              @click="navigateTo(`/chat?c=${singleCharacter.id}`)"
             >
               开始对话
             </button>
             <NuxtLink
-              :to="`/characters/${singleCharacter.id}`"
+              :to="`/memory?c=${singleCharacter.id}`"
               :aria-label="`查看 ${singleCharacter.name} 的记忆`"
             >
               记忆
@@ -469,7 +469,7 @@ async function handleRefresh() {
                 <div class="role-head">
                   <NuxtLink
                     class="role-name"
-                    :to="`/characters/${character.id}`"
+                    :to="`/memory?c=${character.id}`"
                   >
                     {{ character.name }}
                   </NuxtLink>
@@ -520,13 +520,13 @@ async function handleRefresh() {
               </div>
               <div class="role-links">
                 <NuxtLink
-                  :to="`/characters/${character.id}/chat`"
+                  :to="`/chat?c=${character.id}`"
                   :aria-label="`与 ${character.name} 对话`"
                 >
                   <el-icon><ChatDotRound /></el-icon>对话
                 </NuxtLink>
                 <NuxtLink
-                  :to="`/characters/${character.id}`"
+                  :to="`/memory?c=${character.id}`"
                   :aria-label="`查看 ${character.name} 的记忆`"
                 >
                   <el-icon><Cpu /></el-icon>记忆
