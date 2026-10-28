@@ -48,6 +48,7 @@ export async function handleChannelMessage(input: ChannelMessageInput): Promise<
       id: true,
       name: true,
       basePrompt: true,
+      styleExamples: true,
       status: true,
       modelConfig: true,
       memoryScopes: { where: { scopeType: "CHARACTER_GLOBAL" }, select: { id: true } },
@@ -170,6 +171,7 @@ export async function handleChannelMessage(input: ChannelMessageInput): Promise<
     generated = await generateConversationReply({
       characterName: character.name,
       characterPrompt: character.basePrompt.slice(0, 12_000),
+      styleExamples: (character.styleExamples ?? "").slice(0, 8000),
       model: chatSettings.model,
       apiKey,
       apiBaseUrl: chatSettings.apiBaseUrl,
