@@ -14,6 +14,7 @@ export default defineEventHandler(async (event) => {
   const personality = readTrimmedString(body.personality, "基础人设", 12000);
   // 对话示例是可选增量：老客户端不传就当空，不注入提示词（等于迁移前行为）
   const examples = readTrimmedString(body.examples, "对话示例", 8000);
+  const userAddress = readTrimmedString(body.userAddress, "她对你的称呼", 40) || "主人";
   const avatarTone = body.avatarTone === "purple" || body.avatarTone === "peach" || body.avatarTone === "blue"
     ? body.avatarTone
     : "mint";
@@ -28,6 +29,7 @@ export default defineEventHandler(async (event) => {
       avatar: name.slice(0, 1),
       basePrompt: personality || "请补充角色的人设与行为规则。",
       styleExamples: examples,
+      userAddress,
       // 新建即可对话：停用是用户显式动作（角色管理 → 停用），不是默认态。
       status: "ACTIVE",
       modelConfig: { alias, description, avatarTone },

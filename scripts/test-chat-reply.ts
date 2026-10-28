@@ -74,7 +74,7 @@ try {
   assert.equal(requestBody.model, "test-chat-model");
   const systemMessage = requestBody.messages.find((item) => item.role === "system");
   assert(systemMessage, "The request must include a system prompt.");
-  assert(systemMessage.content.includes("YILING_CONVERSATION_REPLY_V2"), "The system prompt marker must stay in sync with the prompt template version.");
+  assert(systemMessage.content.includes("YILING_CONVERSATION_REPLY_V3"), "The system prompt marker must stay in sync with the prompt template version.");
   const userMessage = requestBody.messages.find((item) => item.role === "user");
   assert(userMessage, "The request must include a structured user context.");
   const promptInput = JSON.parse(userMessage.content) as Record<string, unknown>;
@@ -127,6 +127,45 @@ try {
   assert(mergedPrompt.includes("本鱼都还没开始努力呢"), "示例正文要带进提示词");
   assert.match(mergedPrompt, /别把示例里的内容当成发生过的事/, "要写明只学语气，否则她会把示例当回忆");
   assert.match(mergedPrompt, /仍然只返回规定的 JSON/, "要写死不改变输出格式");
+
+  // ── 称呼：设了才进 promptInput，系统提示词同步解释这个字段 ──
+  capturedBody = "";
+  await generateConversationReply({
+    characterName: "鲸鱼娘",
+    characterPrompt: "你是「鲸鱼娘」。",
+    userAddress: "主人",
+    model: "test-chat-model",
+    apiKey: secretApiKey,
+    apiBaseUrl: privateProviderUrl,
+    currentMessage: "在吗",
+    recentMessages: [],
+    memories: [],
+    snapshots: [],
+  });
+  const addressedMessages = (JSON.parse(capturedBody) as { messages: Array<{ role: string; content: string }> }).messages;
+  const addressedInput = JSON.parse(addressedMessages.find((item) => item.role === "user")!.content) as Record<string, unknown>;
+  assert.equal(addressedInput.userAddress, "主人", "称呼要作为独立字段进提示词");
+  const addressedSystem = addressedMessages.find((item) => item.role === "system")!.content;
+  assert(addressedSystem.includes("userAddress"), "系统提示词要说明这个字段是什么");
+  assert.match(addressedSystem, /not in every sentence/, "要写清是偶尔称呼，不是每句都喊");
+
+  capturedBody = "";
+  await generateConversationReply({
+    characterName: "鲸鱼娘",
+    characterPrompt: "你是「鲸鱼娘」。",
+    userAddress: "   ",
+    model: "test-chat-model",
+    apiKey: secretApiKey,
+    apiBaseUrl: privateProviderUrl,
+    currentMessage: "在吗",
+    recentMessages: [],
+    memories: [],
+    snapshots: [],
+  });
+  const blankMessages = (JSON.parse(capturedBody) as { messages: Array<{ role: string; content: string }> }).messages;
+  const blankInput = JSON.parse(blankMessages.find((item) => item.role === "user")!.content) as Record<string, unknown>;
+  assert(!("userAddress" in blankInput), "空白称呼等于没设，不该塞空字段");
+  assert(!blankMessages.find((item) => item.role === "system")!.content.includes("userAddress"), "没设称呼就别加这段说明");
 
   globalThis.fetch = async (): Promise<Response> => new Response("not-json", {
     status: 200,

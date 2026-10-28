@@ -1,10 +1,10 @@
 <script setup lang="ts">
 /**
- * 角色资料的四个字段：名称 / 简介 / 基础人设 / 对话示例。
+ * 角色资料的五个字段：名称 / 简介 / 对你的称呼 / 基础人设 / 对话示例。
  * 「编辑角色资料」和「创建角色」两个弹窗共用这一份，别各写一套 —— 版式一改就得改两处。
  *
  * 版式（design/character-settings/profile-dialog-lab.html 方案 A）：
- *   ① 身份条     —— 名称 + 简介并排装进一张 --surface-2 浅色卡，和下面的长文分开
+ *   ① 身份条     —— 名称 + 简介 + 称呼并排装进一张 --surface-2 浅色卡，和下面的长文分开
  *   ② 主次两栏   —— 人设 1.25 列（唯一主体）、对话示例 1 列，并排而不是竖着堆
  *   ③ 说明一行 + 字数上列头 —— 说明是三级信息，不该和正文抢；计数原来贴在框内右下角，
  *      既压住最后一行、又逼着全局补 26px 的 padding-bottom
@@ -12,11 +12,12 @@
  * ⚠️ 编辑框是**固定高度 + 框内自滚**，不是跟着内容长高。
  *   之前那版反过来（autosize，整表滚），是因为双滚动条会并排挤在弹窗右边缘、像套了双层边框。
  *   两栏之后这两条滚动条相距 380px、各自长在一个框上，读起来是「这个框还有内容」，
- *   不再是噪音；于是换回固定高度 —— 弹窗本体不用滚，一屏能看全四个字段。
+ *   不再是噪音；于是换回固定高度 —— 弹窗本体不用滚，一屏能看全五个字段。
  *   改回 autosize 前先想清楚这点，别只看「有没有滚动条」。
  */
 const name = defineModel<string>("name", { required: true });
 const description = defineModel<string>("description", { required: true });
+const userAddress = defineModel<string>("userAddress", { required: true });
 const personality = defineModel<string>("personality", { required: true });
 const examples = defineModel<string>("examples", { required: true });
 
@@ -58,6 +59,14 @@ onBeforeUnmount(() => {
           v-model="description"
           maxlength="2000"
           placeholder="用一句话描述角色的个性或定位。"
+        />
+      </el-form-item>
+      <el-form-item label="她对你的称呼">
+        <el-input
+          v-model="userAddress"
+          maxlength="40"
+          clearable
+          placeholder="主人 / 老板 / 你的名字"
         />
       </el-form-item>
     </div>
@@ -108,8 +117,8 @@ onBeforeUnmount(() => {
 /* ── 身份条：两个短字段并排装进浅色卡，和下面的长文分开（组间 > 组内） ── */
 .cp-idcard {
   display: grid;
-  grid-template-columns: 240px minmax(0, 1fr);
-  gap: 0 24px;
+  grid-template-columns: 200px minmax(0, 1fr) 176px;
+  gap: 0 20px;
   padding: 14px 16px;
   border-radius: var(--radius);
   background: var(--surface-2);

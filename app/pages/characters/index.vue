@@ -49,6 +49,8 @@ const name = ref("");
 const description = ref("");
 const personality = ref("");
 const examples = ref("");
+/** 新建角色默认就喊「主人」；清空 = 不特意称呼 */
+const userAddress = ref("主人");
 /** 创建中：连点两次会建出两个同名角色，跟 deleteCharacter / toggle 那些一样需要闸门 */
 const creating = ref(false);
 
@@ -58,6 +60,7 @@ function resetDraft() {
   description.value = "";
   personality.value = "";
   examples.value = "";
+  userAddress.value = "主人";
 }
 
 const profileOpen = ref(false);
@@ -103,6 +106,7 @@ async function createCharacter() {
         description: description.value.trim(),
         personality: personality.value.trim(),
         examples: examples.value.trim(),
+        userAddress: userAddress.value.trim(),
       },
     });
     characters.value.unshift(item);
@@ -172,6 +176,7 @@ async function duplicateCharacter(character: Character) {
         alias: character.alias,
         description: character.description,
         personality: character.personality,
+        userAddress: character.userAddress,
         avatarTone: character.avatarTone,
       },
     });
@@ -594,6 +599,7 @@ function runCharacterCommand(command: string) {
         <CharacterProfileFields
           v-model:name="name"
           v-model:description="description"
+          v-model:user-address="userAddress"
           v-model:personality="personality"
           v-model:examples="examples"
         />

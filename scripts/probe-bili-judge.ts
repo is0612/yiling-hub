@@ -12,7 +12,7 @@ const CHARACTER_ID = process.env.CHAR_ID || "79737b9e-39c8-4bb3-816e-121c51a109f
 const prisma = getPrisma();
 const character = await prisma.character.findUnique({
   where: { id: CHARACTER_ID },
-  select: { name: true, basePrompt: true, modelConfig: true },
+  select: { name: true, basePrompt: true, modelConfig: true, userAddress: true },
 });
 if (!character) throw new Error("character not found");
 
@@ -22,7 +22,7 @@ const duty = parseDutyInput(((connection?.metadata ?? {}) as Record<string, unkn
 const dutyPrompt = buildDutyPrompt(duty, {
   today: "2026-10-28", remaining: 5, perDay: duty.perDay, keywords: duty.keywords, zone: duty.zone,
   frames: duty.frames, dmMode: duty.dmMode, autoComment: duty.autoComment, commentPerRound: duty.commentPerRound,
-  mentionName: duty.mentionName, watchLimit: 3,
+  mentionName: duty.mentionName, userAddress: character.userAddress ?? "", watchLimit: 3,
 });
 const systemPrompt = `${character.basePrompt.slice(0, 12_000)}\n\n${dutyPrompt}`;
 

@@ -17,6 +17,8 @@ export type Character = {
   personality: string;
   /** 对话示例：只用于对齐语气（聊天 / QQ / B站 被动回复注入，值班判断不注入）。 */
   examples?: string;
+  /** 这个角色在对话里怎么称呼你；空字符串 = 不特意称呼。 */
+  userAddress?: string;
   /** ISO 时间：角色资料弹窗页脚左侧显示「上次保存」。 */
   updatedAt?: string;
   // 模型参数：接口一直有返回，之前类型里漏了，导致「模型设置」拿不到。

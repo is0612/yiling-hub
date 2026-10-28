@@ -2545,6 +2545,9 @@ function isPicked(result: string) {
                   v-model="dutyForm.mentionName"
                   placeholder="owner（= 主人），或完整昵称"
                 />
+                <p class="bd-form-tip">
+                  @ 后面跟的称呼来自角色资料的「她对你的称呼」，改称呼去那边改。
+                </p>
               </el-form-item>
             </el-col>
             <el-col

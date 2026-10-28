@@ -87,6 +87,11 @@ const pendingRequestConversationId = ref<string | null>(null);
 const exporting = ref(false);
 const messagePanel = ref<HTMLElement | null>(null);
 const activeConversation = computed(() => conversations.value.find((item) => item.id === conversationId.value) ?? null);
+/** 角色给你的称呼：空 = 没设，不显示这句提示 */
+const addressNote = computed(() => {
+  const address = (current.value?.userAddress ?? "").trim();
+  return address ? `她会叫你「${address}」 · ` : "";
+});
 const canSend = computed(() => Boolean(draft.value.trim()) && modelConfigured.value && conversationView.value === "ACTIVE" && !sending.value);
 
 function getErrorMessage(error: unknown, fallback: string): string {
@@ -422,6 +427,17 @@ function messageSources(message: ChatMessage) {
 function sourceCount(message: ChatMessage) {
   const sources = messageSources(message);
   return sources.memories.length + sources.snapshots.length;
+}
+
+/**
+ * Enter 发送、Shift + Enter 换行。
+ * ⚠️ 输入法选词时的 Enter 也会触发 keydown（composition 未结束），不拦掉就会把半截拼音发出去。
+ */
+function onComposerKeydown(evt: Event | KeyboardEvent) {
+  const event = evt as KeyboardEvent;
+  if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
+  event.preventDefault();
+  void sendMessage();
 }
 
 async function sendMessage() {
@@ -813,11 +829,11 @@ watch(id, (next, previous) => {
             :autosize="{ minRows: 2, maxRows: 8 }"
             :maxlength="8000"
             resize="none"
-            :placeholder="'和' + (current?.name || '角色') + '说点什么……（Ctrl + Enter 发送）'"
-            @keydown.ctrl.enter.prevent="void sendMessage()"
+            :placeholder="'和' + (current?.name || '角色') + '说点什么……（Enter 发送，Shift + Enter 换行）'"
+            @keydown="onComposerKeydown"
           />
           <div class="composer-footer">
-            <span class="composer-hint">只检索这个角色与你的私人记忆</span>
+            <span class="composer-hint">{{ addressNote }}只检索这个角色与你的私人记忆</span>
             <button
               type="button"
               class="btn primary send-btn"

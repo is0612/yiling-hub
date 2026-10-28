@@ -3,7 +3,7 @@ import { ElMessage } from "element-plus";
 import type { Character } from "~/utils/mock-data";
 
 /**
- * 编辑角色资料：名称 / 简介 / 人设 / 对话示例。
+ * 编辑角色资料：名称 / 简介 / 对你的称呼 / 人设 / 对话示例。
  *
  * 字段区（身份条 + 主次两栏 + 列头字数）在 `CharacterProfileFields` 里，
  * 「创建角色」弹窗共用同一份，所以版式只在这里维护一次。这个文件只管弹窗外壳：
@@ -16,6 +16,7 @@ type ProfileCharacter = {
   name: string;
   /** 可选：调用方若没有该字段，就不提交，避免把库里的简介清空 */
   description?: string;
+  userAddress?: string;
   personality?: string;
   examples?: string;
   /** ISO 时间；有就在页脚左侧显示「上次保存」，没有就不显示 */
@@ -40,6 +41,7 @@ const open = computed({
 const saving = ref(false);
 const draftName = ref("");
 const draftDescription = ref("");
+const draftUserAddress = ref("");
 const draftPersonality = ref("");
 const draftExamples = ref("");
 
@@ -49,6 +51,7 @@ watch(open, (isOpen) => {
   const current = props.character;
   draftName.value = current?.name ?? "";
   draftDescription.value = current?.description ?? "";
+  draftUserAddress.value = current?.userAddress ?? "";
   draftPersonality.value = current?.personality ?? "";
   draftExamples.value = current?.examples ?? "";
 }, { immediate: true });
@@ -91,6 +94,10 @@ async function save() {
     if (props.character.description !== undefined) {
       body.description = draftDescription.value.trim();
     }
+    // 空值也要提交：清空称呼 = 让她不再特意喊「主人」，不是「这次别改」
+    if (props.character.userAddress !== undefined) {
+      body.userAddress = draftUserAddress.value.trim();
+    }
     const updated = await $fetch<Character>(`/api/characters/${encodeURIComponent(props.character.id)}`, {
       method: "PATCH",
       body,
@@ -121,6 +128,7 @@ async function save() {
       <CharacterProfileFields
         v-model:name="draftName"
         v-model:description="draftDescription"
+        v-model:user-address="draftUserAddress"
         v-model:personality="draftPersonality"
         v-model:examples="draftExamples"
       />

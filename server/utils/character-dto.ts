@@ -22,6 +22,8 @@ export type CharacterDto = {
   personality: string;
   /** 对话示例：只用于对齐语气，聊天 / QQ / B站 被动回复会注入，B站 值班判断不注入。 */
   examples: string;
+  /** 角色在对话里怎么称呼用户；空字符串表示不特意称呼。 */
+  userAddress: string;
   /** ISO 时间：弹窗页脚左侧显示「上次保存」。 */
   updatedAt: string;
   chatModel: string;
@@ -47,6 +49,7 @@ type CharacterRecord = {
   avatar: string | null;
   basePrompt: string;
   styleExamples: string;
+  userAddress: string;
   status: "ACTIVE" | "PAUSED" | "ARCHIVED";
   modelConfig: unknown;
   updatedAt: Date;
@@ -150,6 +153,7 @@ export function toCharacterDto(input: unknown): CharacterDto {
     latestSnapshot: latestSnapshot ? formatDate(latestSnapshot, setting?.timezone) : "暂无总结",
     personality: character.basePrompt,
     examples: character.styleExamples ?? "",
+    userAddress: character.userAddress ?? "",
     updatedAt: character.updatedAt.toISOString(),
     chatModel: chatSettings.model,
     chatTemperature: chatSettings.temperature,

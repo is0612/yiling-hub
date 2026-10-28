@@ -155,6 +155,8 @@ model Character {
   basePrompt       String                    @db.Text
   /// 对话示例：只用来对齐语气和用词。聊天与 QQ/B站 被动回复会注入，B站 值班判断不注入。
   styleExamples    String                    @default("") @db.Text
+  /// 角色在这个对话里怎么称呼用户（默认「主人」）。空字符串 = 不特意称呼。
+  userAddress      String                    @default("主人") @db.VarChar(40)
   modelConfig      Json                      @default("{}") @db.JsonB
   status           CharacterStatus           @default(ACTIVE)
   createdAt        DateTime                  @default(now()) @db.Timestamptz(6)

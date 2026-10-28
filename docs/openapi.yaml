@@ -2263,6 +2263,11 @@ components:
           type: string
           maxLength: 8000
           description: '线上字段名 examples。对话示例，只用来对齐语气：聊天与 QQ/B站 被动回复注入，B站 值班判断不注入。'
+        userAddress:
+          type: string
+          maxLength: 40
+          default: '主人'
+          description: '线上字段名 userAddress。角色在对话里怎么称呼用户；新建默认「主人」，空字符串表示不特意称呼。目前只在网页 AI 对话注入。'
         modelConfig:
           type: object
           additionalProperties: true
@@ -2275,6 +2280,7 @@ components:
         avatar: { type: string, nullable: true }
         basePrompt: { type: string, maxLength: 50000, description: '线上字段名 personality（基础人设）' }
         styleExamples: { type: string, maxLength: 8000, description: '线上字段名 examples（对话示例）' }
+        userAddress: { type: string, maxLength: 40, description: '线上字段名 userAddress（角色对你的称呼，可传空字符串取消称呼）' }
         modelConfig:
           type: object
           additionalProperties: true

@@ -24,7 +24,7 @@ const BUDGETS = (process.env.BUDGETS || "1024,4096").split(",").map(Number).filt
 const prisma = getPrisma();
 const character = await prisma.character.findUnique({
   where: { id: CHARACTER_ID },
-  select: { basePrompt: true, modelConfig: true },
+  select: { basePrompt: true, modelConfig: true, userAddress: true },
 });
 if (!character) throw new Error(`找不到角色 ${CHARACTER_ID}（可用 CHAR_ID 指定）`);
 
@@ -41,6 +41,7 @@ const dutyPrompt = buildDutyPrompt(duty, {
   autoComment: duty.autoComment,
   commentPerRound: duty.commentPerRound,
   mentionName: duty.mentionName,
+  userAddress: character.userAddress ?? "",
   watchLimit: 5,
 });
 const systemPrompt = `${character.basePrompt.slice(0, 12_000)}\n\n${dutyPrompt}`;

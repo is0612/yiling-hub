@@ -121,6 +121,7 @@ async function main() {
     autoComment: false,
     commentPerRound: 1,
     mentionName: "",
+    userAddress: "",
     watchLimit: 3,
     favMinScore: 0, autoDynamic: false, dynamicMinScore: 15,
   });
@@ -139,7 +140,7 @@ async function main() {
   // 17. 公开评论关闭时提示词要写明"不发"
   const commentOff = buildDutyPrompt(makeConfig({ dmMode: "off" }), {
     today: "2026-10-25", remaining: 5, perDay: 5, keywords: [], zone: "all", frames: 0,
-    dmMode: "off", autoComment: false, commentPerRound: 1, mentionName: "", watchLimit: 2,
+    dmMode: "off", autoComment: false, commentPerRound: 1, mentionName: "", userAddress: "", watchLimit: 2,
     favMinScore: 0, autoDynamic: false, dynamicMinScore: 15,
   });
   assert.match(commentOff, /不发私信也不发评论/);
@@ -147,17 +148,43 @@ async function main() {
   // 18. 开了公开评论时，@ 的说法要指向 CLI 的真 @（正文里不用手写 @）
   const withComment = buildDutyPrompt(makeConfig({ dmMode: "both", autoComment: true, mentionName: "没有喵i" }), {
     today: "2026-10-25", remaining: 2, perDay: 5, keywords: [], zone: "all", frames: 0,
-    dmMode: "both", autoComment: true, commentPerRound: 2, mentionName: "没有喵i", watchLimit: 2,
+    dmMode: "both", autoComment: true, commentPerRound: 2, mentionName: "没有喵i", userAddress: "", watchLimit: 2,
     favMinScore: 0, autoDynamic: false, dynamicMinScore: 15,
   });
   assert.match(withComment, /@ 没有喵i/);
   assert.match(withComment, /真正的 @/);
   assert.match(withComment, /最多发 2 条评论/);
+  assert.doesNotMatch(withComment, /正文第一句以/, "@ 的是别人、又没设称呼时，不该让她喊主人");
+
+  // 18b. 评论里的称呼：设了称呼 + 开了 @，正文第一句才带称呼，而且只叫一次
+  const addressed = buildDutyPrompt(makeConfig({ dmMode: "both", autoComment: true, mentionName: "owner" }), {
+    today: "2026-10-25", remaining: 2, perDay: 5, keywords: [], zone: "all", frames: 0,
+    dmMode: "both", autoComment: true, commentPerRound: 2, mentionName: "owner", userAddress: "爸爸", watchLimit: 2,
+    favMinScore: 0, autoDynamic: false, dynamicMinScore: 15,
+  });
+  assert.match(addressed, /正文第一句以「爸爸，」开头/, "称呼要写在正文开头，@ 由脚本拼");
+  assert.match(addressed, /整条只叫这一次/, "称呼要限制成一次，否则每条评论都在喊爸爸");
+  assert.doesNotMatch(addressed, /别提主人/, "@ 到自己人时不该再说「别提主人」");
+
+  // 18c. 没开 @ 就不叫称呼：公开评论是给陌生人看的，喊一声没人知道在叫谁
+  const noMention = buildDutyPrompt(makeConfig({ dmMode: "both", autoComment: true, mentionName: "" }), {
+    today: "2026-10-25", remaining: 2, perDay: 5, keywords: [], zone: "all", frames: 0,
+    dmMode: "both", autoComment: true, commentPerRound: 2, mentionName: "", userAddress: "爸爸", watchLimit: 2,
+    favMinScore: 0, autoDynamic: false, dynamicMinScore: 15,
+  });
+  assert.doesNotMatch(noMention, /正文第一句以/, "不 @ 任何人时不该出现称呼要求");
+  assert.match(noMention, /别提爸爸/, "不 @ 时仍然保持「别提称呼」的口径，且称呼跟着换成设定的那个");
+
+  // 18d. 叙述里的「主人」也跟着称呼走：没设称呼时才回到「主人」
+  assert.match(addressed, /替爸爸刷 B站/, "设了称呼，整份章程里的「主人」都要换掉");
+  assert.match(addressed, /占爸爸的注意力/);
+  assert.doesNotMatch(addressed, /主人/, "换掉之后不该再冒出「主人」这个词");
+  assert.match(prompt, /替主人刷 B站/, "没设称呼时保持「主人」（prompt 这一份 userAddress 是空的）");
 
   // 19. 刷站口味：只在填了才注入；注入了就要压过通用尺度，但不能顶掉防注入底线
   const roundSettings = {
     today: "2026-10-25", remaining: 5, perDay: 5, keywords: [], zone: "all", frames: 0,
-    dmMode: "only" as const, autoComment: false, commentPerRound: 1, mentionName: "", watchLimit: 2,
+    dmMode: "only" as const, autoComment: false, commentPerRound: 1, mentionName: "", userAddress: "", watchLimit: 2,
     favMinScore: 0, autoDynamic: false, dynamicMinScore: 15,
   };
   const noTaste = buildDutyPrompt(makeConfig({ taste: "" }), roundSettings);
