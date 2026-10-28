@@ -49,6 +49,16 @@ const name = ref("");
 const description = ref("");
 const personality = ref("");
 const examples = ref("");
+/** 创建中：连点两次会建出两个同名角色，跟 deleteCharacter / toggle 那些一样需要闸门 */
+const creating = ref(false);
+
+/** 草稿存在页面而不是弹窗里（ref 在 <script setup> 顶层），所以取消/关闭也要清 */
+function resetDraft() {
+  name.value = "";
+  description.value = "";
+  personality.value = "";
+  examples.value = "";
+}
 
 const profileOpen = ref(false);
 const profileTarget = ref<Character | null>(null);
@@ -77,12 +87,14 @@ function onTabsKeydown(event: KeyboardEvent) {
 }
 
 async function createCharacter() {
+  if (creating.value) return;
   const trimmed = name.value.trim();
   if (!trimmed) {
     ElMessage.warning("请先填写角色名称。");
     return;
   }
 
+  creating.value = true;
   try {
     const item = await $fetch<Character>("/api/characters", {
       method: "POST",
@@ -97,13 +109,12 @@ async function createCharacter() {
     // 刚建完就该看到他，而不是让人回列表里再找一次
     selectedId.value = item.id;
     dialogOpen.value = false;
-    name.value = "";
-    description.value = "";
-    personality.value = "";
-    examples.value = "";
+    resetDraft();
     ElMessage.success("角色已保存到本地数据库。");
   } catch (error) {
     ElMessage.error(readError(error, "创建失败，请检查数据库连接和本地开发配置。"));
+  } finally {
+    creating.value = false;
   }
 }
 
@@ -391,7 +402,7 @@ function runCharacterCommand(command: string) {
             >
               <el-icon><ChatDotRound /></el-icon>开始对话
             </el-button>
-            <el-button @click="navigateTo(`/characters/${selected.id}`)">
+            <el-button @click="navigateTo(`/memory?c=${selected.id}`)">
               <el-icon><Collection /></el-icon>角色记忆
             </el-button>
             <el-button @click="openProfile(selected)">
@@ -571,6 +582,9 @@ function runCharacterCommand(command: string) {
       title="创建角色"
       width="min(1160px, 96vw)"
       destroy-on-close
+      :close-on-click-modal="!creating"
+      :close-on-press-escape="!creating"
+      @closed="resetDraft"
     >
       <el-form
         label-position="top"
@@ -594,6 +608,7 @@ function runCharacterCommand(command: string) {
             </el-button>
             <el-button
               type="primary"
+              :loading="creating"
               @click="createCharacter"
             >
               创建角色
@@ -692,11 +707,8 @@ function runCharacterCommand(command: string) {
   white-space: nowrap;
 }
 
-/* 状态药丸：无描边；文字按浅底实测加深 */
+/* 状态药丸：无描边；文字加深已在 main.css 的 .pill-* 里统一 */
 .chars-a .pill { border: 0; }
-.chars-a .pill-green { color: #0b7a54; }
-.chars-a .pill-amber { color: #8f5c05; }
-.chars-a .pill-gray { color: var(--text-2); }
 
 /* ── 档案详情 ───────────────────────────────────────── */
 /* 选择卡和档案是上下两个平级块，不是一张卡的两段：间距要大于卡内 16（页头到卡片是 18），

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ArrowRight, ArrowDown, Collection, Files, Search, MagicStick, Delete } from "@element-plus/icons-vue";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { initialCharacters, type Character, type Snapshot, type TimelineEntry, type TimelineType } from "~/utils/mock-data";
+import { type Character, type Snapshot, type TimelineEntry, type TimelineType } from "~/utils/mock-data";
 
 type MemoryCategory = "FACT" | "PREFERENCE" | "RELATIONSHIP" | "COMMITMENT" | "GOAL" | "EVENT" | "SUMMARY" | "OTHER";
 type MemoryDetail = {
@@ -47,7 +47,6 @@ const memoryCategoryOptions: Array<{ label: string; value: MemoryCategory }> = [
   { label: "其他", value: "OTHER" },
 ];
 
-const route = useRoute();
 const characters = useCharacterList();
 /** 角色列表与侧边栏共用同一份 SSR 数据，同 key 不会重复请求 */
 await useCharacterListData();
@@ -57,7 +56,7 @@ await useCharacterListData();
  * 没带参数时回退到上次选过的角色，再回退到列表第一个。
  * 选择和 /chat 共用一份（同一个 cookie），换页不会跳角色。
  */
-const { id, go: switchCharacter } = useCharacterSelection("/memory");
+const { id } = useCharacterSelection("/memory");
 
 const currentCharacter = ref<Character | null>(null);
 const snapshots = ref<Snapshot[]>([]);
@@ -88,17 +87,44 @@ const recycleBinBusyIds = ref<string[]>([]);
 const recordedMessageCount = computed(() => timelineEntries.value.filter((entry) => entry.type === "message").length);
 const recordedEventCount = computed(() => timelineEntries.value.filter((entry) => entry.type === "event").length);
 const commitmentCount = computed(() => timelineEntries.value.filter((entry) => entry.type === "memory" && entry.title === "承诺与约定" && entry.tag === "长期记忆").length);
-const channelOptions = computed(() => [...new Set(timelineEntries.value.map((entry) => entry.channel).filter((channel) => channel !== "全部渠道"))].sort());
-const character = computed(() => currentCharacter.value || {
-  ...initialCharacters[0], id: id.value,
-  name: characters.value.length ? "角色加载中" : "还没有角色",
-  alias: characters.value.length ? "数据库档案" : "先去创建一个角色",
-  description: characters.value.length ? "正在读取角色数据。" : "角色列表是空的，创建角色后这里会出现它的事件、总结与长期记忆。",
-  status: "已暂停" as const,
-  channels: [], intervalDays: 8, nextSnapshot: "尚未计划", memoryCount: 0, latestSnapshot: "暂无总结",
-});
+/**
+ * 来源筛选，而不是「渠道」筛选：服务端 timeline 的 channel 里混了两个维度 ——
+ * 真实渠道（连接名 / 本地会话）和长期记忆的范围（长期记忆 / 私人记忆）。
+ * 挤在一个没有标签的下拉里，选「长期记忆」实际筛出的是「所有非私人记忆条目」。
+ * 这里按维度分组；阶段总结的「全部渠道」是跨渠道汇总，仍按通配处理。
+ */
+const SOURCE_ALL = "全部来源";
+const SOURCE_WILDCARD = "全部渠道";
+const MEMORY_SCOPE_SOURCES = new Set(["长期记忆", "私人记忆"]);
+const realChannelOptions = computed(() => [...new Set(timelineEntries.value
+  .map((entry) => entry.channel)
+  .filter((channel) => channel !== SOURCE_WILDCARD && !MEMORY_SCOPE_SOURCES.has(channel)))].sort());
+const memoryScopeOptions = computed(() => [...new Set(timelineEntries.value
+  .map((entry) => entry.channel)
+  .filter((channel) => MEMORY_SCOPE_SOURCES.has(channel)))].sort());
+/**
+ * 角色档案还没到 / 读取失败时的占位。
+ * 以前这里 spread 了 initialCharacters[0]，于是兜底会捎上示例角色的头像、色调和人设；
+ * 现在只补页面上真正会读的字段。列表为空的情况交给模板里的 no-character 整块处理。
+ */
+const emptyCharacter = computed<Character>(() => ({
+  id: id.value,
+  name: "角色加载中",
+  alias: "数据库档案",
+  description: "",
+  personality: "",
+  avatar: "忆",
+  avatarTone: "mint",
+  status: "已暂停",
+  channels: [],
+  intervalDays: 8,
+  nextSnapshot: "尚未计划",
+  memoryCount: 0,
+  latestSnapshot: "暂无总结",
+}));
+const character = computed<Character>(() => currentCharacter.value ?? emptyCharacter.value);
 const activeFilter = ref("全部记录");
-const channelFilter = ref("全部渠道");
+const channelFilter = ref(SOURCE_ALL);
 const query = ref("");
 const filterOptions = [
   { label: "全部记录", type: undefined },
@@ -111,9 +137,11 @@ const filteredEntries = computed(() => {
   const type = filterOptions.find((option) => option.label === activeFilter.value)?.type;
   return timelineEntries.value.filter((entry) => {
     const typeMatches = !type || entry.type === type;
-    const channelMatches = channelFilter.value === "全部渠道" || entry.channel === channelFilter.value || entry.channel === "全部渠道";
+    const sourceMatches = channelFilter.value === SOURCE_ALL
+      || entry.channel === SOURCE_WILDCARD
+      || entry.channel === channelFilter.value;
     const textMatches = !query.value || `${entry.title} ${entry.summary} ${entry.source}`.toLowerCase().includes(query.value.toLowerCase());
-    return typeMatches && channelMatches && textMatches;
+    return typeMatches && sourceMatches && textMatches;
   });
 });
 
@@ -466,8 +494,22 @@ function formatSourceTime(value: string) {
     ? new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium", timeStyle: "short" }).format(date)
     : value;
 }
+/**
+ * 和阶段总结页的「生成阶段总结」是同一个动作（同一个 POST），所以名词、确认文案保持一致。
+ * 以前这里叫「手动归档」且没有二次确认 —— 误点一次就多一份归档版本。
+ */
 async function manualSnapshot() {
   if (snapshotCreating.value) return;
+  try {
+    await ElMessageBox.confirm(
+      "生成一份手动归档，保存当前时间范围内的消息来源与长期记忆。手动归档不会调用模型；自动周期任务会在配置模型后执行 AI 提炼。是否继续？",
+      "生成阶段总结",
+      { confirmButtonText: "确认归档", cancelButtonText: "取消", type: "info" },
+    );
+  } catch {
+    return;
+  }
+
   snapshotCreating.value = true;
   try {
     await $fetch(`/api/characters/${encodeURIComponent(id.value)}/snapshots`, { method: "POST" });
@@ -515,276 +557,266 @@ watch(id, () => void loadCharacter());
           :disabled="snapshotCreating"
           @click="manualSnapshot"
         >
-          <el-icon><MagicStick /></el-icon>{{ snapshotCreating ? "归档中…" : "手动归档" }}
+          <el-icon><MagicStick /></el-icon>{{ snapshotCreating ? "生成中…" : "生成阶段总结" }}
         </button>
       </template>
     </PageHeader>
 
-    <!-- 角色切换：菜单页的入口，所以放在内容最上方、贴着标题，不塞进右上角按钮堆里 -->
-    <div class="card char-bar">
-      <span class="char-bar-label">当前角色</span>
-      <el-select
-        :model-value="id"
-        class="char-select"
-        placeholder="选择角色"
-        :disabled="!characters.length"
-        @change="switchCharacter"
-      >
-        <template #prefix>
-          <span
-            class="avatar sel-avatar"
-            :class="'avatar-' + character.avatarTone"
-          >{{ character.avatar }}</span>
-        </template>
-        <el-option
-          v-for="item in characters"
-          :key="item.id"
-          :label="item.name"
-          :value="item.id"
-        />
-      </el-select>
-      <span
-        class="pill"
-        :class="character.status === '运行中' ? 'pill-green' : 'pill-amber'"
-      >{{ character.status }}</span>
-      <span class="char-bar-note">共 {{ characters.length }} 个角色</span>
-      <NuxtLink
-        v-if="!characters.length"
-        to="/characters"
-        class="char-bar-link"
-      >
-        去创建角色
-      </NuxtLink>
-    </div>
+    <!-- 角色切换：菜单页的入口，放在内容最上方、贴着标题，不塞进右上角按钮堆里 -->
+    <CharacterBar
+      path="/memory"
+      empty-text="还没有角色。先创建一个角色，再回来整理它的记忆。"
+    />
 
-    <!-- 一组数字只讲一遍：原来 KPI 四格 + 右栏「记忆状态」卡是同一组数据。
+    <template v-if="characters.length">
+      <!-- 一组数字只讲一遍：原来 KPI 四格 + 右栏「记忆状态」卡是同一组数据。
          这里收成一条静音统计带，字号 18px，比记忆正文更弱。 -->
-    <div class="card mem-stats">
-      <div class="ms-cell">
-        <span class="ms-k">长期记忆</span>
-        <span class="ms-v">{{ character.memoryCount }}<small>条</small></span>
-        <span class="ms-f">承诺与约定 {{ commitmentCount }} 项</span>
-      </div>
-      <div class="ms-cell">
-        <span class="ms-k">归档周期</span>
-        <span class="ms-v">{{ character.intervalDays }}<small>天</small></span>
-        <span class="ms-f">
-          下一次 {{ character.nextSnapshot }} ·
-          <button
-            type="button"
-            class="ms-link"
-            :disabled="!character.id"
-            @click="navigateTo('/characters/' + character.id + '/settings/memory')"
-          >调整</button>
-        </span>
-      </div>
-      <div class="ms-cell">
-        <span class="ms-k">已记录对话</span>
-        <span class="ms-v">{{ timelineLoading ? "—" : recordedMessageCount }}<small>条</small></span>
-        <span class="ms-f">平台事件 {{ timelineLoading ? "—" : recordedEventCount }} 项</span>
-      </div>
-      <div class="ms-cell">
-        <span class="ms-k">绑定渠道</span>
-        <span class="ms-v">{{ character.channels.length || 0 }}<small>个</small></span>
-        <span class="ms-f">{{ character.channels.length ? character.channels.join(" / ") : "尚未绑定渠道" }}</span>
-      </div>
-    </div>
-
-    <div class="panel-grid">
-      <section>
-        <div class="sec-h">
-          <h2>角色记忆时间线</h2>
-          <span class="sub">{{ filteredEntries.length }}/{{ timelineEntries.length }} 条</span>
+      <div class="card stat-band">
+        <div class="sb-cell">
+          <span class="sb-k">长期记忆</span>
+          <span class="sb-v">{{ character.memoryCount }}<small>条</small></span>
+          <span class="sb-f">承诺与约定 {{ commitmentCount }} 项</span>
         </div>
-        <div class="card tl-card">
-          <div class="filters">
-            <button
-              v-for="option in filterOptions"
-              :key="option.label"
-              type="button"
-              class="chip"
-              :class="{ on: activeFilter === option.label }"
-              @click="activeFilter = option.label"
-            >
-              {{ option.label }}<span class="n">{{ countFor(option.label) }}</span>
-            </button>
-          </div>
-          <div class="tl-tools">
-            <el-input
-              v-model="query"
-              clearable
-              placeholder="搜索时间线内容……"
-              class="tl-search"
-            >
-              <template #prefix>
-                <el-icon><Search /></el-icon>
-              </template>
-            </el-input>
-            <el-select
-              v-model="channelFilter"
-              class="tl-select"
-            >
-              <el-option
-                label="全部渠道"
-                value="全部渠道"
-              /><el-option
-                v-for="channel in channelOptions"
-                :key="channel"
-                :label="channel"
-                :value="channel"
-              />
-            </el-select>
+        <div class="sb-cell">
+          <span class="sb-k">归档周期</span>
+          <span class="sb-v">{{ character.intervalDays }}<small>天</small></span>
+          <span class="sb-f">
+            下一次 {{ character.nextSnapshot }} ·
             <button
               type="button"
-              class="tool-link"
-              @click="openRecycleBin"
-            >
-              <el-icon><Delete /></el-icon>回收站
-            </button>
+              class="ms-link"
+              :disabled="!character.id"
+              @click="navigateTo('/characters/' + character.id + '/settings/memory')"
+            >调整</button>
+          </span>
+        </div>
+        <div class="sb-cell">
+          <span class="sb-k">已记录对话</span>
+          <span class="sb-v">{{ timelineLoading ? "—" : recordedMessageCount }}<small>条</small></span>
+          <span class="sb-f">平台事件 {{ timelineLoading ? "—" : recordedEventCount }} 项</span>
+        </div>
+        <div class="sb-cell">
+          <span class="sb-k">绑定渠道</span>
+          <span class="sb-v">{{ character.channels.length || 0 }}<small>个</small></span>
+          <span class="sb-f">{{ character.channels.length ? character.channels.join(" / ") : "尚未绑定渠道" }}</span>
+        </div>
+      </div>
+
+      <div class="panel-grid">
+        <section>
+          <div class="sec-h">
+            <h2>角色记忆时间线</h2>
+            <span class="sub">{{ filteredEntries.length }}/{{ timelineEntries.length }} 条</span>
           </div>
-          <div class="timeline">
-            <div
-              v-if="timelineLoading"
-              class="tl-loading"
-            >
-              正在加载已保存的时间线记录……
-            </div>
-            <template v-else>
-              <article
-                v-for="entry in pagedEntries"
-                :key="entry.id"
-                class="timeline-item"
-              >
-                <div
-                  class="timeline-marker"
-                  :class="toneFor(entry.tagTone)"
-                >
-                  {{ markerFor(entry.type) }}
-                </div>
-                <div class="timeline-content">
-                  <div class="timeline-heading">
-                    <span class="timeline-title">{{ entry.title }}</span><span class="muted-note">{{ entry.time }}</span>
-                  </div>
-                  <p class="timeline-summary">
-                    {{ entry.summary }}
-                  </p>
-                  <div class="timeline-meta">
-                    <span
-                      class="pill"
-                      :class="toneFor(entry.tagTone)"
-                    >{{ entry.tag }}</span><span v-if="entry.channel !== entry.tag">{{ entry.channel }}</span><span>{{ entry.source }}</span>
-                  </div>
-                  <!-- 行内只留「编辑 + 更多」：原来 4 个链接常显，其中 2 个破坏性，
-                       每行都在喊。状态类操作收进菜单，默认不占视线。 -->
-                  <div
-                    v-if="entry.type === 'memory'"
-                    class="memory-actions"
-                  >
-                    <el-button
-                      link
-                      type="primary"
-                      size="small"
-                      @click="openMemoryEditor(entry)"
-                    >
-                      编辑
-                    </el-button>
-                    <el-dropdown
-                      trigger="click"
-                      placement="bottom-end"
-                      @command="runMemoryCommand(entry, String($event))"
-                    >
-                      <button
-                        type="button"
-                        class="row-more"
-                      >
-                        更多<el-icon><ArrowDown /></el-icon>
-                      </button>
-                      <template #dropdown>
-                        <el-dropdown-menu>
-                          <template v-if="entry.tag === '长期记忆'">
-                            <el-dropdown-item command="archived">
-                              归档
-                            </el-dropdown-item>
-                            <el-dropdown-item command="invalidated">
-                              标记失效
-                            </el-dropdown-item>
-                          </template>
-                          <el-dropdown-item
-                            v-else
-                            command="active"
-                          >
-                            恢复有效
-                          </el-dropdown-item>
-                          <el-dropdown-item
-                            command="trash"
-                            divided
-                            style="color:var(--red)"
-                          >
-                            移入回收站
-                          </el-dropdown-item>
-                        </el-dropdown-menu>
-                      </template>
-                    </el-dropdown>
-                  </div>
-                </div>
-              </article>
+          <div class="card tl-card">
+            <div class="filters">
               <button
-                v-if="filteredEntries.length > visibleCount"
+                v-for="option in filterOptions"
+                :key="option.label"
                 type="button"
-                class="load-more"
-                @click="visibleCount += PAGE_SIZE"
+                class="chip"
+                :class="{ on: activeFilter === option.label }"
+                @click="activeFilter = option.label"
               >
-                加载更多（还有 {{ filteredEntries.length - visibleCount }} 条）
+                {{ option.label }}<span class="n">{{ countFor(option.label) }}</span>
               </button>
-              <div
-                v-if="!filteredEntries.length"
-                class="card-empty"
+            </div>
+            <div class="tl-tools">
+              <el-input
+                v-model="query"
+                clearable
+                placeholder="搜索时间线内容……"
+                class="tl-search"
               >
-                <el-icon><Collection /></el-icon>
-                <span>{{ timelineEntries.length ? "没有匹配的记录" : "还没有已保存的记录" }}</span>
-                <span>{{ timelineEntries.length ? "换个筛选条件或清空搜索词再试一次" : "接入聊天消息、保存长期记忆之后，这里会按时间顺序出现对应条目" }}</span>
+                <template #prefix>
+                  <el-icon><Search /></el-icon>
+                </template>
+              </el-input>
+              <el-select
+                v-if="realChannelOptions.length || memoryScopeOptions.length"
+                v-model="channelFilter"
+                class="tl-select"
+                aria-label="按来源筛选时间线"
+              >
+                <el-option
+                  :label="SOURCE_ALL"
+                  :value="SOURCE_ALL"
+                />
+                <el-option-group
+                  v-if="realChannelOptions.length"
+                  label="渠道"
+                >
+                  <el-option
+                    v-for="channel in realChannelOptions"
+                    :key="channel"
+                    :label="channel"
+                    :value="channel"
+                  />
+                </el-option-group>
+                <el-option-group
+                  v-if="memoryScopeOptions.length"
+                  label="记忆范围"
+                >
+                  <el-option
+                    v-for="channel in memoryScopeOptions"
+                    :key="channel"
+                    :label="channel"
+                    :value="channel"
+                  />
+                </el-option-group>
+              </el-select>
+              <button
+                type="button"
+                class="tool-link"
+                @click="openRecycleBin"
+              >
+                <el-icon><Delete /></el-icon>回收站
+              </button>
+            </div>
+            <div class="timeline">
+              <div
+                v-if="timelineLoading"
+                class="tl-loading"
+              >
+                正在加载已保存的时间线记录……
               </div>
-            </template>
+              <template v-else>
+                <article
+                  v-for="entry in pagedEntries"
+                  :key="entry.id"
+                  class="timeline-item"
+                >
+                  <div
+                    class="timeline-marker"
+                    :class="toneFor(entry.tagTone)"
+                  >
+                    {{ markerFor(entry.type) }}
+                  </div>
+                  <div class="timeline-content">
+                    <div class="timeline-heading">
+                      <span class="timeline-title">{{ entry.title }}</span><span class="muted-note">{{ entry.time }}</span>
+                    </div>
+                    <p class="timeline-summary">
+                      {{ entry.summary }}
+                    </p>
+                    <div class="timeline-meta">
+                      <span
+                        class="pill"
+                        :class="toneFor(entry.tagTone)"
+                      >{{ entry.tag }}</span><span v-if="entry.channel !== entry.tag">{{ entry.channel }}</span><span>{{ entry.source }}</span>
+                    </div>
+                    <!-- 行内只留「编辑 + 更多」：原来 4 个链接常显，其中 2 个破坏性，
+                       每行都在喊。状态类操作收进菜单，默认不占视线。 -->
+                    <div
+                      v-if="entry.type === 'memory'"
+                      class="memory-actions"
+                    >
+                      <el-button
+                        link
+                        type="primary"
+                        size="small"
+                        @click="openMemoryEditor(entry)"
+                      >
+                        编辑
+                      </el-button>
+                      <el-dropdown
+                        trigger="click"
+                        placement="bottom-end"
+                        @command="runMemoryCommand(entry, String($event))"
+                      >
+                        <button
+                          type="button"
+                          class="row-more"
+                        >
+                          更多<el-icon><ArrowDown /></el-icon>
+                        </button>
+                        <template #dropdown>
+                          <el-dropdown-menu>
+                            <template v-if="entry.tag === '长期记忆'">
+                              <el-dropdown-item command="archived">
+                                归档
+                              </el-dropdown-item>
+                              <el-dropdown-item command="invalidated">
+                                标记失效
+                              </el-dropdown-item>
+                            </template>
+                            <el-dropdown-item
+                              v-else
+                              command="active"
+                            >
+                              恢复有效
+                            </el-dropdown-item>
+                            <el-dropdown-item
+                              command="trash"
+                              divided
+                              style="color:var(--red)"
+                            >
+                              移入回收站
+                            </el-dropdown-item>
+                          </el-dropdown-menu>
+                        </template>
+                      </el-dropdown>
+                    </div>
+                  </div>
+                </article>
+                <button
+                  v-if="filteredEntries.length > visibleCount"
+                  type="button"
+                  class="load-more"
+                  @click="visibleCount += PAGE_SIZE"
+                >
+                  加载更多（还有 {{ filteredEntries.length - visibleCount }} 条）
+                </button>
+                <div
+                  v-if="!filteredEntries.length"
+                  class="card-empty"
+                >
+                  <el-icon><Collection /></el-icon>
+                  <span>{{ timelineEntries.length ? "没有匹配的记录" : "还没有已保存的记录" }}</span>
+                  <span>{{ timelineEntries.length ? "换个筛选条件或清空搜索词再试一次" : "接入聊天消息、保存长期记忆之后，这里会按时间顺序出现对应条目" }}</span>
+                </div>
+              </template>
+            </div>
           </div>
-        </div>
-      </section>
+        </section>
 
-      <aside class="side-col">
-        <div class="sec-h">
-          <h2>最近归档</h2>
-          <span class="sub">{{ snapshots.length }} 份</span>
-          <button
-            type="button"
-            class="more"
-            @click="navigateTo('/snapshots?c=' + character.id)"
-          >
-            全部<el-icon><ArrowRight /></el-icon>
-          </button>
-        </div>
-        <div class="card snap-card">
-          <NuxtLink
-            v-for="snapshot in snapshots.slice(0, 2)"
-            :key="snapshot.id"
-            :to="'/snapshots?c=' + character.id"
-            class="snap-row"
-          >
-            <span class="snap-top">
-              <span>第 {{ snapshot.number }} 份阶段总结</span>
-              <span class="muted-note">v{{ snapshot.version }}</span>
-            </span>
-            <span class="snap-sum">{{ snapshot.summary }}</span>
-          </NuxtLink>
-          <div
-            v-if="!snapshots.length"
-            class="card-empty"
-          >
-            <el-icon><Files /></el-icon>
-            <span>还没有保存的总结</span>
-            <span>手动归档一次或等周期 Worker 跑完，这里会出现版本记录</span>
+        <aside class="side-col">
+          <div class="sec-h">
+            <h2>最近归档</h2>
+            <span class="sub">{{ snapshots.length }} 份</span>
+            <button
+              type="button"
+              class="more"
+              @click="navigateTo('/snapshots?c=' + character.id)"
+            >
+              全部<el-icon><ArrowRight /></el-icon>
+            </button>
           </div>
-        </div>
-      </aside>
-    </div>
+          <div class="card snap-card">
+            <NuxtLink
+              v-for="snapshot in snapshots.slice(0, 2)"
+              :key="snapshot.id"
+              :to="'/snapshots?c=' + character.id"
+              class="snap-row"
+            >
+              <span class="snap-top">
+                <span>第 {{ snapshot.number }} 份阶段总结</span>
+                <span class="muted-note">v{{ snapshot.version }}</span>
+              </span>
+              <span class="snap-sum">{{ snapshot.summary }}</span>
+            </NuxtLink>
+            <div
+              v-if="!snapshots.length"
+              class="card-empty"
+            >
+              <el-icon><Files /></el-icon>
+              <span>还没有保存的总结</span>
+              <span>生成一份阶段总结，或等周期 Worker 跑完，这里会出现版本记录</span>
+            </div>
+          </div>
+        </aside>
+      </div>
+    </template>
 
     <el-dialog
       v-model="memoryDialogOpen"
@@ -1024,27 +1056,7 @@ watch(id, () => void loadCharacter());
 /* 白砖：去掉 1px #e6e9ef 描边 + 0 1px 2px 阴影 */
 .card{border:0;border-radius:10px;box-shadow:none}
 
-/* ── 角色切换条：菜单页的第一件事 ─────────────────────── */
-.char-bar{display:flex;align-items:center;gap:12px;margin-bottom:18px;padding:12px 18px}
-.char-bar-label{flex:none;color:var(--dim);font-size:12px}
-/* 头像塞进 select 的 prefix，让「选谁」成为一个控件而不是三个散件 */
-.char-select{width:240px;flex:none}
-.sel-avatar{width:24px;height:24px;border-radius:6px;font-size:12px}
-.char-select :deep(.el-select__placeholder),
-.char-select :deep(.el-select__selected-item){color:var(--text);font-weight:600}
-.char-bar-note{margin-left:auto;color:var(--dim);font-size:12px}
-.char-bar-link{color:var(--brand-strong);font-size:12px;font-weight:600}
-.char-bar-link:hover{text-decoration:underline}
-
-/* ── 统计带：4 组数字并进一张卡 ─────────────────────── */
-.mem-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:0 24px;margin-bottom:18px;padding:14px 18px 15px}
-.ms-cell{display:flex;min-width:0;flex-direction:column;gap:4px}
-.ms-k{color:var(--dim);font-size:12px}
-/* 18px 而不是 26px：这四个数几乎不变，不该是全页最响的东西 */
-.ms-v{color:var(--text);font-size:18px;font-weight:700;font-variant-numeric:tabular-nums;letter-spacing:-.01em;line-height:1.25}
-.ms-v small{margin-left:3px;color:var(--dim);font-size:12px;font-weight:500;letter-spacing:0}
-.ms-f{overflow:hidden;color:var(--dim);font-size:12px;line-height:1.5;text-overflow:ellipsis;white-space:nowrap}
-/* 「调整」：挂在归档周期格里的行内按钮，跟 ms-f 同字号，不抢视觉 */
+/* 「调整」：挂在归档周期格里的行内按钮，跟 sb-f 同字号，不抢视觉（统计带本身在 main.css 的 .stat-band） */
 .ms-link{padding:0;border:0;background:none;color:var(--brand-strong);font:inherit;font-weight:600;cursor:pointer}
 .ms-link:hover{text-decoration:underline}
 .ms-link:disabled{color:var(--faint);cursor:not-allowed}
@@ -1095,11 +1107,6 @@ watch(id, () => void loadCharacter());
 .timeline-marker.pill-amber{background:var(--amber-soft);color:#8f5c05}
 .timeline-marker.pill-gray{background:var(--surface-3);color:var(--text-2)}
 
-/* 状态药丸文字加深：#0f8f63=3.68、#a06a06=4.28 都不到 AA */
-.pill-green{color:#0b7a54}
-.pill-amber{color:#8f5c05}
-.pill-gray{color:var(--text-2)}
-
 /* ── 右栏 ──────────────────────────────────────────── */
 /* 右栏现在只剩「最近归档」一块，跟着滚，别在下面留一大片空白 */
 .side-col{position:sticky;top:72px;align-self:start}
@@ -1124,13 +1131,9 @@ watch(id, () => void loadCharacter());
 
 /* 单列时右栏不再吸顶，否则会跟着页面滚到内容之外 */
 @media(max-width:1150px){.side-col{position:static}}
-@media(max-width:900px){.mem-stats{grid-template-columns:repeat(2,minmax(0,1fr));gap:14px 24px}}
 @media(max-width:640px){
   .tl-card{padding:12px 14px 8px}
   .tl-select{width:100%}
-  .mem-stats{padding:14px}
-  .char-bar{padding:10px 12px;gap:8px}
-  .char-select{width:auto;flex:1;min-width:0}
-  .char-bar-note{display:none}
+  .stat-band{padding:14px}
 }
 </style>

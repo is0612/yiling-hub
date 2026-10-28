@@ -7,13 +7,12 @@ const characters = useCharacterList();
 await useCharacterListData();
 
 /** 菜单页：当前角色由 ?c= 决定，选择和 /memory、/chat 共用一份 cookie */
-const { id, go: goCharacter } = useCharacterSelection("/snapshots");
+const { id } = useCharacterSelection("/snapshots");
 
 /** 头像 / 状态 / 归档周期都在角色列表里，不必再单独拉一次角色档案 */
 const current = computed<Character | null>(
   () => characters.value.find((item) => item.id === id.value) ?? null,
 );
-const characterInitial = computed(() => current.value?.avatar || "忆");
 
 const items = ref<Snapshot[]>([]);
 const loading = ref(true);
@@ -134,7 +133,6 @@ async function switchCharacter(nextId: string) {
   if (!nextId || nextId === id.value) return;
   items.value = [];
   detail.value = null;
-  await goCharacter(nextId);
 }
 
 async function createSnapshot() {
@@ -239,78 +237,35 @@ watch(id, () => void loadSnapshots());
     </PageHeader>
 
     <!-- 角色切换：和角色记忆、AI 对话同一个位置、同一套控件 -->
-    <div class="card char-bar">
-      <span class="char-bar-label">当前角色</span>
-      <el-select
-        :model-value="id"
-        class="char-select"
-        placeholder="选择角色"
-        :disabled="!characters.length || creating"
-        @change="switchCharacter"
-      >
-        <template #prefix>
-          <span
-            class="avatar sel-avatar"
-            :class="'avatar-' + (current?.avatarTone || 'mint')"
-          >{{ characterInitial }}</span>
-        </template>
-        <el-option
-          v-for="item in characters"
-          :key="item.id"
-          :label="item.name"
-          :value="item.id"
-        />
-      </el-select>
-      <span
-        v-if="current"
-        class="pill"
-        :class="current.status === '运行中' ? 'pill-green' : 'pill-amber'"
-      >{{ current.status }}</span>
-      <span class="char-bar-note">共 {{ characters.length }} 个角色</span>
-      <NuxtLink
-        v-if="!characters.length"
-        to="/characters"
-        class="char-bar-link"
-      >
-        去创建角色
-      </NuxtLink>
-    </div>
+    <CharacterBar
+      path="/snapshots"
+      :disabled="creating"
+      empty-text="还没有角色。先创建一个角色，归档任务才有对象。"
+      @change="switchCharacter"
+    />
 
-    <div
-      v-if="!characters.length"
-      class="card no-character"
-    >
-      <p>还没有角色。先创建一个角色，归档任务才有对象。</p>
-      <NuxtLink
-        to="/characters"
-        class="btn primary"
-      >
-        去创建角色
-      </NuxtLink>
-    </div>
-
-    <template v-else>
+    <template v-if="characters.length">
       <!-- 一条静音统计带：原来三张 KPI 卡和正文一样重，其中两个数几乎不变 -->
-      <div class="card snap-stats">
-        <div class="ss-cell">
-          <span class="ss-k">历史归档</span>
-          <span class="ss-v">{{ items.length }}<small>份</small></span>
-          <span class="ss-f">历史版本都保留，不会被覆盖</span>
+      <div class="card stat-band">
+        <div class="sb-cell">
+          <span class="sb-k">历史归档</span>
+          <span class="sb-v">{{ items.length }}<small>份</small></span>
+          <span class="sb-f">历史版本都保留，不会被覆盖</span>
         </div>
-        <div class="ss-cell">
-          <span class="ss-k">覆盖消息</span>
-          <span class="ss-v">{{ totalMessages }}<small>条</small></span>
-          <span class="ss-f">来自已归档周期的原始对话</span>
+        <div class="sb-cell">
+          <span class="sb-k">覆盖消息</span>
+          <span class="sb-v">{{ totalMessages }}<small>条</small></span>
+          <span class="sb-f">来自已归档周期的原始对话</span>
         </div>
-        <div class="ss-cell">
-          <span class="ss-k">归档周期</span>
-          <span class="ss-v">{{ current?.intervalDays ?? "—" }}<small>天</small></span>
-          <span class="ss-f">下一次 {{ current?.nextSnapshot || "尚未计划" }}</span>
+        <div class="sb-cell">
+          <span class="sb-k">归档周期</span>
+          <span class="sb-v">{{ current?.intervalDays ?? "—" }}<small>天</small></span>
+          <span class="sb-f">下一次 {{ current?.nextSnapshot || "尚未计划" }}</span>
         </div>
-        <div class="ss-cell">
-          <span class="ss-k">最近生成</span>
-          <span class="ss-v">{{ items[0] ? items[0].date.slice(5, 10) : "—" }}</span>
-          <span class="ss-f">{{ items[0] ? items[0].date.slice(0, 4) + " 年归档" : "还没有归档过" }}</span>
+        <div class="sb-cell">
+          <span class="sb-k">最近生成</span>
+          <span class="sb-v">{{ items[0] ? items[0].date.slice(5, 10) : "—" }}</span>
+          <span class="sb-f">{{ items[0] ? items[0].date.slice(0, 4) + " 年归档" : "还没有归档过" }}</span>
         </div>
       </div>
 
@@ -658,28 +613,6 @@ watch(id, () => void loadSnapshots());
    ══════════════════════════════════════════════════════════════ */
 .card{border:0;border-radius:10px;box-shadow:none}
 
-/* ── 角色切换条 ─────────────────────────────────────── */
-.char-bar{display:flex;align-items:center;gap:12px;margin-bottom:16px;padding:10px 16px}
-.char-bar-label{flex:none;color:var(--dim);font-size:12px}
-.char-select{width:220px;flex:none}
-.sel-avatar{width:24px;height:24px;border-radius:6px;font-size:12px}
-.char-select :deep(.el-select__placeholder),
-.char-select :deep(.el-select__selected-item){color:var(--text);font-weight:600}
-.char-bar-note{margin-left:auto;color:var(--dim);font-size:12px}
-.char-bar-link{color:var(--brand-strong);font-size:12px;font-weight:600}
-.char-bar-link:hover{text-decoration:underline}
-
-.no-character{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:18px 20px}
-.no-character p{margin:0;color:var(--dim);font-size:14px}
-
-/* ── 统计带（和角色记忆页同款，4 组数字一行） ─────────── */
-.snap-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:0 24px;margin-bottom:18px;padding:14px 18px 15px}
-.ss-cell{display:flex;min-width:0;flex-direction:column;gap:4px}
-.ss-k{color:var(--dim);font-size:12px}
-.ss-v{color:var(--text);font-size:18px;font-weight:700;font-variant-numeric:tabular-nums;letter-spacing:-.01em;line-height:1.25}
-.ss-v small{margin-left:3px;color:var(--dim);font-size:12px;font-weight:500;letter-spacing:0}
-.ss-f{overflow:hidden;color:var(--dim);font-size:12px;line-height:1.5;text-overflow:ellipsis;white-space:nowrap}
-
 /* ── 主次两栏：列表窄、详情宽（详情要读长文本） ───────── */
 .snap-grid{display:grid;grid-template-columns:minmax(272px,344px) minmax(0,1fr);gap:16px;align-items:start}
 
@@ -689,7 +622,8 @@ watch(id, () => void loadSnapshots());
 .list-search{min-width:0;flex:1}
 .reset-link{border:0;border-radius:6px;background:none;padding:2px 4px;color:var(--brand-strong);font-size:12px;font-weight:600;cursor:pointer}
 .reset-link:hover{text-decoration:underline}
-.snap-list{display:flex;flex-direction:column;gap:2px;margin-top:8px}
+/* 左栏列表自己滚，别让几十份归档把右栏详情推到视口外 */
+.snap-list{display:flex;max-height:calc(100dvh - 300px);flex-direction:column;gap:2px;margin-top:8px;overflow:auto}
 .snap-row{display:flex;width:100%;flex-direction:column;gap:5px;border:0;border-radius:8px;background:none;padding:10px 10px 11px;text-align:left;cursor:pointer;transition:background .14s var(--ease)}
 .snap-row:hover{background:var(--surface-2)}
 .snap-row.on{background:var(--brand-soft);box-shadow:inset 2px 0 0 var(--brand)}
@@ -703,12 +637,6 @@ watch(id, () => void loadSnapshots());
 .sk-row{height:74px;border-radius:8px}
 .list-empty{margin:0;padding:22px 12px;color:var(--dim);font-size:12px;line-height:1.8;text-align:center}
 
-/* 状态药丸文字加深：#0f8f63=3.68:1 当 12px 文字不到 AA */
-.pill-green{color:#0b7a54}
-.pill-gray{color:var(--text-2)}
-.pill-purple{color:var(--brand-strong)}
-.pill-blue{color:#3d4dab}
-
 /* ── 右：详情 ──────────────────────────────────────── */
 .detail-card{padding:18px 20px 16px}
 .d-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
@@ -717,7 +645,7 @@ watch(id, () => void loadSnapshots());
 /* 摘要是这页要读的东西：15px / 1.9，字号只比标题小一档 */
 .d-summary{margin:12px 0 0;color:var(--text);font-size:16px;line-height:1.9;white-space:pre-wrap;overflow-wrap:anywhere}
 
-.d-sec{margin-top:20px;border-top:1px solid var(--line);padding-top:16px}
+.d-sec{margin-top:20px;border-top:1px solid var(--surface-3);padding-top:16px}
 .d-sec-h{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px}
 .d-sec-h h3{margin:0;color:var(--text-2);font-size:14px;font-weight:700}
 .d-note{display:flex;align-items:flex-start;gap:7px;margin:16px 0 0;border-radius:8px;background:var(--surface-2);padding:11px 13px;color:var(--dim);font-size:12px;line-height:1.8}
@@ -754,7 +682,7 @@ watch(id, () => void loadSnapshots());
 .src-preview{display:-webkit-box;overflow:hidden;margin:5px 0 0;color:var(--text-2);font-size:14px;line-height:1.8;white-space:pre-wrap;overflow-wrap:anywhere;-webkit-box-orient:vertical;-webkit-line-clamp:3}
 
 /* ── 详情页脚 ──────────────────────────────────────── */
-.d-foot{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:20px;border-top:1px solid var(--line);padding-top:14px}
+.d-foot{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:20px;border-top:1px solid var(--surface-3);padding-top:14px}
 .d-foot-note{min-width:0;margin:0;color:var(--dim);font-size:12px;line-height:1.7}
 .d-action{flex:none}
 .d-action .el-icon{margin-right:2px}
@@ -763,18 +691,11 @@ watch(id, () => void loadSnapshots());
 @media(max-width:1150px){
   .snap-grid{grid-template-columns:minmax(0,1fr)}
 }
-@media(max-width:900px){
-  .snap-stats{grid-template-columns:repeat(2,minmax(0,1fr));gap:14px 24px}
-}
 @media(max-width:640px){
-  .char-bar{flex-wrap:wrap;gap:8px;padding:10px 12px}
-  .char-select{width:auto;min-width:0;flex:1 1 160px}
-  .char-bar-note{display:none}
-  .snap-stats{padding:14px}
-  .ss-f{white-space:normal}
+  .stat-band{padding:14px}
+  .sb-f{white-space:normal}
   .detail-card{padding:16px 14px 14px}
   .d-foot{flex-direction:column;align-items:stretch}
   .d-action{width:100%}
-  .no-character{flex-direction:column;align-items:flex-start}
 }
 </style>

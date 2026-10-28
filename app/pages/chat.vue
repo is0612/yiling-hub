@@ -60,7 +60,7 @@ const characters = useCharacterList();
 await useCharacterListData();
 
 /** 菜单页：当前角色由 ?c= 决定，选择和 /memory 共用一份 cookie */
-const { id, go: goCharacter } = useCharacterSelection("/chat");
+const { id } = useCharacterSelection("/chat");
 
 /** 角色列表里的头像 / 状态 / 名字（比聊天接口返回的更全，头像只有列表里有） */
 const current = computed<Character | null>(
@@ -143,9 +143,8 @@ function resetForCharacter() {
 
 async function switchCharacter(nextId: string) {
   if (!nextId || nextId === id.value || sending.value) return;
+  // CharacterBar 负责 navigateTo 到 ?c= 新 id，这里只做跳转前的清场，避免闪一帧上一角色的会话
   resetForCharacter();
-  // 跳完 ?c= 之后由下面的 watch(id) 统一重拉，不在这里重复请求
-  await goCharacter(nextId);
 }
 
 async function loadCharacter() {
@@ -510,33 +509,12 @@ watch(id, (next, previous) => {
     </PageHeader>
 
     <!-- 角色切换：菜单页的第一件事，和角色记忆页用同一个位置、同一套控件 -->
-    <div class="card char-bar">
-      <span class="char-bar-label">当前角色</span>
-      <el-select
-        :model-value="id"
-        class="char-select"
-        placeholder="选择角色"
-        :disabled="!characters.length || sending"
-        @change="switchCharacter"
-      >
-        <template #prefix>
-          <span
-            class="avatar sel-avatar"
-            :class="'avatar-' + (current?.avatarTone || 'mint')"
-          >{{ characterInitial }}</span>
-        </template>
-        <el-option
-          v-for="item in characters"
-          :key="item.id"
-          :label="item.name"
-          :value="item.id"
-        />
-      </el-select>
-      <span
-        v-if="current"
-        class="pill"
-        :class="current.status === '运行中' ? 'pill-green' : 'pill-amber'"
-      >{{ current.status }}</span>
+    <CharacterBar
+      path="/chat"
+      :disabled="sending"
+      empty-text="还没有角色。先创建一个角色，再回来和它说话。"
+      @change="switchCharacter"
+    >
       <!-- 模型是按角色配的，状态就挂在角色这一行：不再在页面顶部单独报警 -->
       <button
         v-if="id"
@@ -549,31 +527,10 @@ watch(id, (next, previous) => {
         {{ modelConfigured ? character?.chatModel || "模型已配置" : "模型未配置" }}
         <span class="model-chip-go">{{ modelConfigured ? "设置" : "去设置" }}</span>
       </button>
-      <span class="char-bar-note">共 {{ characters.length }} 个角色</span>
-      <NuxtLink
-        v-if="!characters.length"
-        to="/characters"
-        class="char-bar-link"
-      >
-        去创建角色
-      </NuxtLink>
-    </div>
+    </CharacterBar>
 
     <div
-      v-if="!characters.length"
-      class="card no-character"
-    >
-      <p>还没有角色。先创建一个角色，再回来和它说话。</p>
-      <NuxtLink
-        to="/characters"
-        class="btn primary"
-      >
-        去创建角色
-      </NuxtLink>
-    </div>
-
-    <div
-      v-else
+      v-if="characters.length"
       v-loading="loading && !messages.length"
       class="chat-layout"
     >
@@ -890,17 +847,6 @@ watch(id, (next, previous) => {
 
 .card{border:0;border-radius:10px;box-shadow:none}
 
-/* ── 角色切换条 ─────────────────────────────────────── */
-.char-bar{display:flex;align-items:center;gap:12px;margin-bottom:16px;padding:10px 16px}
-.char-bar-label{flex:none;color:var(--dim);font-size:12px}
-.char-select{width:220px;flex:none}
-.sel-avatar{width:24px;height:24px;border-radius:6px;font-size:12px}
-.char-select :deep(.el-select__placeholder),
-.char-select :deep(.el-select__selected-item){color:var(--text);font-weight:600}
-.char-bar-note{margin-left:auto;color:var(--dim);font-size:12px}
-.char-bar-link{color:var(--brand-strong);font-size:12px;font-weight:600}
-.char-bar-link:hover{text-decoration:underline}
-
 /* 模型状态：按角色配置的，所以挂在角色这一行；可点进设置 */
 .model-chip{display:inline-flex;flex:none;align-items:center;gap:5px;border:0;border-radius:999px;background:var(--surface-3);padding:4px 10px;color:var(--text-2);font-size:12px;font-weight:600;cursor:pointer;transition:background .14s var(--ease),color .14s var(--ease)}
 .model-chip:hover{background:var(--surface-2);color:var(--text)}
@@ -908,9 +854,6 @@ watch(id, (next, previous) => {
 .model-chip .el-icon{font-size:12px}
 .model-chip-go{color:var(--dim);font-weight:400}
 .model-chip:hover .model-chip-go{text-decoration:underline}
-
-.no-character{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:18px 20px}
-.no-character p{margin:0;color:var(--dim);font-size:14px}
 
 /* ── 两栏 ───────────────────────────────────────────── */
 .chat-layout{display:grid;min-height:0;flex:1;grid-template-columns:248px minmax(0,1fr);gap:14px}
@@ -992,10 +935,6 @@ watch(id, (next, previous) => {
 .src-item{display:flex;align-items:flex-start;gap:6px;color:var(--dim);font-size:12px;line-height:1.7}
 .src-item .pill{flex:none;padding:3px 7px}
 .src-text{min-width:0;overflow-wrap:anywhere}
-/* 药丸文字加深：--green(3.68) / --amber(4.26) 当 12px 文字都不到 AA */
-.pill-green{color:#0b7a54}
-.pill-amber{color:#8f5c05}
-.pill-blue{color:#3d4dab}
 
 .thinking{display:flex;flex:none;align-items:center;gap:8px;padding-bottom:4px;color:var(--dim);font-size:12px}
 .thinking-dot{width:6px;height:6px;border-radius:50%;background:var(--brand);animation:breathe 1.3s var(--ease) infinite}
@@ -1030,10 +969,7 @@ watch(id, (next, previous) => {
 }
 @media(max-width:640px){
   .chat-page{padding-bottom:16px}
-  .char-bar{flex-wrap:wrap;gap:8px;padding:10px 12px}
   /* 角色名不能被挤成只剩头像：给个下限，放不下就让模型那颗药丸换行 */
-  .char-select{width:auto;min-width:0;flex:1 1 160px}
-  .char-bar-note{display:none}
   .chat-head{padding:12px 14px 10px}
   .msg-scroll{padding:4px 14px 8px;gap:18px}
   .composer{margin:0 10px 10px}

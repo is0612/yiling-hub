@@ -97,6 +97,16 @@ function cyclePercent(character: OverviewCharacter) {
   return Math.round((character.cycle.dayIndex / character.cycle.totalDays) * 100);
 }
 
+/**
+ * 角色状态三档配色，和其余四个页面同一套映射。
+ * 注意不能复用 pill-rose / pill-amber：本页那两个类被 override 成「实心深底白字」，
+ * 是留给「模型未配置 / 任务失败 / 归档逾期」这类警报的；停用是常态信息，用警报式样会误报。
+ */
+function statusTone(status: OverviewCharacter["status"]) {
+  if (status === "运行中") return "pill-status is-green";
+  return status === "已暂停" ? "pill-status is-amber" : "pill-status is-gray";
+}
+
 function copyState() {
   if (alerts.value.length > 0) return `${alerts.value.length} 项需要处理`;
   if (countdown.value) return `一切正常 · ${countdown.value.characterName} 将在 ${countdown.value.atLabel} 归档`;
@@ -145,6 +155,7 @@ async function handleRefresh() {
     <div
       v-if="alerts.length"
       class="alert-bar"
+      role="status"
     >
       <span class="alert-dot" />
       <div class="alert-body">
@@ -165,6 +176,7 @@ async function handleRefresh() {
     <div
       v-else-if="characters.length"
       class="alert-bar is-quiet"
+      role="status"
     >
       <span class="alert-dot is-ok" />
       <span>{{ copyState() }}</span>
@@ -185,7 +197,7 @@ async function handleRefresh() {
       <ol class="guide-steps">
         <li><span>1</span>新建角色，填人设</li>
         <li><span>2</span>在模型设置里填模型 API</li>
-        <li><span>3</span>开始对话，8 天后自动归档</li>
+        <li><span>3</span>开始对话，到周期结束时自动归档</li>
       </ol>
       <button
         class="btn primary lg"
@@ -232,7 +244,7 @@ async function handleRefresh() {
               >归档逾期</span>
               <span
                 class="pill"
-                :class="singleCharacter.status === '运行中' ? 'pill-green' : 'pill-gray'"
+                :class="statusTone(singleCharacter.status)"
               >{{ singleCharacter.status }}</span>
             </div>
             <div class="hero-facts">
@@ -487,7 +499,7 @@ async function handleRefresh() {
                   >归档逾期</span>
                   <span
                     class="pill"
-                    :class="character.status === '运行中' ? 'pill-green' : 'pill-gray'"
+                    :class="statusTone(character.status)"
                   >{{ character.status }}</span>
                 </div>
                 <div class="role-facts">
@@ -1226,10 +1238,21 @@ async function handleRefresh() {
   background: #8f5c05;
   color: #fff;
 }
-.ov-a .role-head .pill-green {
+
+/* 角色状态：软底深字三档。类名独立于 pill-*，避开上面那套实心警报式样 */
+.ov-a .pill-status {
+  border: 0;
+}
+.ov-a .pill-status.is-green {
+  background: var(--green-soft);
   color: #0b7a54;
 }
-.ov-a .role-head .pill-gray {
+.ov-a .pill-status.is-amber {
+  background: var(--amber-soft);
+  color: #8f5c05;
+}
+.ov-a .pill-status.is-gray {
+  background: var(--surface-3);
   color: var(--text-2);
 }
 
