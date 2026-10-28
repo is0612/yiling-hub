@@ -11,7 +11,7 @@ Yiling Hub 由两部分组成：
   - `yarn scheduler:run`：按周期边界把快照/清理任务入队。
   - `yarn worker:run`：领取并执行记忆任务（调用模型）。
   - `yarn onebot:run`：QQ 小号（OneBot v11）渠道适配器（长连接收消息并回复）。
-  - `yarn bili:run`：B站 值班适配器（谷时调度 + 被动回复）。
+  - `yarn bili:run`：B站 值班适配器（谷时调度 + 被动回复）。部署细节见 `docs/B站值班服务器部署清单.md`。
 
 这些后台进程可以与本机 Web 服务同机运行，也可以部署到独立主机/容器。它们之间通过 PostgreSQL 的任务队列协调，天然支持横向拆分。
 

@@ -51,8 +51,10 @@ function parseSeen(text: string): SeenEntry[] {
   const entries: SeenEntry[] = [];
   for (const raw of text.split("\n")) {
     const line = raw.trim();
-    if (!line.startsWith("- ")) continue;
-    const parts = line.slice(2).split("·").map((p) => p.trim());
+    if (!line || line.startsWith("#")) continue;
+    // bili-desk 的 seen.md 有两种写法：markdown 列表「- 2026-…」和直接「2026-… · BV…」，都认
+    const body = line.startsWith("- ") ? line.slice(2) : line;
+    const parts = body.split("·").map((p) => p.trim());
     if (parts.length < 5) continue;
     const [date, bvid, title, author, ...rest] = parts;
     if (!/^BV[0-9A-Za-z]+$/.test(bvid)) continue;
@@ -158,14 +160,21 @@ async function main() {
     }
   }
 
-  // 4. 值班设置 → 连接 metadata
+  // 4. 值班设置 → 连接 metadata（只补缺失字段，不覆盖 yiling-hub 里已有的设置和 taste）
   if (Object.keys(config).length > 0) {
-    console.log(`  迁移值班设置 → 连接 metadata.duty`);
-    if (apply) {
-      const existing = (connection.metadata ?? {}) as Record<string, unknown>;
+    const existing = (connection.metadata ?? {}) as Record<string, unknown>;
+    const currentDuty = (existing.duty ?? {}) as Record<string, unknown>;
+    const merged = { ...config, ...currentDuty };
+    const added = Object.keys(config).filter((k) => !(k in currentDuty));
+    console.log(
+      added.length > 0
+        ? `  补 ${added.length} 个缺失的值班字段 → 连接 metadata.duty（已有设置保持不变）`
+        : `  跳过设置迁移（连接里已有完整值班设置，不覆盖 taste）`,
+    );
+    if (apply && added.length > 0) {
       await prisma.platformConnection.update({
         where: { id: connection.id },
-        data: { metadata: { ...existing, duty: config } },
+        data: { metadata: { ...existing, duty: merged } },
       });
     }
   }
