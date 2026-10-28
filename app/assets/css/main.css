@@ -52,6 +52,18 @@
   --ease: cubic-bezier(.2, .7, .3, 1);
   --sh-1: 0 1px 2px rgba(16, 24, 40, .05);
 
+  /* ── 间距阶（4 的倍数）──
+     字号 / 圆角 / 阴影 / 色阶都有阶，唯独间距长期缺失，单页能出现 20+ 个手写值。
+     新写样式一律从这里取：页面内边距 24，块间距 24 / 16，组内 12 / 8，图标与文字 8 / 4。
+     组与组的间距必须大于组内（这条比"具体用哪一档"重要）。 */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+  --sp-7: 48px;
+
   --ctl-h: 36px;
   --topbar-h: 56px;
   --side-w: 260px;
@@ -774,20 +786,26 @@ button, input, textarea, select { font: inherit; }
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 20px 24px 8px;
+  /* 右侧 14px + 常驻滚动条槽（Chrome 的 thin = 10px）≈ 左侧 24px，
+     滚动条出现/消失时正文不会横向抖（长人设正在输入，一越过高度阈值整段重新折行，光标跟着跳一行） */
+  scrollbar-gutter: stable;
+  /* 滚到底不要把滚动传给背后的页面 */
+  overscroll-behavior: contain;
+  padding: 20px 14px 8px 24px;
   color: var(--text-2);
   font-size: 14px;
-  /* 内容超高时在 body 内滚，6px 细滚动条不抢视觉（默认 15px 会横穿整个表单） */
+  /* 内容超高时在 body 内滚。只留这一组 scrollbar-* / ::-webkit-scrollbar 里的前者有效：
+     Chrome 一旦认了 `scrollbar-width`，同元素上的 ::-webkit-scrollbar 就整个作废（宽度也回到 10px），
+     所以别再写一遍 6px 的 webkit 规则，写了也不生效、还容易让人以为滚动条是 6px 的。 */
   scrollbar-width: thin;
   scrollbar-color: rgba(16, 24, 40, .11) transparent;
 }
-.el-overlay .el-dialog__body::-webkit-scrollbar { width: 6px; height: 6px; }
-.el-overlay .el-dialog__body::-webkit-scrollbar-track { background: transparent; }
-.el-overlay .el-dialog__body::-webkit-scrollbar-thumb { border-radius: 3px; background: rgba(16, 24, 40, .11); }
-.el-overlay .el-dialog__body::-webkit-scrollbar-thumb:hover { background: rgba(16, 24, 40, .24); }
 /* 字数统计默认是偏蓝的灰，在粉色体系里像另一个品牌 —— 收到 --dim */
 .el-overlay .el-dialog .el-input__count,
 .el-overlay .el-dialog .el-input__count-inner { background: transparent; color: var(--dim); }
+/* 多行文本框开启 show-word-limit 时，计数是绝对定位在右下角的，会直接压住最后一行正文
+   （长人设尤其明显）。给正文留出脚位，让计数落在空白上。 */
+.el-overlay .el-dialog .el-textarea:has(.el-input__count) .el-textarea__inner { padding-bottom: 26px; }
 
 .el-overlay .el-dialog__footer {
   flex: none;
