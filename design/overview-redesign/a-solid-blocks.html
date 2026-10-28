@@ -1,0 +1,741 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>忆灵小窝 · 总览 · A 色块平铺</title>
+<style>
+/* ══════════════════════════════════════════════════════════════
+   A · 色块平铺 —— 一张白台面，只有异常才上色
+   L0 画布 #f4f6f9 → L1 白卡（零描边零阴影）→ L2 卡内砖 #f8f9fb
+   → L3 行（无底色无分隔）→ L4 异常整行上色
+   ══════════════════════════════════════════════════════════════ */
+:root{
+  --bg:#f4f6f9; --surface:#fff; --brick:#f8f9fb; --brick2:#f1f3f7;
+  --text:#101620; --text2:#454f5e; --dim:#68717f; --icon:#9aa3b1;
+  --brand:#d94a76; --btn:#c9416b; --btn-h:#b8375f; --brand-strong:#bf3a63;
+  --red:#c92b41; --red-soft:#fdecee; --red-deep:#fbdfe3; --red-text:#8e2739;
+  --amber:#8f5c05; --amber-soft:#fdf6e7; --amber-deep:#fbeed3;
+  --green:#0b7a54; --green-soft:#e8f6f0;
+  --blue:#4c5fd5;
+}
+*,*::before,*::after{box-sizing:border-box}
+html,body{min-height:100%}
+body{
+  margin:0;
+  background:var(--bg);
+  color:var(--text);
+  font:14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+a{color:inherit;text-decoration:none}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+input{font:inherit}
+ul{margin:0;padding:0;list-style:none}
+h1,h2,p{margin:0}
+svg{display:block;flex:none}
+:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
+a:focus-visible{outline-offset:1px}
+
+/* ── 设计稿说明条（不影响正文布局） ─────────────────────────── */
+.spec-toggle{position:absolute;width:1px;height:1px;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.spec-note{
+  position:fixed;right:16px;bottom:16px;z-index:100;width:252px;
+  border-radius:10px;background:#101620;padding:12px 14px;
+  color:#fff;box-shadow:0 20px 44px -24px rgba(16,24,40,.7);
+}
+.spec-name{color:#fff;font-size:12px;font-weight:700;letter-spacing:.04em}
+.spec-desc{margin:4px 0 0;color:rgba(255,255,255,.66);font-size:12px}
+.spec-keys{margin:8px 0 0;color:rgba(255,255,255,.66);font-size:12px;line-height:1.7}
+.spec-keys li::before{content:"— ";color:rgba(255,255,255,.34)}
+.spec-close{position:absolute;top:7px;right:10px;color:rgba(255,255,255,.5);font-size:14px;line-height:1;cursor:pointer}
+.spec-close:hover{color:#fff}
+.spec-toggle:checked ~ .spec-note{display:none}
+.spec-toggle:focus-visible ~ .spec-note{outline:2px solid var(--brand);outline-offset:2px}
+
+/* ── 外壳：260px 侧栏 + 56px 顶栏（本套零描边，靠白/灰两块拼）── */
+.app-grid{display:grid;grid-template-columns:260px minmax(0,1fr);min-height:100vh}
+.sidebar{
+  position:fixed;inset:0 auto 0 0;z-index:30;display:flex;width:260px;
+  flex-direction:column;background:var(--surface);padding:12px 10px 10px;
+}
+.app-main{grid-column:2;min-width:0}
+.sidebar-top{flex:none;padding:2px 4px 10px}
+.brand{display:flex;align-items:center;gap:9px;padding:2px 4px;border-radius:8px}
+.brand-mark{
+  display:grid;width:30px;height:30px;flex:none;place-items:center;
+  border-radius:8px;background:var(--btn);color:#fff;
+  font-size:14px;font-weight:700;letter-spacing:-.02em;
+}
+.brand-title{display:block;color:var(--text);font-size:14px;font-weight:700;line-height:1.2}
+.brand-title span{color:var(--dim);font-weight:500}
+.brand-subtitle{display:block;margin-top:2px;color:var(--dim);font-size:12px;letter-spacing:.06em}
+.workspace-pill{margin-top:10px;border-radius:8px;background:var(--brick);padding:6px 9px}
+.workspace-name{display:block;color:var(--text2);font-size:12px;font-weight:600}
+.workspace-note{display:block;margin-top:1px;color:var(--dim);font-size:12px}
+
+.sidebar-nav{display:flex;flex:1;min-height:0;flex-direction:column;gap:1px;overflow-y:auto;margin-top:6px}
+.nav-group-label{padding:14px 8px 4px;color:var(--dim);font-size:12px;font-weight:700}
+.nav-link{
+  position:relative;display:flex;height:34px;align-items:center;gap:9px;
+  border-radius:8px;padding:0 9px;color:var(--text2);font-size:14px;font-weight:500;
+  transition:background .13s ease,color .13s ease;
+}
+.nav-link svg{width:16px;height:16px;color:var(--icon)}
+.nav-link:hover{background:var(--brick);color:var(--text)}
+.nav-link:hover svg{color:var(--text2)}
+.nav-link.is-active{background:var(--brick2);color:var(--text);font-weight:600}
+.nav-link.is-active::before{
+  position:absolute;top:8px;bottom:8px;left:0;width:2px;border-radius:2px;
+  background:var(--brand);content:"";
+}
+.nav-link.is-active svg{color:var(--brand)}
+.sidebar-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+.sidebar-bottom{flex:none;margin-top:8px;border-radius:10px;background:var(--brick);padding:6px 8px 4px}
+.admin-row{display:flex;align-items:center;gap:9px;padding:4px 2px}
+.admin-avatar{
+  display:grid;width:30px;height:30px;flex:none;place-items:center;border-radius:50%;
+  background:#fdf0f4;color:var(--brand-strong);font-size:12px;font-weight:700;
+}
+.admin-info{min-width:0;flex:1}
+.admin-name{display:block;color:var(--text2);font-size:12px;font-weight:600}
+.admin-note{display:block;margin-top:1px;color:var(--dim);font-size:12px}
+.sidebar-logout{
+  display:flex;width:100%;height:30px;align-items:center;gap:6px;
+  border-radius:8px;padding:0 8px;color:var(--dim);font-size:12px;
+}
+.sidebar-logout svg{width:14px;height:14px;color:var(--icon)}
+.sidebar-logout:hover{background:var(--brick2);color:var(--brand-strong)}
+.sidebar-logout:hover svg{color:var(--brand-strong)}
+.sidebar-version{display:flex;justify-content:space-between;padding:8px 8px 2px;color:var(--dim);font-size:12px}
+
+.topbar{
+  position:sticky;top:0;z-index:20;display:flex;height:56px;align-items:center;
+  justify-content:space-between;gap:16px;background:var(--surface);padding:0 18px;
+}
+.topbar-search{
+  display:flex;width:100%;max-width:380px;height:34px;align-items:center;gap:8px;
+  border-radius:8px;background:var(--brick2);padding:0 10px;
+}
+.topbar-search svg{width:14px;height:14px;color:var(--icon)}
+.topbar-search input{width:100%;border:0;background:none;color:var(--text);font-size:14px;outline:none}
+.topbar-search input::placeholder{color:var(--dim)}
+.topbar-right{display:flex;align-items:center;gap:10px}
+.env{display:inline-flex;height:26px;align-items:center;gap:6px;border-radius:999px;background:var(--brick);padding:0 10px;color:var(--dim);font-size:12px}
+.env-dot{width:6px;height:6px;border-radius:50%;background:var(--green)}
+.icon-btn{display:grid;width:32px;height:32px;place-items:center;border-radius:8px;color:var(--dim);transition:background .13s ease,color .13s ease}
+.icon-btn svg{width:16px;height:16px}
+.icon-btn:hover{background:var(--brick2);color:var(--text)}
+.user-pill{
+  display:flex;height:32px;align-items:center;gap:8px;border-radius:999px;
+  background:var(--brick);padding:0 12px 0 3px;color:var(--text2);font-size:12px;font-weight:600;
+}
+.user-avatar{
+  display:grid;width:26px;height:26px;place-items:center;border-radius:50%;
+  background:#fdf0f4;color:var(--brand-strong);font-size:12px;font-weight:700;
+}
+.topbar-logout{height:30px;border-radius:8px;padding:0 10px;color:var(--dim);font-size:12px}
+.topbar-logout:hover{background:var(--brick2);color:var(--text)}
+
+/* ── 页面 ──────────────────────────────────────────────────── */
+.page-wrap{padding:22px 28px 48px}
+.page-head{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;margin-bottom:16px}
+.crumb{color:var(--dim);font-size:12px}
+.crumb b{color:var(--text2);font-weight:500}
+.page-title{margin-top:4px;color:var(--text);font-size:22px;font-weight:700;letter-spacing:-.015em;line-height:1.25}
+.page-sub{margin-top:5px;color:var(--text2);font-size:14px}
+.page-side{display:flex;flex:none;flex-direction:column;align-items:flex-end;gap:8px}
+.page-actions{display:flex;align-items:center;gap:8px}
+.updated{color:var(--dim);font-size:12px}
+.btn{
+  display:inline-flex;height:36px;align-items:center;justify-content:center;gap:6px;
+  border-radius:8px;background:none;padding:0 10px;
+  color:var(--text2);font-size:14px;font-weight:600;white-space:nowrap;
+  transition:background .14s ease,color .14s ease;
+}
+.btn svg{width:14px;height:14px;color:var(--dim)}
+.btn:hover{color:var(--text);text-decoration:underline;text-underline-offset:3px}
+.btn:hover svg{color:var(--text2)}
+.btn.primary{background:var(--btn);color:#fff;padding:0 14px}
+.btn.primary svg{color:#fff}
+.btn.primary:hover{background:var(--btn-h);color:#fff;text-decoration:none}
+
+/* 异常条 */
+.alert-bar{
+  display:flex;align-items:center;gap:10px;margin-bottom:14px;
+  border-radius:8px;background:var(--red-soft);padding:10px 14px;
+  color:var(--red-text);font-size:12px;
+}
+.alert-dot{width:6px;height:6px;flex:none;border-radius:50%;background:var(--red)}
+.alert-body{display:flex;flex:1;min-width:0;flex-wrap:wrap;gap:4px 14px}
+.alert-item{white-space:nowrap}
+.alert-link{
+  display:inline-flex;min-height:24px;flex:none;align-items:center;gap:4px;
+  border-radius:6px;padding:0 6px;color:var(--brand-strong);font-size:12px;font-weight:600;
+}
+.alert-link:hover{background:#fff}
+
+/* KPI：四块白砖，gap 16 —— 零描边时靠缝分层，不能粘成一块 */
+.kpi-row{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px;margin-bottom:20px}
+.kpi{display:block;border-radius:10px;background:var(--surface);padding:14px 16px 15px;transition:background .14s ease}
+.kpi:hover{background:var(--brick)}
+.kpi-k{display:flex;align-items:center;gap:6px;color:var(--text2);font-weight:500;font-size:12px}
+.kpi-k svg{width:14px;height:14px;color:var(--icon)}
+.kpi-v{
+  display:flex;align-items:baseline;gap:4px;margin-top:6px;
+  color:var(--text);font-size:26px;font-weight:700;
+  font-variant-numeric:tabular-nums;letter-spacing:-.02em;line-height:1.15;
+}
+.kpi-v small{color:var(--dim);font-size:12px;font-weight:500}
+.kpi-foot{margin-top:7px;color:var(--dim);font-size:12px;line-height:1.55}
+.kpi-foot .is-err{color:var(--red);font-weight:600}
+
+/* 区块标题 */
+.sec-h{display:flex;align-items:center;gap:10px;margin:22px 0 10px}
+.sec-h:first-child{margin-top:0}
+.sec-h h2{color:var(--text);font-size:14px;font-weight:700}
+.sec-h .sub{color:var(--dim);font-size:12px}
+.sec-h .more{
+  display:inline-flex;min-height:24px;align-items:center;gap:2px;margin-left:auto;
+  border-radius:6px;padding:0 6px;color:var(--brand-strong);font-size:12px;font-weight:600;
+}
+.sec-h .more:hover{background:var(--brick2)}
+
+/* 白卡：零描边零阴影，卡内 6px 内衬，砖在衬里活动 */
+.card{border-radius:10px;background:var(--surface);padding:6px}
+
+.home-cols{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(0,1fr);gap:22px;align-items:start}
+
+/* 角色行 */
+.role-row{
+  position:relative;display:grid;grid-template-columns:34px minmax(0,1fr) auto;
+  gap:11px;align-items:start;border-radius:8px;padding:12px;
+  transition:background .14s ease;
+}
+/* 行之间留 4px 缝、行内 padding 从 14 收到 12：净高不变，但相邻两行之间有了空隙。
+   A 的行静止态没有分隔线，全靠这 4px 撑住边界（灰度打印时尤其明显）。 */
+.role-row + .role-row{margin-top:4px}
+.role-row:hover,.role-row:focus-within{background:var(--brick)}
+.role-row.is-bad{background:var(--red-soft);box-shadow:inset 4px 0 0 var(--red)}
+/* 逾期只给竖条，不给整行底色：A 的浅底是全页唯一的分块信号，一屏 4 行以上都铺色会变拼贴 */
+.role-row.is-over{box-shadow:inset 4px 0 0 var(--amber)}
+.role-row.is-bad:hover,.role-row.is-bad:focus-within{background:var(--red-deep)}
+.role-row.is-over:hover,.role-row.is-over:focus-within{background:var(--brick)}
+/* 唯一需要抬字的地方：#fdecee 底会把 12px 灰压到 4.32:1（低于本项目自定的 AA 下限），
+   只在这一层提到 #454f5e（7.27:1）；其余行仍是 #68717f。 */
+.role-row.is-bad .role-facts,.role-row.is-bad .role-cycle-text{color:var(--text2)}
+.avatar{
+  display:grid;width:34px;height:34px;place-items:center;border-radius:8px;
+  font-size:14px;font-weight:700;letter-spacing:-.02em;
+}
+.avatar-blue{background:#eef0fd;color:#4a58c4}
+.avatar-mint{background:var(--green-soft);color:#12785a}
+.avatar-purple{background:#fdf0f4;color:var(--brand-strong)}
+.avatar-peach{background:#fdf1ea;color:#a8663f}
+.role-body{min-width:0}
+.role-head{display:flex;height:22px;align-items:center;gap:6px}
+.role-name{color:var(--text);font-size:14px;font-weight:700;line-height:22px}
+.role-name:hover{color:var(--brand-strong)}
+.role-facts{
+  margin-top:4px;color:var(--text2);font-size:12px;line-height:18px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.role-cycle{display:flex;height:18px;align-items:center;gap:9px;margin-top:6px}
+.role-track{width:96px;height:5px;flex:none;overflow:hidden;border-radius:3px;background:var(--brick2)}
+.role-track i{display:block;height:100%;border-radius:3px;background:var(--brand)}
+.role-track i.is-over{background:var(--amber)}
+.role-track i.is-pause{background:#d5d9df}
+.role-cycle-text{color:var(--dim);font-size:12px;line-height:18px}
+.role-links{display:flex;flex:none;gap:4px}
+.role-links a{
+  display:inline-flex;align-items:center;gap:3px;border-radius:6px;padding:6px 8px;
+  color:var(--dim);font-size:12px;line-height:14px;transition:background .14s ease,color .14s ease;
+}
+.role-links a svg{width:12px;height:12px;color:var(--icon);stroke-width:2}
+.role-links a:hover{background:var(--brick);color:var(--brand-strong)}
+.role-links a:hover svg{color:var(--brand-strong)}
+
+/* 状态药丸：异常实心深底白字，正常软底深字 */
+.pill{
+  display:inline-flex;height:20px;flex:none;align-items:center;border-radius:999px;
+  padding:0 8px;font-size:12px;font-weight:600;line-height:1;white-space:nowrap;
+}
+.pill-red{background:var(--red);color:#fff}
+.pill-amber{background:var(--amber);color:#fff}
+.pill-green{background:var(--green-soft);color:var(--green)}
+.pill-gray{background:var(--brick2);color:var(--text2)}
+
+/* 事件流 */
+.event-row{display:flex;align-items:flex-start;gap:9px;border-radius:8px;padding:14px 12px;transition:background .14s ease}
+.event-row:hover{background:var(--brick)}
+.event-dot{width:6px;height:6px;margin-top:7px;flex:none;border-radius:50%;background:var(--dim)}
+.event-dot.ok{background:var(--green)}
+.event-dot.err{background:var(--red)}
+.event-dot.wait{background:var(--amber)}
+.event-dot.run{background:var(--blue)}
+.event-body{min-width:0;flex:1}
+.event-title{color:var(--text2);font-size:14px;font-weight:600;line-height:20px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.event-meta{margin-top:2px;color:var(--dim);font-size:12px;line-height:18px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.event-time{flex:none;color:var(--dim);font-size:12px;line-height:20px;font-variant-numeric:tabular-nums}
+
+/* 任务行 */
+.task-row{display:flex;align-items:center;gap:10px;border-radius:8px;padding:12px;transition:background .14s ease}
+.task-row:hover{background:var(--brick)}
+.task-dot{width:7px;height:7px;flex:none;border-radius:50%;background:var(--dim)}
+.task-dot.ok{background:var(--green)}
+.task-dot.err{background:var(--red)}
+.task-dot.wait{background:var(--amber)}
+.task-dot.run{background:var(--blue)}
+.task-body{min-width:0;flex:1}
+.task-title{color:var(--text2);font-size:14px;font-weight:600;line-height:20px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.task-meta{margin-top:2px;color:var(--dim);font-size:12px;line-height:18px}
+
+/* 系统状况 */
+.admin-wrap{margin-top:4px}
+.admin-grid{display:flex;flex-wrap:wrap;gap:10px 26px;padding:8px}
+.admin-cell{display:flex;align-items:center;gap:7px;font-size:12px}
+.admin-label{color:var(--dim)}
+.admin-cell b{color:var(--text2);font-weight:600;font-variant-numeric:tabular-nums}
+.admin-cell b.is-ok{color:var(--green)}
+.audit-list{padding:0 8px 6px}
+.audit-caption{padding:6px 0 2px;color:var(--dim);font-size:12px}
+.audit-row{display:flex;align-items:center;gap:10px;border-radius:6px;padding:4px 0;font-size:12px}
+.audit-action{color:var(--text2);font-family:Consolas, ui-monospace, monospace}
+.audit-entity{color:var(--dim)}
+.audit-time{margin-left:auto;color:var(--dim);font-variant-numeric:tabular-nums}
+
+@media (max-width:1150px){
+  .home-cols{grid-template-columns:minmax(0,1fr)}
+  .kpi-row{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+</style>
+</head>
+<body>
+<input type="checkbox" id="spec-toggle" class="spec-toggle" aria-label="关闭设计说明">
+<div class="spec-note">
+  <label class="spec-close" for="spec-toggle" title="关闭说明">×</label>
+  <div class="spec-name">A · 色块平铺</div>
+  <p class="spec-desc">一张白台面，只有异常才上色。</p>
+  <ul class="spec-keys">
+    <li>零描边零阴影，靠明度分层</li>
+    <li>卡内 6px 内衬，行 hover 变砖</li>
+    <li>异常＝4px 左竖条 + 实心药丸；未配置再加整行浅底</li>
+  </ul>
+</div>
+
+<div class="app-grid">
+  <aside class="sidebar">
+    <div class="sidebar-top">
+      <a class="brand" href="#">
+        <span class="brand-mark" aria-hidden="true">忆</span>
+        <span class="brand-wordmark">
+          <span class="brand-title">忆灵小窝 <span>Yiling</span></span>
+          <span class="brand-subtitle">AI CHARACTER HUB</span>
+        </span>
+      </a>
+      <div class="workspace-pill">
+        <span class="workspace-name">个人工作空间</span>
+        <span class="workspace-note">本地演示环境</span>
+      </div>
+    </div>
+
+    <nav class="sidebar-nav" aria-label="主导航">
+      <div class="nav-group-label">工作空间</div>
+      <a class="nav-link is-active" href="#" aria-current="page">
+        <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="3.5" width="7" height="7" rx="1.6"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.6"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.6"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.6"/></svg>
+        <span class="sidebar-label">总览</span>
+      </a>
+      <a class="nav-link" href="#">
+        <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.4"/><path d="M5 20c.6-3.6 3.5-5.6 7-5.6s6.4 2 7 5.6"/></svg>
+        <span class="sidebar-label">角色管理</span>
+      </a>
+      <a class="nav-link" href="#">
+        <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="6.5" y="6.5" width="11" height="11" rx="2.2"/><rect x="10" y="10" width="4" height="4" rx="1"/><path d="M10 3.5v3M14 3.5v3M10 17.5v3M14 17.5v3M3.5 10h3M3.5 14h3M17.5 10h3M17.5 14h3"/></svg>
+        <span class="sidebar-label">记忆驾驶舱</span>
+      </a>
+      <a class="nav-link" href="#">
+        <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11.6c0 3.2-3.6 5.8-8 5.8-1.1 0-2.2-.2-3.2-.5L4.4 19l1.4-3.2C4.7 14.8 4 13.3 4 11.6 4 8.4 7.6 5.8 12 5.8s8 2.6 8 5.8Z"/></svg>
+        <span class="sidebar-label">AI 对话</span>
+      </a>
+      <a class="nav-link" href="#">
+        <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="5.5" width="17" height="15" rx="2.4"/><path d="M3.5 10h17M8 3.5v4M16 3.5v4"/></svg>
+        <span class="sidebar-label">阶段总结</span>
+      </a>
+
+      <div class="nav-group-label">系统管理</div>
+      <a class="nav-link" href="#">
+        <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2.2"/><path d="M8.3 15.7a5.3 5.3 0 0 1 0-7.4M15.7 8.3a5.3 5.3 0 0 1 0 7.4M5.7 18.3a8.9 8.9 0 0 1 0-12.6M18.3 5.7a8.9 8.9 0 0 1 0 12.6"/></svg>
+        <span class="sidebar-label">渠道管理</span>
+      </a>
+      <a class="nav-link" href="#">
+        <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="6" width="17" height="12.5" rx="2.6"/><path d="M10.2 10.3 14.4 12.2l-4.2 1.9Z"/></svg>
+        <span class="sidebar-label">B站值班台</span>
+      </a>
+      <a class="nav-link" href="#">
+        <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5h16"/><rect x="6" y="11" width="3.2" height="6" rx="1"/><rect x="11" y="7.5" width="3.2" height="9.5" rx="1"/><rect x="16" y="13" width="3.2" height="4" rx="1"/></svg>
+        <span class="sidebar-label">任务监控</span>
+      </a>
+      <a class="nav-link" href="#">
+        <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5.5" width="18" height="13" rx="2.6"/><circle cx="8.8" cy="10.8" r="1.8"/><path d="M6.2 15.6c.4-1.4 1.4-2.1 2.6-2.1s2.2.7 2.6 2.1M14.4 10h4.2M14.4 13.4h3.2"/></svg>
+        <span class="sidebar-label">身份管理</span>
+      </a>
+      <a class="nav-link" href="#">
+        <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="9.5" cy="8.6" r="3"/><path d="M3.8 19.4c.5-3 2.9-4.7 5.7-4.7s5.2 1.7 5.7 4.7"/><path d="M16.4 6.2a2.8 2.8 0 0 1 0 5.4M17.6 14.9c1.8.6 2.9 2.1 3.2 4.5"/></svg>
+        <span class="sidebar-label">用户管理</span>
+      </a>
+      <a class="nav-link" href="#">
+        <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h5.6M14.4 8H20M4 16h3.6M12.4 16H20"/><circle cx="12" cy="8" r="2.2"/><circle cx="10" cy="16" r="2.2"/></svg>
+        <span class="sidebar-label">系统设置</span>
+      </a>
+    </nav>
+
+    <div class="sidebar-bottom">
+      <div class="admin-row">
+        <div class="admin-avatar" aria-hidden="true">管</div>
+        <div class="admin-info">
+          <span class="admin-name">管理员</span>
+          <span class="admin-note">已登录管理员</span>
+        </div>
+      </div>
+      <button class="sidebar-logout" type="button">
+        <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 6.5V5a1.8 1.8 0 0 0-1.8-1.8H6.2A1.8 1.8 0 0 0 4.4 5v14a1.8 1.8 0 0 0 1.8 1.8h6a1.8 1.8 0 0 0 1.8-1.8v-1.5"/><path d="M11 12h9M17.4 8.6 20.8 12l-3.4 3.4"/></svg>
+        退出登录
+      </button>
+      <div class="sidebar-version"><span>Yiling Hub · 预览版</span><span>v0.1</span></div>
+    </div>
+  </aside>
+
+  <div class="app-main">
+    <header class="topbar">
+      <div class="topbar-search">
+        <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="6.2"/><path d="M15.6 15.6 20 20"/></svg>
+        <input type="text" placeholder="搜索角色、记忆、阶段总结……" aria-label="搜索角色、记忆、阶段总结">
+      </div>
+      <div class="topbar-right">
+        <span class="env"><span class="env-dot" aria-hidden="true"></span>已登录</span>
+        <button class="icon-btn" type="button" aria-label="通知">
+          <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6.6 10.4a5.4 5.4 0 0 1 10.8 0c0 4.2 1.4 5.6 1.4 5.6H5.2s1.4-1.4 1.4-5.6Z"/><path d="M10.2 18.4a1.9 1.9 0 0 0 3.6 0"/></svg>
+        </button>
+        <span class="user-pill"><span class="user-avatar" aria-hidden="true">管</span>管理员</span>
+        <button class="topbar-logout" type="button">退出</button>
+      </div>
+    </header>
+
+    <main class="page-wrap">
+      <div class="page-head">
+        <div class="page-heading">
+          <div class="crumb">工作空间 <span aria-hidden="true">/</span> <b>总览</b></div>
+          <h1 class="page-title">今天的工作台</h1>
+          <p class="page-sub">异常、进度和最近发生的事，一屏看完。</p>
+        </div>
+        <div class="page-side">
+          <div class="page-actions">
+            <button class="btn" type="button">
+              <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M19.6 12a7.6 7.6 0 1 1-2.5-5.6"/><path d="M20.4 4.4V9h-4.6"/></svg>
+              刷新
+            </button>
+            <button class="btn" type="button">开始对话 · 林昭</button>
+            <button class="btn primary" type="button">
+              <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5.2v13.6M5.2 12h13.6"/></svg>
+              新建角色
+            </button>
+          </div>
+          <div class="updated">数据更新于 11:28</div>
+        </div>
+      </div>
+
+      <div class="alert-bar" role="status" aria-live="polite">
+        <span class="alert-dot" aria-hidden="true"></span>
+        <div class="alert-body">
+          <span class="alert-item">2 个角色未配置模型，归档任务会留在队列里不执行</span>
+          <span class="alert-item">1 个角色的归档已逾期</span>
+        </div>
+        <a class="alert-link" href="#">去处理 <span aria-hidden="true">›</span></a>
+      </div>
+
+      <div class="kpi-row">
+        <a class="kpi" href="#">
+          <span class="kpi-k">
+            <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="5.5" width="17" height="15" rx="2.4"/><path d="M3.5 10h17M8 3.5v4M16 3.5v4"/></svg>
+            距下次归档
+          </span>
+          <span class="kpi-v">3<small>天</small></span>
+          <span class="kpi-foot">08-14 03:00 · 林昭</span>
+        </a>
+        <a class="kpi" href="#">
+          <span class="kpi-k">
+            <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11.6c0 3.2-3.6 5.8-8 5.8-1.1 0-2.2-.2-3.2-.5L4.4 19l1.4-3.2C4.7 14.8 4 13.3 4 11.6 4 8.4 7.6 5.8 12 5.8s8 2.6 8 5.8Z"/></svg>
+            本周期消息
+          </span>
+          <span class="kpi-v">128<small>条</small></span>
+          <span class="kpi-foot">第 3/8 天 · 08-14 归档</span>
+        </a>
+        <a class="kpi" href="#">
+          <span class="kpi-k">
+            <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="3.5" width="12.5" height="12.5" rx="2.4"/><path d="M16 20.4H6.4A2.4 2.4 0 0 1 4 18V8.4"/></svg>
+            最近一次归档
+          </span>
+          <span class="kpi-v">08-06<small>v3</small></span>
+          <span class="kpi-foot">林昭 · 08-06 03:00 生成</span>
+        </a>
+        <a class="kpi" href="#">
+          <span class="kpi-k">
+            <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8"/><path d="M12 7.4V12l3.2 1.9"/></svg>
+            待处理任务
+          </span>
+          <span class="kpi-v">2<small>项</small></span>
+          <span class="kpi-foot"><span class="is-err">1 个失败待处理</span></span>
+        </a>
+      </div>
+
+      <div class="home-cols">
+        <section>
+          <div class="sec-h">
+            <h2>角色</h2>
+            <span class="sub">异常优先，其余按归档时间</span>
+            <a class="more" href="#">全部 <span aria-hidden="true">›</span></a>
+          </div>
+          <div class="card">
+            <ul class="role-list" role="list">
+              <li class="role-row is-bad">
+                <div class="avatar avatar-blue" aria-hidden="true">砚</div>
+                <div class="role-body">
+                  <div class="role-head">
+                    <a class="role-name" href="#">沈砚</a>
+                    <span class="pill pill-red">模型未配置</span>
+                    <span class="pill pill-green">运行中</span>
+                  </div>
+                  <div class="role-facts">未接渠道 · 8 天周期 · 上次归档 08-06 · 下次 08-14 03:00</div>
+                  <div class="role-cycle">
+                    <span class="role-cycle-text">共 26 条长期记忆</span>
+                  </div>
+                </div>
+                <div class="role-links">
+                  <a href="#" aria-label="与 沈砚 对话">
+                    <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11.6c0 3.2-3.6 5.8-8 5.8-1.1 0-2.2-.2-3.2-.5L4.4 19l1.4-3.2C4.7 14.8 4 13.3 4 11.6 4 8.4 7.6 5.8 12 5.8s8 2.6 8 5.8Z"/></svg>
+                    对话
+                  </a>
+                  <a href="#" aria-label="查看 沈砚 的记忆">
+                    <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="6.5" y="6.5" width="11" height="11" rx="2.2"/><rect x="10" y="10" width="4" height="4" rx="1"/><path d="M10 3.5v3M14 3.5v3M10 17.5v3M14 17.5v3M3.5 10h3M3.5 14h3M17.5 10h3M17.5 14h3"/></svg>
+                    记忆
+                  </a>
+                  <a href="#" aria-label="查看 沈砚 的阶段总结">
+                    <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="5.5" width="17" height="15" rx="2.4"/><path d="M3.5 10h17M8 3.5v4M16 3.5v4"/></svg>
+                    归档
+                  </a>
+                </div>
+              </li>
+
+              <li class="role-row is-over">
+                <div class="avatar avatar-mint" aria-hidden="true">岚</div>
+                <div class="role-body">
+                  <div class="role-head">
+                    <a class="role-name" href="#">阿岚</a>
+                    <span class="pill pill-amber">归档逾期</span>
+                    <span class="pill pill-green">运行中</span>
+                  </div>
+                  <div class="role-facts">B站私信 · 8 天周期 · 上次归档 08-06 · 下次 08-14 03:00</div>
+                  <div class="role-cycle">
+                    <div class="role-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100" aria-label="阿岚 本周期进度，已逾期">
+                      <i class="is-over" style="width:100%"></i>
+                    </div>
+                    <span class="role-cycle-text">第 8/8 天 · 本周期 64 条消息</span>
+                  </div>
+                </div>
+                <div class="role-links">
+                  <a href="#" aria-label="与 阿岚 对话">
+                    <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11.6c0 3.2-3.6 5.8-8 5.8-1.1 0-2.2-.2-3.2-.5L4.4 19l1.4-3.2C4.7 14.8 4 13.3 4 11.6 4 8.4 7.6 5.8 12 5.8s8 2.6 8 5.8Z"/></svg>
+                    对话
+                  </a>
+                  <a href="#" aria-label="查看 阿岚 的记忆">
+                    <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="6.5" y="6.5" width="11" height="11" rx="2.2"/><rect x="10" y="10" width="4" height="4" rx="1"/><path d="M10 3.5v3M14 3.5v3M10 17.5v3M14 17.5v3M3.5 10h3M3.5 14h3M17.5 10h3M17.5 14h3"/></svg>
+                    记忆
+                  </a>
+                  <a href="#" aria-label="查看 阿岚 的阶段总结">
+                    <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="5.5" width="17" height="15" rx="2.4"/><path d="M3.5 10h17M8 3.5v4M16 3.5v4"/></svg>
+                    归档
+                  </a>
+                </div>
+              </li>
+
+              <li class="role-row">
+                <div class="avatar avatar-purple" aria-hidden="true">昭</div>
+                <div class="role-body">
+                  <div class="role-head">
+                    <a class="role-name" href="#">林昭</a>
+                    <span class="pill pill-green">运行中</span>
+                  </div>
+                  <div class="role-facts">B站私信 / 微博 · 8 天周期 · 上次归档 08-06 · 下次 08-14 03:00</div>
+                  <div class="role-cycle">
+                    <div class="role-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="37" aria-label="林昭 本周期进度">
+                      <i style="width:37%"></i>
+                    </div>
+                    <span class="role-cycle-text">第 3/8 天 · 本周期 128 条消息</span>
+                  </div>
+                </div>
+                <div class="role-links">
+                  <a href="#" aria-label="与 林昭 对话">
+                    <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11.6c0 3.2-3.6 5.8-8 5.8-1.1 0-2.2-.2-3.2-.5L4.4 19l1.4-3.2C4.7 14.8 4 13.3 4 11.6 4 8.4 7.6 5.8 12 5.8s8 2.6 8 5.8Z"/></svg>
+                    对话
+                  </a>
+                  <a href="#" aria-label="查看 林昭 的记忆">
+                    <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="6.5" y="6.5" width="11" height="11" rx="2.2"/><rect x="10" y="10" width="4" height="4" rx="1"/><path d="M10 3.5v3M14 3.5v3M10 17.5v3M14 17.5v3M3.5 10h3M3.5 14h3M17.5 10h3M17.5 14h3"/></svg>
+                    记忆
+                  </a>
+                  <a href="#" aria-label="查看 林昭 的阶段总结">
+                    <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="5.5" width="17" height="15" rx="2.4"/><path d="M3.5 10h17M8 3.5v4M16 3.5v4"/></svg>
+                    归档
+                  </a>
+                </div>
+              </li>
+
+              <li class="role-row">
+                <div class="avatar avatar-peach" aria-hidden="true">木</div>
+                <div class="role-body">
+                  <div class="role-head">
+                    <a class="role-name" href="#">木木</a>
+                    <span class="pill pill-gray">已暂停</span>
+                  </div>
+                  <div class="role-facts">未接渠道 · 8 天周期 · 上次归档 07-29 · 自动归档已关闭</div>
+                  <div class="role-cycle">
+                    <span class="role-cycle-text">共 8 条长期记忆</span>
+                  </div>
+                </div>
+                <div class="role-links">
+                  <a href="#" aria-label="与 木木 对话">
+                    <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11.6c0 3.2-3.6 5.8-8 5.8-1.1 0-2.2-.2-3.2-.5L4.4 19l1.4-3.2C4.7 14.8 4 13.3 4 11.6 4 8.4 7.6 5.8 12 5.8s8 2.6 8 5.8Z"/></svg>
+                    对话
+                  </a>
+                  <a href="#" aria-label="查看 木木 的记忆">
+                    <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="6.5" y="6.5" width="11" height="11" rx="2.2"/><rect x="10" y="10" width="4" height="4" rx="1"/><path d="M10 3.5v3M14 3.5v3M10 17.5v3M14 17.5v3M3.5 10h3M3.5 14h3M17.5 10h3M17.5 14h3"/></svg>
+                    记忆
+                  </a>
+                  <a href="#" aria-label="查看 木木 的阶段总结">
+                    <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="5.5" width="17" height="15" rx="2.4"/><path d="M3.5 10h17M8 3.5v4M16 3.5v4"/></svg>
+                    归档
+                  </a>
+                </div>
+              </li>
+            </ul>
+          </div>
+        </section>
+
+        <section>
+          <div class="sec-h">
+            <h2>最近发生</h2>
+            <span class="sub">任务与归档</span>
+            <a class="more" href="#">任务监控 <span aria-hidden="true">›</span></a>
+          </div>
+          <div class="card">
+            <ul class="event-list" role="list">
+              <li class="event-row">
+                <span class="event-dot ok" aria-hidden="true"></span>
+                <div class="event-body">
+                  <div class="event-title">阶段总结已生成 · v3</div>
+                  <div class="event-meta">林昭 · 08-01 00:00 — 08-06 03:00</div>
+                </div>
+                <span class="event-time">08-06 03:00</span>
+              </li>
+              <li class="event-row">
+                <span class="event-dot wait" aria-hidden="true"></span>
+                <div class="event-body">
+                  <div class="event-title">生成阶段总结 · 等待重试</div>
+                  <div class="event-meta">阿岚 · 缺少模型配置</div>
+                </div>
+                <span class="event-time">08-06 03:00</span>
+              </li>
+              <li class="event-row">
+                <span class="event-dot run" aria-hidden="true"></span>
+                <div class="event-body">
+                  <div class="event-title">长期记忆更新 · 执行成功</div>
+                  <div class="event-meta">林昭 · 新增 4 条长期记忆</div>
+                </div>
+                <span class="event-time">08-06 03:02</span>
+              </li>
+              <li class="event-row">
+                <span class="event-dot err" aria-hidden="true"></span>
+                <div class="event-body">
+                  <div class="event-title">生成阶段总结 · 执行失败</div>
+                  <div class="event-meta">阿岚 · 请求超时（30s）</div>
+                </div>
+                <span class="event-time">08-05 09:14</span>
+              </li>
+            </ul>
+          </div>
+
+          <div class="sec-h">
+            <h2>最近任务</h2>
+            <span class="sub">3 项未结束</span>
+          </div>
+          <div class="card">
+            <ul class="task-list" role="list">
+              <li class="task-row">
+                <span class="task-dot ok" aria-hidden="true"></span>
+                <div class="task-body">
+                  <div class="task-title">生成阶段总结 · 已成功</div>
+                  <div class="task-meta">林昭</div>
+                </div>
+              </li>
+              <li class="task-row">
+                <span class="task-dot err" aria-hidden="true"></span>
+                <div class="task-body">
+                  <div class="task-title">生成阶段总结 · 已失败</div>
+                  <div class="task-meta">阿岚</div>
+                </div>
+              </li>
+              <li class="task-row">
+                <span class="task-dot wait" aria-hidden="true"></span>
+                <div class="task-body">
+                  <div class="task-title">生成阶段总结 · 等待重试</div>
+                  <div class="task-meta">阿岚</div>
+                </div>
+              </li>
+              <li class="task-row">
+                <span class="task-dot run" aria-hidden="true"></span>
+                <div class="task-body">
+                  <div class="task-title">重新生成总结 · 运行中</div>
+                  <div class="task-meta">林昭</div>
+                </div>
+              </li>
+            </ul>
+          </div>
+        </section>
+      </div>
+
+      <section class="admin-wrap">
+        <div class="sec-h">
+          <h2>系统状况</h2>
+          <span class="sub">仅管理员可见</span>
+        </div>
+        <div class="card">
+          <div class="admin-grid">
+            <div class="admin-cell"><span class="admin-label">数据库</span><b class="is-ok">正常</b></div>
+            <div class="admin-cell"><span class="admin-label">任务队列</span><b>1 等待 / 0 运行 / 1 失败</b></div>
+            <div class="admin-cell"><span class="admin-label">渠道</span><b>2 / 3 在线</b></div>
+          </div>
+          <div class="audit-list">
+            <div class="audit-caption">最近操作</div>
+            <div class="audit-row">
+              <span class="audit-action">snapshot.regenerate</span>
+              <span class="audit-entity">character</span>
+              <span class="audit-time">08-06 03:12</span>
+            </div>
+            <div class="audit-row">
+              <span class="audit-action">task.requeue</span>
+              <span class="audit-entity">task</span>
+              <span class="audit-time">08-06 02:41</span>
+            </div>
+            <div class="audit-row">
+              <span class="audit-action">character.update</span>
+              <span class="audit-entity">character</span>
+              <span class="audit-time">08-05 21:07</span>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+</div>
+</body>
+</html>
