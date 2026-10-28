@@ -19,7 +19,8 @@ import assert from "node:assert/strict";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { callBiliModel } from "../server/utils/channel-adapter/bili/llm";
-import { parseJsonLoose, extractBvids } from "../server/utils/channel-adapter/bili/cards";
+import { extractBvids } from "../server/utils/channel-adapter/bili/cards";
+import { parseJsonLoose } from "../server/utils/loose-json";
 
 type MockReply = { status?: number; content?: string; finishReason?: string; reasoningTokens?: number };
 

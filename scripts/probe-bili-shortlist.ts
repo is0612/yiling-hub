@@ -5,7 +5,8 @@ import { resolveChatModelSettings } from "../server/utils/chat-model-config";
 import { resolveCharacterApiKey } from "../server/utils/credential-encryption";
 import { parseDutyInput } from "../server/utils/channel-adapter/bili/configure";
 import { buildDutyPrompt } from "../server/utils/channel-adapter/bili/duty-prompt";
-import { parseJsonLoose, extractBvids } from "../server/utils/channel-adapter/bili/cards";
+import { extractBvids } from "../server/utils/channel-adapter/bili/cards";
+import { parseJsonLoose } from "../server/utils/loose-json";
 
 const CHARACTER_ID = process.env.CHAR_ID || "79737b9e-39c8-4bb3-816e-121c51a109f4";
 

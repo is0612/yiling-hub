@@ -15,7 +15,11 @@ import {
   readOnebotMessageText,
   readOnebotUserId,
   type OnebotMessageType,
+  type OnebotSegment,
 } from "./types";
+
+/** 出站消息：纯文本，或段数组（表情、图片、@）。 */
+export type OnebotOutgoingMessage = string | OnebotSegment[];
 
 export type OnebotConnectionConfig = {
   wsUrl: string;
@@ -182,22 +186,25 @@ export function connectOnebot(
   });
 }
 
-/** Sends a private message through the OneBot HTTP API. */
+/**
+ * Sends a private message through the OneBot HTTP API. `message` is either plain text or a
+ * segment array (face / image / at), which is what the v11 spec calls CQ messages.
+ */
 export async function sendOnebotPrivateMessage(
   config: OnebotConnectionConfig,
   userId: string,
-  text: string,
+  message: OnebotOutgoingMessage,
 ): Promise<void> {
-  await sendOnebotApi(config, "send_private_msg", { user_id: Number(userId), message: text });
+  await sendOnebotApi(config, "send_private_msg", { user_id: Number(userId), message });
 }
 
 /** Sends a group message through the OneBot HTTP API. */
 export async function sendOnebotGroupMessage(
   config: OnebotConnectionConfig,
   groupId: string,
-  text: string,
+  message: OnebotOutgoingMessage,
 ): Promise<void> {
-  await sendOnebotApi(config, "send_group_msg", { group_id: Number(groupId), message: text });
+  await sendOnebotApi(config, "send_group_msg", { group_id: Number(groupId), message });
 }
 
 async function sendOnebotApi(
@@ -215,5 +222,23 @@ async function sendOnebotApi(
   });
   if (!response.ok) {
     throw new Error(`ONEBOT_SEND_HTTP_${response.status}: 发送 OneBot 消息失败。`);
+  }
+  // ⚠️ OneBot v11 发送失败时 HTTP 仍是 200，错误藏在 retcode 里（被风控、小号下线、群已解散）。
+  // 只看 response.ok 会把「没发出去」当成「发成功」，还要等用户来问「她怎么不回我」。
+  let payload: unknown;
+  try {
+    payload = await response.json();
+  } catch {
+    return;
+  }
+  const record = payload as { retcode?: unknown; wording?: unknown; message?: unknown } | null;
+  const retcode = record?.retcode;
+  if (typeof retcode === "number" && retcode !== 0) {
+    const detail = typeof record?.wording === "string" && record.wording
+      ? record.wording
+      : typeof record?.message === "string" && record.message
+        ? record.message
+        : "未知原因";
+    throw new Error(`ONEBOT_SEND_${retcode}: 发送 OneBot 消息失败（${detail}）。`);
   }
 }

@@ -86,16 +86,38 @@ OneBot v11 的 `message` 字段是**分段数组**（CQ 码），例如：
 ]
 ```
 
-适配器把文本段拼成 `content`；`at` 段转换为 `@qq号`；图片/表情/语音等非文本段用占位
-符（`[图片]`/`[表情]`/`[语音]`）表示，不下载媒体（对齐 qq-bridge 的占位策略）。
+适配器把文本段拼成 `content`；`at` 段转换为 `@qq号`；`face` 段查内置清单还原成中文名
+（`[害羞]`、`[白眼]`），清单外的 id 与语音/视频等仍用通用占位符（`[表情]`/`[语音]`）。
+不下载媒体（对齐 qq-bridge 的占位策略）。
+
+表情名有意义：对方发「害羞」还是「白眼」，语气完全不同。一律写成 `[表情]` 等于没告诉模型
+任何东西。
 
 ## 7. 回复发送
 
-- 私聊 → `send_private_msg`（`user_id`, `message`, 可选 `auto_escape`）。
+- 私聊 → `send_private_msg`（`user_id`, `message`）。
 - 群聊 → `send_group_msg`（`group_id`, `message`）。
+- `message` 可以是纯文本，也可以是段数组（`face` / `image` / `at`）。
 - 群聊中被 @ 时才回复的开关（`replyOnlyWhenMentioned`）由连接配置控制；私聊总是回复。
 - 回复按 OneBot HTTP API 发送（默认 `http://127.0.0.1:3000`），带 `Authorization:
   Bearer <token>` 头（SnowLuma 的 HTTP token 与 WS token 可能不同，分别配置）。
+- **发送失败要看 `retcode`**：OneBot v11 出错时 HTTP 仍是 200（被风控、小号下线、群已解散），
+  错误只在 body 的 `retcode` 里。只查 `response.ok` 会把「没发出去」记成「发成功」。
+
+### 7.1 表情
+
+QQ 是唯一支持表情段的渠道。链路：
+
+1. 角色模型设置里打开「QQ 渠道发表情」（`modelConfig.emojiEnabled`，默认关）。
+2. 装配提示词时把 `ONEBOT_FACES` 清单作为 `availableFaces` 塞进输入，系统提示词才允许模型返回
+   `faces` 字段（最多 1 个 id）。
+3. 返回值校验：只认清单内的 id，去重，截断到 1 个 —— 模型偶尔会自己编 id。
+4. 发送时**正文一条、表情一条**。拼进正文会卡在句子中间，而且表情发失败不该连累正文。
+5. 表情 id 记在消息 `metadata.faceIds`，**不进 `content`**：正文要能原样重放给下一轮模型，
+   混进段标记会被当成用户打的字。
+6. 冷却：上一条回复带过表情且间隔小于 10 分钟，本轮不再发。否则一个爱发表情的角色会句句贴图。
+
+清单故意不是 QQ 的完整 face 表 —— 菜刀、骷髅、炸弹也在表里，但模型分不清开玩笑和真发火。
 
 ## 8. 配置字段（存储于 PlatformConnection）
 

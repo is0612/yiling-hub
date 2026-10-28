@@ -211,9 +211,64 @@ try {
   const afterDuplicate = (await (await fetch("http://127.0.0.1:4031/__mock/messages")).json()) as { messages: unknown[] };
   assert.equal(afterDuplicate.messages.length, 1, "A duplicate event must not trigger a second reply.");
 
+  // 7. 表情：开关打开后正文一条、表情单独一条；紧接着的下一条不再重复发表情（冷却）。
+  const readSent = async () => ((await (await fetch("http://127.0.0.1:4031/__mock/messages")).json()) as {
+    messages: Array<{ action: string; body: Record<string, unknown> }>;
+  }).messages;
+  const emitText = (messageId: number, text: string) => fetch("http://127.0.0.1:4031/__mock/emit", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      event: {
+        post_type: "message",
+        message_type: "group",
+        self_id: 123456789,
+        message_id: messageId,
+        user_id: 111,
+        group_id: 999,
+        sender: { user_id: 111, nickname: "小明" },
+        message: [{ type: "text", data: { text } }],
+      },
+    }),
+  });
+
+  const beforeFaces = (await readSent()).length;
+  await prisma.character.update({ where: { id: characterId }, data: { modelConfig: { emojiEnabled: true } } });
+
+  await emitText(2, "你猜");
+  await waitFor(async () => (await readSent()).length >= beforeFaces + 2);
+  const withFace = await readSent();
+  assert.equal(withFace.length, beforeFaces + 2, "一次回复带表情时，恰好是正文加表情两条。");
+  assert(String(withFace[beforeFaces]!.body.message).includes("CI 模拟模型回复"), "正文必须先发。");
+  assert.deepEqual(
+    withFace[beforeFaces + 1]!.body.message,
+    [{ type: "face", data: { id: "0" } }],
+    "表情必须是独立的 face 段，不能拼进正文。",
+  );
+
+  await emitText(3, "然后呢");
+  await waitFor(async () => (await readSent()).length >= beforeFaces + 3);
+  await sleep(800);
+  const cooled = await readSent();
+  assert.equal(cooled.length, beforeFaces + 3, "冷却期内只发正文，不再跟一张表情。");
+  assert.equal(typeof cooled[beforeFaces + 2]!.body.message, "string", "冷却期内发出去的必须是纯文本。");
+
+  // 表情段不进 content（否则会被当成用户打的字），只记在 metadata 里。
+  const assistantMeta = await prisma.message.findMany({
+    where: { conversationId, role: "ASSISTANT" },
+    orderBy: { occurredAt: "asc" },
+    select: { content: true, metadata: true },
+  });
+  const faceIdsPerReply = assistantMeta.map((item) => (item.metadata as { faceIds?: string[] } | null)?.faceIds ?? []);
+  assert.deepEqual(faceIdsPerReply, [[], ["0"], []], "只有开了开关的那一条带 faceIds。");
+  assert(
+    assistantMeta.every((item) => !item.content.includes("face")),
+    "正文里不能残留任何段标记。",
+  );
+
   closeGateway();
 
-  console.log("OneBot 渠道端到端测试通过：事件接入、CQ 码解析、凭据解密、角色绑定路由、记忆检索、模型回复、消息持久化、外部身份 upsert、回发平台与幂等去重。");
+  console.log("OneBot 渠道端到端测试通过：事件接入、CQ 码解析、凭据解密、角色绑定路由、记忆检索、模型回复、表情段发送与冷却、消息持久化、外部身份 upsert、回发平台与幂等去重。");
 } finally {
   for (const child of children) child.kill();
   if (conversationId) await prisma.conversation.deleteMany({ where: { channelBindingId: bindingId } }).catch(() => undefined);

@@ -4,14 +4,16 @@ import {
   extractBvids,
   formatWatchedForModel,
   isFatalBiliError,
-  parseJsonLoose,
   parseVerdict,
   parseVideoCards,
   parseWatchedVideo,
   parseBiliOwner,
+  parseScore,
   readAuthor,
   readBiliError,
+  sanitizePublicText,
 } from "../server/utils/channel-adapter/bili/cards";
+import { parseJsonLoose } from "../server/utils/loose-json";
 
 /** 一条 feed 卡片的真实结构（author 是对象，不是字符串）。 */
 function feedCard(overrides: Record<string, unknown> = {}) {
@@ -140,6 +142,28 @@ async function main() {
   assert.equal(parseBiliOwner({ ok: false, error: { code: "not_logged_in" } }), null);
   assert.equal(parseBiliOwner(null), null);
 
+  // ---- 7. 打分 ----
+  assert.equal(parseScore("判断：值得\n分数：16\n理由：有实测数据"), 16);
+  assert.equal(parseScore("判断：跳过\n分数: 8\n理由：标题党"), 8, "半角冒号也要认");
+  assert.equal(parseScore("分数： 13 "), 13, "带空格要 trim");
+  assert.equal(parseScore("分数：99"), 20, "越界夹到 20");
+  assert.equal(parseScore("分数：-3"), null, "负数不是合法分（正则不认减号）");
+  assert.equal(parseScore("判断：值得\n理由：好"), null, "没给分就是 null，不能当 0");
+  assert.equal(parseScore("分数：很高"), null, "非数字当没给");
+  assert.equal(parseScore(""), null);
+
+  // ---- 8. 公开脱敏闸 ----
+  assert.equal(sanitizePublicText("把实测数据全列了，省得自己试"), "把实测数据全列了，省得自己试", "正常理由不该被改");
+  assert.equal(sanitizePublicText("这个讲得好 @没有喵i 说得对"), "这个讲得好 说得对", "@ 提及要去掉");
+  assert.equal(sanitizePublicText("加我 QQ 308940936"), "加我 QQ", "长数字串（QQ 号 / UID）要去掉");
+  assert.equal(
+    sanitizePublicText("这条留给你看。主人应该会喜欢。"),
+    "这条留给你看。",
+    "提到主人的整句要丢掉，别的句子保留",
+  );
+  assert.equal(sanitizePublicText("只跟主人说，私信里聊"), "", "整段都是私密话时什么都不剩");
+  assert.equal(sanitizePublicText(""), "");
+
   console.log("✅ test-bili-cards 全部通过");
   console.log("   author 四种形态（对象/字符串/别名/嵌套）：通过");
   console.log("   列表卡片解析（feed / search / 裸数组）：通过");
@@ -147,6 +171,8 @@ async function main() {
   console.log("   判词否定优先（「不值得」不再判成值得）：通过");
   console.log("   宽松 JSON / BV 提取 / 错误码：通过");
   console.log("   当前主人解析（mid 数字 / owner 为 null）：通过");
+  console.log("   打分解析（0-20 / 缺省为 null / 越界夹住）：通过");
+  console.log("   公开脱敏闸（@ / 长数字 / 私密句）：通过");
 }
 
 main().catch((error) => {

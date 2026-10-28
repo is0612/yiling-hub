@@ -124,7 +124,7 @@ async function main() {
     try {
       const records = await loadBiliConnections();
       if (records.length === 0) {
-        log({ event: "bili-no-connections", hint: "请先在「渠道管理」创建 B站 连接并绑定角色。" });
+        log({ event: "bili-no-connections", hint: "请先在「系统管理 → B站值班台」添加账号并绑定角色。" });
       } else {
         for (const record of records) {
           await serveConnection(record);

@@ -1,12 +1,16 @@
 <script setup lang="ts">
 import {
   ArrowRight, Bell, Camera, ChatDotRound, ChatLineRound, Clock, Close, CopyDocument,
-  DataLine, Document, Expand, Fold, Folder, Grid, MessageBox, Operation,
+  DataLine, Document, Expand, Fold, Folder, Grid, MessageBox, Operation, Plus,
   Promotion, Refresh, Search, Setting, Star, TrendCharts, User, VideoPlay, View,
 } from "@element-plus/icons-vue";
-import { ElMessage } from "element-plus";
+import { ElMessage, ElMessageBox } from "element-plus";
 
 useHead({ title: "B站值班台 · 忆灵小窝" });
+
+// 角色列表：绑定角色时用，与角色管理页共享同一份数据。
+const characters = useCharacterList();
+await useCharacterListData();
 
 // ── 数据类型 ───────────────────────────────────────────────
 type BiliReport = { id: string; roundIndex: number; pickedCount: number; content: string; createdAt: string };
@@ -29,6 +33,11 @@ type BiliAccount = {
     dmAllowNew: boolean;
     /** 刷站口味（自由文本），只作用于 B站 值班，不影响聊天与 QQ。 */
     taste: string;
+    /** 收藏阈分，0 = 不收藏。 */
+    favMinScore: number;
+    /** 是否把当天最好的一条发成公开动态。 */
+    autoDynamic: boolean;
+    dynamicMinScore: number;
   };
   nextWindow: "noon" | "night" | null;
   bindings: BiliBinding[];
@@ -39,7 +48,7 @@ type BiliCatalogParam = {
   key: string; label: string; pos?: boolean; flag?: string;
   type?: "text" | "int" | "bool" | "select"; default?: string; choices?: string[]; ph?: string;
 };
-type BiliCatalogItem = { id: string; label: string; argv: string[]; write?: boolean; kind?: string; params?: BiliCatalogParam[] };
+type BiliCatalogItem = { id: string; label: string; argv: string[]; write?: boolean; kind?: string; params?: BiliCatalogParam[]; common?: boolean };
 type BiliCatalogGroup = { group: string; items: BiliCatalogItem[] };
 type BiliRunResult = {
   code: number | null; json: unknown; stdout: string; stderr: string;
@@ -84,7 +93,7 @@ function selectItem(item: BiliCatalogItem) {
   if (item.kind === "duty") {
     const account = dashboard.value.accounts[0];
     if (!account) {
-      ElMessage.warning("还没有 B站 渠道连接，请先到「渠道管理」创建。");
+      ElMessage.warning("还没有 B站 账号，先点下方「添加账号」。");
       return;
     }
     openDutySettings(account);
@@ -123,6 +132,8 @@ const searchRef = ref<{ focus?: () => void } | null>(null);
 
 // ── 菜单管理：只影响侧栏显示，命令表本身不动 ──────────────
 const MENU_KEY = "yiling-hub:bili-menu";
+/** v2 起「非常用命令默认收起」。老配置要合并一次默认集，否则升级后照样是 46 条全铺。 */
+const MENU_VERSION = 2;
 
 /**
  * 存「隐藏清单」而不是「显示清单」：
@@ -130,22 +141,33 @@ const MENU_KEY = "yiling-hub:bili-menu";
  */
 const hiddenGroups = ref<string[]>([]);
 const hiddenItems = ref<string[]>([]);
+/** 已存配置；目录没到位时算不出默认隐藏集，所以读和算是两步 */
+let savedMenu: { version: number; hiddenGroups: string[]; hiddenItems: string[] } | null = null;
+
+function defaultHiddenIds(): string[] {
+  return groups.value.flatMap((group) => group.items.filter((item) => !item.common).map((item) => item.id));
+}
 
 function readMenu() {
   try {
     const raw = localStorage.getItem(MENU_KEY);
-    if (!raw) return;
+    if (!raw) {
+      savedMenu = null;
+      return;
+    }
     const data: unknown = JSON.parse(raw);
-    if (!data || typeof data !== "object") return;
-    const d = data as { hiddenGroups?: unknown; hiddenItems?: unknown };
-    if (Array.isArray(d.hiddenGroups)) {
-      hiddenGroups.value = d.hiddenGroups.filter((x): x is string => typeof x === "string");
+    if (!data || typeof data !== "object") {
+      savedMenu = null;
+      return;
     }
-    if (Array.isArray(d.hiddenItems)) {
-      hiddenItems.value = d.hiddenItems.filter((x): x is string => typeof x === "string");
-    }
+    const d = data as { version?: unknown; hiddenGroups?: unknown; hiddenItems?: unknown };
+    savedMenu = {
+      version: typeof d.version === "number" ? d.version : 1,
+      hiddenGroups: Array.isArray(d.hiddenGroups) ? d.hiddenGroups.filter((x): x is string => typeof x === "string") : [],
+      hiddenItems: Array.isArray(d.hiddenItems) ? d.hiddenItems.filter((x): x is string => typeof x === "string") : [],
+    };
   } catch {
-    /* 配置坏了就当全显示 */
+    savedMenu = null;
   }
 }
 
@@ -153,11 +175,27 @@ function writeMenu() {
   try {
     localStorage.setItem(
       MENU_KEY,
-      JSON.stringify({ hiddenGroups: hiddenGroups.value, hiddenItems: hiddenItems.value }),
+      JSON.stringify({
+        version: MENU_VERSION,
+        hiddenGroups: hiddenGroups.value,
+        hiddenItems: hiddenItems.value,
+      }),
     );
   } catch {
     /* 隐私模式下写不进去，忽略 */
   }
+}
+
+/** 目录到手后才调：此时才知道哪些命令带 common 标记 */
+function applyMenu() {
+  hiddenGroups.value = savedMenu?.hiddenGroups ?? [];
+  if (savedMenu?.version === MENU_VERSION) {
+    hiddenItems.value = savedMenu.hiddenItems;
+    return;
+  }
+  // 老配置只记了「自己手藏的几条」。不并进默认集的话，升级后侧栏毫无变化。
+  hiddenItems.value = [...new Set([...defaultHiddenIds(), ...(savedMenu?.hiddenItems ?? [])])];
+  writeMenu();
 }
 
 /** 某条命令是否被藏起来（整组隐藏也算） */
@@ -243,6 +281,12 @@ function menuToggleAll(show: boolean) {
   }
 }
 
+/** 回到「常用可见、其余收起」的初始布局 */
+function menuResetDefaults() {
+  draftHiddenGroups.value = [];
+  draftHiddenItems.value = defaultHiddenIds();
+}
+
 /** 弹窗内搜索：组名或命令命中就保留整组（45 条盲翻太费劲） */
 const menuShownGroups = computed(() => {
   const q = menuQuery.value.trim().toLowerCase();
@@ -291,6 +335,7 @@ async function loadCatalog() {
   try {
     const data = await $fetch<{ groups: BiliCatalogGroup[] }>("/api/admin/bili/catalog");
     groups.value = data.groups;
+    applyMenu();
     // 深链：/bili?cmd=video.watch
     const deepLink = String(route.query.cmd || "");
     if (deepLink) {
@@ -657,6 +702,7 @@ const dutyForm = reactive({
   dmAllowNew: false,
   autoComment: false, commentPerRound: 1, mentionName: "",
   taste: "",
+  favMinScore: 0, autoDynamic: false, dynamicMinScore: 15,
 });
 
 /** 口味文本上限，和服务器 parseDutyInput 的截断保持一致。 */
@@ -680,6 +726,9 @@ function openDutySettings(account: BiliAccount) {
   dutyForm.commentPerRound = duty.commentPerRound ?? 1;
   dutyForm.mentionName = duty.mentionName ?? "";
   dutyForm.taste = duty.taste ?? "";
+  dutyForm.favMinScore = duty.favMinScore ?? 0;
+  dutyForm.autoDynamic = duty.autoDynamic ?? false;
+  dutyForm.dynamicMinScore = duty.dynamicMinScore ?? 15;
   // 主人存在 bili CLI 自己的配置里，每次打开都现读，避免显示上一个账号的昵称
   ownerInfo.value = null;
   ownerError.value = "";
@@ -716,6 +765,9 @@ async function saveDuty() {
           commentPerRound: dutyForm.commentPerRound,
           mentionName: dutyForm.mentionName.trim(),
           taste: dutyForm.taste.trim().slice(0, TASTE_MAX),
+          favMinScore: dutyForm.favMinScore,
+          autoDynamic: dutyForm.autoDynamic,
+          dynamicMinScore: dutyForm.dynamicMinScore,
         },
       },
     });
@@ -801,7 +853,7 @@ async function runRound() {
   const account = dashboard.value.accounts[0];
   const binding = account?.bindings[0];
   if (!account || !binding) {
-    ElMessage.warning("还没有绑定角色的 B站 账号，先去「渠道管理」绑定一个角色。");
+    ElMessage.warning("还没有绑定角色的 B站 账号，先在下方「账号与角色」里添加账号并绑定角色。");
     return;
   }
   running.value = binding.bindingId;
@@ -827,6 +879,109 @@ async function runRound() {
     ElMessage.error(readErrorMessage(error, "执行失败。"));
   } finally {
     running.value = null;
+  }
+}
+
+// ── 账号管理：添加账号 / 绑定角色 / 解绑 / 删除 ─────────────
+const accountVisible = ref(false);
+const accountSaving = ref(false);
+const accountForm = reactive({ displayName: "", dataHome: "", biliBin: "" });
+
+function openAddAccount() {
+  accountForm.displayName = "";
+  accountForm.dataHome = "";
+  accountForm.biliBin = "";
+  accountVisible.value = true;
+}
+
+async function saveAccount() {
+  if (accountSaving.value) return;
+  accountSaving.value = true;
+  try {
+    await $fetch("/api/admin/channels", {
+      method: "POST",
+      body: {
+        platform: "bili",
+        displayName: accountForm.displayName.trim(),
+        dataHome: accountForm.dataHome.trim(),
+        biliBin: accountForm.biliBin.trim(),
+      },
+    });
+    ElMessage.success("B站 账号已添加，值班设置等账号出现后再配。");
+    accountVisible.value = false;
+    await loadDashboard();
+  } catch (error) {
+    ElMessage.error(readErrorMessage(error, "添加账号失败，请稍后重试。"));
+  } finally {
+    accountSaving.value = false;
+  }
+}
+
+const bindVisible = ref(false);
+const bindSaving = ref(false);
+const bindTarget = ref<BiliAccount | null>(null);
+const bindForm = reactive({ characterId: "" });
+
+function openBind(account: BiliAccount) {
+  bindTarget.value = account;
+  bindForm.characterId = "";
+  bindVisible.value = true;
+}
+
+async function saveBind() {
+  if (bindSaving.value || !bindTarget.value) return;
+  if (!bindForm.characterId) {
+    ElMessage.warning("请选择要绑定的角色。");
+    return;
+  }
+  bindSaving.value = true;
+  try {
+    await $fetch(`/api/admin/channels/${encodeURIComponent(bindTarget.value.connectionId)}/bindings`, {
+      method: "POST",
+      body: { characterId: bindForm.characterId },
+    });
+    ElMessage.success("角色已绑定到这个账号。");
+    bindVisible.value = false;
+    await loadDashboard();
+  } catch (error) {
+    ElMessage.error(readErrorMessage(error, "绑定失败，请稍后重试。"));
+  } finally {
+    bindSaving.value = false;
+  }
+}
+
+async function unbind(account: BiliAccount, binding: BiliBinding) {
+  const confirmed = await ElMessageBox.confirm(
+    `解除「${binding.characterName}」与「${account.displayName}」的绑定？该账号的报告、判重记录会一并随绑定删除。`,
+    "解除绑定",
+    { confirmButtonText: "解绑", cancelButtonText: "取消", type: "warning" },
+  ).catch(() => false);
+  if (!confirmed) return;
+  try {
+    await $fetch(
+      `/api/admin/channels/${encodeURIComponent(account.connectionId)}/bindings/${encodeURIComponent(binding.bindingId)}`,
+      { method: "DELETE" },
+    );
+    ElMessage.success("已解绑。");
+    await loadDashboard();
+  } catch (error) {
+    ElMessage.error(readErrorMessage(error, "解绑失败，请稍后重试。"));
+  }
+}
+
+async function removeAccount(account: BiliAccount) {
+  const confirmed = await ElMessageBox.confirm(
+    `删除「${account.displayName}」？它的绑定、报告、判重记录会一并删除，且不可恢复。`,
+    "删除账号",
+    { confirmButtonText: "删除", cancelButtonText: "取消", type: "warning" },
+  ).catch(() => false);
+  if (!confirmed) return;
+  try {
+    await $fetch(`/api/admin/channels/${encodeURIComponent(account.connectionId)}`, { method: "DELETE" });
+    ElMessage.success("账号已删除。");
+    await loadDashboard();
+  } catch (error) {
+    ElMessage.error(readErrorMessage(error, "删除失败，请稍后重试。"));
   }
 }
 
@@ -1187,6 +1342,20 @@ function isPicked(result: string) {
           >
             没有匹配「{{ query }}」的命令<br>共 {{ visibleCount }} 条
           </div>
+          <!-- 默认收起 20 多条命令，得留一句说明，否则像命令丢了 -->
+          <div
+            v-if="!searching && menuTotal > visibleCount"
+            class="bd-side-empty"
+          >
+            还有 {{ menuTotal - visibleCount }} 条命令收着
+            <br>
+            <button
+              type="button"
+              @click="openMenuManager"
+            >
+              要用的在这里打开
+            </button>
+          </div>
         </div>
 
         <div class="bd-side-foot">
@@ -1269,14 +1438,14 @@ function isPicked(result: string) {
                   <VideoPlay />
                 </el-icon>
               </div>
-              <h4>还没有 B站 渠道连接</h4>
-              <p>先到「渠道管理 → 添加渠道 → B站 值班」创建连接并绑定角色，值班跑一轮后这里就会有数据。</p>
+              <h4>还没有 B站 账号</h4>
+              <p>点下方「添加账号」接入一个 B站 账号并绑定角色，值班跑一轮后这里就会有数据。</p>
               <button
                 class="bd-btn primary"
                 type="button"
-                @click="navigateTo('/channels')"
+                @click="openAddAccount"
               >
-                去创建连接
+                添加账号
               </button>
             </div>
 
@@ -1573,6 +1742,13 @@ function isPicked(result: string) {
               <div class="bd-sec-h">
                 <h2>账号与角色</h2>
                 <span class="sub">{{ dashboard.today }}</span>
+                <button
+                  class="more"
+                  type="button"
+                  @click="openAddAccount"
+                >
+                  添加账号<el-icon><Plus /></el-icon>
+                </button>
               </div>
               <div class="bd-card bd-accounts">
                 <div
@@ -1594,19 +1770,30 @@ function isPicked(result: string) {
                     <button
                       class="bd-btn is-sm"
                       type="button"
+                      @click="openBind(account)"
+                    >
+                      <el-icon><User /></el-icon>绑定角色
+                    </button>
+                    <button
+                      class="bd-btn is-sm"
+                      type="button"
                       @click="openDutySettings(account)"
                     >
                       <el-icon><Setting /></el-icon>值班设置
+                    </button>
+                    <button
+                      class="bd-btn is-sm is-danger"
+                      type="button"
+                      @click="removeAccount(account)"
+                    >
+                      <el-icon><Close /></el-icon>删除
                     </button>
                   </div>
                   <div
                     v-if="!account.bindings.length"
                     class="bd-account-empty"
                   >
-                    这个账号还没绑定角色，值班不会产生对话。去
-                    <NuxtLink to="/channels">
-                      渠道管理
-                    </NuxtLink> 绑定一个。
+                    这个账号还没绑定角色，值班不会产生对话。点上面「绑定角色」选一个。
                   </div>
                   <div
                     v-for="binding in account.bindings"
@@ -1618,6 +1805,13 @@ function isPicked(result: string) {
                     <span class="bd-binding-stat">剩余 {{ binding.remaining }} 条</span>
                     <span class="bd-binding-stat">{{ binding.reports.length }} 轮报告</span>
                     <span class="bd-binding-stat">{{ binding.seenToday.length }} 条看过</span>
+                    <button
+                      class="bd-btn is-sm is-danger"
+                      type="button"
+                      @click="unbind(account, binding)"
+                    >
+                      <el-icon><Close /></el-icon>解绑
+                    </button>
                   </div>
                 </div>
               </div>
@@ -2057,6 +2251,90 @@ function isPicked(result: string) {
       </main>
     </div>
 
+    <!-- 添加账号 -->
+    <el-dialog
+      v-model="accountVisible"
+      title="添加 B站 账号"
+      width="520px"
+      :close-on-click-modal="false"
+    >
+      <el-form label-position="top">
+        <el-form-item label="显示名（可选）">
+          <el-input
+            v-model="accountForm.displayName"
+            placeholder="例如：我的 B站 账号"
+          />
+        </el-form-item>
+        <el-form-item label="配置目录（可选，bili CLI 的 credential / owner 所在处）">
+          <el-input
+            v-model="accountForm.dataHome"
+            placeholder="留空 = %APPDATA%\bili-cli（多账号要各填一个目录）"
+          />
+        </el-form-item>
+        <el-form-item label="bili 可执行文件路径（可选）">
+          <el-input
+            v-model="accountForm.biliBin"
+            placeholder="留空则从 BILI_BIN 或 PATH 里找"
+          />
+        </el-form-item>
+      </el-form>
+      <p class="bd-form-tip">
+        值班设置（每天挑几条、谷时窗口、刷站口味等）在账号建好后的「值班设置」里配，这里只管接入。
+      </p>
+      <template #footer>
+        <el-button @click="accountVisible = false">
+          取消
+        </el-button>
+        <el-button
+          type="primary"
+          :loading="accountSaving"
+          @click="saveAccount"
+        >
+          保存
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 绑定角色 -->
+    <el-dialog
+      v-model="bindVisible"
+      title="绑定角色"
+      width="440px"
+      :close-on-click-modal="false"
+    >
+      <el-form label-position="top">
+        <el-form-item label="角色">
+          <el-select
+            v-model="bindForm.characterId"
+            placeholder="选择要绑定的角色"
+            style="width:100%"
+          >
+            <el-option
+              v-for="character in characters"
+              :key="character.id"
+              :label="character.name"
+              :value="character.id"
+            />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <p class="bd-form-tip">
+        一个账号可绑多个角色，各自独立记报告、判重和每日额度。
+      </p>
+      <template #footer>
+        <el-button @click="bindVisible = false">
+          取消
+        </el-button>
+        <el-button
+          type="primary"
+          :loading="bindSaving"
+          @click="saveBind"
+        >
+          绑定
+        </el-button>
+      </template>
+    </el-dialog>
+
     <!-- 值班设置 -->
     <el-dialog
       v-model="dutyVisible"
@@ -2286,6 +2564,59 @@ function isPicked(result: string) {
             </el-col>
             <el-col :span="24">
               <div class="bd-form-sec">
+                <h3>对外动作</h3>
+                <span>会以这个账号的身份写出去，默认全关</span>
+              </div>
+            </el-col>
+            <el-col
+              :xs="24"
+              :sm="12"
+            >
+              <el-form-item label="收藏阈分（0 = 不收藏）">
+                <el-input-number
+                  v-model="dutyForm.favMinScore"
+                  :min="0"
+                  :max="20"
+                  controls-position="right"
+                  style="width:100%"
+                />
+                <p class="bd-form-tip">
+                  分数到这个数才收进收藏夹；每天最多 2 条，理由少于 6 个字不收 ——
+                  理由太短说明她自己也没想清楚为什么要留着。
+                </p>
+              </el-form-item>
+            </el-col>
+            <el-col
+              :xs="24"
+              :sm="12"
+            >
+              <el-form-item label="把当天最好的一条发成动态">
+                <el-switch v-model="dutyForm.autoDynamic" />
+                <p class="bd-form-tip">
+                  所有人可见。每天最多 1 条，两条之间至少隔 30 分钟。
+                </p>
+              </el-form-item>
+            </el-col>
+            <el-col
+              v-if="dutyForm.autoDynamic"
+              :xs="24"
+              :sm="12"
+            >
+              <el-form-item label="发动态的最低分">
+                <el-input-number
+                  v-model="dutyForm.dynamicMinScore"
+                  :min="0"
+                  :max="20"
+                  controls-position="right"
+                  style="width:100%"
+                />
+                <p class="bd-form-tip">
+                  当天最高分没到这个数就这一天不发。理由里带「主人」「私信」这类话的会被拦下来。
+                </p>
+              </el-form-item>
+            </el-col>
+            <el-col :span="24">
+              <div class="bd-form-sec">
                 <h3>刷站口味</h3>
                 <span>只作用于这个账号的值班，不会影响聊天和 QQ 渠道</span>
               </div>
@@ -2320,11 +2651,11 @@ function isPicked(result: string) {
         </el-form>
 
         <el-alert
-          v-if="dutyForm.autoComment"
+          v-if="dutyForm.autoComment || dutyForm.autoDynamic"
           type="warning"
           :closable="false"
           show-icon
-          title="公开评论会以该 B站 账号的身份真的发出去。"
+          :title="dutyForm.autoDynamic ? '公开评论和动态会以该 B站 账号的身份真的发出去。' : '公开评论会以该 B站 账号的身份真的发出去。'"
         />
       </div>
       <template #footer>
@@ -2444,6 +2775,13 @@ function isPicked(result: string) {
             </template>
           </el-input>
           <span class="bd-menu-cnt">显示 {{ menuVisibleCount }} / {{ menuTotal }}</span>
+          <el-button
+            size="small"
+            text
+            @click="menuResetDefaults"
+          >
+            恢复默认
+          </el-button>
         </div>
 
         <div
@@ -2917,6 +3255,8 @@ function isPicked(result: string) {
   box-shadow: 0 8px 18px -12px rgba(201, 65, 107, .95);
 }
 .bd-btn.primary:hover { border-color: var(--bd-brand-btn-h); background: var(--bd-brand-btn-h); color: #fff; }
+.bd-btn.is-danger { color: var(--bd-red); }
+.bd-btn.is-danger:hover { border-color: #e3a5af; background: #fdf2f4; color: var(--bd-red); }
 .bd-btn.lg { height: 38px; padding: 0 18px; }
 .bd-btn.is-sm { height: 30px; padding: 0 10px; font-size: 12px; }
 .bd-btn:disabled { opacity: .5; cursor: not-allowed; }
@@ -3165,6 +3505,7 @@ function isPicked(result: string) {
 }
 .bd-binding-role { color: var(--bd-text-2); font-size: 12px; font-weight: 700; }
 .bd-binding-stat { color: var(--bd-dim); font-size: 12px; }
+.bd-binding .bd-btn { margin-left: auto; }
 
 /* ── 运行记录：筛选 chip ──────────────────────────────── */
 .bd-filters { display: flex; align-items: center; gap: 6px; margin: 2px 0 14px; }

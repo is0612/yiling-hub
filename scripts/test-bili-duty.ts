@@ -122,6 +122,7 @@ async function main() {
     commentPerRound: 1,
     mentionName: "",
     watchLimit: 3,
+    favMinScore: 0, autoDynamic: false, dynamicMinScore: 15,
   });
   assert.match(prompt, /替主人刷 B站/);
   assert.match(prompt, /今天还能挑：5 条/);
@@ -139,6 +140,7 @@ async function main() {
   const commentOff = buildDutyPrompt(makeConfig({ dmMode: "off" }), {
     today: "2026-10-25", remaining: 5, perDay: 5, keywords: [], zone: "all", frames: 0,
     dmMode: "off", autoComment: false, commentPerRound: 1, mentionName: "", watchLimit: 2,
+    favMinScore: 0, autoDynamic: false, dynamicMinScore: 15,
   });
   assert.match(commentOff, /不发私信也不发评论/);
 
@@ -146,6 +148,7 @@ async function main() {
   const withComment = buildDutyPrompt(makeConfig({ dmMode: "both", autoComment: true, mentionName: "没有喵i" }), {
     today: "2026-10-25", remaining: 2, perDay: 5, keywords: [], zone: "all", frames: 0,
     dmMode: "both", autoComment: true, commentPerRound: 2, mentionName: "没有喵i", watchLimit: 2,
+    favMinScore: 0, autoDynamic: false, dynamicMinScore: 15,
   });
   assert.match(withComment, /@ 没有喵i/);
   assert.match(withComment, /真正的 @/);
@@ -155,6 +158,7 @@ async function main() {
   const roundSettings = {
     today: "2026-10-25", remaining: 5, perDay: 5, keywords: [], zone: "all", frames: 0,
     dmMode: "only" as const, autoComment: false, commentPerRound: 1, mentionName: "", watchLimit: 2,
+    favMinScore: 0, autoDynamic: false, dynamicMinScore: 15,
   };
   const noTaste = buildDutyPrompt(makeConfig({ taste: "" }), roundSettings);
   assert.doesNotMatch(noTaste, /这个账号的口味/, "没填口味时不该出现口味段");
@@ -180,6 +184,22 @@ async function main() {
   assert.match(toUid, /指定收件人（UID 308940936）/);
   assert.doesNotMatch(toUid, /私信给主人/, "指定收件人后不该还写「私信给主人」");
 
+  // 20.5 打分与对外动作：分数要讲清楚怎么打，动作用什么口径要跟设置一致
+  const withActions = buildDutyPrompt(
+    makeConfig({ favMinScore: 14, autoDynamic: true, dynamicMinScore: 16 }),
+    { ...roundSettings, favMinScore: 14, autoDynamic: true, dynamicMinScore: 16 },
+  );
+  assert.match(withActions, /## 打分/, "章程里必须有打分口径");
+  assert.match(withActions, /0-20 的整数分/);
+  assert.match(withActions, /14 分以上才会收进收藏夹/);
+  assert.match(withActions, /到 16 分会发一条公开动态/);
+  assert.match(withActions, /不要出现「主人」「私信」/, "要发动态时必须提前讲清公开边界");
+
+  const actionsOff = buildDutyPrompt(makeConfig(), roundSettings);
+  assert.match(actionsOff, /这一轮不收藏/);
+  assert.match(actionsOff, /这一轮不发动态/);
+  assert.doesNotMatch(actionsOff, /不要出现「主人」「私信」/, "不发动态时不该多这段警告");
+
   // 21. parseDutyInput：收件人只留数字，陌生放行默认关
   assert.equal(normalizeDmTargetUid("UID: 308940936"), "308940936");
   assert.equal(normalizeDmTargetUid("没有喵i"), "");
@@ -194,6 +214,14 @@ async function main() {
   assert.equal(parsedDefault.dmAllowNew, false, "默认不给陌生人发私信");
   // 老数据（没有这两个字段）读回来也不能变成「发给 UID 空字符串」
   assert.equal(parseDutyInput({ taste: "只看米哈游" }).dmTargetUid, "");
+  // 对外动作：默认全关，越界值要夹住
+  const actionDefaults = parseDutyInput({});
+  assert.equal(actionDefaults.favMinScore, 0, "默认不收藏");
+  assert.equal(actionDefaults.autoDynamic, false, "默认不发动态");
+  assert.equal(actionDefaults.dynamicMinScore, 15);
+  const actionClamped = parseDutyInput({ favMinScore: 99, dynamicMinScore: -3 });
+  assert.equal(actionClamped.favMinScore, 20, "收藏阈分夹到 0-20");
+  assert.equal(actionClamped.dynamicMinScore, 0, "动态阈分同样夹住");
 
   console.log("✅ test-bili-duty 全部通过");
   console.log("   谷时窗口判断（含跨午夜）：通过");
@@ -202,6 +230,7 @@ async function main() {
   console.log("   值班章程提示词：通过");
   console.log("   刷站口味注入（空/有/底线不被顶掉）：通过");
   console.log("   私信收件人（主人 / 指定 UID）与陌生放行：通过");
+  console.log("   打分口径 / 收藏与发动态闸门：通过");
 }
 
 main().catch((error) => {

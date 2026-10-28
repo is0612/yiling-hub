@@ -70,7 +70,7 @@ async function serveConnection(record: OnebotConnectionRecord): Promise<void> {
 async function main() {
   const records = await loadOnebotConnections();
   if (records.length === 0) {
-    log({ event: "onebot-no-connections", hint: "请先在「渠道管理」创建 QQ 小号（OneBot）连接并绑定角色。" });
+    log({ event: "onebot-no-connections", hint: "请先在「系统管理 → QQ 渠道」添加 QQ 小号连接并绑定角色。" });
   }
   await Promise.all(records.map(serveConnection));
   await prisma.$disconnect();

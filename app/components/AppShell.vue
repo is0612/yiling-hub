@@ -5,6 +5,7 @@ import {
   Cpu,
   Calendar,
   ChatDotRound,
+  ChatLineRound,
   DataBoard,
   Setting,
   SwitchButton,
@@ -72,7 +73,7 @@ const navigation = computed<NavigationItem[]>(() => {
   ];
   if (isAdmin.value) {
     items.push(
-      { key: "channels", label: "渠道管理", href: "/channels", icon: ChatDotRound, section: "系统管理" },
+      { key: "qq", label: "QQ 渠道", href: "/qq", icon: ChatLineRound, section: "系统管理" },
       { key: "bili", label: "B站值班台", href: "/bili", icon: VideoPlay },
       { key: "tasks", label: "任务监控", href: "/tasks", icon: DataAnalysis },
       { key: "identities", label: "身份管理", href: "/identities", icon: Connection },

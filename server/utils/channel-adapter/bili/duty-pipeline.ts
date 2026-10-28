@@ -25,8 +25,10 @@ import { getPrisma } from "../../prisma";
 import { runBili, type BiliRunResult } from "./runner";
 import { buildDutyPrompt, type BiliDutyRoundSettings } from "./duty-prompt";
 import { callBiliModel } from "./llm";
+import { recordModelUsage, readDailyQuota, type ModelUsageTokens } from "../../model-usage";
 import { resolveChatModelSettings } from "../../chat-model-config";
 import { resolveCharacterApiKey } from "../../credential-encryption";
+import { parseJsonLoose } from "../../loose-json";
 import type { BiliConnectionRecord, BiliDutyConfig } from "./configure";
 import { biliOptions } from "./configure";
 import { remainingQuota, toDayKey } from "./duty-scheduler";
@@ -36,11 +38,12 @@ import {
   formatWatchedForModel,
   isFatalBiliError,
   isRateLimited,
-  parseJsonLoose,
+  parseScore,
   parseVerdict,
   parseVideoCards,
   parseWatchedVideo,
   readBiliError,
+  sanitizePublicText,
   unwrapBiliData,
   type BiliVideoCard,
   type BiliWatchedVideo,
@@ -57,7 +60,7 @@ export type BiliDutyRoundResult = {
   watched: number;
   seenVideos: number;
   /** 投递结果。 */
-  delivered: { dm: boolean; comments: number };
+  delivered: { dm: boolean; comments: number; fav: number; dynamic: boolean };
   error?: string;
   /** 过程中值得记一笔的事（风控、限流、命令失败等）。 */
   notes: string[];
@@ -73,6 +76,19 @@ const WATCH_TIMEOUT_MS = 10 * 60 * 1000;
 const DM_MAX_CHARS = 480;
 /** 评论文本上限（CLI 没有硬限，但像真人随口说一句）。 */
 const COMMENT_MAX_CHARS = 120;
+/**
+ * 收藏每天最多几条。CLI 只限了 5 秒/次、60 次/小时，管不住「一天收三十个视频」——
+ * 收藏是「我想留着」，收了三十个等于没收藏。
+ */
+const FAV_PER_DAY = 2;
+/** 收藏理由的最短长度。抄 surfcore 的判据：短理由说明她也没想清楚为什么要留着。 */
+const FAV_MIN_REASON = 6;
+/** 每天最多发一条动态。 */
+const DYNAMIC_PER_DAY = 1;
+/** 两条动态之间至少隔多久。跟 surfcore 的 `dynamics.gapMin` 同量级。 */
+const DYNAMIC_GAP_MS = 30 * 60 * 1000;
+/** 动态正文字数上限（含链接）。 */
+const DYNAMIC_MAX_CHARS = 200;
 
 type CandidateSource = "feed" | "hot" | "search";
 
@@ -85,10 +101,12 @@ type PickedVideo = {
   reason: string;
   /** 模型写的公开评论（可能为空）。 */
   comment: string;
+  /** 终判给的分（0-20）；null = 模型没给，别当成 0。 */
+  score: number | null;
 };
 
 /** 跳过的候选也要带理由 —— 口味里规定了「跳过理由写两个字」时，这里就是它落地的地方。 */
-type SkippedVideo = { candidate: Candidate; reason: string };
+type SkippedVideo = { candidate: Candidate; reason: string; score: number | null };
 
 /** 把一段文本写进临时文件，交给 bili 的 `--file`（避免命令行被引号/换行切碎）。 */
 async function withTempText<T>(text: string, fn: (path: string) => Promise<T>): Promise<T> {
@@ -173,6 +191,9 @@ async function collectCandidates(
   return candidates;
 }
 
+/** 粗筛与终判分开记账：一个按候选条数、一个按入选视频条数，单价差一倍以上。 */
+type BiliUsageKind = "bili-screening" | "bili-judge";
+
 /** 粗筛：把候选列表交给模型，让它挑出值得细看的（返回 bvid 数组）。 */
 async function shortlistCandidates(
   candidates: Candidate[],
@@ -183,6 +204,7 @@ async function shortlistCandidates(
     apiKey: string;
     apiBaseUrl?: string;
     memoryLines: string[];
+    onUsage?: (kind: BiliUsageKind, usage: ModelUsageTokens) => void;
   },
   notes: string[],
 ): Promise<string[]> {
@@ -215,6 +237,7 @@ async function shortlistCandidates(
       temperature: 0.3,
       // 25 条候选的粗筛，思考型模型光思考就要 1500~2200 tokens；给低于这个数的预算会正文全空
       maxTokens: 4096,
+      onUsage: (usage) => model.onUsage?.("bili-screening", usage),
     });
   } catch (error) {
     notes.push(`粗筛调用模型失败：${error instanceof Error ? error.message : String(error)}`);
@@ -265,9 +288,10 @@ async function judgeVideo(
     apiKey: string;
     apiBaseUrl?: string;
     memoryLines: string[];
+    onUsage?: (kind: BiliUsageKind, usage: ModelUsageTokens) => void;
   },
   notes: string[],
-): Promise<{ worth: boolean; reason: string; comment: string }> {
+): Promise<{ worth: boolean; reason: string; comment: string; score: number | null }> {
   const material = formatWatchedForModel(watched);
   const memoryText = model.memoryLines.length ? `我记得这些：\n${model.memoryLines.join("\n")}\n\n` : "";
 
@@ -278,8 +302,9 @@ async function judgeVideo(
     "",
     "---",
     "判断：这条值不值得占主人的注意力？拿不准就跳过，别反复权衡。",
-    "按下面三行回答，一行一个字段，不要用 JSON、不要加别的解释：",
+    "按下面四行回答，一行一个字段，不要用 JSON、不要加别的解释：",
     "判断：值得  或  判断：跳过",
+    "分数：0 到 20 的整数（四把尺子见章程，不要虚高）",
     "理由：一句话，30 字内，说清为什么。跳过也要写；口味里规定了写法的（比如只写两个字），按口味写",
     "评论：如果要公开评论，写一句 60 字内、像自己刷到随口说一句的话；不需要就写「无」",
   ].join("\n");
@@ -295,16 +320,17 @@ async function judgeVideo(
       temperature: 0.4,
       // 单条终判要输出三行 + 思考，3072 起步
       maxTokens: 3072,
+      onUsage: (usage) => model.onUsage?.("bili-judge", usage),
     });
   } catch (error) {
     notes.push(`终判 ${candidate.bvid} 调用模型失败：${error instanceof Error ? error.message : String(error)}`);
-    return { worth: false, reason: "", comment: "" };
+    return { worth: false, reason: "", comment: "", score: null };
   }
 
   const verdict = parseVerdict(reply);
   const reason = readLabeledLine(reply, "理由").slice(0, 120) || verdict.reason.slice(0, 120);
   const comment = readLabeledLine(reply, "评论").slice(0, COMMENT_MAX_CHARS);
-  return { worth: verdict.worth, reason, comment };
+  return { worth: verdict.worth, reason, comment, score: parseScore(reply) };
 }
 
 /** 组装私信正文：单条用「标题/链接/理由」，多条用编号汇总（都在 500 字内）。 */
@@ -394,6 +420,45 @@ async function deliverComment(
   return { sent: false, fatal: false, note: `评论 ${bvid} 失败（${code}）：${detail}` };
 }
 
+/** 收藏一条视频。CLI 自带 guard（5 秒一次、60 次/小时），日上限由调用方管。 */
+async function favVideo(record: BiliConnectionRecord, bvid: string): Promise<DeliveryOutcome> {
+  const outcome = await runBili(["video", "fav", bvid], biliOptions(record));
+  const error = readBiliError(outcome.json);
+  if (!error && outcome.code === 0) return { sent: true, fatal: false };
+  const code = error?.code ?? (outcome.timedOut ? "timeout" : "unknown_error");
+  const detail = error?.message || outcome.stderr.slice(0, 120);
+  if (isFatalBiliError(code)) return { sent: false, fatal: true, note: `收藏 ${bvid} 失败（${code}）：${detail}` };
+  if (isRateLimited(code)) return { sent: false, fatal: false, note: `收藏 ${bvid} 被本地限流：${detail}` };
+  return { sent: false, fatal: false, note: `收藏 ${bvid} 失败（${code}）：${detail}` };
+}
+
+/**
+ * 动态正文：理由 + 标题 + 链接。
+ *
+ * 理由本来是写给主人的，发到动态上等于换了一群读者，所以先过脱敏闸。
+ * 整段都被闸挡掉时返回空串 —— 宁可今天不发，也不发一条只剩标题和链接的空壳。
+ */
+function buildDynamicText(item: PickedVideo): string {
+  const reason = sanitizePublicText(item.reason).slice(0, 100);
+  if (!reason) return "";
+  const title = item.candidate.title.trim().slice(0, 60);
+  return [`${reason}`, `——《${title}》`, item.candidate.url].join("\n").slice(0, DYNAMIC_MAX_CHARS);
+}
+
+/** 发一条公开动态。这是整条流水线里唯一会向陌生人可见的写操作。 */
+async function postDynamic(record: BiliConnectionRecord, text: string): Promise<DeliveryOutcome> {
+  const trimmed = text.trim().slice(0, DYNAMIC_MAX_CHARS);
+  if (!trimmed) return { sent: false, fatal: false };
+  const outcome = await withTempText(trimmed, (path) => runBili(["dynamic", "post", "--file", path], biliOptions(record)));
+  const error = readBiliError(outcome.json);
+  if (!error && outcome.code === 0) return { sent: true, fatal: false };
+  const code = error?.code ?? (outcome.timedOut ? "timeout" : "unknown_error");
+  const detail = error?.message || outcome.stderr.slice(0, 120);
+  if (isFatalBiliError(code)) return { sent: false, fatal: true, note: `发动态失败（${code}）：${detail}` };
+  if (isRateLimited(code)) return { sent: false, fatal: false, note: `发动态被本地限流：${detail}` };
+  return { sent: false, fatal: false, note: `发动态失败（${code}）：${detail}` };
+}
+
 /**
  * 跑一轮值班。绑定到某个角色（binding），读该角色的长期记忆做判断，写报告/判重/札记。
  *
@@ -405,7 +470,7 @@ export async function runDutyRound(record: BiliConnectionRecord, binding: { id: 
   const now = new Date();
   const today = toDayKey(now);
   const notes: string[] = [];
-  const empty = { picked: 0, skipped: 0, watched: 0, seenVideos: 0, delivered: { dm: false, comments: 0 } };
+  const empty = { picked: 0, skipped: 0, watched: 0, seenVideos: 0, delivered: { dm: false, comments: 0, fav: 0, dynamic: false } };
 
   const character = await prisma.character.findUnique({
     where: { id: binding.characterId },
@@ -470,6 +535,13 @@ export async function runDutyRound(record: BiliConnectionRecord, binding: { id: 
     return { ok: false, ...empty, skipped: candidates.length, seenVideos: seenBvids.size, notes, error: "角色未配置模型" };
   }
 
+  // 一轮最多 30 次调用，额度见底时连候选都不筛 —— 先停手比筛到一半没钱更安全。
+  const quota = await readDailyQuota(binding.characterId, character.modelConfig);
+  if (quota.exceeded) {
+    notes.push(`今日模型额度已用完（${quota.used} / ${quota.limit} tokens），本轮不刷。`);
+    return { ok: false, ...empty, skipped: candidates.length, seenVideos: seenBvids.size, notes, error: "额度已用完" };
+  }
+
   const settings: BiliDutyRoundSettings = {
     today,
     remaining,
@@ -483,6 +555,9 @@ export async function runDutyRound(record: BiliConnectionRecord, binding: { id: 
     mentionName: config.mentionName,
     dmTarget: config.dmTargetUid,
     watchLimit: Math.min(MAX_WATCH_PER_ROUND, Math.max(remaining, 1) + 2),
+    favMinScore: config.favMinScore,
+    autoDynamic: config.autoDynamic,
+    dynamicMinScore: config.dynamicMinScore,
   };
   const dutyPrompt = buildDutyPrompt(config, settings);
 
@@ -505,6 +580,15 @@ export async function runDutyRound(record: BiliConnectionRecord, binding: { id: 
     apiKey,
     apiBaseUrl: modelSettings.apiBaseUrl,
     memoryLines,
+    onUsage: (kind: BiliUsageKind, usage: ModelUsageTokens) => {
+      void recordModelUsage({
+        kind,
+        model: modelSettings.model,
+        usage,
+        characterId: binding.characterId,
+        channelBindingId: binding.id,
+      });
+    },
   };
 
   // 4. 粗筛：只对入选的才付出 watch 的代价
@@ -524,7 +608,7 @@ export async function runDutyRound(record: BiliConnectionRecord, binding: { id: 
     const watched = await watchVideo(record, config, bvid, notes);
     if (!watched) {
       // 看不懂就不硬判 —— 记为跳过，理由写清楚，别假装看过
-      skipped.push({ candidate, reason: "看不懂内容" });
+      skipped.push({ candidate, reason: "看不懂内容", score: null });
       continue;
     }
     watchedCount += 1;
@@ -534,9 +618,9 @@ export async function runDutyRound(record: BiliConnectionRecord, binding: { id: 
 
     const verdict = await judgeVideo(candidate, watched, model, notes);
     if (verdict.worth && picked.length < remaining) {
-      picked.push({ candidate, watched, reason: verdict.reason, comment: verdict.comment });
+      picked.push({ candidate, watched, reason: verdict.reason, comment: verdict.comment, score: verdict.score });
     } else {
-      skipped.push({ candidate, reason: verdict.reason });
+      skipped.push({ candidate, reason: verdict.reason, score: verdict.score });
     }
 
     // 风控一旦出现，本轮立刻停止继续 watch
@@ -546,11 +630,11 @@ export async function runDutyRound(record: BiliConnectionRecord, binding: { id: 
   // 没进粗筛的候选也算"看过"，写进判重表，避免下一轮反复出现在候选里
   const shortlistSet = new Set(shortlist);
   for (const candidate of candidates) {
-    if (!shortlistSet.has(candidate.bvid)) skipped.push({ candidate, reason: "粗筛没留" });
+    if (!shortlistSet.has(candidate.bvid)) skipped.push({ candidate, reason: "粗筛没留", score: null });
   }
 
   // 6. 投递
-  const delivered = { dm: false, comments: 0 };
+  const delivered = { dm: false, comments: 0, fav: 0, dynamic: false };
   if (picked.length > 0) {
     const dmOutcome = await deliverDm(record, config, picked);
     delivered.dm = dmOutcome.sent;
@@ -570,11 +654,82 @@ export async function runDutyRound(record: BiliConnectionRecord, binding: { id: 
     }
   }
 
+  // 6.5 对外动作：收藏 / 发动态。
+  // 都在报告落库之前做完 —— 动作结果要写进报告，但失败只记一笔，不能让整轮值班变成失败。
+  if (picked.length > 0) {
+    if (config.favMinScore > 0) {
+      const favToday = await prisma.biliAction.count({ where: { bindingId: binding.id, day: today, kind: "fav" } });
+      let favBudget = Math.max(0, FAV_PER_DAY - favToday);
+      if (favBudget <= 0) notes.push(`今天已经收藏了 ${FAV_PER_DAY} 条，这一轮不再收。`);
+
+      for (const item of picked) {
+        if (favBudget <= 0) break;
+        if ((item.score ?? 0) < config.favMinScore) continue;
+        // 理由太短说明她自己也没想清楚为什么要留着，那就别占收藏夹。
+        if (item.reason.trim().length < FAV_MIN_REASON) {
+          notes.push(`《${item.candidate.title.slice(0, 20)}》分数够但理由太短，不收藏。`);
+          continue;
+        }
+        const outcome = await favVideo(record, item.candidate.bvid);
+        if (outcome.note) notes.push(outcome.note);
+        if (!outcome.sent) {
+          if (outcome.fatal) break;
+          continue;
+        }
+        favBudget -= 1;
+        delivered.fav += 1;
+        await prisma.biliAction.create({
+          data: { bindingId: binding.id, day: today, kind: "fav", bvid: item.candidate.bvid, detail: item.reason.slice(0, 200) },
+        }).catch(() => undefined);
+      }
+    }
+
+    // 发动态：一天一条、两条隔 30 分钟、必须是当天最高分且过门槛。
+    // 没有「最高分」概念的话，一天挑五条就要纠结发哪条 —— 排序已经替她做了决定。
+    if (config.autoDynamic) {
+      const best = [...picked].sort((a, b) => (b.score ?? -1) - (a.score ?? -1))[0];
+      const bestScore = best?.score ?? -1;
+      if (!best || bestScore < config.dynamicMinScore) {
+        notes.push(`当天最高分 ${bestScore >= 0 ? String(bestScore) : "未知"} 没到发动态的门槛 ${config.dynamicMinScore}，不发。`);
+      } else {
+        const [dynamicToday, lastDynamic] = await Promise.all([
+          prisma.biliAction.count({ where: { bindingId: binding.id, day: today, kind: "dynamic" } }),
+          prisma.biliAction.findFirst({
+            where: { bindingId: binding.id, kind: "dynamic" },
+            orderBy: { createdAt: "desc" },
+            select: { createdAt: true },
+          }),
+        ]);
+        const gapOk = !lastDynamic || Date.now() - lastDynamic.createdAt.getTime() >= DYNAMIC_GAP_MS;
+        if (dynamicToday >= DYNAMIC_PER_DAY) {
+          notes.push("今天已经发过动态，不再发。");
+        } else if (!gapOk) {
+          notes.push("距离上一条动态不到 30 分钟，这一轮先不发。");
+        } else {
+          const text = buildDynamicText(best);
+          if (!text) {
+            notes.push(`《${best.candidate.title.slice(0, 20)}》的理由过不了公开闸，今天不发动态。`);
+          } else {
+            const outcome = await postDynamic(record, text);
+            if (outcome.note) notes.push(outcome.note);
+            if (outcome.sent) {
+              delivered.dynamic = true;
+              await prisma.biliAction.create({
+                data: { bindingId: binding.id, day: today, kind: "dynamic", bvid: best.candidate.bvid, detail: text },
+              }).catch(() => undefined);
+            }
+          }
+        }
+      }
+    }
+  }
+
   // 7. 收尾：写报告 + 判重表（事务内）
   const roundIndex = todayReports.reduce((max, r) => Math.max(max, r.roundIndex), 0) + 1;
   const reportContent = picked
     .map((item) => {
       const lines = [`### ${item.candidate.bvid}`, `${item.candidate.title}（UP：${item.candidate.author.name || "未知"}）`, item.candidate.url];
+      if (item.score !== null) lines.push(`分数：${item.score}`);
       if (item.reason) lines.push(`理由：${item.reason}`);
       return lines.join("\n");
     })
@@ -635,15 +790,16 @@ export async function runDutyRound(record: BiliConnectionRecord, binding: { id: 
     // 原来是逐条 create 再 catch 掉唯一冲突 —— 但在 Postgres 事务里，一条语句失败
     // 会让整个事务进入 aborted 状态，后面写的东西（包括上面那条记忆）跟着一起回滚。
     const seenRows = [
-      ...picked.map((item) => ({ candidate: item.candidate, result: "picked", reason: item.reason || "值得" })),
-      ...skipped.map((item) => ({ candidate: item.candidate, result: "skipped", reason: item.reason || "跳过" })),
-    ].map(({ candidate, result, reason }) => ({
+      ...picked.map((item) => ({ candidate: item.candidate, result: "picked", reason: item.reason || "值得", score: item.score })),
+      ...skipped.map((item) => ({ candidate: item.candidate, result: "skipped", reason: item.reason || "跳过", score: item.score })),
+    ].map(({ candidate, result, reason, score }) => ({
       bindingId: binding.id,
       bvid: candidate.bvid,
       title: candidate.title,
       author: candidate.author.name,
       result,
       reason,
+      score,
     }));
     if (seenRows.length) {
       await tx.biliSeenVideo.createMany({ data: seenRows, skipDuplicates: true });

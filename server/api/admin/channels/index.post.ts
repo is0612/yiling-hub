@@ -1,6 +1,6 @@
 import { createError, readBody } from "h3";
 import { requireAdminActor } from "../../../utils/auth";
-import { encryptApiKey } from "../../../utils/credential-encryption";
+import { decryptApiKey, encryptApiKey } from "../../../utils/credential-encryption";
 import { readTrimmedString } from "../../../utils/local-api";
 import { parseDutyInput } from "../../../utils/channel-adapter/bili/configure";
 import { getPrisma } from "../../../utils/prisma";
@@ -27,15 +27,41 @@ export default defineEventHandler(async (event) => {
 });
 
 async function createOnebotConnection(body: Record<string, unknown>) {
-  const wsUrl = readTrimmedString(body?.wsUrl, "WS 地址", 500) || "ws://127.0.0.1:3001";
-  const httpUrl = readTrimmedString(body?.httpUrl, "HTTP API 地址", 500) || "http://127.0.0.1:3000";
-  const accessToken = readTrimmedString(body?.accessToken, "WS Token", 500);
-  const httpToken = readTrimmedString(body?.httpToken, "HTTP Token", 500);
   const qqNumber = readTrimmedString(body?.qqNumber, "QQ 号", 100, { required: true });
   const displayName = readTrimmedString(body?.displayName, "显示名", 120) || `QQ 小号 ${qqNumber}`;
   const replyOnlyWhenMentioned = typeof body?.replyOnlyWhenMentioned === "boolean" ? body.replyOnlyWhenMentioned : false;
+  const submittedWsUrl = readTrimmedString(body?.wsUrl, "WS 地址", 500);
+  const submittedHttpUrl = readTrimmedString(body?.httpUrl, "HTTP API 地址", 500);
+  const submittedAccessToken = readTrimmedString(body?.accessToken, "WS Token", 500);
+  const submittedHttpToken = readTrimmedString(body?.httpToken, "HTTP Token", 500);
 
   const prisma = getPrisma();
+
+  // 凭据加密入库，接口不回显，所以编辑时填不出旧值。
+  // 约定：地址/Token 留空 = 沿用已保存的值，否则改一次显示名就把 Token 清空了。
+  let oldCredentials: Record<string, unknown> = {};
+  const existing = await prisma.platformConnection.findUnique({
+    where: { platform_platformAccountKey: { platform: "qq-onebot", platformAccountKey: qqNumber } },
+    select: { credentialsCiphertext: true },
+  });
+  if (existing?.credentialsCiphertext) {
+    try {
+      const plain = await decryptApiKey(Buffer.from(existing.credentialsCiphertext).toString("utf8"));
+      oldCredentials = JSON.parse(plain) as Record<string, unknown>;
+    } catch {
+      // 解不开就按「没有旧值」处理，让用户重新填。
+    }
+  }
+  const reuse = (submitted: string, key: string) => {
+    if (submitted) return submitted;
+    return typeof oldCredentials[key] === "string" ? (oldCredentials[key] as string) : "";
+  };
+
+  const wsUrl = reuse(submittedWsUrl, "wsUrl") || "ws://127.0.0.1:3001";
+  const httpUrl = reuse(submittedHttpUrl, "httpUrl") || "http://127.0.0.1:3000";
+  const accessToken = reuse(submittedAccessToken, "accessToken");
+  const httpToken = reuse(submittedHttpToken, "httpToken");
+
   const credentialsCiphertext = Buffer.from(await encryptApiKey(JSON.stringify({
     wsUrl,
     httpUrl,

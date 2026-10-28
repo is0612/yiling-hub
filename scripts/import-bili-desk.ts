@@ -101,7 +101,7 @@ async function main() {
   });
 
   if (!connection) {
-    console.log("⚠️ 尚未创建 B站连接。请先在「渠道管理」创建 B站渠道并绑定角色，再运行迁移。");
+    console.log("⚠️ 尚未创建 B站连接。请先在「系统管理 → B站值班台」添加账号并绑定角色，再运行迁移。");
     console.log("（或者你也可以直接删除 bili-desk —— 当前没有可迁移的历史数据，凭证由 bili-cli 独立管理。）");
     await prisma.$disconnect();
     return;

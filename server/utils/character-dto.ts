@@ -1,4 +1,10 @@
 import { resolveChatModelSettings } from "./chat-model-config";
+import { MEMORY_TOKEN_BUDGET_DEFAULT, SNAPSHOT_TOKEN_BUDGET_DEFAULT } from "./memory-retrieval";
+import { resolveProactiveSettings, type ProactiveSettings } from "./proactive-settings";
+
+function positiveNumber(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.round(value) : 0;
+}
 
 export type CharacterDto = {
   id: string;
@@ -24,6 +30,15 @@ export type CharacterDto = {
   chatApiBaseUrl: string;
   chatApiKeyConfigured: boolean;
   chatApiKeySource: "character" | "environment" | "missing";
+  /** 每日 token 额度，0 = 不限。 */
+  dailyTokenLimit: number;
+  /** 每次对话注入的记忆 / 快照 token 预算。 */
+  memoryTokenBudget: number;
+  snapshotTokenBudget: number;
+  /** QQ 渠道回复是否允许附一张表情；默认关。 */
+  emojiEnabled: boolean;
+  /** 主动找话设置；未配置过时是默认值（enabled=false）。 */
+  proactive: ProactiveSettings;
 };
 
 type CharacterRecord = {
@@ -142,5 +157,10 @@ export function toCharacterDto(input: unknown): CharacterDto {
     chatApiBaseUrl: chatSettings.apiBaseUrl,
     chatApiKeyConfigured: chatSettings.apiKeyConfigured,
     chatApiKeySource: chatSettings.apiKeySource,
+    dailyTokenLimit: positiveNumber(config.dailyTokenLimit),
+    memoryTokenBudget: positiveNumber(config.memoryTokenBudget) || MEMORY_TOKEN_BUDGET_DEFAULT,
+    snapshotTokenBudget: positiveNumber(config.snapshotTokenBudget) || SNAPSHOT_TOKEN_BUDGET_DEFAULT,
+    emojiEnabled: config.emojiEnabled === true,
+    proactive: resolveProactiveSettings(config),
   };
 }

@@ -37,9 +37,21 @@ AI 对话的检索范围按身份隔离：`resolveChatMemoryScopes()` 只放行�
 
 鉴权已实现服务端会话：`sessions` 表只存会话令牌的 SHA-256 哈希，Cookie 为 `yiling_session`（HttpOnly / SameSite=Strict / 生产 Secure），密码用 scrypt 校验，登录失败写 `login_attempts` 并按用户名与来源地址限流。所有 `/api` 请求经过同源/跨站校验；业务接口通过 `requireActorUserId()` 从会话取身份。本地开发保留一条受限回退（开发构建 + `YILING_LOCAL_API_ENABLED=true` + 未关闭 `YILING_ALLOW_DEV_OWNER_BYPASS` + 回环 Host），生产构建没有该通道；携带失效 Cookie 时必须重新登录，不能回退成开发身份。回归测试为 `yarn test:auth`、`yarn test:auth-db`，登录/登出/限流链路由冒烟脚本覆盖。
 
-仍未完成的边界：密码重置（需 SMTP）、注册邮箱验证（需 SMTP）、渠道适配器的断线重连与主动消息、渠道按外部用户隔离私人记忆、公网部署加固（HTTPS、反向代理信任、备份演练）；真实模型端到端调用也需要开发者在本机配置 API 后验证。当前 CI 用仅监听回环地址的模拟模型服务验证完整数据流。模型未配置时任务必须留在队列，不得用规则摘要冒充 AI 输出。来源证据必须通过当前周期原始消息 ID 白名单校验；不要把未验证的模型推断当作确定事实自动写入长期记忆。每次代码修改后运行适用的类型检查、测试、lint 与构建；没有实际执行的检查不能声称通过。
+仍未完成的边界：密码重置（需 SMTP）、注册邮箱验证（需 SMTP）、渠道适配器的断线重连、QQ 群聊里的主动参与（主动私聊已实现，见 `docs/proactive-messaging.md`）、渠道按外部用户隔离私人记忆、公网部署加固（HTTPS、反向代理信任、备份演练）；真实模型端到端调用也需要开发者在本机配置 API 后验证。当前 CI 用仅监听回环地址的模拟模型服务验证完整数据流。模型未配置时任务必须留在队列，不得用规则摘要冒充 AI 输出。来源证据必须通过当前周期原始消息 ID 白名单校验；不要把未验证的模型推断当作确定事实自动写入长期记忆。每次代码修改后运行适用的类型检查、测试、lint 与构建；没有实际执行的检查不能声称通过。
 
 账号模型为「1 个管理员 + 邮箱注册普通用户」：`User.role` 只有 ADMIN/USER；业务接口按会话 `userId` 过滤，天然隔离；管理员接口 `/api/admin/*` 走 `requireAdminActor()`。QQ 渠道只保留 OneBot 一条通道（`server/utils/channel-adapter/onebot/*`）：挂个人号，走 OneBot v11 网关的 WS 收消息 + HTTP API 发消息，WS/HTTP Token 加密入库，消息处理按角色绑定路由、幂等去重、回写平台；回归测试 `yarn test:onebot`。QQ 官方机器人渠道（AppID + AppSecret）已于 2026-10-27 下线，不要再恢复。
+
+模型调用统一记账：`model_usages` 表由 `server/utils/model-usage.ts` 写入（kind / model / prompt / completion / total / reasoning token），四个埋点是 `chat.post.ts`、`channel-adapter/pipeline.ts`、`memory-worker.ts`、`bili/duty-pipeline.ts`（粗筛与终判分开计）。每日额度取角色 `modelConfig.dailyTokenLimit`（0 = 不限，东八区日界），超额时对话返回 429、QQ 与值班静默跳过；记账失败只写日志，不许把已经成功的回复变成错误。
+
+记忆注入按 token 预算装配（`rankMemoriesWithBudget` / `rankSnapshotsWithBudget`）：记忆默认 1200、快照默认 2000（各自独立）、条数上限 8，排序 = 相关度 × 重要度 × 半衰期衰减（30 天，参照 `lastRecalledAt`）× 召回加成；装不下时跳过整条但**第一条永远放行**。不要再改回 top-N 硬截断 —— 那样提示词会静默爆掉，且看不出谁被挤掉。预算与条数走 `modelConfig.memoryTokenBudget` / `snapshotTokenBudget` / `memoryItemLimit`。
+
+前端渠道入口按平台拆成两个页面，**不要再合并回一个通用「渠道管理」页**（`app/pages/channels.vue` 已删除）：QQ 小号在「系统管理 → QQ 渠道」（`app/pages/qq.vue`，只列 `qq-onebot`，含四步接入引导），B站 在「系统管理 → B站 值班台」（`app/pages/bili/index.vue`，账号创建、绑定角色、值班设置都在里面）。两个页面共用 `/api/admin/channels` 系列接口；QQ 凭据不回显，保存时地址/Token 留空表示沿用旧值（`channels/index.post.ts` 里的合并逻辑，别改成直接覆盖）。
+
+QQ 表情走「模型返回 faces 字段 → 渠道拼 face 段」：清单在 `onebot/faces.ts`（精选，非 QQ 完整 face 表），能力由 `ChannelMessageInput.faceCatalog` 声明而非平台名判断，角色开关 `modelConfig.emojiEnabled` 默认关，上一条刚发过表情则 10 分钟内不再发。**表情必须单独一条消息**，表情 id 只记在 `metadata.faceIds`、绝不进 `content`。别再退回「从 reply 文本里认 `[face]` 占位符」的做法 —— 正文一旦混进段标记就会被原样当文字发出去。发送侧要查 OneBot 返回的 `retcode`：出错时 HTTP 仍是 200。
+
+B站 值班的终判除了「值得/跳过」还要给 0-20 分，分数进 `bili_seen_videos.score` 并驱动两个对外动作：收藏（`duty.favMinScore`，默认 0 = 关）和发动态（`duty.autoDynamic`，默认关）。两条动作都记账在 `bili_actions`（按 `bindingId + day + kind`），因为「每天几次 / 隔多久」这类判定不能存在内存里 —— 进程一重启就归零，而账号那边的痕迹删不掉。**分数缺失必须是 `null` 不是 `0`**：0 分会被当成当天最低分压掉别的东西。发动态前必须过 `sanitizePublicText()`，那是唯一面向陌生人的写操作。B站 侧栏命令目录用 `catalog.ts` 的 `common` 标记决定默认可见性，存「隐藏清单 + 版本号」，别改回「全部铺开」。
+
+主动找话走「想 → 判 → 说」三段（`server/utils/proactive*.ts`，文档 `docs/proactive-messaging.md`）：先攒目的池（`proactive_intents`，按 `characterId + dedupeKey` 去重），再由 `evaluateProactiveGate` 零成本判定，放行后才调模型写一句话并发 QQ 私信。**默认关**（`PROACTIVE_DEFAULTS.enabled = false`），闸门必须先判配置性问题（开关/收件人/额度）再判时间性问题（安静时段/间隔/主人在聊），**先判闸门再调模型**，发出后必须落成一条 `ASSISTANT` 消息（否则她读不到自己说过什么）。页面「立即试一次」的 `force` 只跳过时间类闸门，不跳过开关、收件人和额度。收件人取最近一次 `c:` 前缀的 QQ 私聊，不要求用户手填主人 QQ。常驻进程 `yarn proactive:run`，不要塞进 Web 进程的 `setInterval`。
 
 ## 外部 Vue Skill 的 Nuxt 覆盖说明
 

@@ -1534,6 +1534,87 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /characters/{characterId}/proactive:
+    parameters:
+      - $ref: '#/components/parameters/CharacterId'
+    get:
+      tags: [Proactive]
+      operationId: getCharacterProactiveStatus
+      summary: 主动找话的现状
+      description: |
+        返回设置、此刻能不能发（与后台 tick 使用同一把闸门）、待发池条数与最近几条想法。
+        设置本身通过 `PATCH /characters/{characterId}` 的 `proactive` 字段写入。
+      responses:
+        '200':
+          description: 设置与状态
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [settings, status, recent]
+                properties:
+                  settings: { $ref: '#/components/schemas/ProactiveSettings' }
+                  status:
+                    type: object
+                    required: [sentToday, pendingCount, canSendNow, reason, reasonLabel]
+                    properties:
+                      sentToday: { type: integer, minimum: 0 }
+                      pendingCount: { type: integer, minimum: 0 }
+                      recipient:
+                        type: string
+                        nullable: true
+                        description: 脱敏后的收件人；null 表示还没有可投递的 QQ 私聊。
+                      lastSentAt: { type: string, format: date-time, nullable: true }
+                      gapRemainingMinutes: { type: integer, minimum: 0 }
+                      quietNow: { type: boolean }
+                      quotaExceeded: { type: boolean }
+                      canSendNow: { type: boolean }
+                      reason: { type: string }
+                      reasonLabel: { type: string, description: 已翻译成中文的原因 }
+                  recent:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string, format: uuid }
+                        kind: { type: string, enum: [SHARE, ASK, INVITE, CONFIDE, CURIOUS, FOLLOWUP] }
+                        goal: { type: string }
+                        status: { type: string, enum: [PENDING, SENT, SKIPPED, EXPIRED] }
+                        content: { type: string, nullable: true }
+                        confidence: { type: number }
+                        sentAt: { type: string, format: date-time, nullable: true }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /characters/{characterId}/proactive/try:
+    parameters:
+      - $ref: '#/components/parameters/CharacterId'
+    post:
+      tags: [Proactive]
+      operationId: tryCharacterProactive
+      summary: 立即试一次
+      description: |
+        跳过时间类闸门（安静时段 / 最小间隔 / 主人是否在聊 / 每日上限），
+        开关、收件人与当日模型额度仍然照判。会真的往 QQ 发一条私信。
+      responses:
+        '200':
+          description: 本次结果；status=sent 时 content 为发出的正文
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, reason, reasonLabel]
+                properties:
+                  status: { type: string, enum: [sent, skipped, failed] }
+                  reason: { type: string }
+                  reasonLabel: { type: string }
+                  content: { type: string, nullable: true }
+                  detail: { type: string, nullable: true, description: 失败时的原始错误 }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /overview:
     get:
       tags: [Overview]
@@ -2292,6 +2373,48 @@ components:
           type: string
           enum: [NEXT_CYCLE, IMMEDIATE_RECALC]
           default: NEXT_CYCLE
+    ProactiveSettings:
+      type: object
+      description: 写入时只提交要改的字段；读取时一定是归一化后的完整对象。
+      required: [enabled, dailyMax, minGapMinutes, quietStart, quietEnd, userActiveMinutes, minConfidence]
+      properties:
+        enabled:
+          type: boolean
+          default: false
+          description: 默认关。这是唯一一条「她先开口」的路径。
+        dailyMax:
+          type: integer
+          minimum: 0
+          maximum: 24
+          default: 2
+          description: 每天最多主动几条（东八区自然日）；0 等于关掉这个口子。
+        minGapMinutes:
+          type: integer
+          minimum: 15
+          maximum: 1440
+          default: 180
+        quietStart:
+          type: string
+          pattern: '^\d{1,2}:\d{2}$'
+          default: '23:00'
+          description: 安静时段起点（含）。允许跨午夜。
+        quietEnd:
+          type: string
+          pattern: '^\d{1,2}:\d{2}$'
+          default: '08:00'
+          description: 安静时段终点（不含）。与起点相同会被 400 拒绝。
+        userActiveMinutes:
+          type: integer
+          minimum: 0
+          maximum: 720
+          default: 30
+          description: 你在这个时间内说过话就不打扰；0 = 不判这条。
+        minConfidence:
+          type: number
+          minimum: 0
+          maximum: 1
+          default: 0.4
+          description: 挑目的时的置信度门槛。
     MemoryJob:
       type: object
       required: [id, type, status, attemptCount, createdAt]

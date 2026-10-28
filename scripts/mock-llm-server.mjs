@@ -85,10 +85,15 @@ const server = http.createServer(async (request, response) => {
       }
       const firstMemory = memories[0] && typeof memories[0].id === "string" ? memories[0].id : null;
       const firstSnapshot = snapshots[0] && typeof snapshots[0].id === "string" ? snapshots[0].id : null;
+      // 只在给了清单时才挑一张 —— 用来验证「模型选表情 → 渠道发出去」这条链路。
+      // 真实模型大多数时候会返回空数组，这里恒定挑第一张只是为了测试能断言。
+      const availableFaces = Array.isArray(input.availableFaces) ? input.availableFaces : [];
+      const pickedFace = availableFaces[0] && typeof availableFaces[0].id === "string" ? availableFaces[0].id : null;
       sendJson(response, 200, chatCompletion(body, {
         reply: "CI 模拟模型回复：" + String(input.currentMessage ?? "").slice(0, 150),
         usedMemoryIds: firstMemory ? [firstMemory] : [],
         usedSnapshotIds: firstSnapshot ? [firstSnapshot] : [],
+        faces: pickedFace ? [pickedFace] : [],
       }));
       return;
     }

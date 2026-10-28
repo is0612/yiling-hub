@@ -30,7 +30,7 @@ export default defineEventHandler(async (event) => {
     throw createError({ statusCode: 404, statusMessage: "找不到该 B站 连接。" });
   }
   if (connection.bindings.length === 0) {
-    throw createError({ statusCode: 400, statusMessage: "该连接还没有绑定角色，请先在渠道管理里绑定。" });
+    throw createError({ statusCode: 400, statusMessage: "该连接还没有绑定角色，请先在 B站值班台的账号卡片上绑定。" });
   }
 
   const binding = bindingId

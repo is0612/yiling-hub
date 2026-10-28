@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Connection, Cpu, InfoFilled, Refresh, Select } from "@element-plus/icons-vue";
+import { Connection, Cpu, InfoFilled, Promotion, Refresh, Select } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
 import type { Character } from "~/utils/mock-data";
 import { MODEL_PROVIDERS, buildModelOptions, providerByBaseUrl, providerByKey } from "~/utils/model-catalog";
@@ -25,8 +25,107 @@ const draftChatApiBaseUrl = ref("https://api.deepseek.com");
 const draftChatApiKey = ref("");
 const clearSavedApiKey = ref(false);
 const draftProviderKey = ref("deepseek");
+const draftDailyTokenLimit = ref(0);
+const draftMemoryTokenBudget = ref(1200);
+const draftSnapshotTokenBudget = ref(2000);
+const draftEmojiEnabled = ref(false);
 /** 本页「获取模型」拉回来的列表；换地址就作废 */
 const fetchedModels = ref<string[]>([]);
+
+type ProactiveSettings = NonNullable<Character["proactive"]>;
+
+const PROACTIVE_FALLBACK: ProactiveSettings = {
+  enabled: false,
+  dailyMax: 2,
+  minGapMinutes: 180,
+  quietStart: "23:00",
+  quietEnd: "08:00",
+  userActiveMinutes: 30,
+  minConfidence: 0.4,
+};
+const draftProactive = ref<ProactiveSettings>({ ...PROACTIVE_FALLBACK });
+
+type ProactiveSnapshot = {
+  settings: ProactiveSettings;
+  status: {
+    sentToday: number;
+    pendingCount: number;
+    recipient: string | null;
+    lastSentAt: string | null;
+    gapRemainingMinutes: number;
+    quietNow: boolean;
+    quotaExceeded: boolean;
+    canSendNow: boolean;
+    reason: string;
+    reasonLabel: string;
+  };
+  recent: Array<{
+    id: string;
+    kind: string;
+    goal: string;
+    status: string;
+    content: string | null;
+    confidence: number;
+    sentAt: string | null;
+  }>;
+};
+const proactiveSnapshot = ref<ProactiveSnapshot | null>(null);
+const tryingProactive = ref(false);
+
+const PROACTIVE_KIND_LABELS: Record<string, string> = {
+  SHARE: "分享",
+  ASK: "想问",
+  INVITE: "邀约",
+  CONFIDE: "心里话",
+  CURIOUS: "好奇",
+  FOLLOWUP: "追问",
+};
+
+const PROACTIVE_STATUS_LABELS: Record<string, string> = {
+  PENDING: "待说",
+  SENT: "已发",
+  SKIPPED: "略过",
+  EXPIRED: "过期",
+};
+
+async function loadProactive() {
+  if (!id.value) return;
+  try {
+    proactiveSnapshot.value = await $fetch<ProactiveSnapshot>(
+      `/api/characters/${encodeURIComponent(id.value)}/proactive`,
+    );
+  } catch {
+    // 状态读不到不影响改设置，静默即可。
+    proactiveSnapshot.value = null;
+  }
+}
+
+type DailyUsage = {
+  day: string;
+  usage: { totalTokens: number; promptTokens: number; completionTokens: number; calls: number; byKind: Record<string, { totalTokens: number; calls: number }> };
+  quota: { limit: number; used: number; remaining: number; exceeded: boolean };
+};
+const dailyUsage = ref<DailyUsage | null>(null);
+
+const KIND_LABELS: Record<string, string> = {
+  chat: "AI 对话",
+  channel: "QQ 回复",
+  snapshot: "阶段总结",
+  "bili-screening": "值班粗筛",
+  "bili-judge": "值班终判",
+  proactive: "主动找话",
+  other: "其他",
+};
+
+async function loadUsage() {
+  if (!id.value) return;
+  try {
+    dailyUsage.value = await $fetch<DailyUsage>(`/api/characters/${encodeURIComponent(id.value)}/usage`);
+  } catch {
+    // 看板读不到不影响改设置，静默即可。
+    dailyUsage.value = null;
+  }
+}
 
 /** 三个入口各回各家：对话页、角色管理页、角色记忆页 */
 const backTarget = computed(() => {
@@ -99,8 +198,14 @@ async function loadCharacter() {
     draftChatApiBaseUrl.value = data.chatApiBaseUrl || "https://api.deepseek.com/v1";
     draftChatApiKey.value = "";
     clearSavedApiKey.value = false;
+    draftDailyTokenLimit.value = data.dailyTokenLimit ?? 0;
+    draftMemoryTokenBudget.value = data.memoryTokenBudget ?? 1200;
+    draftSnapshotTokenBudget.value = data.snapshotTokenBudget ?? 2000;
+    draftEmojiEnabled.value = data.emojiEnabled === true;
+    draftProactive.value = { ...PROACTIVE_FALLBACK, ...(data.proactive ?? {}) };
     draftProviderKey.value = providerByBaseUrl(draftChatApiBaseUrl.value)?.key ?? "custom";
     fetchedModels.value = [];
+    await Promise.all([loadUsage(), loadProactive()]);
   } catch {
     character.value = null;
     ElMessage.error("加载角色失败，请确认角色仍存在且本地数据库已初始化。");
@@ -127,12 +232,18 @@ async function save(silent = false): Promise<boolean> {
         chatApiBaseUrl: draftChatApiBaseUrl.value.trim(),
         chatApiKey: draftChatApiKey.value,
         clearApiKey: clearSavedApiKey.value && !draftChatApiKey.value.trim(),
+        dailyTokenLimit: draftDailyTokenLimit.value,
+        memoryTokenBudget: draftMemoryTokenBudget.value,
+        snapshotTokenBudget: draftSnapshotTokenBudget.value,
+        emojiEnabled: draftEmojiEnabled.value,
+        proactive: { ...draftProactive.value },
       },
     });
     character.value = updated;
     draftChatApiKey.value = "";
     clearSavedApiKey.value = false;
     if (!silent) ElMessage.success("模型设置已保存。");
+    await Promise.all([loadUsage(), loadProactive()]);
     return true;
   } catch (error) {
     ElMessage.error(readError(error, "保存失败，请稍后重试。"));
@@ -188,6 +299,33 @@ async function fetchModels() {
     ElMessage.error(readError(error, "获取模型列表失败，请稍后重试。"));
   } finally {
     fetchingModels.value = false;
+  }
+}
+
+/** 试跑前先保存：后台用的是库里那份设置，不先存就等于拿旧设置试。 */
+async function tryProactive() {
+  if (tryingProactive.value || saving.value || !character.value) return;
+  tryingProactive.value = true;
+  try {
+    const saved = await save(true);
+    if (!saved) return;
+    const result = await $fetch<{
+      status: string;
+      reason: string;
+      reasonLabel: string;
+      content: string | null;
+      detail: string | null;
+    }>(`/api/characters/${encodeURIComponent(id.value)}/proactive/try`, { method: "POST" });
+
+    if (result.status === "sent") ElMessage.success(`发出去了：「${result.content ?? ""}」`);
+    else if (result.status === "skipped") ElMessage.warning(`这次没发：${result.reasonLabel}`);
+    else ElMessage.error(`这次失败：${result.reasonLabel}${result.detail ? `（${result.detail}）` : ""}`);
+
+    await Promise.all([loadProactive(), loadUsage()]);
+  } catch (error) {
+    ElMessage.error(readError(error, "试跑失败，请稍后重试。"));
+  } finally {
+    tryingProactive.value = false;
   }
 }
 
@@ -376,27 +514,226 @@ watch(id, () => void loadCharacter());
                 数值越大，回复可能越长，单次请求的消耗也越高。
               </div>
             </el-form-item>
+
+            <el-form-item label="每日 token 额度">
+              <el-input-number
+                v-model="draftDailyTokenLimit"
+                :min="0"
+                :max="10000000"
+                :step="10000"
+              />
+              <div class="form-help">
+                0 = 不限。按东八区自然日累计全部调用（对话 / QQ / 值班 / 总结）；用完后对话直接拒绝，QQ 与值班静默跳过。
+              </div>
+            </el-form-item>
+
+            <el-form-item label="记忆注入预算（token）">
+              <el-input-number
+                v-model="draftMemoryTokenBudget"
+                :min="0"
+                :max="20000"
+                :step="200"
+              />
+              <div class="form-help">
+                每次对话最多带多少记忆。0 = 用默认 1200。超出预算时按「相关度 × 新鲜度衰减 × 重要度」取到这个上限为止。
+              </div>
+            </el-form-item>
+
+            <el-form-item label="阶段总结注入预算（token）">
+              <el-input-number
+                v-model="draftSnapshotTokenBudget"
+                :min="0"
+                :max="20000"
+                :step="200"
+              />
+              <div class="form-help">
+                一篇周期总结动辄两三千字，所以和记忆分开算预算，否则两者会互相挤掉。0 = 用默认 2000。
+              </div>
+            </el-form-item>
+
+            <el-form-item label="QQ 渠道发表情">
+              <el-switch v-model="draftEmojiEnabled" />
+              <div class="form-help">
+                开启后 QQ 回复偶尔会在正文之后单独跟一条表情。默认关闭；上一条刚发过表情的话，10 分钟内不会再发。网页对话与 B站 私信不受影响。
+              </div>
+            </el-form-item>
+          </el-form>
+        </section>
+
+        <!-- 主动找话 -->
+        <section class="surface form-section">
+          <div class="settings-section-head">
+            <div>
+              <div class="form-title">
+                主动找话
+                <span
+                  class="pill"
+                  :class="draftProactive.enabled ? 'pill-green' : ''"
+                >{{ draftProactive.enabled ? "已开启" : "默认关闭" }}</span>
+              </div>
+              <p class="section-description">
+                想开口的时候，她自己先发一条 QQ 私信。不是定时群发：先攒「想做但还没做的事」，再由硬闸门决定这一刻能不能说。
+              </p>
+            </div>
+            <el-icon class="section-icon">
+              <Promotion />
+            </el-icon>
+          </div>
+
+          <el-form
+            label-position="top"
+            style="margin-top:18px"
+          >
+            <el-form-item label="开启主动找话">
+              <el-switch v-model="draftProactive.enabled" />
+              <div class="form-help">
+                默认关闭——这是唯一一条「她先开口」的路径，开着的话你得先接受她突然找你。收件人取的是这个角色最近一次 QQ 私聊的对象，没私聊过就不会发。
+              </div>
+            </el-form-item>
+
+            <template v-if="draftProactive.enabled">
+              <el-form-item label="每天最多几条">
+                <el-input-number
+                  v-model="draftProactive.dailyMax"
+                  :min="0"
+                  :max="24"
+                />
+                <div class="form-help">
+                  0 = 关掉这个口子。按东八区自然日计，和 token 额度同一把尺量日子。
+                </div>
+              </el-form-item>
+
+              <el-form-item label="两条之间至少隔多久（分钟）">
+                <el-input-number
+                  v-model="draftProactive.minGapMinutes"
+                  :min="15"
+                  :max="1440"
+                  :step="15"
+                />
+                <div class="form-help">
+                  默认 180 分钟。间隔太短，她会变成「刚聊完又凑上来」。
+                </div>
+              </el-form-item>
+
+              <el-form-item label="安静时段">
+                <div class="quiet-row">
+                  <el-time-select
+                    v-model="draftProactive.quietStart"
+                    start="00:00"
+                    step="00:30"
+                    end="23:30"
+                    placeholder="23:00"
+                  />
+                  <span class="quiet-sep">到</span>
+                  <el-time-select
+                    v-model="draftProactive.quietEnd"
+                    start="00:00"
+                    step="00:30"
+                    end="23:30"
+                    placeholder="08:00"
+                  />
+                </div>
+                <div class="form-help">
+                  允许跨午夜（23:00 到 08:00 就是整夜闭嘴）。起止填成一样会被拒绝保存，因为那等于没有安静时段。
+                </div>
+              </el-form-item>
+
+              <el-form-item label="刚聊过就先不打扰（分钟）">
+                <el-input-number
+                  v-model="draftProactive.userActiveMinutes"
+                  :min="0"
+                  :max="720"
+                  :step="10"
+                />
+                <div class="form-help">
+                  你在这段时间内说过话，她就不会主动开口——那样叫接话，不叫主动找。0 = 不判这条。
+                </div>
+              </el-form-item>
+
+              <el-form-item label="最低置信度">
+                <el-slider
+                  v-model="draftProactive.minConfidence"
+                  :min="0"
+                  :max="1"
+                  :step="0.05"
+                  show-input
+                />
+                <div class="form-help">
+                  她会给每件「想做的事」打 0–1 分，低于这个值就不开口。调高更安静。
+                </div>
+              </el-form-item>
+            </template>
           </el-form>
 
-          <div class="form-actions">
+          <div class="proactive-foot">
+            <div class="proactive-state">
+              <template v-if="proactiveSnapshot">
+                <span
+                  class="pill"
+                  :class="proactiveSnapshot.status.canSendNow ? 'pill-green' : ''"
+                >{{ proactiveSnapshot.status.reasonLabel }}</span>
+                <span class="proactive-meta">
+                  今天 {{ proactiveSnapshot.status.sentToday }} / {{ proactiveSnapshot.settings.dailyMax }} 条 ·
+                  池子 {{ proactiveSnapshot.status.pendingCount }} 条 ·
+                  收件人 {{ proactiveSnapshot.status.recipient ?? "还没有" }}
+                </span>
+              </template>
+              <span
+                v-else
+                class="proactive-meta"
+              >还读不到当前状态，保存后刷新一次。</span>
+            </div>
             <button
               type="button"
               class="btn"
-              :disabled="saving || testing || fetchingModels"
-              @click="testConnection"
+              :disabled="tryingProactive || saving"
+              @click="tryProactive"
             >
-              <el-icon><Connection /></el-icon>{{ testing ? "测试中…" : "保存并测试" }}
-            </button>
-            <button
-              type="button"
-              class="btn primary"
-              :disabled="saving || testing || fetchingModels"
-              @click="save(false)"
-            >
-              <el-icon><Select /></el-icon>{{ saving ? "保存中…" : "保存设置" }}
+              <el-icon><Promotion /></el-icon>{{ tryingProactive ? "试跑中…" : "立即试一次" }}
             </button>
           </div>
+
+          <div class="form-help">
+            「立即试一次」只跳过时间类限制（安静时段 / 间隔 / 每日上限）；开关、收件人和当日额度照判，否则这个按钮就等于绕过所有保护。
+          </div>
+
+          <div
+            v-if="proactiveSnapshot?.recent.length"
+            class="proactive-recent"
+          >
+            <div class="recent-head">
+              最近的想法
+            </div>
+            <div
+              v-for="item in proactiveSnapshot.recent.slice(0, 5)"
+              :key="item.id"
+              class="recent-row"
+            >
+              <span class="pill">{{ PROACTIVE_KIND_LABELS[item.kind] ?? item.kind }}</span>
+              <span class="recent-text">{{ item.status === "SENT" ? (item.content ?? item.goal) : item.goal }}</span>
+              <span class="recent-status">{{ PROACTIVE_STATUS_LABELS[item.status] ?? item.status }}</span>
+            </div>
+          </div>
         </section>
+
+        <div class="form-actions">
+          <button
+            type="button"
+            class="btn"
+            :disabled="saving || testing || fetchingModels"
+            @click="testConnection"
+          >
+            <el-icon><Connection /></el-icon>{{ testing ? "测试中…" : "保存并测试" }}
+          </button>
+          <button
+            type="button"
+            class="btn primary"
+            :disabled="saving || testing || fetchingModels"
+            @click="save(false)"
+          >
+            <el-icon><Select /></el-icon>{{ saving ? "保存中…" : "保存设置" }}
+          </button>
+        </div>
       </div>
 
       <aside class="settings-side">
@@ -423,6 +760,45 @@ watch(id, () => void loadCharacter());
           <div class="info-callout side-callout">
             <el-icon><InfoFilled /></el-icon><span>模型未配置时，对话与自动归档会留在队列里，不会用规则摘要冒充 AI 输出。</span>
           </div>
+        </section>
+
+        <section class="surface panel side-panel">
+          <div class="card-head">
+            <h2>今日用量</h2>
+            <span class="sub">{{ dailyUsage?.day ?? "—" }}</span>
+          </div>
+          <div class="metric-row">
+            <span>已用 token</span>
+            <span class="metric-value">
+              {{ dailyUsage ? dailyUsage.usage.totalTokens.toLocaleString() : "—" }}
+              <template v-if="dailyUsage?.quota.limit"> / {{ dailyUsage.quota.limit.toLocaleString() }}</template>
+            </span>
+          </div>
+          <div class="metric-row">
+            <span>调用次数</span><span class="metric-value">{{ dailyUsage?.usage.calls ?? 0 }}</span>
+          </div>
+          <div
+            v-for="(value, kind) in dailyUsage?.usage.byKind ?? {}"
+            :key="kind"
+            class="metric-row"
+          >
+            <span>{{ KIND_LABELS[String(kind)] ?? kind }}</span>
+            <span class="metric-value">{{ value.totalTokens.toLocaleString() }} · {{ value.calls }} 次</span>
+          </div>
+          <div
+            class="form-help"
+            style="margin-top:8px"
+          >
+            额度用完时这里不会自动清零 —— 统计的是真实花费，调高额度或等次日恢复。
+          </div>
+          <button
+            type="button"
+            class="btn sm"
+            style="margin-top:10px"
+            @click="loadUsage"
+          >
+            <el-icon><Refresh /></el-icon>刷新用量
+          </button>
         </section>
 
         <section class="surface panel">
@@ -461,6 +837,20 @@ watch(id, () => void loadCharacter());
 /* 模型下拉 + 「获取模型」同行：select 吃掉剩余宽度 */
 .model-row{display:flex;width:100%;gap:8px}
 .model-select{min-width:0;flex:1}
+
+/* 安静时段两个时刻选择器 + 「到」 */
+.quiet-row{display:flex;align-items:center;gap:8px}
+.quiet-sep{color:var(--dim);font-size:12px}
+
+.proactive-foot{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:6px;padding-top:14px;border-top:1px solid var(--line)}
+.proactive-state{display:flex;flex-wrap:wrap;align-items:center;gap:8px;min-width:0}
+.proactive-meta{color:var(--faint);font-size:12px;line-height:1.7}
+
+.proactive-recent{margin-top:14px}
+.recent-head{margin-bottom:6px;color:var(--text-2);font-size:12px;font-weight:600}
+.recent-row{display:flex;align-items:center;gap:8px;padding:5px 0;border-top:1px dashed var(--line)}
+.recent-text{min-width:0;flex:1;overflow:hidden;color:var(--dim);font-size:12px;text-overflow:ellipsis;white-space:nowrap}
+.recent-status{flex:0 0 auto;color:var(--faint);font-size:12px}
 
 .settings-side{display:flex;flex-direction:column;gap:16px}
 .settings-side .panel{padding:18px 20px}

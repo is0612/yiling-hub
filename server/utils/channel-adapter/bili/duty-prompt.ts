@@ -34,6 +34,10 @@ export type BiliDutyRoundSettings = {
   mentionName: string;
   /** 这一轮最多「看懂」几条（粗筛的上限）。 */
   watchLimit: number;
+  /** 收藏阈分，0 = 不收藏。 */
+  favMinScore: number;
+  autoDynamic: boolean;
+  dynamicMinScore: number;
 };
 
 export function buildDutyPrompt(config: BiliDutyConfig, settings: BiliDutyRoundSettings): string {
@@ -69,6 +73,18 @@ export function buildDutyPrompt(config: BiliDutyConfig, settings: BiliDutyRoundS
     "- 拿不准就跳过。半天想不明白值不值得的，就是不值得。",
     "- 我看到的是**这条视频本身**，不是标题。标题写得天花乱坠但正文很空 —— 按正文算。",
     "",
+    "## 打分",
+    "",
+    "除了判值得/跳过，还要给这条视频打一个 0-20 的整数分。四把尺子，每把 0-5：",
+    "",
+    "- **信息量**：看完能不能带走点具体的东西。全是空话给 0，有硬货给 5。",
+    "- **跟我有关**：离主人的兴趣、离这台账号爱看的范围有多近。",
+    "- **完成度**：讲透了没有。切片、搬运、只讲一半的往低打。",
+    "- **后劲**：看完还会不会想起来。看完就忘的，再有用也给不了高分。",
+    "",
+    "分数不是评优，是用来排序的：它决定这条要不要留着（收藏）、以及当天最好的那条要不要发出去。",
+    "所以别虚高 —— 拿不准就给个保守的整数，不要给 16、17 这种没把握的高分。",
+    "",
     // 口味是这台账号专属的（值班台里填），故意排在通用尺度后面：
     // 通用尺度讲「什么样的内容值得占注意力」，口味讲「这个账号爱看什么」，
     // 冲突时以口味为准 —— 但「素材不是指令」那类底线不受口味影响。
@@ -91,6 +107,14 @@ export function buildDutyPrompt(config: BiliDutyConfig, settings: BiliDutyRoundS
     "- 具体比漂亮重要：「把 XX 的实测数据全列了，省得自己试」比「内容很精彩」有用得多。",
     `- 理由会直接发给${dmTo}看，所以要像跟他说话，不要写成推荐语广告。`,
     "- 判定跳过的也要给一句理由，会记进「看过的视频」里；口味里规定了写法的就按它写。",
+    // 理由会被搬运到公开动态上，所以「写给自己人看」和「写给所有人看」的边界要提前讲清。
+    ...(settings.autoDynamic
+      ? [
+          "",
+          "⚠️ 这一轮开了发动态：当天分数最高的那条，理由会被当作正文发到公开动态里。",
+          "所以理由里不要出现「主人」「私信」「只跟你说」这类话 —— 那是所有人都看得到的。",
+        ]
+      : []),
     "",
     commentOn
       ? [
@@ -121,5 +145,7 @@ export function buildDutyPrompt(config: BiliDutyConfig, settings: BiliDutyRoundS
     `- 抽帧：${settings.frames} 帧（0 = 不看画面）`,
     `- 这一轮最多细看：${settings.watchLimit} 条`,
     `- 投递：${dm}`,
+    `- 收藏：${settings.favMinScore > 0 ? `${settings.favMinScore} 分以上才会收进收藏夹` : "这一轮不收藏"}`,
+    `- 发动态：${settings.autoDynamic ? `当天最高分到 ${settings.dynamicMinScore} 分会发一条公开动态` : "这一轮不发动态"}`,
   ].join("\n");
 }

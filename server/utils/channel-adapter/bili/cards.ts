@@ -339,37 +339,37 @@ export function parseVerdict(reply: string): { worth: boolean; reason: string } 
 }
 
 /**
- * 宽松 JSON 解析：模型经常带 ```json 围栏，或在前后加一句解释。
- * 先整体 parse，再截取首个 `[...]` / `{...}`。
+ * 解析终判给的分数（0-20）。
+ *
+ * 找不到返回 null 而不是 0：0 分的意思是「差到极点」，会被当成当天最低分压掉别的东西；
+ * 而「这轮没打分」应该当作没发生。两者混在一起，收藏与发动态的阈值判定就全乱了。
  */
-export function parseJsonLoose(text: string): unknown {
-  const cleaned = (text || "").trim();
-  if (!cleaned) return null;
-  const unfenced = cleaned
-    .replace(/^```(?:json)?\s*/i, "")
-    .replace(/\s*```$/, "")
-    .trim();
-  try {
-    return JSON.parse(unfenced);
-  } catch {
-    // 落到下面的截取
-  }
-  for (const [open, close] of [
-    ["[", "]"],
-    ["{", "}"],
-  ] as const) {
-    const start = unfenced.indexOf(open);
-    const end = unfenced.lastIndexOf(close);
-    if (start >= 0 && end > start) {
-      try {
-        return JSON.parse(unfenced.slice(start, end + 1));
-      } catch {
-        // 继续试下一个括号
-      }
-    }
-  }
-  return null;
+export function parseScore(reply: string): number | null {
+  const match = (reply || "").match(/分数\s*[：:]\s*(\d{1,2})/);
+  if (!match) return null;
+  const value = Number(match[1]);
+  if (!Number.isFinite(value)) return null;
+  return Math.max(0, Math.min(20, Math.round(value)));
 }
+
+/**
+ * 公开发布前的脱敏闸。动态是所有人都看得到的，而理由那段话本来是写给主人的。
+ *
+ * 只挡最常见的几种：@ 提及、长数字串（QQ 号 / UID）、以及把私密关系说出口的句子。
+ * 这不是完备的语义防护 —— 真正的边界是「理由由终判在看过人设后写、不读私信」。
+ */
+export function sanitizePublicText(text: string): string {
+  return (text || "")
+    .split(/(?<=[。！？!?\n])/)
+    .filter((part) => !/主人|私信|报备|额度|群友/.test(part))
+    .join("")
+    .replace(/@\S+/g, "")
+    .replace(/\d{6,}/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** 宽松 JSON 解析已抽到 `server/utils/loose-json.ts`（主动机制也用），直接从那边引。 */
 
 /** 从模型返回里提取 bvid 列表（JSON 解析失败时的兜底）。 */
 export function extractBvids(text: string): string[] {

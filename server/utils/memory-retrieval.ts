@@ -179,3 +179,188 @@ export function rankSnapshotCandidates<T extends { id: string; summary: string; 
 ): RankedCandidate<T>[] {
   return rankCandidates(query, snapshots, (snapshot) => snapshot.summary, (snapshot) => snapshot.createdAt ?? snapshot.periodEnd, limit);
 }
+
+// ── token 预算与衰减 ─────────────────────────────────────────
+//
+// 为什么需要：此前是「按相关度取 top-8 条记忆 + top-4 个快照」的硬截断。
+// 两个问题：① 每条长度不受控，8 条长记忆 + 4 篇 3000 字快照能把提示词直接撑爆；
+// ② 截断是无声的，没有任何地方能看出「有一条更该进来的记忆被挤掉了」。
+// 现在改成按 token 预算装配，并给排序加时间衰减 —— 旧记忆不是被硬删，是慢慢变淡。
+
+export const MEMORY_TOKEN_BUDGET_DEFAULT = 1200;
+export const SNAPSHOT_TOKEN_BUDGET_DEFAULT = 2000;
+export const MEMORY_HALF_LIFE_DAYS_DEFAULT = 30;
+
+export type MemoryBudgetOptions = {
+  /** 最多注入几条。0 或不传 = 不按条数限制，只受 token 预算约束。 */
+  limit?: number;
+  /** token 预算。0 = 不限制。 */
+  tokenBudget?: number;
+  /** 新鲜度半衰期（天）：越久没被用到，权重越低。 */
+  halfLifeDays?: number;
+  now?: number;
+};
+
+export type RankedMemory<T> = RankedCandidate<T> & {
+  /** 相关度 × 重要度 × 衰减 × 召回加成之后的最终排序分。 */
+  finalScore: number;
+  /** 0..1，1 = 刚用过。 */
+  decay: number;
+  /** 估算 token 数。 */
+  tokens: number;
+};
+
+export type BudgetedRank<T> = {
+  items: RankedMemory<T>[];
+  /** 有相关度、但被预算或条数挤掉的数量。 */
+  dropped: number;
+  usedTokens: number;
+};
+
+/**
+ * 粗估 token：中文 1 字 ≈ 1 token，其他 4 字符 ≈ 1 token。
+ * 宁可高估 —— 低估会让提示词在真实模型那里被截断，而截断是静默的。
+ */
+export function estimateTokens(text: string): number {
+  if (!text) return 0;
+  const cjk = text.match(/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/gu);
+  const cjkCount = cjk ? cjk.length : 0;
+  const otherCount = text.length - cjkCount;
+  return Math.max(1, cjkCount + Math.ceil(otherCount / 4));
+}
+
+function clamp01(value: unknown, fallback = 0.5): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+  return Math.min(1, Math.max(0, value));
+}
+
+/** 半衰期式衰减：30 天半衰期下，一条 30 天没被碰过的记忆权重降到 0.5。 */
+function decayFactor(recencyMs: number, nowMs: number, halfLifeDays: number): number {
+  if (!recencyMs) return 0.5;
+  const ageDays = Math.max(0, (nowMs - recencyMs) / 86_400_000);
+  return Math.exp(-ageDays * Math.LN2 / Math.max(1, halfLifeDays));
+}
+
+function selectWithBudget<T extends { id: string }>(
+  ranked: Array<RankedCandidate<T> & { finalScore: number; decay: number }>,
+  textOf: (candidate: T) => string,
+  options: MemoryBudgetOptions,
+): BudgetedRank<T> {
+  const limit = options.limit && options.limit > 0 ? options.limit : Number.POSITIVE_INFINITY;
+  const budget = options.tokenBudget && options.tokenBudget > 0 ? options.tokenBudget : 0;
+
+  const items: RankedMemory<T>[] = [];
+  let usedTokens = 0;
+  let dropped = 0;
+
+  for (const entry of ranked) {
+    if (items.length >= limit) {
+      dropped += 1;
+      continue;
+    }
+    const tokens = estimateTokens(textOf(entry));
+    // 预算不够时跳过，但第一条永远放行：否则一个有相关命中的问题会变成「她什么都不记得」。
+    const overBudget = budget > 0 && usedTokens + tokens > budget;
+    if (overBudget && items.length > 0) {
+      dropped += 1;
+      continue;
+    }
+    usedTokens += tokens;
+    items.push({ ...entry, tokens });
+  }
+
+  return { items, dropped, usedTokens };
+}
+
+export function rankMemoriesWithBudget<
+  T extends {
+    id: string; content: string; importance?: unknown; recallCount?: unknown;
+    lastRecalledAt?: unknown; updatedAt?: unknown; createdAt?: unknown;
+  },
+>(query: string, memories: T[], options: MemoryBudgetOptions = {}): BudgetedRank<T> {
+  const now = options.now ?? Date.now();
+  const halfLife = options.halfLifeDays && options.halfLifeDays > 0
+    ? options.halfLifeDays
+    : MEMORY_HALF_LIFE_DAYS_DEFAULT;
+
+  // 先拿到全量相关度排序（不截断），再按衰减重排 —— 相关但不是"最近"的记忆仍有基础分。
+  const scored = rankCandidates(
+    query,
+    memories,
+    (memory) => memory.content,
+    (memory) => memory.lastRecalledAt ?? memory.updatedAt ?? memory.createdAt,
+    memories.length,
+  );
+
+  const byId = new Map(memories.map((memory) => [memory.id, memory]));
+  const rescored = scored.map((entry) => {
+    const source = byId.get(entry.id);
+    const decay = decayFactor(
+      dateValue(source?.lastRecalledAt ?? source?.updatedAt ?? source?.createdAt),
+      now,
+      halfLife,
+    );
+    const importance = clamp01(source?.importance);
+    const recallCount = typeof source?.recallCount === "number" ? source.recallCount : 0;
+    // 衰减下限 0.55：重要的旧事不该因为"很久没提"就彻底消失，只是排得靠后。
+    const finalScore = entry.relevanceScore
+      * (0.55 + 0.45 * importance)
+      * (0.55 + 0.45 * decay)
+      * (1 + Math.min(recallCount, 10) * 0.03);
+    return { ...entry, finalScore: Math.round(finalScore * 1000) / 1000, decay: Math.round(decay * 1000) / 1000 };
+  });
+
+  rescored.sort((left, right) => right.finalScore - left.finalScore || right.relevanceScore - left.relevanceScore);
+  return selectWithBudget(rescored, (memory) => memory.content, options);
+}
+
+export function rankSnapshotsWithBudget<
+  T extends { id: string; summary: string; createdAt?: unknown; periodEnd?: unknown },
+>(query: string, snapshots: T[], options: MemoryBudgetOptions = {}): BudgetedRank<T> {
+  const now = options.now ?? Date.now();
+  const halfLife = options.halfLifeDays && options.halfLifeDays > 0
+    ? options.halfLifeDays
+    : MEMORY_HALF_LIFE_DAYS_DEFAULT;
+
+  const scored = rankCandidates(
+    query,
+    snapshots,
+    (snapshot) => snapshot.summary,
+    (snapshot) => snapshot.createdAt ?? snapshot.periodEnd,
+    snapshots.length,
+  );
+
+  const byId = new Map(snapshots.map((snapshot) => [snapshot.id, snapshot]));
+  const rescored = scored.map((entry) => {
+    const source = byId.get(entry.id);
+    const decay = decayFactor(dateValue(source?.createdAt ?? source?.periodEnd), now, halfLife);
+    // 快照表没有 importance 字段：周期总结本身就是"被提炼过的重要事"，固定按 0.6 算。
+    const finalScore = entry.relevanceScore * (0.55 + 0.45 * 0.6) * (0.55 + 0.45 * decay);
+    return { ...entry, finalScore: Math.round(finalScore * 1000) / 1000, decay: Math.round(decay * 1000) / 1000 };
+  });
+
+  rescored.sort((left, right) => right.finalScore - left.finalScore || right.relevanceScore - left.relevanceScore);
+  return selectWithBudget(rescored, (snapshot) => snapshot.summary, options);
+}
+
+function positiveNumber(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.round(value) : 0;
+}
+
+/** 记忆预算从角色 modelConfig 读，缺省 1200 token。 */
+export function resolveMemoryTokenBudget(modelConfig: unknown): number {
+  const record = modelConfig && typeof modelConfig === "object" ? modelConfig as Record<string, unknown> : {};
+  return positiveNumber(record.memoryTokenBudget) || MEMORY_TOKEN_BUDGET_DEFAULT;
+}
+
+/** 快照预算单独一份：一篇周期总结动辄两三千字，和记忆条目抢同一个池子会互相饿死。 */
+export function resolveSnapshotTokenBudget(modelConfig: unknown): number {
+  const record = modelConfig && typeof modelConfig === "object" ? modelConfig as Record<string, unknown> : {};
+  return positiveNumber(record.snapshotTokenBudget) || SNAPSHOT_TOKEN_BUDGET_DEFAULT;
+}
+
+/** 记忆注入条数上限（防止一堆短句把提示词塞满）。 */
+export function resolveMemoryItemLimit(modelConfig: unknown): number {
+  const record = modelConfig && typeof modelConfig === "object" ? modelConfig as Record<string, unknown> : {};
+  return positiveNumber(record.memoryItemLimit) || 8;
+}

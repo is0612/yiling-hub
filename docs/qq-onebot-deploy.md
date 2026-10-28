@@ -57,11 +57,11 @@ Get-NetTCPConnection -LocalPort 3000 -State Listen
 
 有输出即说明 OneBot 的 WS 和 HTTP 都起来了。
 
-## 3. 在 yiling-hub 里添加「QQ 小号」渠道
+## 3. 在 yiling-hub 里添加「QQ 小号」
 
 1. 启动 yiling-hub（`yarn dev`）。
-2. 打开「系统管理 → 渠道管理 → 添加渠道」。
-3. 平台选 **「QQ 小号」**（即 `qq-onebot`）。
+2. 打开「系统管理 → QQ 渠道」，点右上「添加 QQ 小号」。
+3. 平台固定为 **`qq-onebot`**（这个页面只管 QQ 小号，B站 走「B站值班台」）。
 4. 填表单：
 
 | 字段 | 填什么 |
@@ -75,8 +75,11 @@ Get-NetTCPConnection -LocalPort 3000 -State Listen
 | 显示名 | 例如「我的 QQ 小号」 |
 
 5. 保存。
+6. 在这张连接卡片上点「绑定角色」，选一个角色。**不绑角色，消息进来不会有人回。**
+   路由键留空 = 私聊 + 所有群都响应；填群号 = 只响应那个群（多个群就绑多条）。
 
-> 凭据（WS/HTTP 地址 + Token）会 AES-256-GCM 加密后存进数据库，不会明文落盘。
+> 凭据（WS/HTTP 地址 + Token）会 AES-256-GCM 加密后存进数据库，不会明文落盘，接口也不回显。
+> 所以重新保存时**这些字段留空 = 沿用已保存的值**，不会把 Token 清掉。同一个 QQ 号再保存一次是更新，不会重复创建。
 
 ## 4. 启动 QQ 小号适配器
 

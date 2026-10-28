@@ -9,6 +9,8 @@
  * Platform id is "qq-onebot". QQ 官方机器人渠道已下线，QQ 只保留这一条通道。
  */
 
+import { onebotFaceName } from "./faces";
+
 export const ONEBOT_PLATFORM = "qq-onebot";
 
 /** OneBot v11 message types we handle. Other post_types (notice/request/meta_event) are ignored. */
@@ -101,8 +103,16 @@ export function readOnebotMessageText(data: unknown): string {
         case "image":
           parts.push("[图片]");
           break;
-        case "face":
-          parts.push("[表情]");
+        case "face": {
+          // 转成中文名而不是一律「[表情]」：对方发的是害羞还是白眼，语气完全不同。
+          const name = onebotFaceName(segData.id);
+          parts.push(name ? `[${name}]` : "[表情]");
+          break;
+        }
+        case "mface":
+        case "marketface":
+          // 商城表情包只能拿到一句 summary，图片本身取不到。
+          parts.push(typeof segData.summary === "string" && segData.summary.trim() ? segData.summary.trim() : "[表情包]");
           break;
         case "record":
           parts.push("[语音]");

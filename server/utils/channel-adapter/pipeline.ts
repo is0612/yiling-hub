@@ -1,11 +1,23 @@
 import { generateConversationReply, type ConversationContextMessage } from "../chat-reply";
-import { resolveChatModelSettings } from "../chat-model-config";
+import { isEmojiEnabled, resolveChatModelSettings } from "../chat-model-config";
 import { resolveCharacterApiKey } from "../credential-encryption";
-import { rankMemoryCandidates, rankSnapshotCandidates } from "../memory-retrieval";
+import {
+  rankMemoriesWithBudget, rankSnapshotsWithBudget,
+  resolveMemoryItemLimit, resolveMemoryTokenBudget, resolveSnapshotTokenBudget,
+} from "../memory-retrieval";
+import { recordModelUsage, readDailyQuota, toUsageTokens } from "../model-usage";
 import { ensureExternalIdentityScope } from "../identity-scope";
 import { getPrisma } from "../prisma";
 
-export type ChannelReplySender = (text: string) => Promise<void>;
+export type ChannelReplyOptions = {
+  /** 表情 id。渠道自己保证 id 合法；不支持表情的渠道忽略即可。 */
+  faces?: string[];
+};
+
+export type ChannelReplySender = (text: string, options?: ChannelReplyOptions) => Promise<void>;
+
+/** 上一条回复带过表情后，多久之内不再发——连着两条都贴图，像自动回复机器人。 */
+const FACE_COOLDOWN_MS = 10 * 60 * 1000;
 
 export type ChannelMessageInput = {
   platform: string;
@@ -22,6 +34,11 @@ export type ChannelMessageInput = {
   /** Optional author display name for identity metadata. */
   authorDisplayName?: string;
   content: string;
+  /**
+   * 这个渠道能发的表情清单。**传了就等于声明「本渠道支持表情」**——B站 私信没有表情段，
+   * 不传；流水线不认平台名，只认这份清单在不在。
+   */
+  faceCatalog?: ReadonlyArray<{ id: string; name: string }>;
   sendReply: ChannelReplySender;
 };
 
@@ -29,6 +46,15 @@ export type ChannelMessageResult =
   | { status: "replied"; conversationId: string }
   | { status: "duplicate" }
   | { status: "ignored"; reason: string };
+
+/** 从已存消息的 metadata 里取表情 id。更早的消息没有这个字段，返回空数组。 */
+function readStoredFaceIds(metadata: unknown): string[] {
+  const record = metadata && typeof metadata === "object" && !Array.isArray(metadata)
+    ? metadata as Record<string, unknown>
+    : {};
+  const ids = record.faceIds;
+  return Array.isArray(ids) ? ids.filter((item): item is string => typeof item === "string") : [];
+}
 
 /**
  * The reusable channel event pipeline: idempotent ingest → character binding → character-global
@@ -103,6 +129,10 @@ export async function handleChannelMessage(input: ChannelMessageInput): Promise<
   }
   if (!apiKey || !chatSettings.model) return { status: "ignored", reason: "model_not_configured" };
 
+  // 额度用完就静默不回：渠道里抛错会把一条普通聊天变成失败事件，还会触发重试。
+  const quota = await readDailyQuota(input.characterId, character.modelConfig);
+  if (quota.exceeded) return { status: "ignored", reason: "daily_quota_exceeded" };
+
   const existingConversation = await prisma.conversation.findFirst({
     where: { channelBindingId: input.bindingId, externalConversationId: input.externalConversationId },
     select: { id: true, title: true },
@@ -113,9 +143,24 @@ export async function handleChannelMessage(input: ChannelMessageInput): Promise<
         where: { conversationId: existingConversation.id },
         orderBy: [{ occurredAt: "desc" }, { id: "desc" }],
         take: 20,
-        select: { role: true, content: true, occurredAt: true },
+        select: { role: true, content: true, occurredAt: true, metadata: true },
       })
     : [];
+
+  // 表情要看三件事：渠道收不收（faceCatalog）、角色开没开开关、上一条是不是刚贴过。
+  // 只看前两个的话，一个爱发表情的角色会在每句后面都挂一张。
+  const lastAssistant = recentStoredMessages.find((item) => item.role === "ASSISTANT");
+  const facesCoolingDown = Boolean(
+    lastAssistant
+    && Date.now() - lastAssistant.occurredAt.getTime() < FACE_COOLDOWN_MS
+    && readStoredFaceIds(lastAssistant.metadata).length > 0,
+  );
+  const emojiFaces = input.faceCatalog?.length
+    && isEmojiEnabled(character.modelConfig)
+    && !facesCoolingDown
+    ? input.faceCatalog
+    : undefined;
+
   const recentMessages: ConversationContextMessage[] = recentStoredMessages
     .reverse()
     .filter((item) => item.role === "USER" || item.role === "ASSISTANT")
@@ -139,9 +184,16 @@ export async function handleChannelMessage(input: ChannelMessageInput): Promise<
     where: { memoryScopeId: { in: readableScopeIds }, status: "ACTIVE", deletedAt: null },
     orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
     take: 300,
-    select: { id: true, category: true, content: true, confidence: true, updatedAt: true, createdAt: true, memoryScopeId: true },
+    select: {
+      id: true, category: true, content: true, confidence: true, updatedAt: true, createdAt: true,
+      memoryScopeId: true, importance: true, lastRecalledAt: true, recallCount: true,
+    },
   });
-  const memories = rankMemoryCandidates(retrievalQuery, memoryCandidates, 8).map((memory) => ({
+  const memoryRank = rankMemoriesWithBudget(retrievalQuery, memoryCandidates, {
+    limit: resolveMemoryItemLimit(character.modelConfig),
+    tokenBudget: resolveMemoryTokenBudget(character.modelConfig),
+  });
+  const memories = memoryRank.items.map((memory) => ({
     id: memory.id,
     category: memory.category,
     content: memory.content.slice(0, 1200),
@@ -156,7 +208,11 @@ export async function handleChannelMessage(input: ChannelMessageInput): Promise<
     take: 80,
     select: { id: true, summary: true, periodStart: true, periodEnd: true, version: true, createdAt: true, memoryScopeId: true },
   });
-  const snapshots = rankSnapshotCandidates(retrievalQuery, snapshotCandidates, 4).map((snapshot) => ({
+  const snapshotRank = rankSnapshotsWithBudget(retrievalQuery, snapshotCandidates, {
+    limit: 4,
+    tokenBudget: resolveSnapshotTokenBudget(character.modelConfig),
+  });
+  const snapshots = snapshotRank.items.map((snapshot) => ({
     id: snapshot.id,
     summary: snapshot.summary.slice(0, 3000),
     periodStart: snapshot.periodStart.toISOString(),
@@ -181,6 +237,7 @@ export async function handleChannelMessage(input: ChannelMessageInput): Promise<
       recentMessages,
       memories,
       snapshots,
+      ...(emojiFaces ? { emojiFaces } : {}),
     });
   } catch (error) {
     return { status: "ignored", reason: (error instanceof Error ? error.message : "model_error").slice(0, 200) };
@@ -189,6 +246,7 @@ export async function handleChannelMessage(input: ChannelMessageInput): Promise<
   const now = new Date();
   const assistantAt = new Date(now.getTime() + 1);
   const title = existingConversation?.title || input.content.slice(0, 80);
+  const replyFaces = generated.faceIds;
 
   const conversationId = await prisma.$transaction(async (tx) => {
     const conversation = existingConversation ?? await tx.conversation.create({
@@ -232,6 +290,8 @@ export async function handleChannelMessage(input: ChannelMessageInput): Promise<
           promptTemplateVersion: generated.promptTemplateVersion,
           usedMemoryIds: generated.usedMemoryIds,
           usedSnapshotIds: generated.usedSnapshotIds,
+          // 表情段不进 content：正文要能原样重放给下一轮模型，混进 [face] 会被当成用户打的字。
+          ...(replyFaces.length ? { faceIds: replyFaces } : {}),
         },
       },
       select: { id: true },
@@ -240,6 +300,20 @@ export async function handleChannelMessage(input: ChannelMessageInput): Promise<
     return conversation.id;
   });
 
-  await input.sendReply(generated.reply);
+  await input.sendReply(generated.reply, replyFaces.length ? { faces: replyFaces } : undefined);
+  if (generated.usedMemoryIds.length) {
+    await prisma.memoryItem.updateMany({
+      where: { id: { in: generated.usedMemoryIds } },
+      data: { lastRecalledAt: new Date(), recallCount: { increment: 1 } },
+    }).catch(() => undefined);
+  }
+  await recordModelUsage({
+    kind: "channel",
+    model: chatSettings.model,
+    usage: toUsageTokens(generated.usage),
+    characterId: input.characterId,
+    channelBindingId: input.bindingId,
+    conversationId,
+  });
   return { status: "replied", conversationId };
 }

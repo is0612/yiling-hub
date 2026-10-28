@@ -6,9 +6,10 @@
  */
 
 import { getPrisma } from "../../prisma";
-import type { OnebotConnectionConfig, OnebotResolvedEvent } from "./client";
+import type { OnebotConnectionConfig, OnebotOutgoingMessage, OnebotResolvedEvent } from "./client";
 import { sendOnebotGroupMessage, sendOnebotPrivateMessage } from "./client";
 import type { OnebotBindingRecord, OnebotConnectionRecord } from "./configure";
+import { ONEBOT_FACES, toOnebotFaceSegments } from "./faces";
 import { handleChannelMessage } from "../pipeline";
 import { ONEBOT_PLATFORM } from "./types";
 
@@ -68,12 +69,23 @@ export function createOnebotMessageHandler(record: OnebotConnectionRecord) {
       .catch(() => undefined);
 
     const config = record.config;
-    const sendReply = async (reply: string): Promise<void> => {
-      if (event.messageType === "group" && event.groupId) {
-        await sendOnebotGroupMessage(config, event.groupId, reply);
-      } else if (event.userId) {
-        await sendOnebotPrivateMessage(config, event.userId, reply);
-      }
+    const sendReply = async (reply: string, options?: { faces?: string[] }): Promise<void> => {
+      const send = (message: OnebotOutgoingMessage): Promise<void> => {
+        if (event.messageType === "group" && event.groupId) {
+          return sendOnebotGroupMessage(config, event.groupId, message);
+        }
+        if (event.userId) {
+          return sendOnebotPrivateMessage(config, event.userId, message);
+        }
+        return Promise.resolve();
+      };
+      await send(reply);
+      const segments = toOnebotFaceSegments(options?.faces ?? []);
+      if (!segments.length) return;
+      // 表情单独一条。拼进正文会卡在句子中间，而且它发失败也没必要让正文背锅。
+      await send(segments).catch((error) => {
+        console.error("[onebot] 表情发送失败：", error instanceof Error ? error.message : String(error));
+      });
     };
 
     return handleChannelMessage({
@@ -87,6 +99,8 @@ export function createOnebotMessageHandler(record: OnebotConnectionRecord) {
       authorPlatformUid: event.userId,
       authorDisplayName: event.displayName || undefined,
       content: event.content,
+      // QQ 是唯一能发表情的渠道；清单非空即声明能力，是否真发还要过角色开关和冷却。
+      faceCatalog: ONEBOT_FACES,
       sendReply,
     });
   };

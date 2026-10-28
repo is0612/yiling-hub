@@ -1,5 +1,6 @@
 import { resolveChatModelSettings } from "./chat-model-config";
 import { resolveCharacterApiKey } from "./credential-encryption";
+import { recordModelUsage, toUsageTokens } from "./model-usage";
 import { randomUUID } from "node:crypto";
 import type { PrismaClient } from "../../src/generated/prisma/client";
 import {
@@ -554,6 +555,14 @@ export async function processNextMemoryJob(
       omittedMessageCount: Math.max(0, messageCount - aiMessages.length),
       activeMemories: aiMemoryContext,
       previousSnapshotSummary: previousSnapshot?.summary ?? null,
+    });
+
+    // 记账放在事务之前：模型已经调用过，后面事务失败也不能漏掉这笔花费。
+    await recordModelUsage({
+      kind: "snapshot",
+      model: chatSettings.model,
+      usage: toUsageTokens(aiResult.usage),
+      characterId: scope.characterId,
     });
 
     const outcome = await prisma.$transaction(async (tx) => {

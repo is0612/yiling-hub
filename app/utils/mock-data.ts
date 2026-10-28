@@ -27,6 +27,23 @@ export type Character = {
   chatApiBaseUrl?: string;
   chatApiKeyConfigured?: boolean;
   chatApiKeySource?: "character" | "environment" | "missing";
+  /** 每日 token 额度，0 = 不限。 */
+  dailyTokenLimit?: number;
+  /** 每次对话注入记忆 / 快照的 token 预算。 */
+  memoryTokenBudget?: number;
+  snapshotTokenBudget?: number;
+  /** QQ 渠道回复是否附一张表情。 */
+  emojiEnabled?: boolean;
+  /** 主动找话设置；服务端返回时一定带默认值填充。 */
+  proactive?: {
+    enabled: boolean;
+    dailyMax: number;
+    minGapMinutes: number;
+    quietStart: string;
+    quietEnd: string;
+    userActiveMinutes: number;
+    minConfidence: number;
+  };
 };
 
 export type TimelineEntry = {

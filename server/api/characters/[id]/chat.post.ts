@@ -3,7 +3,11 @@ import { createError, getRouterParam, readBody, setResponseStatus } from "h3";
 import { generateConversationReply, type ConversationContextMessage } from "../../../utils/chat-reply";
 import { resolveChatModelSettings } from "../../../utils/chat-model-config";
 import { resolveCharacterApiKey } from "../../../utils/credential-encryption";
-import { rankMemoryCandidates, rankSnapshotCandidates } from "../../../utils/memory-retrieval";
+import {
+  rankMemoriesWithBudget, rankSnapshotsWithBudget,
+  resolveMemoryItemLimit, resolveMemoryTokenBudget, resolveSnapshotTokenBudget,
+} from "../../../utils/memory-retrieval";
+import { recordModelUsage, readDailyQuota, toUsageTokens } from "../../../utils/model-usage";
 import { resolveChatMemoryScopes } from "../../../utils/memory-scope-access";
 import { requireActorUserId } from "../../../utils/auth";
 import { readTrimmedString, requireUuid } from "../../../utils/local-api";
@@ -131,6 +135,14 @@ export default defineEventHandler(async (event) => {
     throw createError({ statusCode: 503, statusMessage: "尚未配置模型 API。请在当前角色的「AI 对话 → 模型参数」中填写 API Key 和模型名称。" });
   }
 
+  const quota = await readDailyQuota(characterId, character.modelConfig);
+  if (quota.exceeded) {
+    throw createError({
+      statusCode: 429,
+      statusMessage: `今天的模型额度已用完（${quota.used} / ${quota.limit} tokens）。可以在「模型参数」里调高每日额度，或明天再聊。`,
+    });
+  }
+
   const existingConversation = requestedConversationId
     ? await prisma.conversation.findFirst({
         where: { id: requestedConversationId, characterId, memoryScopeId, status: "ACTIVE" },
@@ -162,13 +174,20 @@ export default defineEventHandler(async (event) => {
     where: { memoryScopeId: { in: readableScopeIds }, status: "ACTIVE", deletedAt: null },
     orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
     take: 300,
-    select: { id: true, category: true, content: true, confidence: true, updatedAt: true, createdAt: true, memoryScopeId: true },
+    select: {
+      id: true, category: true, content: true, confidence: true, updatedAt: true, createdAt: true,
+      memoryScopeId: true, importance: true, lastRecalledAt: true, recallCount: true,
+    },
   });
   const retrievalQuery = [
     message,
     ...recentMessages.filter((item) => item.role === "USER").slice(-2).map((item) => item.content),
   ].join("\n");
-  const memories = rankMemoryCandidates(retrievalQuery, memoryCandidates, 8).map((memory) => ({
+  const memoryRank = rankMemoriesWithBudget(retrievalQuery, memoryCandidates, {
+    limit: resolveMemoryItemLimit(character.modelConfig),
+    tokenBudget: resolveMemoryTokenBudget(character.modelConfig),
+  });
+  const memories = memoryRank.items.map((memory) => ({
     id: memory.id,
     category: memory.category,
     content: memory.content.slice(0, 1200),
@@ -183,7 +202,11 @@ export default defineEventHandler(async (event) => {
     take: 80,
     select: { id: true, summary: true, periodStart: true, periodEnd: true, version: true, createdAt: true, memoryScopeId: true },
   });
-  const snapshots = rankSnapshotCandidates(retrievalQuery, snapshotCandidates, 4).map((snapshot) => ({
+  const snapshotRank = rankSnapshotsWithBudget(retrievalQuery, snapshotCandidates, {
+    limit: 4,
+    tokenBudget: resolveSnapshotTokenBudget(character.modelConfig),
+  });
+  const snapshots = snapshotRank.items.map((snapshot) => ({
     id: snapshot.id,
     summary: snapshot.summary.slice(0, 3000),
     periodStart: snapshot.periodStart.toISOString(),
@@ -277,7 +300,15 @@ export default defineEventHandler(async (event) => {
       userMessage: { ...saved.userMessage, sources: { memories: [], snapshots: [] } },
       assistantMessage: { ...saved.assistantMessage, sources: usedSources },
       model: { name: generated.model, provider: generated.provider, promptTemplateVersion: generated.promptTemplateVersion },
-      retrieval: { memoriesAvailable: memories.length, snapshotsAvailable: snapshots.length, privateScopeActive },
+      retrieval: {
+        memoriesAvailable: memories.length,
+        snapshotsAvailable: snapshots.length,
+        privateScopeActive,
+        memoryTokens: memoryRank.usedTokens,
+        memoryDropped: memoryRank.dropped,
+        snapshotTokens: snapshotRank.usedTokens,
+        snapshotDropped: snapshotRank.dropped,
+      },
     };
     // Commit messages and the replayable response atomically. A database failure must not
     // leave saved messages behind while the request is marked FAILED and retried.
@@ -291,6 +322,22 @@ export default defineEventHandler(async (event) => {
       throw createError({ statusCode: 409, statusMessage: "聊天请求已被新的重试接管，请刷新会话后查看结果。" });
     }
     return result;
+  });
+  // 只给模型真的用到的记忆记一次召回：进过提示词但没被引用的不算"用上了"。
+  if (usedMemoryIds.size) {
+    await prisma.memoryItem.updateMany({
+      where: { id: { in: [...usedMemoryIds] } },
+      data: { lastRecalledAt: new Date(), recallCount: { increment: 1 } },
+    }).catch(() => undefined);
+  }
+
+  await recordModelUsage({
+    kind: "chat",
+    model: generated.model,
+    usage: toUsageTokens(generated.usage),
+    characterId,
+    userId: ownerId,
+    conversationId: response.conversationId,
   });
   setResponseStatus(event, 201);
   return response;

@@ -182,3 +182,11 @@ export function isChatModelConfigured(configValue?: unknown): boolean {
     return false;
   }
 }
+
+/**
+ * 渠道回复是否允许带表情。默认关闭：默认开会变成每个角色一上来就在每句后面贴一张，
+ * 而且要关的时候人已经先烦了。
+ */
+export function isEmojiEnabled(configValue: unknown): boolean {
+  return asRecord(configValue).emojiEnabled === true;
+}

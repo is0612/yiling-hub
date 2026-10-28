@@ -128,43 +128,44 @@ enum AuditActorType {
 }
 
 model User {
-  id                 String           @id @default(uuid()) @db.Uuid
-  username           String           @unique @db.VarChar(100)
-  email              String?          @unique @db.VarChar(255)
-  registrationIpHash String?          @db.VarChar(64)
-  passwordHash       String           @db.VarChar(255)
-  displayName        String?          @db.VarChar(120)
-  status             UserStatus       @default(ACTIVE)
-  role               UserRole         @default(USER)
-  createdAt        DateTime         @default(now()) @db.Timestamptz(6)
-  updatedAt        DateTime         @updatedAt @db.Timestamptz(6)
-  ownedCharacters  Character[]      @relation("CharacterOwner")
-  linkedIdentities ExternalIdentity[] @relation("IdentityLinkedUser")
-  memoryScopes     MemoryScope[]    @relation("MemoryScopeUser")
-  auditLogs        AuditLog[]       @relation("AuditActor")
-  sessions         Session[]        @relation("UserSessions")
+  id                 String             @id @default(uuid()) @db.Uuid
+  username           String             @unique @db.VarChar(100)
+  email              String?            @unique @db.VarChar(255)
+  registrationIpHash String?            @db.VarChar(64)
+  passwordHash       String             @db.VarChar(255)
+  displayName        String?            @db.VarChar(120)
+  status             UserStatus         @default(ACTIVE)
+  role               UserRole           @default(USER)
+  createdAt          DateTime           @default(now()) @db.Timestamptz(6)
+  updatedAt          DateTime           @updatedAt @db.Timestamptz(6)
+  ownedCharacters    Character[]        @relation("CharacterOwner")
+  linkedIdentities   ExternalIdentity[] @relation("IdentityLinkedUser")
+  memoryScopes       MemoryScope[]      @relation("MemoryScopeUser")
+  auditLogs          AuditLog[]         @relation("AuditActor")
+  sessions           Session[]          @relation("UserSessions")
 
   @@map("users")
 }
 
 model Character {
-  id             String                   @id @default(uuid()) @db.Uuid
-  ownerId        String                   @db.Uuid
-  name           String                   @db.VarChar(100)
-  avatar         String?
-  basePrompt     String                   @db.Text
+  id               String                    @id @default(uuid()) @db.Uuid
+  ownerId          String                    @db.Uuid
+  name             String                    @db.VarChar(100)
+  avatar           String?
+  basePrompt       String                    @db.Text
   /// 对话示例：只用来对齐语气和用词。聊天与 QQ/B站 被动回复会注入，B站 值班判断不注入。
-  styleExamples  String                   @default("") @db.Text
-  modelConfig    Json                     @default("{}") @db.JsonB
-  status         CharacterStatus          @default(ACTIVE)
-  createdAt      DateTime                 @default(now()) @db.Timestamptz(6)
-  updatedAt      DateTime                 @updatedAt @db.Timestamptz(6)
-  owner          User                     @relation("CharacterOwner", fields: [ownerId], references: [id], onDelete: Restrict)
-  channelBindings CharacterChannelBinding[]
-  conversations  Conversation[]
-  memoryScopes   MemoryScope[]
-  memorySetting  CharacterMemorySetting?
-  auditLogs      AuditLog[]               @relation("CharacterAuditLogs")
+  styleExamples    String                    @default("") @db.Text
+  modelConfig      Json                      @default("{}") @db.JsonB
+  status           CharacterStatus           @default(ACTIVE)
+  createdAt        DateTime                  @default(now()) @db.Timestamptz(6)
+  updatedAt        DateTime                  @updatedAt @db.Timestamptz(6)
+  owner            User                      @relation("CharacterOwner", fields: [ownerId], references: [id], onDelete: Restrict)
+  channelBindings  CharacterChannelBinding[]
+  conversations    Conversation[]
+  memoryScopes     MemoryScope[]
+  memorySetting    CharacterMemorySetting?
+  auditLogs        AuditLog[]                @relation("CharacterAuditLogs")
+  proactiveIntents ProactiveIntent[]
 
   @@index([ownerId, status])
   @@index([updatedAt])
@@ -192,19 +193,20 @@ model PlatformConnection {
 }
 
 model CharacterChannelBinding {
-  id           String          @id @default(uuid()) @db.Uuid
-  characterId  String          @db.Uuid
-  connectionId String          @db.Uuid
-  status       BindingStatus   @default(ACTIVE)
-  routingKey   String?         @db.VarChar(255)
-  config       Json?           @db.JsonB
-  createdAt    DateTime        @default(now()) @db.Timestamptz(6)
-  updatedAt    DateTime        @updatedAt @db.Timestamptz(6)
-  character    Character       @relation(fields: [characterId], references: [id], onDelete: Cascade)
-  connection   PlatformConnection @relation(fields: [connectionId], references: [id], onDelete: Restrict)
-  conversations Conversation[]
+  id               String             @id @default(uuid()) @db.Uuid
+  characterId      String             @db.Uuid
+  connectionId     String             @db.Uuid
+  status           BindingStatus      @default(ACTIVE)
+  routingKey       String?            @db.VarChar(255)
+  config           Json?              @db.JsonB
+  createdAt        DateTime           @default(now()) @db.Timestamptz(6)
+  updatedAt        DateTime           @updatedAt @db.Timestamptz(6)
+  character        Character          @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  connection       PlatformConnection @relation(fields: [connectionId], references: [id], onDelete: Restrict)
+  conversations    Conversation[]
   biliRoundReports BiliRoundReport[]
   biliSeenVideos   BiliSeenVideo[]
+  biliActions      BiliAction[]
 
   @@unique([characterId, connectionId])
   @@index([status])
@@ -212,20 +214,20 @@ model CharacterChannelBinding {
 }
 
 model ExternalIdentity {
-  id               String                 @id @default(uuid()) @db.Uuid
-  platform         String                 @db.VarChar(50)
-  platformUid      String                 @db.VarChar(255)
-  displayName      String?                @db.VarChar(255)
-  linkedUserId     String?                @db.Uuid
-  connectionId     String?                @db.Uuid
-  status           ExternalIdentityStatus @default(UNVERIFIED)
-  verifiedAt       DateTime?              @db.Timestamptz(6)
-  metadata         Json?                  @db.JsonB
-  createdAt        DateTime               @default(now()) @db.Timestamptz(6)
-  updatedAt        DateTime               @updatedAt @db.Timestamptz(6)
-  linkedUser       User?                  @relation("IdentityLinkedUser", fields: [linkedUserId], references: [id], onDelete: SetNull)
-  connection       PlatformConnection?    @relation(fields: [connectionId], references: [id], onDelete: SetNull)
-  memoryScopes     MemoryScope[]
+  id           String                 @id @default(uuid()) @db.Uuid
+  platform     String                 @db.VarChar(50)
+  platformUid  String                 @db.VarChar(255)
+  displayName  String?                @db.VarChar(255)
+  linkedUserId String?                @db.Uuid
+  connectionId String?                @db.Uuid
+  status       ExternalIdentityStatus @default(UNVERIFIED)
+  verifiedAt   DateTime?              @db.Timestamptz(6)
+  metadata     Json?                  @db.JsonB
+  createdAt    DateTime               @default(now()) @db.Timestamptz(6)
+  updatedAt    DateTime               @updatedAt @db.Timestamptz(6)
+  linkedUser   User?                  @relation("IdentityLinkedUser", fields: [linkedUserId], references: [id], onDelete: SetNull)
+  connection   PlatformConnection?    @relation(fields: [connectionId], references: [id], onDelete: SetNull)
+  memoryScopes MemoryScope[]
 
   @@unique([platform, platformUid])
   @@index([linkedUserId, status])
@@ -234,16 +236,16 @@ model ExternalIdentity {
 }
 
 model MemoryScope {
-  id                 String           @id @default(uuid()) @db.Uuid
-  characterId        String           @db.Uuid
+  id                 String            @id @default(uuid()) @db.Uuid
+  characterId        String            @db.Uuid
   scopeType          MemoryScopeType
-  scopeKey           String           @unique @db.VarChar(500)
-  userId             String?          @db.Uuid
-  externalIdentityId String?          @db.Uuid
-  createdAt          DateTime         @default(now()) @db.Timestamptz(6)
-  updatedAt          DateTime         @updatedAt @db.Timestamptz(6)
-  character          Character        @relation(fields: [characterId], references: [id], onDelete: Restrict)
-  user               User?            @relation("MemoryScopeUser", fields: [userId], references: [id], onDelete: SetNull)
+  scopeKey           String            @unique @db.VarChar(500)
+  userId             String?           @db.Uuid
+  externalIdentityId String?           @db.Uuid
+  createdAt          DateTime          @default(now()) @db.Timestamptz(6)
+  updatedAt          DateTime          @updatedAt @db.Timestamptz(6)
+  character          Character         @relation(fields: [characterId], references: [id], onDelete: Restrict)
+  user               User?             @relation("MemoryScopeUser", fields: [userId], references: [id], onDelete: SetNull)
   externalIdentity   ExternalIdentity? @relation(fields: [externalIdentityId], references: [id], onDelete: SetNull)
   conversations      Conversation[]
   memoryItems        MemoryItem[]
@@ -257,21 +259,21 @@ model MemoryScope {
 }
 
 model Conversation {
-  id                    String              @id @default(uuid()) @db.Uuid
-  characterId           String              @db.Uuid
-  memoryScopeId         String              @db.Uuid
-  channelBindingId      String?             @db.Uuid
-  externalConversationId String?            @db.VarChar(255)
-  title                 String?             @db.VarChar(255)
-  status                ConversationStatus  @default(ACTIVE)
-  metadata              Json?               @db.JsonB
-  lastMessageAt         DateTime?           @db.Timestamptz(6)
-  createdAt             DateTime            @default(now()) @db.Timestamptz(6)
-  updatedAt             DateTime            @updatedAt @db.Timestamptz(6)
-  character             Character           @relation(fields: [characterId], references: [id], onDelete: Restrict)
-  memoryScope           MemoryScope         @relation(fields: [memoryScopeId], references: [id], onDelete: Restrict)
-  channelBinding        CharacterChannelBinding? @relation(fields: [channelBindingId], references: [id], onDelete: SetNull)
-  messages              Message[]
+  id                     String                   @id @default(uuid()) @db.Uuid
+  characterId            String                   @db.Uuid
+  memoryScopeId          String                   @db.Uuid
+  channelBindingId       String?                  @db.Uuid
+  externalConversationId String?                  @db.VarChar(255)
+  title                  String?                  @db.VarChar(255)
+  status                 ConversationStatus       @default(ACTIVE)
+  metadata               Json?                    @db.JsonB
+  lastMessageAt          DateTime?                @db.Timestamptz(6)
+  createdAt              DateTime                 @default(now()) @db.Timestamptz(6)
+  updatedAt              DateTime                 @updatedAt @db.Timestamptz(6)
+  character              Character                @relation(fields: [characterId], references: [id], onDelete: Restrict)
+  memoryScope            MemoryScope              @relation(fields: [memoryScopeId], references: [id], onDelete: Restrict)
+  channelBinding         CharacterChannelBinding? @relation(fields: [channelBindingId], references: [id], onDelete: SetNull)
+  messages               Message[]
 
   @@unique([channelBindingId, externalConversationId])
   @@index([characterId, updatedAt])
@@ -280,18 +282,18 @@ model Conversation {
 }
 
 model Message {
-  id                String                  @id @default(uuid()) @db.Uuid
-  conversationId    String                  @db.Uuid
-  externalMessageId String?                 @db.VarChar(255)
-  role              MessageRole
-  eventType         String                  @default("message") @db.VarChar(80)
-  content           String                  @db.Text
-  occurredAt        DateTime                @db.Timestamptz(6)
-  ingestedAt        DateTime                @default(now()) @db.Timestamptz(6)
-  metadata          Json?                   @db.JsonB
-  conversation      Conversation            @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  snapshotSources   MemorySnapshotSource[]
-  derivedMemoryItems MemoryItem[]             @relation("MemoryItemSourceMessage")
+  id                 String                 @id @default(uuid()) @db.Uuid
+  conversationId     String                 @db.Uuid
+  externalMessageId  String?                @db.VarChar(255)
+  role               MessageRole
+  eventType          String                 @default("message") @db.VarChar(80)
+  content            String                 @db.Text
+  occurredAt         DateTime               @db.Timestamptz(6)
+  ingestedAt         DateTime               @default(now()) @db.Timestamptz(6)
+  metadata           Json?                  @db.JsonB
+  conversation       Conversation           @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  snapshotSources    MemorySnapshotSource[]
+  derivedMemoryItems MemoryItem[]           @relation("MemoryItemSourceMessage")
 
   @@unique([conversationId, externalMessageId])
   @@index([conversationId, occurredAt])
@@ -319,25 +321,31 @@ model ChatRequest {
 }
 
 model MemoryItem {
-  id              String                 @id @default(uuid()) @db.Uuid
-  memoryScopeId   String                 @db.Uuid
-  category        MemoryCategory
-  content         String                 @db.Text
-  confidence      Float?
-  status           MemoryItemStatus       @default(ACTIVE)
+  id                String                 @id @default(uuid()) @db.Uuid
+  memoryScopeId     String                 @db.Uuid
+  category          MemoryCategory
+  content           String                 @db.Text
+  confidence        Float?
+  /// 0..1 的重要度。衰减排序时加权：越高越不容易因为陈旧被丢掉。
+  importance        Float                  @default(0.5)
+  /// 上次被检索命中并真的注入提示词的时间。衰减优先看它，没有才回落到 updatedAt。
+  lastRecalledAt    DateTime?              @db.Timestamptz(6)
+  /// 被召回次数。越常用的记忆越稳，避免"总结里提过但很少被用"的条目先被挤掉。
+  recallCount       Int                    @default(0)
+  status            MemoryItemStatus       @default(ACTIVE)
   statusBeforeTrash MemoryItemStatus?
-  deletedAt        DateTime?              @db.Timestamptz(6)
-  sourceMessageId  String?                @db.Uuid
-  sourceSnapshotId String?               @db.Uuid
-  dedupeKey       String?                @db.VarChar(255)
-  validFrom       DateTime?              @db.Timestamptz(6)
-  validTo         DateTime?              @db.Timestamptz(6)
-  createdAt       DateTime               @default(now()) @db.Timestamptz(6)
-  updatedAt       DateTime               @updatedAt @db.Timestamptz(6)
-  memoryScope     MemoryScope            @relation(fields: [memoryScopeId], references: [id], onDelete: Cascade)
-  sourceMessage   Message?               @relation("MemoryItemSourceMessage", fields: [sourceMessageId], references: [id], onDelete: SetNull)
-  sourceSnapshot  MemorySnapshot?        @relation("MemoryItemDerivedFromSnapshot", fields: [sourceSnapshotId], references: [id], onDelete: SetNull)
-  snapshotSources MemorySnapshotSource[] @relation("MemoryItemSnapshotSources")
+  deletedAt         DateTime?              @db.Timestamptz(6)
+  sourceMessageId   String?                @db.Uuid
+  sourceSnapshotId  String?                @db.Uuid
+  dedupeKey         String?                @db.VarChar(255)
+  validFrom         DateTime?              @db.Timestamptz(6)
+  validTo           DateTime?              @db.Timestamptz(6)
+  createdAt         DateTime               @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime               @updatedAt @db.Timestamptz(6)
+  memoryScope       MemoryScope            @relation(fields: [memoryScopeId], references: [id], onDelete: Cascade)
+  sourceMessage     Message?               @relation("MemoryItemSourceMessage", fields: [sourceMessageId], references: [id], onDelete: SetNull)
+  sourceSnapshot    MemorySnapshot?        @relation("MemoryItemDerivedFromSnapshot", fields: [sourceSnapshotId], references: [id], onDelete: SetNull)
+  snapshotSources   MemorySnapshotSource[] @relation("MemoryItemSnapshotSources")
 
   @@unique([memoryScopeId, dedupeKey])
   @@index([memoryScopeId, status, category])
@@ -347,23 +355,23 @@ model MemoryItem {
 }
 
 model MemorySnapshot {
-  id                String                 @id @default(uuid()) @db.Uuid
-  snapshotKey       String                 @db.VarChar(500)
-  memoryScopeId     String                 @db.Uuid
-  kind              SnapshotKind           @default(AUTOMATIC)
-  version           Int                    @default(1)
-  periodStart       DateTime               @db.Timestamptz(6)
-  periodEnd         DateTime               @db.Timestamptz(6)
-  summary           String                 @db.Text
-  structuredContent Json                   @db.JsonB
-  status            SnapshotStatus         @default(CURRENT)
-  modelMetadata     Json?                  @db.JsonB
-  generatedAt       DateTime?              @db.Timestamptz(6)
-  createdAt         DateTime               @default(now()) @db.Timestamptz(6)
-  memoryScope       MemoryScope            @relation(fields: [memoryScopeId], references: [id], onDelete: Cascade)
-  sources           MemorySnapshotSource[]
+  id                 String                 @id @default(uuid()) @db.Uuid
+  snapshotKey        String                 @db.VarChar(500)
+  memoryScopeId      String                 @db.Uuid
+  kind               SnapshotKind           @default(AUTOMATIC)
+  version            Int                    @default(1)
+  periodStart        DateTime               @db.Timestamptz(6)
+  periodEnd          DateTime               @db.Timestamptz(6)
+  summary            String                 @db.Text
+  structuredContent  Json                   @db.JsonB
+  status             SnapshotStatus         @default(CURRENT)
+  modelMetadata      Json?                  @db.JsonB
+  generatedAt        DateTime?              @db.Timestamptz(6)
+  createdAt          DateTime               @default(now()) @db.Timestamptz(6)
+  memoryScope        MemoryScope            @relation(fields: [memoryScopeId], references: [id], onDelete: Cascade)
+  sources            MemorySnapshotSource[]
   derivedMemoryItems MemoryItem[]           @relation("MemoryItemDerivedFromSnapshot")
-  jobs              MemoryJob[]
+  jobs               MemoryJob[]
 
   @@unique([snapshotKey, version])
   @@index([memoryScopeId, periodStart, periodEnd])
@@ -390,20 +398,20 @@ model MemorySnapshotSource {
 }
 
 model CharacterMemorySetting {
-  id                     String    @id @default(uuid()) @db.Uuid
-  characterId            String    @unique @db.Uuid
-  snapshotIntervalDays    Int       @default(8)
+  id                          String                     @id @default(uuid()) @db.Uuid
+  characterId                 String                     @unique @db.Uuid
+  snapshotIntervalDays        Int                        @default(8)
   pendingSnapshotIntervalDays Int?
-  timezone                String    @default("Asia/Shanghai") @db.VarChar(100)
-  anchorAt                DateTime  @default(now()) @db.Timestamptz(6)
-  nextSnapshotAt          DateTime? @db.Timestamptz(6)
-  autoSnapshotEnabled     Boolean   @default(true)
-  changePolicy            MemorySettingsChangePolicy @default(NEXT_CYCLE)
-  rawMessageRetentionDays Int?
-  rawMessageCleanupEnabled Boolean  @default(false)
-  createdAt               DateTime  @default(now()) @db.Timestamptz(6)
-  updatedAt              DateTime  @updatedAt @db.Timestamptz(6)
-  character              Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  timezone                    String                     @default("Asia/Shanghai") @db.VarChar(100)
+  anchorAt                    DateTime                   @default(now()) @db.Timestamptz(6)
+  nextSnapshotAt              DateTime?                  @db.Timestamptz(6)
+  autoSnapshotEnabled         Boolean                    @default(true)
+  changePolicy                MemorySettingsChangePolicy @default(NEXT_CYCLE)
+  rawMessageRetentionDays     Int?
+  rawMessageCleanupEnabled    Boolean                    @default(false)
+  createdAt                   DateTime                   @default(now()) @db.Timestamptz(6)
+  updatedAt                   DateTime                   @updatedAt @db.Timestamptz(6)
+  character                   Character                  @relation(fields: [characterId], references: [id], onDelete: Cascade)
 
   @@map("character_memory_settings")
 }
@@ -436,17 +444,17 @@ model MemoryJob {
 }
 
 model AuditLog {
-  id          String        @id @default(uuid()) @db.Uuid
+  id          String         @id @default(uuid()) @db.Uuid
   actorType   AuditActorType
-  actorId     String?       @db.Uuid
-  characterId String?       @db.Uuid
-  action      String        @db.VarChar(120)
-  entityType  String        @db.VarChar(120)
-  entityId    String?       @db.VarChar(255)
-  details     Json?         @db.JsonB
-  createdAt   DateTime      @default(now()) @db.Timestamptz(6)
-  actor       User?         @relation("AuditActor", fields: [actorId], references: [id], onDelete: SetNull)
-  character   Character?    @relation("CharacterAuditLogs", fields: [characterId], references: [id], onDelete: SetNull)
+  actorId     String?        @db.Uuid
+  characterId String?        @db.Uuid
+  action      String         @db.VarChar(120)
+  entityType  String         @db.VarChar(120)
+  entityId    String?        @db.VarChar(255)
+  details     Json?          @db.JsonB
+  createdAt   DateTime       @default(now()) @db.Timestamptz(6)
+  actor       User?          @relation("AuditActor", fields: [actorId], references: [id], onDelete: SetNull)
+  character   Character?     @relation("CharacterAuditLogs", fields: [characterId], references: [id], onDelete: SetNull)
 
   @@index([createdAt])
   @@index([characterId, createdAt])
@@ -490,13 +498,13 @@ model LoginAttempt {
 /// B站值班：每一轮"刷B站"的报告。替代 bili-desk 的 out/<date>.md 文件级报告。
 /// 报告正文用 `### BV号` 段落标记"挑中的"视频，宿主按段落数统计本轮挑了几条。
 model BiliRoundReport {
-  id          String   @id @default(uuid()) @db.Uuid
-  bindingId   String   @db.Uuid
-  day         String   @db.VarChar(10)
-  roundIndex  Int      @default(1)
-  pickedCount Int      @default(0)
-  content     String   @db.Text
-  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  id          String                  @id @default(uuid()) @db.Uuid
+  bindingId   String                  @db.Uuid
+  day         String                  @db.VarChar(10)
+  roundIndex  Int                     @default(1)
+  pickedCount Int                     @default(0)
+  content     String                  @db.Text
+  createdAt   DateTime                @default(now()) @db.Timestamptz(6)
   binding     CharacterChannelBinding @relation(fields: [bindingId], references: [id], onDelete: Cascade)
 
   @@unique([bindingId, day, roundIndex])
@@ -507,17 +515,102 @@ model BiliRoundReport {
 /// B站值班判重表：替代 bili-desk 的 seen.md，记录看过的每一条视频（挑中/跳过都算）。
 /// 最近 7 天看过的 BV 不再重复挑，用 bvid 唯一约束保证幂等。
 model BiliSeenVideo {
-  id        String   @id @default(uuid()) @db.Uuid
-  bindingId String   @db.Uuid
-  bvid      String   @db.VarChar(32)
-  title     String?  @db.VarChar(255)
-  author    String?  @db.VarChar(120)
-  result    String   @db.VarChar(20)
-  reason    String?  @db.Text
-  seenAt    DateTime @default(now()) @db.Timestamptz(6)
+  id        String                  @id @default(uuid()) @db.Uuid
+  bindingId String                  @db.Uuid
+  bvid      String                  @db.VarChar(32)
+  title     String?                 @db.VarChar(255)
+  author    String?                 @db.VarChar(120)
+  result    String                  @db.VarChar(20)
+  reason    String?                 @db.Text
+  /// 终判给这条视频打的分（0-20）。null = 这轮没打分（老记录或模型没给）。
+  score     Int?
+  seenAt    DateTime                @default(now()) @db.Timestamptz(6)
   binding   CharacterChannelBinding @relation(fields: [bindingId], references: [id], onDelete: Cascade)
 
   @@unique([bindingId, bvid])
   @@index([bindingId, seenAt])
   @@map("bili_seen_videos")
+}
+
+/// 主动找话的「目的池」。
+///
+/// 目的必须落库，不能每次现编：刚聊完又凑上来、同一句话反复说，都是「每次现编」的典型症状。
+/// 一条目的走完 PENDING → SENT（真发出去）/ SKIPPED（这轮放弃）/ EXPIRED（放太久失效）。
+model ProactiveIntent {
+  id          String    @id @default(uuid()) @db.Uuid
+  characterId String    @db.Uuid
+  /// SHARE 分享 / ASK 索取 / INVITE 邀请 / CONFIDE 倾诉 / CURIOUS 好奇 / FOLLOWUP 追问
+  kind        String    @db.VarChar(20)
+  /// 一句话的目的，用她自己的口吻写。
+  goal        String    @db.Text
+  /// 0..1：这是不是个真目的。低置信度的存着但不挑中。
+  confidence  Float     @default(0.5)
+  /// 0..1：放久了会失效的（「他今天说的那个事」）该高一点。
+  urgency     Float     @default(0.5)
+  /// 来源：memory（长期记忆）/ chat（最近对话）。
+  origin      String    @db.VarChar(20)
+  /// 去重键，同一角色的同一目的短期不重复。
+  dedupeKey   String    @db.VarChar(255)
+  /// PENDING / SENT / SKIPPED / EXPIRED
+  status      String    @default("PENDING") @db.VarChar(20)
+  attempts    Int       @default(0)
+  sentAt      DateTime? @db.Timestamptz(6)
+  /// 真发出去的正文（发出后才有）。
+  content     String?   @db.Text
+  /// 发给了谁（平台 + 会话 key），排查用。
+  recipient   String?   @db.VarChar(120)
+  createdAt   DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime  @updatedAt @db.Timestamptz(6)
+  character   Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+
+  @@unique([characterId, dedupeKey])
+  @@index([characterId, status, createdAt])
+  @@map("proactive_intents")
+}
+
+/// B站 的对外动作账本：收藏、发动态。
+/// 记在库里而不是内存，是为了做「每天最多几次」「两条动态至少隔多久」这类判定——
+/// 进程重启后内存里的计数会归零，账号那边的痕迹删不掉。
+model BiliAction {
+  id        String                  @id @default(uuid()) @db.Uuid
+  bindingId String                  @db.Uuid
+  /// 东八区日界，与值班报告的 day 同口径。
+  day       String                  @db.VarChar(10)
+  /// fav | dynamic
+  kind      String                  @db.VarChar(20)
+  bvid      String?                 @db.VarChar(32)
+  /// 动作内容（动态正文 / 收藏理由），排查用。
+  detail    String?                 @db.Text
+  createdAt DateTime                @default(now()) @db.Timestamptz(6)
+  binding   CharacterChannelBinding @relation(fields: [bindingId], references: [id], onDelete: Cascade)
+
+  @@index([bindingId, day, kind])
+  @@index([bindingId, createdAt])
+  @@map("bili_actions")
+}
+
+/// 每次模型调用的 token 记账。
+/// 故意不做外键：账单不应该随角色/会话删除而消失，且这里只用于统计与额度。
+model ModelUsage {
+  id               String   @id @default(uuid()) @db.Uuid
+  /// 调用类别：chat / channel / snapshot / bili-screening / bili-judge / other。
+  /// 用字符串而不是 enum：新调用点不该为此再跑一次迁移。
+  kind             String   @db.VarChar(40)
+  model            String   @db.VarChar(120)
+  characterId      String?  @db.Uuid
+  userId           String?  @db.Uuid
+  conversationId   String?  @db.Uuid
+  channelBindingId String?  @db.Uuid
+  promptTokens     Int      @default(0)
+  completionTokens Int      @default(0)
+  totalTokens      Int      @default(0)
+  /// 思考型模型（如 deepseek-flash）单独统计的 reasoning token。
+  reasoningTokens  Int?
+  metadata         Json?    @db.JsonB
+  createdAt        DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([characterId, createdAt])
+  @@index([kind, createdAt])
+  @@index([createdAt])
+  @@map("model_usages")
 }

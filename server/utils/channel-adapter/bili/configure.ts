@@ -57,6 +57,17 @@ export type BiliDutyConfig = {
    * 粗筛阶段就能挡掉，不必白花一次 `video watch`。
    */
   taste: string;
+  /**
+   * 收藏阈值（0-20，0 = 不收藏）。
+   *
+   * 抄的是 surfcore 的判据：分数够高才收，理由够长才收，每天有上限。
+   * 收藏是「我想留着」，不是「我赞过」—— 手一松收藏夹就废了。
+   */
+  favMinScore: number;
+  /** 是否把当天最好的一条发成公开动态。默认关：这是唯一会公开发内容的路径。 */
+  autoDynamic: boolean;
+  /** 发动态的最低分（0-20）。低于这个分宁可这一天不发。 */
+  dynamicMinScore: number;
 };
 
 export type BiliConnectionRecord = {
@@ -88,6 +99,9 @@ export const BILI_DUTY_DEFAULTS: BiliDutyConfig = {
   dmTargetUid: "",
   dmAllowNew: false,
   taste: "",
+  favMinScore: 0,
+  autoDynamic: false,
+  dynamicMinScore: 15,
 };
 
 /** 口味文本的长度上限：提示词要留预算给视频材料，不能让人写成十万字。 */
@@ -140,6 +154,9 @@ export function parseDutyInput(input: unknown): BiliDutyConfig {
     dmTargetUid: normalizeDmTargetUid(duty.dmTargetUid),
     dmAllowNew: bool(duty.dmAllowNew, BILI_DUTY_DEFAULTS.dmAllowNew),
     taste,
+    favMinScore: num(duty.favMinScore, BILI_DUTY_DEFAULTS.favMinScore, 0, 20),
+    autoDynamic: bool(duty.autoDynamic, BILI_DUTY_DEFAULTS.autoDynamic),
+    dynamicMinScore: num(duty.dynamicMinScore, BILI_DUTY_DEFAULTS.dynamicMinScore, 0, 20),
   };
 }
 
