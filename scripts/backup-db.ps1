@@ -90,3 +90,17 @@ if (-not (Test-Path $hostPath) -or (Get-Item $hostPath).Length -le 0) {
 
 Write-Host "Backup complete. Store this file safely outside the repository."
 Write-Host $hostPath
+
+# The database holds encrypted credentials (channel tokens, model API keys) whose key file
+# lives outside Postgres: .data/credentials-encryption.key. Restoring the dump without it
+# leaves every credential undecryptable — silently, with no error, just empty fields.
+# So copy it alongside the dump; both files are required for a complete restore.
+$keySource = Join-Path $repoRoot ".data\credentials-encryption.key"
+$keyTarget = Join-Path $backupDir ($fileName -replace '\.dump$', '.key')
+if (Test-Path $keySource) {
+    Copy-Item -Path $keySource -Destination $keyTarget -Force
+    Write-Host "Encryption key copied: $keyTarget"
+    Write-Host "Restore needs BOTH the .dump and the .key file."
+} else {
+    Write-Warning "No encryption key at $keySource. This backup cannot decrypt channel tokens or model API keys; they will need to be re-entered after a restore."
+}

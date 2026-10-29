@@ -93,6 +93,22 @@ PostgreSQL 的运行数据存放在 Docker named volume `yiling_postgres_data`�
 
 首次恢复到新电脑时，优先恢复到一个空的本地开发数据库。恢复完成后，检查角色数量、消息、长期记忆、快照版本、任务记录和迁移历史，再启动应用。不要在未经检查的情况下把开发数据库备份恢复到含有真实用户数据的生产数据库。
 
+### 5.1 恢复演练（推荐每次改完 schema 跑一次）
+
+备份从没被恢复过，就等于没有备份。用 `-TargetDb` 把备份恢复到一个临时库，生产过程库完全不受影响，也不会有交互式确认：
+
+```powershell
+.\scripts\restore-db.ps1 -BackupFile ".\backups\yiling-hub-YYYYMMDD-HHMMSS.dump" -ConfirmOverwrite -TargetDb "yiling_hub_drill"
+```
+
+脚本会自动创建临时库并恢复。恢复完逐表比对行数（`characters` / `messages` / `memory_items` / `memory_snapshots` / `memory_jobs` / `platform_connections` / `audit_logs`）与内容（记忆的 `sourceMessageId`、连接的 `credentialsCiphertext` 字节数），确认无误后删掉临时库：
+
+```powershell
+docker exec yiling-hub-db dropdb --username yiling_hub yiling_hub_drill
+```
+
+⚠️ 备份是**两个文件**：`.dump` 负责数据库，同名的 `.key` 是凭据解密密钥（`backup-db.ps1` 会一并拷贝）。只恢复 `.dump` 而不恢复 `.key`，所有渠道 Token 与模型 API Key 都会解不开——而且**不报错**，只表现为那些字段一片空白。
+
 ## 6. 更换电脑的完整流程
 
 ### 旧电脑
