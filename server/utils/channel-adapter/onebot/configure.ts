@@ -9,15 +9,20 @@
 import { decryptApiKey } from "../../credential-encryption";
 import { getPrisma } from "../../prisma";
 import type { OnebotConnectionConfig } from "./client";
+import { resolveGroupChatSettings, type GroupChatSettings } from "./group-chat";
 import { ONEBOT_PLATFORM } from "./types";
 
 export type OnebotBindingRecord = {
   id: string;
   characterId: string;
+  /** 角色名。群聊里用来判断「有没有人叫她」，所以跟绑定一起读出来。 */
+  characterName: string;
   routingKey: string | null;
   /** 群聊限流：每 replyWindowMinutes 分钟最多 replyLimitPerWindow 条；0 条 = 不限。 */
   replyWindowMinutes: number;
   replyLimitPerWindow: number;
+  /** 群聊怎么回：仅 @ / 自然接话 / 全都回。含攒批与闸门参数。 */
+  groupChat: GroupChatSettings;
   /** 群聊是否仅当被 @ 时才回复（已回退到连接默认值，私聊总是回复）。 */
   replyOnlyWhenMentioned: boolean;
   /** 主人能否在群里触发她刷一轮 B站（已回退到连接默认值）。 */
@@ -27,6 +32,11 @@ export type OnebotBindingRecord = {
 export type OnebotConnectionRecord = {
   id: string;
   platform: string;
+  /**
+   * 这个小号自己的 QQ 号。事件里的 `self_id` 缺失时拿它判断「是不是 @ 我」——
+   * 网关偶尔不发 self_id，缺了就等于谁都没 @ 她，群聊会整段静默。
+   */
+  accountQq: string;
   config: OnebotConnectionConfig;
   /** 群聊回复策略的连接级默认值：各 binding 未单独覆盖时生效（私聊总是回复）。 */
   replyOnlyWhenMentioned: boolean;
@@ -102,7 +112,13 @@ export async function loadOnebotConnections(
       metadata: true,
       characterBindings: {
         where: { status: "ACTIVE" },
-        select: { id: true, characterId: true, routingKey: true, config: true },
+        select: {
+          id: true,
+          characterId: true,
+          routingKey: true,
+          config: true,
+          character: { select: { name: true } },
+        },
       },
     },
   });
@@ -121,18 +137,25 @@ export async function loadOnebotConnections(
 
     const metadata = (connection.metadata ?? {}) as Record<string, unknown>;
     // 连接级默认「仅被 @ 时才回复」：见啥回啥会接走别人的聊天，还容易触发风控。
-    const replyOnlyWhenMentioned =
+    const connectionMentionOnly =
       typeof metadata.replyOnlyWhenMentioned === "boolean" ? metadata.replyOnlyWhenMentioned : true;
     const groupAnnouncementEnabled = metadata.groupAnnouncementEnabled === true;
     const groupBiliRunEnabled = metadata.groupBiliRunEnabled === true;
     const ownerQq = typeof metadata.ownerQq === "string" ? metadata.ownerQq.trim() : "";
     const ownerName = typeof metadata.ownerName === "string" ? metadata.ownerName.trim() : "";
+    // 小号自己的号：metadata.qqNumber 是页面填的，platformAccountKey 是连接建好后存的同一串。
+    const accountQq = (
+      (typeof metadata.qqNumber === "string" && metadata.qqNumber.trim())
+      || connection.platformAccountKey
+      || ""
+    ).toString().trim();
 
     records.push({
       id: connection.id,
       platform: connection.platform,
+      accountQq,
       config: readConfig(credentials, connection.platformAccountKey),
-      replyOnlyWhenMentioned,
+      replyOnlyWhenMentioned: connectionMentionOnly,
       groupAnnouncementEnabled,
       groupBiliRunEnabled,
       ownerQq,
@@ -146,9 +169,14 @@ export async function loadOnebotConnections(
         const rawWindow = config.replyWindowMinutes;
         // 老字段 replyLimitPer10Min 迁移：窗口固定 10 分钟、条数原样带过来。
         const rawLimit = config.replyLimitPerWindow ?? config.replyLimitPer10Min;
+        // binding 没写就沿用连接默认值，这样老数据不丢、新绑定也有个起点。
+        const replyOnlyWhenMentioned = typeof config.replyOnlyWhenMentioned === "boolean"
+          ? config.replyOnlyWhenMentioned
+          : connectionMentionOnly;
         return {
           id: binding.id,
           characterId: binding.characterId,
+          characterName: binding.character?.name ?? "",
           routingKey: binding.routingKey,
           replyWindowMinutes: typeof rawWindow === "number" && Number.isFinite(rawWindow) && rawWindow >= 1
             ? Math.min(Math.round(rawWindow), 1440)
@@ -156,10 +184,8 @@ export async function loadOnebotConnections(
           replyLimitPerWindow: typeof rawLimit === "number" && Number.isFinite(rawLimit) && rawLimit > 0
             ? Math.min(Math.round(rawLimit), 100)
             : 0,
-          // binding 没写就沿用连接默认值，这样老数据不丢、新绑定也有个起点。
-          replyOnlyWhenMentioned: typeof config.replyOnlyWhenMentioned === "boolean"
-            ? config.replyOnlyWhenMentioned
-            : replyOnlyWhenMentioned,
+          groupChat: resolveGroupChatSettings(config, connectionMentionOnly),
+          replyOnlyWhenMentioned,
           groupBiliRunEnabled: typeof config.groupBiliRunEnabled === "boolean"
             ? config.groupBiliRunEnabled
             : groupBiliRunEnabled,

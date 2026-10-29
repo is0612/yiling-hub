@@ -6,6 +6,7 @@ import { onebotBackoffMs, superviseOnebotConnection } from "../server/utils/chan
 const record: OnebotConnectionRecord = {
   id: "conn-test",
   platform: "qq-onebot",
+  accountQq: "10000",
   config: { wsUrl: "ws://127.0.0.1:1", httpUrl: "http://127.0.0.1:1" },
   replyOnlyWhenMentioned: false,
   bindings: [],

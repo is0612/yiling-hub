@@ -68,7 +68,8 @@ Worker 配置模型后会调用 LLM 对周期对话进行结构化总结，验�
 ### QQ 小号渠道（OneBot v11）
 
 - 通过 OneBot v11 网关（NapCat / SnowLuma 等）挂**个人 QQ 号**，支持群聊与私聊消息；`qq-onebot` 是当前唯一的 QQ 通道。
-- 流程：管理员在「系统管理 → QQ 渠道」（`/qq`）添加 QQ 小号连接（WS/HTTP 地址与 Token 加密入库）并绑定角色 → 运行 `yarn onebot:run` 启动适配器 → 收到消息后按绑定路由到角色，检索该角色全局记忆生成回复，持久化对话并回发平台；同一消息重复投递会被幂等去重。
+- 流程：管理员在「系统管理 → QQ 渠道」（`/qq`）添加 QQ 小号连接（WS/HTTP 地址与 Token 加密入库）并绑定角色 → 跑适配器 → 收到消息后按绑定路由到角色，检索该角色全局记忆生成回复，持久化对话并回发平台；同一消息重复投递会被幂等去重。
+- 启动：`yarn onebot:stack`（或双击 `scripts/start-qq.bat`）会**先把协议端拉起来、等 3001/3002 通了再挂适配器**，一个窗口管到底；协议端已经自己跑着就用 `yarn onebot:run`。协议端不在默认目录时设 `SNOWLUMA_HOME`。
 - 页面顶部有四步接入引导（装 SnowLuma 或 NapCat、开 3001/3002、填连接并绑角色、跑适配器），完整部署清单见 `docs/qq-onebot-deploy.md`。
 - 端点与 Token 加密入库，管理员在「连接设置」里能回显明文核对；同一个 QQ 号再保存是更新同一条连接。
 - 端点可用 `ONEBOT_WS_URL` / `ONEBOT_HTTP_URL` 覆盖，本地联调用 `scripts/mock-onebot-gateway.mjs` 模拟网关。

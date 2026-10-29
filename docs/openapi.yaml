@@ -312,7 +312,7 @@ paths:
                 httpUrl: { type: string, maxLength: 500, description: 'qq-onebot 可选，默认 http://127.0.0.1:3002' }
                 accessToken: { type: string, maxLength: 500, description: 'qq-onebot WS Token' }
                 httpToken: { type: string, maxLength: 500, description: 'qq-onebot HTTP Token' }
-                replyOnlyWhenMentioned: { type: boolean, description: 'qq-onebot 群聊仅被 @ 时回复' }
+                replyOnlyWhenMentioned: { type: boolean, description: 'qq-onebot 群聊仅被 @ 时回复（连接级默认值；角色绑定未写 groupChatMode 时用它兜底）' }
                 groupAnnouncementEnabled: { type: boolean, description: 'qq-onebot 是否允许群主/管理员让她拟群公告草稿（默认 false；确认后才发布）' }
                 groupBiliRunEnabled: { type: boolean, description: 'qq-onebot 是否允许主人在群里让她刷一轮 B站（默认 false）' }
                 ownerQq: { type: string, maxLength: 20, description: 'qq-onebot 主人 QQ 号；群里的 B站 指令只认这个号，留空 = 未设置' }
@@ -402,6 +402,14 @@ paths:
                 replyWindowMinutes: { type: integer, minimum: 1, maximum: 1440, description: '群聊限流窗口（分钟），默认 10。' }
                 replyLimitPerWindow: { type: integer, minimum: 0, maximum: 100, description: '窗口内最多回复几条；0 = 不限。第 N+1 条起静默。' }
                 replyLimitPer10Min: { type: integer, minimum: 0, maximum: 100, description: '兼容旧字段，等价于 replyWindowMinutes=10 的 replyLimitPerWindow。' }
+                groupChatMode: { type: string, enum: [mention, ambient, all], description: '群聊怎么回：mention 仅被 @（不攒批）；ambient 自然接话（默认，攒一批再判、可不说话）；all 每句都回。' }
+                minGapSeconds: { type: integer, minimum: 0, maximum: 3600, description: '自然接话两条之间的最短间隔（秒）。' }
+                dailyMax: { type: integer, minimum: 0, maximum: 1000, description: '自然接话每天最多说几句（按群，东八区日界；0 = 不限）。' }
+                ambientChance: { type: number, minimum: 0, maximum: 1, description: '跟她无关的闲聊被考虑进去的概率（0-1）。' }
+                quietStart: { type: string, description: '安静时段起点 HH:MM，允许跨午夜。' }
+                quietEnd: { type: string, description: '安静时段终点 HH:MM。' }
+                groupAliases: { type: string, maxLength: 200, description: '群里怎么叫她，逗号分隔；没 @ 但叫到这些名字也算在跟她说话。' }
+                replyOnlyWhenMentioned: { type: boolean, description: '兼容旧字段：true = mention，false = ambient（不再是「全都回」，那个要显式传 groupChatMode=all）。' }
       responses:
         '200':
           description: 绑定结果

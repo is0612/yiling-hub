@@ -64,6 +64,14 @@ export default defineEventHandler(async (event) => {
     modelConfigPatch.emojiEnabled = body.emojiEnabled;
   }
 
+  // 看图开关：和表情开关一样是角色级，只影响 QQ 渠道的被动回复。
+  if (body.imageUnderstanding !== undefined) {
+    if (typeof body.imageUnderstanding !== "boolean") {
+      throw createError({ statusCode: 400, statusMessage: "看图开关必须是布尔值。" });
+    }
+    modelConfigPatch.imageUnderstanding = body.imageUnderstanding;
+  }
+
   // 主动找话的设置也挂在 modelConfig 上，但走独立的校验：写入侧宁可报错也不夹取。
   if (body.proactive !== undefined) {
     const current = config.proactive && typeof config.proactive === "object" && !Array.isArray(config.proactive)

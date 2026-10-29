@@ -155,6 +155,44 @@ export function readOnebotMessageText(data: unknown): string {
   return "";
 }
 
+/** 一张图在 OneBot 事件里的样子。`url` 带 rkey 且有时效，只在收到消息的当口可用。 */
+export type OnebotImageRef = {
+  /** 直链；表情包/商城表情常常拿不到，是空字符串。 */
+  url: string;
+  /** 网关给的文件名 —— 只是文件名，不是本地路径，别拿去 open。 */
+  file: string;
+  /** 表情包常见的一句文字说明。 */
+  summary: string;
+  /** QQ 的图片子类型（0 普通图 / 1 表情 / …）；只用于排查，不参与判定。 */
+  subType: number;
+};
+
+/**
+ * 从 `message` 段数组里把 image 段挑出来。
+ *
+ * 单独一个函数而不是塞进 `readOnebotMessageText`：正文最后仍然要压成 `[图片]`
+ * （聊天模型读不懂 url），真正需要直链的是「看图」那条旁路。
+ * 两条路各取所需，别把 url 混进正文，也别在正文里丢掉拿到图的机会。
+ */
+export function readOnebotImages(data: unknown): OnebotImageRef[] {
+  const message = (data as { message?: unknown } | null)?.message;
+  if (!Array.isArray(message)) return [];
+  const images: OnebotImageRef[] = [];
+  for (const segment of message) {
+    if (!segment || typeof segment !== "object") continue;
+    const seg = segment as OnebotSegment;
+    if (seg.type !== "image") continue;
+    const segData = seg.data ?? {};
+    images.push({
+      url: typeof segData.url === "string" ? segData.url.trim() : "",
+      file: typeof segData.file === "string" ? segData.file : "",
+      summary: typeof segData.summary === "string" ? segData.summary : "",
+      subType: typeof segData.sub_type === "number" ? segData.sub_type : 0,
+    });
+  }
+  return images;
+}
+
 /** The stable conversation key: "c:<user_id>" for private, "g:<group_id>" for group. */
 export function onebotConversationKey(messageType: OnebotMessageType, data: unknown): string {
   if (messageType === "group") {

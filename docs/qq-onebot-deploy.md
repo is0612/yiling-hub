@@ -109,9 +109,13 @@ Get-NetTCPConnection -LocalPort 3002 -State Listen
 
 ## 4. 启动 QQ 小号适配器
 
-两种方式等价，选一个：
+三种方式等价，选一个：
 
-- 网页上点：QQ 渠道页第 4 步的**启动适配器**按钮（会开一个命令行窗口替你跑）。
+- **一键（推荐）**：`yarn onebot:stack`，或双击 `scripts/start-qq.bat`。
+  它会先把 SnowLuma 拉起来、等 3001/3002 通了再挂适配器，一个窗口管到底 ——
+  省得「协议端还没开端口，适配器已经在重连」，也避免手滑起两个协议端实例抢同一个库。
+  协议端不在 `D:\AI\snowluma\v2.2.1` 时设 `SNOWLUMA_HOME` 指向它的目录。
+- 网页上点：QQ 渠道页第 4 步的**启动适配器**按钮（协议端已经在跑时用这个）。
 - 新开一个终端，在项目根目录执行：
 
 ```bash
@@ -172,6 +176,9 @@ yarn onebot:run
 | `onebot-connected` 后仍不回 | 检查角色是否已绑定该渠道；检查角色模型/API Key 是否配好 |
 | SnowLuma 首次连接报 1006 | 已知行为，会自动重连；只要最后出现 `onebot-connected` 就没问题 |
 | SnowLuma 启动报 `Client private-message reporting is unavailable` | 只是拿不到自己发出去私聊的送达回执，不影响收消息，可忽略 |
+| 日志刷 `SQLITE_READONLY: attempt to write a readonly database` | 起了**两个**协议端实例抢同一个 messages.db。任务管理器里把路径含 snowluma 的 node 进程全部结束（正常单实例是 2 个：主进程 + 子进程，超过就是重复），再只启动一次 |
+| 消息进来了但不回（`not_mentioned`） | 勾了「群聊中仅在被 @ 时才回复」就是这样；私聊不受这条限制 |
+| 重启电脑后一片「连接异常」 | 直接 `yarn onebot:stack`（或双击 `scripts/start-qq.bat`）一次搞定；手动起的话三件事都要在：QQ 客户端登录着、协议端在跑（3001/3002 在监听）、适配器在跑 |
 | SnowLuma 进程活着但收不到 | 「Hook 退化」已知问题：重启 SnowLuma，仍不行就查它自己的 `logs/` |
 | 登录提示风控/验证 | 换扫码/短信登录，小号养几天再上 |
 | 发消息频繁被吞 | 降低回复频率（QQ 对高频有管控） |

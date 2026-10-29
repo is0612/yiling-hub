@@ -74,7 +74,7 @@ try {
   assert.equal(requestBody.model, "test-chat-model");
   const systemMessage = requestBody.messages.find((item) => item.role === "system");
   assert(systemMessage, "The request must include a system prompt.");
-  assert(systemMessage.content.includes("YILING_CONVERSATION_REPLY_V3"), "The system prompt marker must stay in sync with the prompt template version.");
+  assert(systemMessage.content.includes("YILING_CONVERSATION_REPLY_V4"), "The system prompt marker must stay in sync with the prompt template version.");
   const userMessage = requestBody.messages.find((item) => item.role === "user");
   assert(userMessage, "The request must include a structured user context.");
   const promptInput = JSON.parse(userMessage.content) as Record<string, unknown>;
@@ -236,8 +236,52 @@ try {
   );
   assert.equal(calls, 2, "重试上限是一次。");
 
+  // 群聊：允许她说「这轮不插嘴」。silent 不是错误，reply 为空是合法的。
+  let silentBody = "";
+  globalThis.fetch = async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    silentBody = typeof init?.body === "string" ? init.body : "";
+    return new Response(JSON.stringify({
+      choices: [{
+        message: {
+          content: JSON.stringify({ action: "silent", reply: "", usedMemoryIds: [], usedSnapshotIds: [] }),
+        },
+      }],
+      usage: { prompt_tokens: 30, completion_tokens: 2, total_tokens: 32 },
+    }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  const silent = await generateConversationReply({
+    characterName: "鲸鱼娘",
+    characterPrompt: "你是群里的一个网友。",
+    model: "test-chat-model",
+    apiKey: secretApiKey,
+    apiBaseUrl: privateProviderUrl,
+    currentMessage: "A：今天吃什么\nB：随便",
+    transcript: [
+      { speaker: "A", content: "今天吃什么" },
+      { speaker: "B", content: "随便" },
+    ],
+    allowSilent: true,
+    recentMessages: [],
+    memories: [],
+    snapshots: [],
+  });
+  assert.equal(silent.action, "silent");
+  assert.equal(silent.reply, "", "silent 时正文必须为空，调用方据此什么都不发。");
+  assert.equal(silent.usage?.totalTokens, 32, "不说话也算花了 token，照常记账。");
+  const silentMessages = (JSON.parse(silentBody) as { messages: Array<{ role: string; content: string }> }).messages;
+  const silentSystem = silentMessages.find((item) => item.role === "system")!.content;
+  assert(silentSystem.includes('"silent"'), "群聊提示词必须说明可以返回 silent。");
+  assert(!silentSystem.includes("reply (non-empty string)"), "群聊不能再要求「必须给非空回复」。");
+  const silentInput = JSON.parse(silentMessages.find((item) => item.role === "user")!.content) as Record<string, unknown>;
+  assert.deepEqual(
+    (silentInput.transcript as Array<{ speaker: string }>).map((item) => item.speaker),
+    ["A", "B"],
+    "transcript 要带发言人，模型才知道是谁在说。",
+  );
+
   console.log("Chat reply tests passed: prompt credential isolation, source ID validation, malformed provider response handling, and one retry for malformed model output.");
   console.log("对话示例注入：拼进 characterPrompt、带边界、不新增顶层字段 —— 通过");
+  console.log("群聊 silent：允许不说、reply 允许为空、usage 照常记账、transcript 带发言人 —— 通过");
 } finally {
   globalThis.fetch = originalFetch;
 }

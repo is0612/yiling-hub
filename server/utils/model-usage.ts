@@ -7,7 +7,7 @@
 
 import { getPrisma } from "./prisma";
 
-export type ModelUsageKind = "chat" | "channel" | "snapshot" | "bili-screening" | "bili-judge" | "proactive" | "other";
+export type ModelUsageKind = "chat" | "channel" | "snapshot" | "bili-screening" | "bili-judge" | "proactive" | "vision" | "other";
 
 export type ModelUsageTokens = {
   promptTokens: number;

@@ -10,10 +10,16 @@ import type { OnebotConnectionConfig, OnebotOutgoingMessage, OnebotResolvedEvent
 import { sendOnebotGroupMessage, sendOnebotPrivateMessage } from "./client";
 import type { OnebotBindingRecord, OnebotConnectionRecord } from "./configure";
 import { ONEBOT_FACES, toOnebotFaceSegments } from "./faces";
-import { handleChannelMessage } from "../pipeline";
+import { handleChannelBatch, handleChannelMessage, type ChannelReplySender } from "../pipeline";
 import { loadBiliConnections } from "../bili/configure";
 import { runDutyRound, type BiliDutyRoundResult } from "../bili/duty-pipeline";
 import { isBiliRunCommand } from "./bili-run";
+import {
+  createGroupChatBuffer,
+  evaluateGroupChatGate,
+  groupChatDayStart,
+  mentionsCharacterName,
+} from "./group-chat";
 import { ONEBOT_PLATFORM } from "./types";
 import {
   claimPendingAnnouncement,
@@ -32,6 +38,9 @@ import {
 
 export type OnebotHandleOutcome =
   | { status: "replied"; conversationId: string }
+  | { status: "silent"; conversationId: string }
+  /** 群聊攒批中：几秒后连同这一轮其他人的话一起处理。 */
+  | { status: "buffered" }
   | { status: "duplicate" }
   | { status: "ignored"; reason: string };
 
@@ -51,19 +60,26 @@ export function routeOnebotEventToBinding(
   return defaults[0] ?? null;
 }
 
-/** 判断群聊消息是否 @ 了机器人自己（selfId）。 */
-function isSelfMentioned(event: OnebotResolvedEvent): boolean {
+/**
+ * 判断群聊消息是否 @ 了机器人自己。
+ *
+ * 优先用事件里的 self_id；网关没给时退回连接上记的小号 QQ —— 少了这个兜底，
+ * 一旦 self_id 缺失，「仅 @ 时回复」就变成「永远不回」，而且日志里只会是一串 not_mentioned。
+ */
+function isSelfMentioned(event: OnebotResolvedEvent, fallbackSelfId = ""): boolean {
+  const selfId = event.selfId || fallbackSelfId;
+  if (!selfId) return false;
   const data = event.data as { message?: unknown } | null;
   const message = data?.message;
   if (!Array.isArray(message)) {
     // 非数组时退回检查文本里的 @selfId
-    return event.selfId ? event.content.includes(`@${event.selfId}`) : false;
+    return event.content.includes(`@${selfId}`);
   }
   for (const segment of message) {
     if (!segment || typeof segment !== "object") continue;
     const seg = segment as { type?: unknown; data?: { qq?: unknown } | null };
     if (seg.type === "at" && seg.data?.qq !== undefined) {
-      if (String(seg.data.qq) === event.selfId) return true;
+      if (String(seg.data.qq) === selfId) return true;
     }
   }
   return false;
@@ -73,6 +89,44 @@ function isSelfMentioned(event: OnebotResolvedEvent): boolean {
 const processedBiliRunCommands = new Set<string>();
 /** 正在跑 B站 的角色；同一角色不并发跑两轮。 */
 const biliRunInFlight = new Set<string>();
+
+/**
+ * 同一个绑定在同一个会话里的消息必须排队处理，不能并发。
+ *
+ * OneBot 的 WS 帧是各帧独立派发的：群里连着来 6 条消息，6 个 handler 会同时跑起来。
+ * 而群聊限流统计的是「已经落库的回复」—— 前面几条还在等模型，库里还是 0 条，
+ * 于是全部放行，32 秒说完本该撑 10 分钟的 5 条额度（2026-10-29 实测 6 条）。
+ * 排队同时修掉另一件事：回复顺序不再和群里的发言顺序错开。
+ */
+const conversationChains = new Map<string, Promise<unknown>>();
+
+/** 排到队时已经过了这么久 = 这句话在群里早过去了，补一句只会更怪。 */
+const QUEUE_STALE_MS = 20_000;
+
+/** 她刚说完话的这段时间里，群里再聊大概率还是同一个话题，值得再看一眼。 */
+const RELATED_WINDOW_MS = 3 * 60 * 1000;
+
+type PendingGroupMessage = { event: OnebotResolvedEvent; binding: OnebotBindingRecord; at: number };
+
+/** 群里怎么叫她：角色名 + 手填的昵称。@ 由 isSelfMentioned 单独判。 */
+function cueNames(binding: OnebotBindingRecord): string[] {
+  return [binding.characterName, ...binding.groupChat.aliases]
+    .map((name) => name.trim())
+    .filter((name) => name.length > 0);
+}
+
+function enqueueConversation<T>(key: string, task: () => Promise<T>): Promise<T> {
+  const tail = conversationChains.get(key) ?? Promise.resolve();
+  // 前一个失败也要继续跑自己的，所以 then 的 onRejected 也接 task。
+  const run = tail.then(task, task);
+  const guard = run.then(() => undefined, () => undefined);
+  conversationChains.set(key, guard);
+  void guard.then(() => {
+    // 只有自己还是队尾时才清理，否则会把后来者的链一起删掉。
+    if (conversationChains.get(key) === guard) conversationChains.delete(key);
+  });
+  return run;
+}
 
 function rememberBiliRunCommand(messageId: string) {
   processedBiliRunCommands.add(messageId);
@@ -313,30 +367,130 @@ async function resolveOwnerDisplayName(record: OnebotConnectionRecord, event: On
   }
 }
 
-export function createOnebotMessageHandler(record: OnebotConnectionRecord) {
-  return async (event: OnebotResolvedEvent): Promise<OnebotHandleOutcome> => {
-    const binding = routeOnebotEventToBinding(record.bindings, event);
-    if (!binding) return { status: "ignored", reason: "no_binding" };
-
-    const config = record.config;
-    const sendReply = async (reply: string, options?: { faces?: string[] }): Promise<void> => {
-      const send = (message: OnebotOutgoingMessage): Promise<void> => {
-        if (event.messageType === "group" && event.groupId) {
-          return sendOnebotGroupMessage(config, event.groupId, message);
-        }
-        if (event.userId) {
-          return sendOnebotPrivateMessage(config, event.userId, message);
-        }
-        return Promise.resolve();
-      };
-      await send(reply);
-      const segments = toOnebotFaceSegments(options?.faces ?? []);
-      if (!segments.length) return;
-      // 表情单独一条。拼进正文会卡在句子中间，而且它发失败也没必要让正文背锅。
-      await send(segments).catch((error) => {
-        console.error("[onebot] 表情发送失败：", error instanceof Error ? error.message : String(error));
-      });
+/**
+ * 回复发回原处：群消息发群，私聊发人。
+ * 表情必须单独一条 —— 拼进正文会卡在句子中间，而且它发失败也没必要让正文背锅。
+ */
+function createReplySender(
+  config: OnebotConnectionConfig,
+  target: Pick<OnebotResolvedEvent, "messageType" | "groupId" | "userId">,
+): ChannelReplySender {
+  return async (reply, options) => {
+    const send = (message: OnebotOutgoingMessage): Promise<void> => {
+      if (target.messageType === "group" && target.groupId) {
+        return sendOnebotGroupMessage(config, target.groupId, message);
+      }
+      if (target.userId) {
+        return sendOnebotPrivateMessage(config, target.userId, message);
+      }
+      return Promise.resolve();
     };
+    await send(reply);
+    const segments = toOnebotFaceSegments(options?.faces ?? []);
+    if (!segments.length) return;
+    await send(segments).catch((error) => {
+      console.error("[onebot] 表情发送失败：", error instanceof Error ? error.message : String(error));
+    });
+  };
+}
+
+function logGroupRound(groupId: string, detail: Record<string, unknown>): void {
+  console.log("[onebot] 群聊", JSON.stringify({ groupId, ...detail }));
+}
+
+export function createOnebotMessageHandler(record: OnebotConnectionRecord) {
+  /**
+   * 一轮群聊的判定与处理。
+   *
+   * 闸门放在这里而不是 push 的那一刻：push 时还不知道这一轮到底聊了什么，
+   * 也不知道她上一次开口是什么时候 —— 这两样都要等这一轮安静下来才成立。
+   */
+  const flushGroupRound = async (items: PendingGroupMessage[]): Promise<void> => {
+    const binding = items[0]!.binding;
+    const groupEvent = items[0]!.event;
+    const settings = binding.groupChat;
+    const names = cueNames(binding);
+    const cue = items.some((item) => isSelfMentioned(item.event, record.accountQq)
+      || mentionsCharacterName(item.event.content, names));
+
+    const prisma = getPrisma();
+    const conversation = await prisma.conversation.findFirst({
+      where: { channelBindingId: binding.id, externalConversationId: groupEvent.conversationKey },
+      select: { id: true },
+    });
+    const lastAssistant = conversation
+      ? await prisma.message.findFirst({
+          where: { conversationId: conversation.id, role: "ASSISTANT" },
+          orderBy: { occurredAt: "desc" },
+          select: { occurredAt: true },
+        })
+      : null;
+    const spokenToday = conversation
+      ? await prisma.message.count({
+          where: {
+            conversationId: conversation.id,
+            role: "ASSISTANT",
+            occurredAt: { gte: groupChatDayStart() },
+          },
+        })
+      : 0;
+
+    const now = new Date();
+    const lastSpokeAt = lastAssistant?.occurredAt ?? null;
+    const gate = evaluateGroupChatGate({
+      settings,
+      now,
+      cue,
+      related: Boolean(lastSpokeAt && now.getTime() - lastSpokeAt.getTime() < RELATED_WINDOW_MS),
+      lastSpokeAt,
+      spokenToday,
+      random: Math.random(),
+    });
+    if (!gate.allowed) {
+      logGroupRound(groupEvent.groupId, { reason: gate.reason, messages: items.length });
+      return;
+    }
+    // 群规限流仍然生效：闸门管「该不该接」，这里管「这个群十分钟能说几句」。
+    if (await isGroupReplyLimited(binding, groupEvent)) {
+      logGroupRound(groupEvent.groupId, { reason: "group_reply_limit", messages: items.length });
+      return;
+    }
+
+    const result = await handleChannelBatch({
+      platform: ONEBOT_PLATFORM,
+      characterId: binding.characterId,
+      bindingId: binding.id,
+      eventType: "GROUP_MESSAGE",
+      externalConversationId: groupEvent.conversationKey,
+      messages: items.map((item) => ({
+        externalMessageId: item.event.messageId,
+        authorOpenId: item.event.userId,
+        authorPlatformUid: item.event.userId,
+        ...(item.event.displayName ? { authorDisplayName: item.event.displayName } : {}),
+        content: item.event.content,
+        ...(item.event.images.length ? { images: item.event.images } : {}),
+        occurredAt: new Date(item.at),
+      })),
+      faceCatalog: ONEBOT_FACES,
+      // 有人点名叫她，就不该「想了想还是不说」。
+      allowSilent: !cue,
+      sendReply: createReplySender(record.config, groupEvent),
+    });
+    logGroupRound(groupEvent.groupId, { reason: gate.reason, status: result.status, messages: items.length });
+  };
+
+  const groupChatBuffer = createGroupChatBuffer<PendingGroupMessage>({
+    onFlush: async (key, items) => {
+      // 和 @ 的单条处理走同一把锁：不然攒批与单条会同时改同一个会话。
+      await enqueueConversation(key, () => flushGroupRound(items));
+    },
+  });
+
+  const handleRoutedEvent = async (
+    event: OnebotResolvedEvent,
+    binding: OnebotBindingRecord,
+  ): Promise<OnebotHandleOutcome> => {
+    const sendReply = createReplySender(record.config, event);
 
     const canManageAnnouncement = record.groupAnnouncementEnabled
       && event.messageType === "group"
@@ -348,8 +502,16 @@ export function createOnebotMessageHandler(record: OnebotConnectionRecord) {
       return handleAnnouncementConfirm(record, event, binding, sendReply);
     }
 
-    // 群聊：仅当绑定要求 @ 且未被 @ 时忽略。
-    if (event.messageType === "group" && binding.replyOnlyWhenMentioned && !isSelfMentioned(event)) {
+    const isGroupMessage = event.messageType === "group" && Boolean(event.groupId);
+    const groupChatMode = binding.groupChat.mode;
+    // 有没有人在跟她说话：@ 她，或者叫到她的名字。下面几处都要用，算一次就够。
+    const cued = isGroupMessage && (
+      isSelfMentioned(event, record.accountQq)
+      || mentionsCharacterName(event.content, cueNames(binding))
+    );
+
+    // 「仅 @ 时回复」是对整个群聊的开关，指令类消息也受它约束（保持老行为）。
+    if (isGroupMessage && groupChatMode === "mention" && !cued) {
       return { status: "ignored", reason: "not_mentioned" };
     }
 
@@ -367,6 +529,18 @@ export function createOnebotMessageHandler(record: OnebotConnectionRecord) {
         return { status: "ignored", reason: "bili_run_not_owner" };
       }
       return handleBiliRunCommand(event, binding.characterId, sendReply);
+    }
+
+    // 自然接话：攒一批再判。指令类（公告、B站）已经在上面的分支里返回，不会走到这里。
+    if (isGroupMessage && groupChatMode === "ambient") {
+      // 点名叫她的走短窗口（4 秒），别人闲聊走整轮窗口；都等这一轮安静下来再判。
+      const windowMs = (cued ? binding.groupChat.mentionWindowSeconds : binding.groupChat.batchWindowSeconds) * 1000;
+      groupChatBuffer.push(
+        `${binding.id}:${event.conversationKey}`,
+        { event, binding, at: Date.now() },
+        windowMs,
+      );
+      return { status: "buffered" };
     }
 
     // 群规限流只拦普通聊天；群公告是管理员显式确认的动作，不在这里静默。
@@ -399,9 +573,23 @@ export function createOnebotMessageHandler(record: OnebotConnectionRecord) {
       authorPlatformUid: event.userId,
       authorDisplayName: event.displayName || undefined,
       content: event.content,
+      ...(event.images.length ? { images: event.images } : {}),
       // QQ 是唯一能发表情的渠道；清单非空即声明能力，是否真发还要过角色开关和冷却。
       faceCatalog: ONEBOT_FACES,
       sendReply,
+    });
+  };
+
+  return async (event: OnebotResolvedEvent): Promise<OnebotHandleOutcome> => {
+    const binding = routeOnebotEventToBinding(record.bindings, event);
+    if (!binding) return { status: "ignored", reason: "no_binding" };
+    const queuedAt = Date.now();
+    return enqueueConversation(`${binding.id}:${event.conversationKey}`, async () => {
+      // 排队等太久说明前一条还在跑（或者群里已经刷过去了），回过去也是对着空气说话。
+      if (Date.now() - queuedAt > QUEUE_STALE_MS) {
+        return { status: "ignored", reason: "stale_in_queue" };
+      }
+      return handleRoutedEvent(event, binding);
     });
   };
 }

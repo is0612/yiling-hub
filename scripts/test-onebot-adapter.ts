@@ -105,8 +105,10 @@ try {
       metadata: { onebotReloadRequestedAt: "2026-10-29T00:00:00.000Z", keep: { nested: true }, replyOnlyWhenMentioned: false },
     },
   });
+  // 端到端这部分验证的是「消息能不能走通」，所以把群聊策略设成 all（每句都回、不攒批），
+  // 攒批与闸门另有 test-onebot-group-chat.ts 专门测。
   const binding = await prisma.characterChannelBinding.create({
-    data: { characterId, connectionId, status: "ACTIVE", routingKey: null },
+    data: { characterId, connectionId, status: "ACTIVE", routingKey: null, config: { groupChatMode: "all" } },
     select: { id: true },
   });
   bindingId = binding.id;
@@ -123,6 +125,8 @@ try {
   // 这个用例显式设了「所有消息都回复」，后面才好用「不 @ 也回」的群消息验证端到端链路。
   // 「默认仅 @ 回复」这个安全默认值由 configure.ts 兜底（没写时取 true），不在这里重复断言。
   assert.equal(record.replyOnlyWhenMentioned, false);
+  // self_id 缺失时靠它判断「@ 的是不是她」，所以连接上必须带着小号自己的号。
+  assert.equal(record.accountQq, "123456789");
   assert.equal(record.reloadRequestedAt, "2026-10-29T00:00:00.000Z");
   // A newer request/config save must survive acknowledgment of the initial loaded request.
   await prisma.platformConnection.update({ where: { id: connectionId }, data: {
@@ -373,12 +377,18 @@ try {
   // 9. 群发言频率：每 10 分钟最多 2 条时，第 3 条必须静默（不调模型、不发消息）。
   await prisma.characterChannelBinding.update({
     where: { id: bindingId },
-    data: { config: { replyWindowMinutes: 10, replyLimitPerWindow: 2 } },
+    data: { config: { groupChatMode: "all", replyWindowMinutes: 10, replyLimitPerWindow: 2 } },
   });
   record.bindings[0]!.replyWindowMinutes = 10;
   record.bindings[0]!.replyLimitPerWindow = 2;
 
-  const emitToGroup = (groupId: number, messageId: number, text: string, userId = 444) => fetch("http://127.0.0.1:4031/__mock/emit", {
+  const emitToGroup = (
+    groupId: number,
+    messageId: number,
+    text: string,
+    userId = 444,
+    mention = false,
+  ) => fetch("http://127.0.0.1:4031/__mock/emit", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -390,30 +400,45 @@ try {
         user_id: userId,
         group_id: groupId,
         sender: { user_id: userId, nickname: userId === 222 ? "主人" : "群友", role: "member" },
-        message: [{ type: "text", data: { text } }],
+        message: mention
+          ? [{ type: "at", data: { qq: 123456789 } }, { type: "text", data: { text } }]
+          : [{ type: "text", data: { text } }],
       },
     }),
   });
   const groupReplies = async () => (await readSent()).filter(
     (item) => item.action === "send_group_msg" && Number(item.body.group_id) === 1001,
   );
-  const groupAssistantCount = async () => {
+  const assistantCount = async (groupId: number) => {
     const conversation = await prisma.conversation.findFirst({
-      where: { channelBindingId: bindingId, externalConversationId: "g:1001" },
+      where: { channelBindingId: bindingId, externalConversationId: `g:${groupId}` },
       select: { id: true },
     });
     return conversation
       ? prisma.message.count({ where: { conversationId: conversation.id, role: "ASSISTANT" } })
       : 0;
   };
+  const groupAssistantCount = () => assistantCount(1001);
+  const userCount = async (groupId: number) => {
+    const conversation = await prisma.conversation.findFirst({
+      where: { channelBindingId: bindingId, externalConversationId: `g:${groupId}` },
+      select: { id: true },
+    });
+    return conversation
+      ? prisma.message.count({ where: { conversationId: conversation.id, role: "USER" } })
+      : 0;
+  };
 
-  await emitToGroup(1001, 20, "第一条");
-  await waitFor(async () => (await groupAssistantCount()) >= 1);
-  await emitToGroup(1001, 21, "第二条");
+  // 三条同时发：并发是这条链路最容易漏的地方 —— 限流查的是「已落库的回复」，
+  // 前一条还在等模型时库里还是 0 条，几条消息会一起放行（2026-10-29 线上 32 秒回了 6 条）。
+  await Promise.all([
+    emitToGroup(1001, 20, "第一条"),
+    emitToGroup(1001, 21, "第二条"),
+    emitToGroup(1001, 22, "第三条应该被静默"),
+  ]);
   await waitFor(async () => (await groupAssistantCount()) >= 2);
-  await emitToGroup(1001, 22, "第三条应该被静默");
-  await sleep(1500);
-  assert.equal(await groupAssistantCount(), 2, "达到每 10 分钟上限后不能再落助手消息。");
+  await sleep(2500);
+  assert.equal(await groupAssistantCount(), 2, "同时涌入的超限消息也必须被限流挡住，不能一起放行。");
   const sentTexts = (await groupReplies()).map((item) => String(item.body.message));
   assert(!sentTexts.some((text) => text.includes("第三条应该被静默")), "被静默的请求不能发出回复。");
   const rateConversation = await prisma.conversation.findFirst({
@@ -421,6 +446,48 @@ try {
     select: { id: true },
   });
   assert(rateConversation, "限流群也要有会话记录。");
+
+  // 9.5 群聊只回 @ 她的：别人的闲聊不能进模型，@ 了才回。
+  record.bindings[0]!.groupChat.mode = "mention";
+  await emitToGroup(1003, 40, "这是别人在聊天", 555, false);
+  await sleep(1500);
+  assert.equal(await assistantCount(1003), 0, "没有被 @ 时不能落助手消息。");
+  await emitToGroup(1003, 41, "叫她一声", 555, true);
+  await waitFor(async () => (await assistantCount(1003)) >= 1);
+  record.bindings[0]!.groupChat.mode = "all";
+
+  // 9.6 自然接话：一段连发合成一轮只回一条；闸门不过时整轮不进模型。
+  const ambientSettings = {
+    mode: "ambient" as const,
+    batchWindowSeconds: 3,
+    mentionWindowSeconds: 1,
+    minGapSeconds: 0,
+    dailyMax: 0,
+    quietStart: "00:00",
+    quietEnd: "00:00",
+    ambientChance: 1,
+    aliases: [],
+  };
+  await prisma.characterChannelBinding.update({
+    where: { id: bindingId },
+    data: { config: { groupChatMode: "ambient", batchWindowSeconds: 3, mentionWindowSeconds: 1, minGapSeconds: 0, dailyMax: 0, quietStart: "00:00", quietEnd: "00:00", ambientChance: 1 } },
+  });
+  record.bindings[0]!.groupChat = { ...ambientSettings };
+  await Promise.all([
+    emitToGroup(1004, 50, "今天好热", 555, false),
+    emitToGroup(1004, 51, "热死了", 556, false),
+  ]);
+  await sleep(6500);
+  assert.equal(await assistantCount(1004), 1, "同一轮里的几条消息只该回一条，不能一句一答。");
+  assert.equal(await userCount(1004), 2, "这一轮的每条用户消息都要落库，不能只留第一条。");
+
+  // 闸门不通过（抽中概率 0）时，整轮直接丢掉：不调模型、不落库、不发消息。
+  record.bindings[0]!.groupChat.ambientChance = 0;
+  await emitToGroup(1005, 60, "跟他完全无关的闲聊", 555, false);
+  await sleep(5000);
+  assert.equal(await assistantCount(1005), 0, "闸门不过时不该落助手消息。");
+  assert.equal(await userCount(1005), 0, "闸门不过时连用户消息都不落库，省得下次重投再判一遍。");
+  record.bindings[0]!.groupChat = { ...ambientSettings, mode: "all" };
 
   // 10. 群聊 B站 指令只认主人：群友触发被忽略，主人触发才得到回执/提示。
   record.groupBiliRunEnabled = true;
@@ -441,7 +508,7 @@ try {
 
   closeGateway();
 
-  console.log("OneBot 渠道端到端测试通过：WS token 鉴权与单次握手、事件接入、CQ 码解析、凭据解密、角色绑定路由、记忆检索、模型回复、表情段发送与冷却、消息持久化、外部身份 upsert、回发平台与幂等去重、群公告草稿与确认发布、普通成员越权拦截、按群滚动 10 分钟回复上限、B站 指令主人专属。");
+  console.log("OneBot 渠道端到端测试通过：WS token 鉴权与单次握手、事件接入、CQ 码解析、凭据解密、角色绑定路由、记忆检索、模型回复、表情段发送与冷却、消息持久化、外部身份 upsert、回发平台与幂等去重、群公告草稿与确认发布、普通成员越权拦截、按群滚动 10 分钟回复上限（含并发涌入）、群聊仅回 @ 她的、自然接话攒批与闸门、B站 指令主人专属。");
 } finally {
   for (const child of children) child.kill();
   await prisma.onebotGroupAnnouncement.deleteMany({ where: { connectionId } }).catch(() => undefined);

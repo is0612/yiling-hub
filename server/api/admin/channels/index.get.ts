@@ -1,4 +1,5 @@
 import { requireAdminActor } from "../../../utils/auth";
+import { resolveGroupChatSettings } from "../../../utils/channel-adapter/onebot/group-chat";
 import { decryptApiKey } from "../../../utils/credential-encryption";
 import { getPrisma } from "../../../utils/prisma";
 
@@ -79,6 +80,9 @@ export default defineEventHandler(async (event) => {
         const meta = (connection.metadata && typeof connection.metadata === "object")
           ? connection.metadata as Record<string, unknown>
           : {};
+        // 群聊策略统一走这里解析：老数据只有 replyOnlyWhenMentioned，新数据有 groupChatMode，
+        // 前端只认一份结果，不用在页面里再猜一遍。
+        const groupChat = resolveGroupChatSettings(config, meta.replyOnlyWhenMentioned === true);
         return {
           id: binding.id,
           characterId: binding.characterId,
@@ -90,9 +94,9 @@ export default defineEventHandler(async (event) => {
           replyLimitPerWindow: typeof rawLimit === "number" && Number.isFinite(rawLimit) && rawLimit > 0
             ? Math.min(Math.round(rawLimit), 100)
             : 0,
-          replyOnlyWhenMentioned: typeof config.replyOnlyWhenMentioned === "boolean"
-            ? config.replyOnlyWhenMentioned
-            : meta.replyOnlyWhenMentioned === true,
+          groupChat,
+          // 旧字段保留给还没升级的调用方；值跟着 groupChat.mode 走，省得两处说法不一致。
+          replyOnlyWhenMentioned: groupChat.mode === "mention",
           groupBiliRunEnabled: typeof config.groupBiliRunEnabled === "boolean"
             ? config.groupBiliRunEnabled
             : meta.groupBiliRunEnabled === true,

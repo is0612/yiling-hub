@@ -39,6 +39,8 @@ export type CharacterDto = {
   snapshotTokenBudget: number;
   /** QQ 渠道回复是否允许附一张表情；默认关。 */
   emojiEnabled: boolean;
+  /** QQ 群里发来的图是否交给视觉模型读；默认关。 */
+  imageUnderstanding: boolean;
   /** 主动找话设置；未配置过时是默认值（enabled=false）。 */
   proactive: ProactiveSettings;
 };
@@ -165,6 +167,7 @@ export function toCharacterDto(input: unknown): CharacterDto {
     memoryTokenBudget: positiveNumber(config.memoryTokenBudget) || MEMORY_TOKEN_BUDGET_DEFAULT,
     snapshotTokenBudget: positiveNumber(config.snapshotTokenBudget) || SNAPSHOT_TOKEN_BUDGET_DEFAULT,
     emojiEnabled: config.emojiEnabled === true,
+    imageUnderstanding: config.imageUnderstanding === true,
     proactive: resolveProactiveSettings(config),
   };
 }

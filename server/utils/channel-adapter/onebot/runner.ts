@@ -8,6 +8,7 @@ function revision(record: OnebotConnectionRecord): string {
   return createHash("sha256").update(JSON.stringify({
     config: record.config,
     platform: record.platform,
+    accountQq: record.accountQq,
     // 连接级默认值 + 群管理门；binding 里各自的覆盖值已经随 bindings 一起进了下面那份 JSON，
     // 任一变化都要让 runner 重载，否则页面保存了、进程还在用旧值。
     replyOnlyWhenMentioned: record.replyOnlyWhenMentioned,

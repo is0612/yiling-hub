@@ -6,6 +6,13 @@ import {
   resolveMemoryItemLimit, resolveMemoryTokenBudget, resolveSnapshotTokenBudget,
 } from "../memory-retrieval";
 import { recordModelUsage, readDailyQuota, toUsageTokens } from "../model-usage";
+import {
+  applyImageDescriptions,
+  describeImages,
+  MAX_IMAGES_PER_TURN,
+  resolveImageUnderstandingSettings,
+  type ChannelImageRef,
+} from "../image-understanding";
 import { ensureExternalIdentityScope } from "../identity-scope";
 import { getPrisma } from "../prisma";
 
@@ -18,6 +25,27 @@ export type ChannelReplySender = (text: string, options?: ChannelReplyOptions) =
 
 /** 上一条回复带过表情后，多久之内不再发——连着两条都贴图，像自动回复机器人。 */
 const FACE_COOLDOWN_MS = 10 * 60 * 1000;
+
+/** 一轮里的一个人说的话。群聊会把几秒内的几条消息合成一轮。 */
+export type ChannelTurnMessage = {
+  externalMessageId: string;
+  authorOpenId: string;
+  /** Stable per-platform author id (bili uid / qq openid). Used to upsert ExternalIdentity. */
+  authorPlatformUid?: string;
+  /** Optional author display name for identity metadata. */
+  authorDisplayName?: string;
+  content: string;
+  /** 收到这条消息的时刻（不是模型返回的时刻）。 */
+  occurredAt?: Date;
+  /** 这条消息里带的图。只有接了「看图」旁路才会被读，没配视觉模型时完全忽略。 */
+  images?: ChannelImageRef[];
+  /** 当前说话人是不是主人；只用于提示词，不参与鉴权。 */
+  speaker?: {
+    displayName?: string;
+    isOwner: boolean;
+    ownerDisplayName?: string;
+  };
+};
 
 export type ChannelMessageInput = {
   platform: string;
@@ -40,6 +68,8 @@ export type ChannelMessageInput = {
     ownerDisplayName?: string;
   };
   content: string;
+  /** 这条消息带的图。渠道不传就等于「这个渠道没有图」，不影响其他行为。 */
+  images?: ChannelImageRef[];
   /**
    * 这个渠道能发的表情清单。**传了就等于声明「本渠道支持表情」**——B站 私信没有表情段，
    * 不传；流水线不认平台名，只认这份清单在不在。
@@ -48,8 +78,23 @@ export type ChannelMessageInput = {
   sendReply: ChannelReplySender;
 };
 
+/** 群聊一轮：几秒内几个人说的话，一次看、最多回一次。 */
+export type ChannelBatchInput = {
+  platform: string;
+  characterId: string;
+  bindingId: string;
+  eventType: string;
+  externalConversationId: string;
+  messages: ChannelTurnMessage[];
+  faceCatalog?: ReadonlyArray<{ id: string; name: string }>;
+  /** 允许模型说「这轮不插嘴」。被 @ 时传 false —— 点名了还不回比乱回更糟。 */
+  allowSilent?: boolean;
+  sendReply: ChannelReplySender;
+};
+
 export type ChannelMessageResult =
   | { status: "replied"; conversationId: string }
+  | { status: "silent"; conversationId: string }
   | { status: "duplicate" }
   | { status: "ignored"; reason: string };
 
@@ -63,14 +108,91 @@ function readStoredFaceIds(metadata: unknown): string[] {
 }
 
 /**
+ * 把这一轮里的图先变成文字，再交给聊天模型。
+ *
+ * 聊天模型（deepseek-flash 这类）在聊天这条路上走的是文本 body，图没法直接混进去，
+ * 所以"看图"只能发生在进提示词之前：视觉模型出 2-4 句描述，正文里的 `[图片]` 换成
+ * `[图片：描述]`。角色没打开 `imageUnderstanding` 时这里原样返回 —— 行为与接入前一致。
+ *
+ * 放在额度检查之后：额度已经超了就别再为看图多花一次调用。
+ * 失败一律吞掉：少一句描述不该让整轮回复变成错误事件。
+ */
+async function attachImageDescriptions(
+  messages: ChannelTurnMessage[],
+  context: {
+    modelConfig: unknown;
+    chatModel: string;
+    apiBaseUrl: string;
+    apiKey: string;
+    characterId: string;
+    bindingId: string;
+  },
+): Promise<ChannelTurnMessage[]> {
+  if (!messages.some((message) => (message.images?.length ?? 0) > 0)) return messages;
+  const settings = resolveImageUnderstandingSettings({
+    modelConfig: context.modelConfig,
+    chatModel: context.chatModel,
+    chatApiBaseUrl: context.apiBaseUrl,
+    chatApiKey: context.apiKey,
+  });
+  if (!settings) return messages;
+
+  let remaining = MAX_IMAGES_PER_TURN;
+  const descriptionsByMessage = new Map<string, Array<string | null>>();
+  for (const message of messages) {
+    if (remaining <= 0) break;
+    const refs = (message.images ?? []).filter((image) => Boolean(image.url));
+    if (!refs.length) continue;
+    const batch = refs.slice(0, remaining);
+    remaining -= batch.length;
+    try {
+      descriptionsByMessage.set(
+        message.externalMessageId,
+        await describeImages(batch, settings, {
+          characterId: context.characterId,
+          channelBindingId: context.bindingId,
+        }),
+      );
+    } catch {
+      // 看图失败只是少一句描述，`[图片]` 原样保留。
+    }
+  }
+  if (!descriptionsByMessage.size) return messages;
+
+  return messages.map((message) => {
+    const descriptions = descriptionsByMessage.get(message.externalMessageId);
+    if (!descriptions?.length) return message;
+    return { ...message, content: applyImageDescriptions(message.content, descriptions) };
+  });
+}
+
+/**
  * The reusable channel event pipeline: idempotent ingest → character binding → character-global
  * memory retrieval → model reply → persistence → send back. This is platform-agnostic apart from
  * the QQ message-event type used for the conversation key.
  *
- * v1 reads character-global memory only; per-external-user private memory is a later step.
+ * 群聊（`GROUP_MESSAGE`）只读角色全局记忆：一个群里说话的是不同的人，
+ * 把某一个人的私人记忆端到另一个人面前，等于当面念别人的悄悄话。
+ * 私聊仍然带上这个人的 identity scope。
  */
-export async function handleChannelMessage(input: ChannelMessageInput): Promise<ChannelMessageResult> {
+async function runChannelTurn(input: {
+  platform: string;
+  characterId: string;
+  bindingId: string;
+  eventType: string;
+  externalConversationId: string;
+  messages: ChannelTurnMessage[];
+  faceCatalog?: ReadonlyArray<{ id: string; name: string }>;
+  /** 允许模型说「这轮我不插嘴」。只有群聊批处理会传。 */
+  allowSilent?: boolean;
+  sendReply: ChannelReplySender;
+}): Promise<ChannelMessageResult> {
   const prisma = getPrisma();
+  const isGroup = input.eventType === "GROUP_MESSAGE";
+  let messages = input.messages
+    .filter((message) => message.externalMessageId && message.content)
+    .slice(-10);
+  if (!messages.length) return { status: "ignored", reason: "missing_fields" };
 
   // Character lookup comes first: a paused or archived character must not answer channel
   // messages, and rejecting early also avoids creating an external identity for a dead character.
@@ -92,38 +214,50 @@ export async function handleChannelMessage(input: ChannelMessageInput): Promise<
   if (!globalScope) return { status: "ignored", reason: "no_global_scope" };
 
   // Idempotency: a QQ message id is unique for the application, so a re-delivered event is dropped
-  // regardless of whether its conversation has been created yet.
-  const duplicate = await prisma.message.findFirst({
-    where: { externalMessageId: input.externalMessageId },
-    select: { id: true },
+  // regardless of whether its conversation has been created yet. 群聊一轮里有几条，全查一遍。
+  const seen = await prisma.message.findMany({
+    where: { externalMessageId: { in: messages.map((message) => message.externalMessageId) } },
+    select: { externalMessageId: true },
   });
-  if (duplicate) return { status: "duplicate" };
+  if (seen.length) {
+    const seenIds = new Set(seen.map((row) => row.externalMessageId));
+    const fresh = messages.filter((message) => !seenIds.has(message.externalMessageId));
+    if (!fresh.length) return { status: "duplicate" };
+    messages = fresh;
+  }
 
-  // Upsert the external identity for this platform author, so cross-platform identity
-  // management can later verify and link it. Defaults to UNVERIFIED; never auto-merge.
-  const platformUid = (input.authorPlatformUid || input.authorOpenId || "").trim();
-  let externalIdentityId: string | null = null;
-  let identityScopeId: string | null = null;
-  if (platformUid) {
+  // Upsert the external identities for the people in this turn. 群聊一轮里可能有好几个人，
+  // 每个人各自一行；同一轮里同一个人说两句就只 upsert 一次。
+  let primaryIdentityScopeId: string | null = null;
+  const identityScopeByAuthor = new Map<string, string | null>();
+  for (const message of messages) {
+    const platformUid = (message.authorPlatformUid || message.authorOpenId || "").trim();
+    if (!platformUid || identityScopeByAuthor.has(platformUid)) continue;
     const identity = await prisma.externalIdentity.upsert({
       where: { platform_platformUid: { platform: input.platform, platformUid } },
       create: {
         platform: input.platform,
         platformUid,
-        displayName: input.authorDisplayName?.slice(0, 255) || null,
+        displayName: message.authorDisplayName?.slice(0, 255) || null,
         status: "UNVERIFIED",
       },
       update: {
-        ...(input.authorDisplayName ? { displayName: input.authorDisplayName.slice(0, 255) } : {}),
+        ...(message.authorDisplayName ? { displayName: message.authorDisplayName.slice(0, 255) } : {}),
       },
       select: { id: true },
     });
-    externalIdentityId = identity.id;
     // Establish the identity's dedicated memory scope so its private memory can be
     // isolated per platform (and later linked via admin verification). Best-effort:
     // a scope that already exists is reused; failure must not block the message.
-    const scope = await ensureExternalIdentityScope(input.characterId, input.platform, platformUid, externalIdentityId).catch(() => null);
-    identityScopeId = scope?.scopeId ?? null;
+    const scope = await ensureExternalIdentityScope(
+      input.characterId, input.platform, platformUid, identity.id,
+    ).catch(() => null);
+    identityScopeByAuthor.set(platformUid, scope?.scopeId ?? null);
+  }
+  {
+    const first = messages[0]!;
+    const firstUid = (first.authorPlatformUid || first.authorOpenId || "").trim();
+    primaryIdentityScopeId = firstUid ? identityScopeByAuthor.get(firstUid) ?? null : null;
   }
 
   const chatSettings = resolveChatModelSettings(character.modelConfig);
@@ -138,6 +272,16 @@ export async function handleChannelMessage(input: ChannelMessageInput): Promise<
   // 额度用完就静默不回：渠道里抛错会把一条普通聊天变成失败事件，还会触发重试。
   const quota = await readDailyQuota(input.characterId, character.modelConfig);
   if (quota.exceeded) return { status: "ignored", reason: "daily_quota_exceeded" };
+
+  // 图先变成文字再进提示词；角色没开看图开关时这一步什么都不做。
+  messages = await attachImageDescriptions(messages, {
+    modelConfig: character.modelConfig,
+    chatModel: chatSettings.model,
+    apiBaseUrl: chatSettings.apiBaseUrl,
+    apiKey,
+    characterId: input.characterId,
+    bindingId: input.bindingId,
+  });
 
   const existingConversation = await prisma.conversation.findFirst({
     where: { channelBindingId: input.bindingId, externalConversationId: input.externalConversationId },
@@ -176,15 +320,20 @@ export async function handleChannelMessage(input: ChannelMessageInput): Promise<
       occurredAt: item.occurredAt.toISOString(),
     }));
 
+  const currentMessage = messages.length === 1
+    ? messages[0]!.content
+    : messages.map((message) => `${message.authorDisplayName || "群友"}：${message.content}`).join("\n");
+
   const retrievalQuery = [
-    input.content,
+    currentMessage,
     ...recentMessages.filter((item) => item.role === "USER").slice(-2).map((item) => item.content),
   ].join("\n");
 
   // Retrieval scope: character-global (shared persona) plus the author's own identity scope
-  // (per-platform private memory). The identity scope is only this identity's, so it never
-  // leaks another external user's private memory.
-  const readableScopeIds = identityScopeId ? [globalScope.id, identityScopeId] : [globalScope.id];
+  // (per-platform private memory). 群聊只用全局：一轮里好几个人，谁的私人记忆都不该端出来。
+  const readableScopeIds = isGroup
+    ? [globalScope.id]
+    : (primaryIdentityScopeId ? [globalScope.id, primaryIdentityScopeId] : [globalScope.id]);
 
   const memoryCandidates = await prisma.memoryItem.findMany({
     where: { memoryScopeId: { in: readableScopeIds }, status: "ACTIVE", deletedAt: null },
@@ -228,19 +377,35 @@ export async function handleChannelMessage(input: ChannelMessageInput): Promise<
     scope: snapshot.memoryScopeId === globalScope.id ? ("character" as const) : ("private" as const),
   }));
 
+  // 群聊一轮是「几个人在聊」，不是「某个人在对我说话」：交给 transcript，并允许她不说。
+  // 进了群聊批处理就一律用 transcript —— 哪怕这一轮只来了一条，那也是「群里有人说了句话」，
+  // 不是「某个人在私聊里问我」。
+  const allowSilent = input.allowSilent === true && isGroup;
+  const useTranscript = allowSilent || messages.length > 1;
+
   let generated;
   try {
     generated = await generateConversationReply({
       characterName: character.name,
       characterPrompt: character.basePrompt.slice(0, 12_000),
-      ...(input.speaker ? { speaker: input.speaker } : {}),
+      ...(!useTranscript && messages[0]!.speaker ? { speaker: messages[0]!.speaker } : {}),
       styleExamples: (character.styleExamples ?? "").slice(0, 8000),
       model: chatSettings.model,
       apiKey,
       apiBaseUrl: chatSettings.apiBaseUrl,
       temperature: chatSettings.temperature,
       maxTokens: chatSettings.maxTokens,
-      currentMessage: input.content,
+      currentMessage,
+      ...(useTranscript
+        ? {
+            transcript: messages.map((message) => ({
+              speaker: message.authorDisplayName ?? "",
+              content: message.content,
+              ...(message.occurredAt ? { occurredAt: message.occurredAt.toISOString() } : {}),
+            })),
+          }
+        : {}),
+      ...(allowSilent ? { allowSilent } : {}),
       recentMessages,
       memories,
       snapshots,
@@ -252,17 +417,16 @@ export async function handleChannelMessage(input: ChannelMessageInput): Promise<
 
   const now = new Date();
   const assistantAt = new Date(now.getTime() + 1);
-  const title = existingConversation?.title || input.content.slice(0, 80);
-  const replyFaces = generated.faceIds;
+  const title = existingConversation?.title || currentMessage.slice(0, 80);
+  const replyFaces = generated.action === "silent" ? [] : generated.faceIds;
+  const conversationScopeId = isGroup ? globalScope.id : (primaryIdentityScopeId ?? globalScope.id);
 
   const conversationId = await prisma.$transaction(async (tx) => {
     const conversation = existingConversation ?? await tx.conversation.create({
       data: {
         characterId: input.characterId,
-        // The conversation belongs to the identity's own scope when an external author is
-        // known, otherwise to the character-global scope. This keeps per-platform private
-        // memory and its conversation together.
-        memoryScopeId: identityScopeId ?? globalScope.id,
+        // 群聊挂在角色全局 scope 下：它属于一群人，不属于某一个外部身份。
+        memoryScopeId: conversationScopeId,
         channelBindingId: input.bindingId,
         externalConversationId: input.externalConversationId,
         title,
@@ -271,43 +435,57 @@ export async function handleChannelMessage(input: ChannelMessageInput): Promise<
       },
       select: { id: true, title: true },
     });
-    await tx.message.create({
-      data: {
-        conversationId: conversation.id,
-        externalMessageId: input.externalMessageId,
-        role: "USER",
-        content: input.content,
-        occurredAt: now,
-        metadata: { source: "channel", platform: input.platform, authorOpenId: input.authorOpenId },
-      },
-      select: { id: true },
-    });
-    await tx.message.create({
-      data: {
-        conversationId: conversation.id,
-        role: "ASSISTANT",
-        content: generated.reply,
-        occurredAt: assistantAt,
-        metadata: {
-          source: "channel",
-          platform: input.platform,
-          generatedBy: "llm",
-          model: generated.model,
-          provider: generated.provider,
-          promptTemplateVersion: generated.promptTemplateVersion,
-          usedMemoryIds: generated.usedMemoryIds,
-          usedSnapshotIds: generated.usedSnapshotIds,
-          // 表情段不进 content：正文要能原样重放给下一轮模型，混进 [face] 会被当成用户打的字。
-          ...(replyFaces.length ? { faceIds: replyFaces } : {}),
+    for (const [index, message] of messages.entries()) {
+      await tx.message.create({
+        data: {
+          conversationId: conversation.id,
+          externalMessageId: message.externalMessageId,
+          role: "USER",
+          content: message.content,
+          // 一条一轮时保持原来的「处理时刻」，多条时用各自的收到时刻，别让并发把顺序搅乱。
+          occurredAt: messages.length === 1 ? now : (message.occurredAt ?? new Date(now.getTime() - (messages.length - index))),
+          metadata: {
+            source: "channel",
+            platform: input.platform,
+            authorOpenId: message.authorOpenId,
+            ...(message.authorDisplayName ? { authorDisplayName: message.authorDisplayName } : {}),
+          },
         },
-      },
-      select: { id: true },
-    });
-    await tx.conversation.update({ where: { id: conversation.id }, data: { lastMessageAt: assistantAt } });
+        select: { id: true },
+      });
+    }
+    if (generated.action === "reply") {
+      await tx.message.create({
+        data: {
+          conversationId: conversation.id,
+          role: "ASSISTANT",
+          content: generated.reply,
+          occurredAt: assistantAt,
+          metadata: {
+            source: "channel",
+            platform: input.platform,
+            generatedBy: "llm",
+            model: generated.model,
+            provider: generated.provider,
+            promptTemplateVersion: generated.promptTemplateVersion,
+            usedMemoryIds: generated.usedMemoryIds,
+            usedSnapshotIds: generated.usedSnapshotIds,
+            // 表情段不进 content：正文要能原样重放给下一轮模型，混进 [face] 会被当成用户打的字。
+            ...(replyFaces.length ? { faceIds: replyFaces } : {}),
+          },
+        },
+        select: { id: true },
+      });
+      await tx.conversation.update({ where: { id: conversation.id }, data: { lastMessageAt: assistantAt } });
+    } else {
+      await tx.conversation.update({ where: { id: conversation.id }, data: { lastMessageAt: messages[messages.length - 1]!.occurredAt ?? now } });
+    }
     return conversation.id;
   });
 
-  await input.sendReply(generated.reply, replyFaces.length ? { faces: replyFaces } : undefined);
+  if (generated.action === "reply") {
+    await input.sendReply(generated.reply, replyFaces.length ? { faces: replyFaces } : undefined);
+  }
   if (generated.usedMemoryIds.length) {
     await prisma.memoryItem.updateMany({
       where: { id: { in: generated.usedMemoryIds } },
@@ -322,5 +500,52 @@ export async function handleChannelMessage(input: ChannelMessageInput): Promise<
     channelBindingId: input.bindingId,
     conversationId,
   });
-  return { status: "replied", conversationId };
+  return generated.action === "silent"
+    ? { status: "silent", conversationId }
+    : { status: "replied", conversationId };
+}
+
+/** 单条路径的结果：不传 allowSilent，所以永远不会是 silent。 */
+export type ChannelSingleMessageResult =
+  | { status: "replied"; conversationId: string }
+  | { status: "duplicate" }
+  | { status: "ignored"; reason: string };
+
+/** 单条消息（私聊、B站、以及群聊里 @ 她的那一条）。行为与此前一致。 */
+export async function handleChannelMessage(input: ChannelMessageInput): Promise<ChannelSingleMessageResult> {
+  const result = await runChannelTurn({
+    platform: input.platform,
+    characterId: input.characterId,
+    bindingId: input.bindingId,
+    eventType: input.eventType,
+    externalConversationId: input.externalConversationId,
+    messages: [{
+      externalMessageId: input.externalMessageId,
+      authorOpenId: input.authorOpenId,
+      ...(input.authorPlatformUid ? { authorPlatformUid: input.authorPlatformUid } : {}),
+      ...(input.authorDisplayName ? { authorDisplayName: input.authorDisplayName } : {}),
+      content: input.content,
+      ...(input.images?.length ? { images: input.images } : {}),
+      ...(input.speaker ? { speaker: input.speaker } : {}),
+    }],
+    ...(input.faceCatalog ? { faceCatalog: input.faceCatalog } : {}),
+    sendReply: input.sendReply,
+  });
+  // 单条路径不该出现 silent；真出现了就当作没说，别让调用方去处理一个它不可能遇到的状态。
+  return result.status === "silent" ? { status: "ignored", reason: "silent" } : result;
+}
+
+/** 群聊一轮：几条消息一起看，模型可以决定不说（silent）。 */
+export async function handleChannelBatch(input: ChannelBatchInput): Promise<ChannelMessageResult> {
+  return runChannelTurn({
+    platform: input.platform,
+    characterId: input.characterId,
+    bindingId: input.bindingId,
+    eventType: input.eventType,
+    externalConversationId: input.externalConversationId,
+    messages: input.messages,
+    ...(input.faceCatalog ? { faceCatalog: input.faceCatalog } : {}),
+    allowSilent: input.allowSilent !== false,
+    sendReply: input.sendReply,
+  });
 }

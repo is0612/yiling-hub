@@ -2,6 +2,7 @@ import { createError, getRouterParam, readBody } from "h3";
 import type { Prisma } from "../../../../../../src/generated/prisma/client";
 import { requireAdminActor } from "../../../../../utils/auth";
 import { readTrimmedString, requireUuid } from "../../../../../utils/local-api";
+import { formatClockMinutes, readClockMinutes } from "../../../../../utils/proactive-settings";
 import { getPrisma } from "../../../../../utils/prisma";
 
 /**
@@ -49,6 +50,47 @@ export default defineEventHandler(async (event) => {
     }
     replyOnlyWhenMentioned = body.replyOnlyWhenMentioned;
   }
+  // 群聊「自然接话」：模式 + 几个闸门参数。全都可以单独提交，没提交的保留原值。
+  let groupChatMode: "mention" | "ambient" | "all" | undefined;
+  if (body?.groupChatMode !== undefined) {
+    const value = body.groupChatMode;
+    if (value !== "mention" && value !== "ambient" && value !== "all") {
+      throw createError({ statusCode: 400, statusMessage: "群聊回复方式只能是「仅 @ 时回复」「自然接话」或「所有消息都回复」。" });
+    }
+    groupChatMode = value;
+  }
+  const readRange = (key: string, label: string, min: number, max: number, integer = true) => {
+    const raw = body?.[key];
+    if (raw === undefined) return undefined;
+    if (typeof raw !== "number" || !Number.isFinite(raw) || raw < min || raw > max || (integer && !Number.isInteger(raw))) {
+      throw createError({ statusCode: 400, statusMessage: `${label}必须在 ${min} 到 ${max} 之间${integer ? "的整数" : ""}。` });
+    }
+    return raw;
+  };
+  const minGapSeconds = readRange("minGapSeconds", "最短回复间隔", 0, 3600);
+  const dailyMax = readRange("dailyMax", "每天最多说几句", 0, 1000);
+  const ambientChance = readRange("ambientChance", "无关闲聊的参与概率", 0, 1, false);
+  const readClockField = (key: string, label: string) => {
+    const raw = body?.[key];
+    if (raw === undefined) return undefined;
+    const minutes = readClockMinutes(raw);
+    if (minutes === null) throw createError({ statusCode: 400, statusMessage: `${label}必须是 HH:MM 格式的时间。` });
+    return formatClockMinutes(minutes);
+  };
+  const quietStart = readClockField("quietStart", "安静时段起点");
+  const quietEnd = readClockField("quietEnd", "安静时段终点");
+  let groupAliases: string | undefined;
+  if (body?.groupAliases !== undefined) {
+    if (typeof body.groupAliases !== "string") {
+      throw createError({ statusCode: 400, statusMessage: "群里的称呼必须是逗号分隔的文字。" });
+    }
+    const trimmed = body.groupAliases.trim();
+    if (trimmed.length > 200) {
+      throw createError({ statusCode: 400, statusMessage: "群里的称呼最多 200 个字。" });
+    }
+    groupAliases = trimmed;
+  }
+
   let groupBiliRunEnabled: boolean | undefined;
   if (body?.groupBiliRunEnabled !== undefined) {
     if (typeof body.groupBiliRunEnabled !== "boolean") {
@@ -81,7 +123,21 @@ export default defineEventHandler(async (event) => {
   const patch: Record<string, unknown> = {};
   if (replyWindowMinutes !== undefined) patch.replyWindowMinutes = replyWindowMinutes;
   if (replyLimitPerWindow !== undefined) patch.replyLimitPerWindow = replyLimitPerWindow;
-  if (replyOnlyWhenMentioned !== undefined) patch.replyOnlyWhenMentioned = replyOnlyWhenMentioned;
+  if (groupChatMode !== undefined) {
+    patch.groupChatMode = groupChatMode;
+    // 旧字段跟新字段保持一致：两个都存着但说法不同，下一个读代码的人一定会踩。
+    patch.replyOnlyWhenMentioned = groupChatMode === "mention";
+  } else if (replyOnlyWhenMentioned !== undefined) {
+    // 老客户端只认识这个开关：关 = 自然接话（不是「全都回」，那个要显式选 all）。
+    patch.replyOnlyWhenMentioned = replyOnlyWhenMentioned;
+    patch.groupChatMode = replyOnlyWhenMentioned ? "mention" : "ambient";
+  }
+  if (minGapSeconds !== undefined) patch.minGapSeconds = minGapSeconds;
+  if (dailyMax !== undefined) patch.dailyMax = dailyMax;
+  if (ambientChance !== undefined) patch.ambientChance = ambientChance;
+  if (quietStart !== undefined) patch.quietStart = quietStart;
+  if (quietEnd !== undefined) patch.quietEnd = quietEnd;
+  if (groupAliases !== undefined) patch.groupAliases = groupAliases;
   if (groupBiliRunEnabled !== undefined) patch.groupBiliRunEnabled = groupBiliRunEnabled;
   const hasUpdate = Object.keys(patch).length > 0;
   const config = hasUpdate ? { ...baseConfig, ...patch } : (existing?.config ?? undefined);

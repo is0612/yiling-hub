@@ -12,10 +12,12 @@ import {
   onebotConversationKey,
   readOnebotDisplayName,
   readOnebotGroupRole,
+  readOnebotImages,
   readOnebotMessageId,
   readOnebotMessageText,
   readOnebotUserId,
   type OnebotGroupRole,
+  type OnebotImageRef,
   type OnebotMessageType,
   type OnebotSegment,
 } from "./types";
@@ -41,6 +43,8 @@ export type OnebotResolvedEvent = {
   conversationKey: string;
   displayName: string;
   content: string;
+  /** 这一条消息里带的图。正文里只有 `[图片]`，直链在这里等「看图」旁路来取。 */
+  images: OnebotImageRef[];
   selfId: string;
   /** 群成员身份；私聊或网关未提供时为 member。 */
   senderRole: OnebotGroupRole;
@@ -88,6 +92,7 @@ export function resolveOnebotEvent(data: unknown): OnebotResolvedEvent | null {
     conversationKey,
     displayName: readOnebotDisplayName(data),
     content,
+    images: readOnebotImages(data),
     selfId: String(record?.self_id ?? ""),
     senderRole: readOnebotGroupRole(data),
   };

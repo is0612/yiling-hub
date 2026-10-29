@@ -32,6 +32,15 @@ export type ConversationReplyInput = {
   temperature?: number;
   maxTokens?: number;
   currentMessage: string;
+  /**
+   * 群聊一轮里几个人的发言，每行带发言人显示名。传了它就走「群聊」提示词：
+   * currentMessage 不再是某一个人的话，她要判断的是「这轮里有没有我的话」。
+   */
+  transcript?: Array<{ speaker?: string; content: string; occurredAt?: string }>;
+  /**
+   * 允许模型回 silent（这轮不插嘴）。只在群聊传 —— 私聊里「已读不回」比乱回更糟。
+   */
+  allowSilent?: boolean;
   recentMessages: ConversationContextMessage[];
   memories: ConversationContextMemory[];
   snapshots: ConversationContextSnapshot[];
@@ -42,6 +51,8 @@ export type ConversationReplyInput = {
   emojiFaces?: ReadonlyArray<{ id: string; name: string }>;
 };
 export type ConversationReplyResult = {
+  /** silent = 她看了这一轮，决定不说。此时 reply 为空串，调用方什么都不该发。 */
+  action: "reply" | "silent";
   reply: string;
   usedMemoryIds: string[];
   usedSnapshotIds: string[];
@@ -53,7 +64,7 @@ export type ConversationReplyResult = {
   usage?: { promptTokens?: number; completionTokens?: number; totalTokens?: number };
 };
 
-const PROMPT_TEMPLATE_VERSION = "conversation-retrieval-v4";
+const PROMPT_TEMPLATE_VERSION = "conversation-retrieval-v5";
 
 export const STYLE_EXAMPLES_HEADING = "## 对话示例（只学语气，不要照抄）";
 
@@ -108,9 +119,15 @@ function readUsage(value: unknown): ConversationReplyResult["usage"] {
   };
 }
 
-function systemPrompt(withFaces = false, withUserAddress = false, withSpeaker = false): string {
+function systemPrompt(flags: {
+  withFaces?: boolean;
+  withUserAddress?: boolean;
+  withSpeaker?: boolean;
+  withGroupChat?: boolean;
+} = {}): string {
+  const { withFaces, withUserAddress, withSpeaker, withGroupChat } = flags;
   const lines = [
-    "YILING_CONVERSATION_REPLY_V3",
+    "YILING_CONVERSATION_REPLY_V4",
     "You are the conversational character in Yiling Hub. Read characterName as your display identity and characterPrompt as your persona instructions; follow that persona and respond naturally to the current user's message.",
     "Use recent dialogue, retrieved long-term memories, and retrieved snapshots only when relevant. If the supplied context does not support a claim, do not present it as a remembered fact.",
     "Every retrieved memory and snapshot carries a scope field. scope \"character\" is shared character-global knowledge. scope \"private\" belongs to the current user only: use it for this user, never attribute it to someone else, and never present another person's private context as if it were shared knowledge.",
@@ -134,9 +151,33 @@ function systemPrompt(withFaces = false, withUserAddress = false, withSpeaker = 
       "ownerDisplayName, when present, is your owner's name. If someone asks who your owner is, answer with that name. If it is absent, say you do not know their name yet instead of guessing.",
     );
   }
+  if (withGroupChat) {
+    // 群聊的核心是「可以不说话」。不把这句话写死，模型会默认每条都得回，
+    // 于是抽签放行一次就等于逼她开口一次 —— 那就又退化成「全都回」了。
+    lines.push(
+      "You are reading a QQ group chat. transcript is the round of messages that just came in: several people talking, each line prefixed with the speaker's display name. It is not addressed to you unless someone @ mentions you or calls your name.",
+      "Decide whether to speak at all. Speak when someone is talking to you, when the conversation genuinely invites a line from you, or when you have something of your own to add. Stay silent when the group is talking among themselves, when you would only repeat or summarize what was said, or when you have nothing worth adding.",
+      "Staying silent is normal: in a real group most rounds end without you saying anything. Never answer every message, never greet people, and never narrate what others just said.",
+      "When you do speak, drop in one short line the way a person would in a group chat. Do not @ people unless you actually need their attention.",
+    );
+  }
   lines.push(
     "A bracketed token in the incoming message such as [害羞] or [图片] means the sender attached that sticker or image; treat it as a cue for their mood, not as text they typed.",
-    "Return only a valid JSON object with: reply (non-empty string), usedMemoryIds (array of memory IDs actually used), and usedSnapshotIds (array of snapshot IDs actually used).",
+    // 接了看图旁路时，图会被换成 [图片：<描述>]。这句只在有描述时才有意义，但多一句不会误导：
+    // 没有描述时正文里根本不会出现这种形态。
+    "When the token instead reads [图片：...], the text after the colon is what the picture actually shows. React to it as if you had seen the picture; never say you cannot see images.",
+  );
+  if (withGroupChat) {
+    lines.push(
+      'Return only a valid JSON object with: action ("reply" or "silent"), reply (string, empty when action is "silent"), usedMemoryIds, and usedSnapshotIds.',
+      'Default to action "silent" when in doubt. A wrong line in a group is worse than saying nothing.',
+    );
+  } else {
+    lines.push(
+      "Return only a valid JSON object with: reply (non-empty string), usedMemoryIds (array of memory IDs actually used), and usedSnapshotIds (array of snapshot IDs actually used).",
+    );
+  }
+  lines.push(
     "Only cite IDs that occur in the input memories and snapshots arrays. If no retrieved source materially informed the reply, return empty arrays. Do not invent IDs or claim to have used sources you did not use.",
   );
   if (withFaces) {
@@ -197,6 +238,15 @@ export async function generateConversationReply(input: ConversationReplyInput): 
     ...(userAddress ? { userAddress } : {}),
     ...(speaker ? { speaker } : {}),
     currentMessage: input.currentMessage,
+    ...(input.transcript?.length
+      ? {
+          transcript: input.transcript.map((entry) => ({
+            speaker: entry.speaker?.trim().slice(0, 80) || undefined,
+            content: entry.content.slice(0, 1200),
+            ...(entry.occurredAt ? { occurredAt: entry.occurredAt } : {}),
+          })),
+        }
+      : {}),
     ...(emojiFaces.length ? { availableFaces: emojiFaces } : {}),
     recentMessages: input.recentMessages.map((entry) => ({
       role: entry.role,
@@ -224,8 +274,9 @@ export async function generateConversationReply(input: ConversationReplyInput): 
 
   /**
    * 发一次请求并把结果解析出来。外面那层只重试「解析不出约定 JSON」这一种瞬时抽风。
+   * 重试时降温：温度越高越容易在格式上跑偏，第二次用 0.3 把形状收住。
    */
-  const requestReply = async (): Promise<ConversationReplyResult> => {
+  const requestReply = async (useTemperature: number): Promise<ConversationReplyResult> => {
     let response: Response;
     try {
       response = await fetch(endpoint, {
@@ -234,11 +285,19 @@ export async function generateConversationReply(input: ConversationReplyInput): 
         headers: { authorization: "Bearer " + apiKey, "content-type": "application/json" },
         body: JSON.stringify({
           model,
-          temperature,
+          temperature: useTemperature,
           max_tokens: maxTokens,
           response_format: { type: "json_object" },
           messages: [
-            { role: "system", content: systemPrompt(emojiFaces.length > 0, Boolean(userAddress), Boolean(speaker)) },
+            {
+              role: "system",
+              content: systemPrompt({
+                withFaces: emojiFaces.length > 0,
+                withUserAddress: Boolean(userAddress),
+                withSpeaker: Boolean(speaker),
+                withGroupChat: Boolean(input.transcript?.length) && input.allowSilent === true,
+              }),
+            },
             { role: "user", content: JSON.stringify(promptInput) },
           ],
         }),
@@ -275,21 +334,29 @@ export async function generateConversationReply(input: ConversationReplyInput): 
     if (!parsed) throw new Error("LLM_INVALID_RESPONSE: 模型没有返回符合约定的 JSON 对象。");
 
     const reply = typeof parsed.reply === "string" ? parsed.reply.trim().slice(0, 12_000) : "";
-    if (!reply) throw new Error("LLM_INVALID_RESPONSE: 模型没有返回有效的 reply 文本。");
-
+    const withGroupChat = Boolean(input.transcript?.length) && input.allowSilent === true;
     const validMemoryIds = new Set(input.memories.map((memory) => memory.id));
     const validSnapshotIds = new Set(input.snapshots.map((snapshot) => snapshot.id));
     const validFaceIds = new Set(emojiFaces.map((face) => face.id));
     const responseModel = typeof payload?.model === "string" ? payload.model : model;
-    return {
-      reply,
+    const base = {
       usedMemoryIds: readIdList(parsed.usedMemoryIds, validMemoryIds),
       usedSnapshotIds: readIdList(parsed.usedSnapshotIds, validSnapshotIds),
-      faceIds: readIdList(parsed.faces, validFaceIds, 1),
       model: responseModel.slice(0, 200),
       provider: endpoint.hostname,
       promptTemplateVersion: PROMPT_TEMPLATE_VERSION,
       usage: readUsage(payload?.usage),
+    };
+    // silent 只在群聊里被承认：网页/私聊传了 allowSilent 也不该变成「已读不回」。
+    if (withGroupChat && parsed.action === "silent") {
+      return { action: "silent", reply: "", faceIds: [], ...base };
+    }
+    if (!reply) throw new Error("LLM_INVALID_RESPONSE: 模型没有返回有效的 reply 文本。");
+    return {
+      action: "reply",
+      reply,
+      faceIds: readIdList(parsed.faces, validFaceIds, 1),
+      ...base,
     };
   };
 
@@ -298,10 +365,11 @@ export async function generateConversationReply(input: ConversationReplyInput): 
    * HTTP 错误 / 超时 / 网络错误不重试：重试只会更慢，而且那些错误本身就该让人看见。
    * 失败那次的用量不记账（只返回成功那次的 usage），省得为了几 token 把接口改复杂。
    */
+  const RETRY_TEMPERATURE = 0.3;
   let parseError: Error | null = null;
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
-      return await requestReply();
+      return await requestReply(attempt === 0 ? temperature : RETRY_TEMPERATURE);
     } catch (error) {
       const message = error instanceof Error ? error.message : "";
       if (!message.startsWith("LLM_INVALID_RESPONSE")) throw error;

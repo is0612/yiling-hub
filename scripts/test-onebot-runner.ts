@@ -5,7 +5,8 @@ import { createOnebotRunner } from "../server/utils/channel-adapter/onebot/runne
 import { superviseOnebotConnection } from "../server/utils/channel-adapter/onebot/supervise";
 
 const base: OnebotConnectionRecord = {
-  id: "test", platform: "qq-onebot", config: { wsUrl: "ws://localhost:1", httpUrl: "http://localhost:2" },
+  id: "test", platform: "qq-onebot", accountQq: "10000",
+  config: { wsUrl: "ws://localhost:1", httpUrl: "http://localhost:2" },
   replyOnlyWhenMentioned: false, bindings: [], reloadRequestedAt: "2026-10-29T00:00:00.000Z",
 };
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
