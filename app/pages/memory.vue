@@ -193,6 +193,101 @@ async function loadTimeline() {
   }
 }
 
+// ── 全库检索 ────────────────────────────────────────────────
+/**
+ * 时间线只载最近 400 条，所以「找三个月前那条偏好」必须走服务端。
+ * 搜索框一有内容就切换到检索模式（列表换成检索结果），清空即回到时间线。
+ * 游标翻页由服务端给，前端只管往后追加。
+ */
+type MemoryRow = {
+  id: string;
+  category: string;
+  content: string;
+  status: string;
+  scopeType: string;
+  importance: number;
+  validTo: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+const searchRows = ref<MemoryRow[]>([]);
+const searchTotal = ref(0);
+const searchCursor = ref<string | null>(null);
+const searchLoading = ref(false);
+const isSearching = computed(() => query.value.trim().length > 0);
+
+const MEMORY_STATUS_TONE: Record<string, string> = {
+  ACTIVE: "pill-green",
+  SUPERSEDED: "pill-gray",
+  ARCHIVED: "pill-gray",
+  INVALIDATED: "pill-amber",
+  TRASHED: "pill-gray",
+};
+function memoryStatusTone(status: string) {
+  return MEMORY_STATUS_TONE[status] ?? "pill-gray";
+}
+function memoryCategoryLabel(category: string) {
+  return memoryCategoryOptions.find((option) => option.value === category)?.label ?? category;
+}
+function formatMemoryTime(value: string) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? "时间未知"
+    : new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit" }).format(date);
+}
+/** 记忆范围的三档（和 MemoryScopeType 对齐，别把 EXTERNAL_IDENTITY 也念成「长期记忆」） */
+const MEMORY_SCOPE_LABELS: Record<string, string> = {
+  CHARACTER_GLOBAL: "长期记忆",
+  USER_PRIVATE: "私人记忆",
+  EXTERNAL_IDENTITY: "外部身份",
+};
+function memoryScopeLabel(scopeType: string) {
+  return MEMORY_SCOPE_LABELS[scopeType] ?? "长期记忆";
+}
+
+function resetSearch() {
+  searchRows.value = [];
+  searchTotal.value = 0;
+  searchCursor.value = null;
+  searchLoading.value = false;
+}
+
+async function runSearch(reset: boolean) {
+  if (!isSearching.value) return;
+  if (!reset && !searchCursor.value) return;
+  searchLoading.value = true;
+  try {
+    const params = new URLSearchParams({ limit: "30", q: query.value.trim() });
+    if (!reset && searchCursor.value) params.set("cursor", searchCursor.value);
+    const result = await $fetch<{ items: MemoryRow[]; total: number; nextCursor: string | null }>(
+      `/api/characters/${encodeURIComponent(id.value)}/memories?${params.toString()}`,
+    );
+    searchRows.value = reset ? result.items : [...searchRows.value, ...result.items];
+    searchTotal.value = result.total;
+    searchCursor.value = result.nextCursor;
+  } catch {
+    if (reset) resetSearch();
+    ElMessage.error("记忆检索失败，请检查本地开发服务器日志。");
+  } finally {
+    searchLoading.value = false;
+  }
+}
+
+/** 防抖 300ms：找一条记忆不该每敲一个字打一次库 */
+let searchTimer: ReturnType<typeof setTimeout> | null = null;
+watch(query, () => {
+  if (searchTimer) clearTimeout(searchTimer);
+  if (!isSearching.value) {
+    resetSearch();
+    return;
+  }
+  searchTimer = setTimeout(() => void runSearch(true), 300);
+});
+onBeforeUnmount(() => {
+  if (searchTimer) clearTimeout(searchTimer);
+});
+
 async function loadSnapshots() {
   try {
     snapshots.value = await $fetch<Snapshot[]>(`/api/characters/${encodeURIComponent(id.value)}/snapshots`);
@@ -635,11 +730,22 @@ watch(id, () => void loadCharacter());
       <div class="panel-grid">
         <section>
           <div class="sec-h">
-            <h2>角色记忆时间线</h2>
-            <span class="sub">{{ filteredEntries.length }}/{{ timelineEntries.length }} 条</span>
+            <h2>{{ isSearching ? "记忆检索" : "角色记忆时间线" }}</h2>
+            <span class="sub">{{ isSearching ? searchTotal + " 条命中" : filteredEntries.length + "/" + timelineEntries.length + " 条" }}</span>
+            <button
+              v-if="isSearching"
+              type="button"
+              class="more"
+              @click="query = ''"
+            >
+              回到时间线
+            </button>
           </div>
           <div class="card tl-card">
-            <div class="filters">
+            <div
+              v-if="!isSearching"
+              class="filters"
+            >
               <button
                 v-for="option in filterOptions"
                 :key="option.label"
@@ -655,7 +761,7 @@ watch(id, () => void loadCharacter());
               <el-input
                 v-model="query"
                 clearable
-                placeholder="搜索时间线内容……"
+                placeholder="搜索全部记忆（不受时间线条数限制）……"
                 class="tl-search"
               >
                 <template #prefix>
@@ -663,7 +769,7 @@ watch(id, () => void loadCharacter());
                 </template>
               </el-input>
               <el-select
-                v-if="realChannelOptions.length || memoryScopeOptions.length"
+                v-if="!isSearching && (realChannelOptions.length || memoryScopeOptions.length)"
                 v-model="channelFilter"
                 class="tl-select"
                 aria-label="按来源筛选时间线"
@@ -703,7 +809,71 @@ watch(id, () => void loadCharacter());
                 <el-icon><Delete /></el-icon>回收站
               </button>
             </div>
-            <div class="timeline">
+            <!-- 检索模式：结果来自全库，不受时间线那 400 条的限制 -->
+            <div
+              v-if="isSearching"
+              class="timeline"
+            >
+              <div class="search-head">
+                <span>在全部 {{ timelineCounts.memory }} 条长期记忆里按内容查（含已被替代与已失效的）</span>
+              </div>
+              <div
+                v-if="searchLoading && !searchRows.length"
+                class="tl-loading"
+              >
+                正在检索……
+              </div>
+              <template v-else>
+                <article
+                  v-for="row in searchRows"
+                  :key="row.id"
+                  class="timeline-item"
+                >
+                  <div
+                    class="timeline-marker"
+                    :class="memoryStatusTone(row.status)"
+                  >
+                    忆
+                  </div>
+                  <div class="timeline-content">
+                    <div class="timeline-heading">
+                      <span class="timeline-title">{{ memoryCategoryLabel(row.category) }}</span><span class="muted-note">{{ formatMemoryTime(row.updatedAt) }}</span>
+                    </div>
+                    <p class="timeline-summary">
+                      {{ row.content }}
+                    </p>
+                    <div class="timeline-meta">
+                      <span
+                        class="pill"
+                        :class="memoryStatusTone(row.status)"
+                      >{{ memoryStatusText(row.status) }}</span>
+                      <span>{{ memoryScopeLabel(row.scopeType) }}</span>
+                    </div>
+                  </div>
+                </article>
+                <button
+                  v-if="searchCursor"
+                  type="button"
+                  class="load-more"
+                  :disabled="searchLoading"
+                  @click="runSearch(false)"
+                >
+                  {{ searchLoading ? "加载中……" : "加载更多" }}
+                </button>
+                <div
+                  v-if="!searchRows.length"
+                  class="card-empty"
+                >
+                  <el-icon><Search /></el-icon>
+                  <span>没有匹配的记忆</span>
+                  <span>换个关键词，或清空搜索框回到时间线。</span>
+                </div>
+              </template>
+            </div>
+            <div
+              v-else
+              class="timeline"
+            >
               <div
                 v-if="timelineLoading"
                 class="tl-loading"
@@ -793,8 +963,7 @@ watch(id, () => void loadCharacter());
                   v-if="truncated"
                   class="tl-note"
                 >
-                  这里只列最近 {{ loadedTotal }} 条（共 {{ knownTotal }} 条记忆与总结）。更早的还查不到，
-                  搜索与分页还没做。
+                  这里只列最近 {{ loadedTotal }} 条（共 {{ knownTotal }} 条记忆与总结）。更早的用上面的搜索框查。
                 </p>
                 <button
                   v-if="filteredEntries.length > visibleCount"
@@ -1126,6 +1295,8 @@ watch(id, () => void loadCharacter());
 .load-more:hover{background:var(--surface-2);color:var(--brand-strong)}
 /* 截断说明：只在「库里比载入的多」时出现，别让人以为记忆丢了 */
 .tl-note{margin:8px 0 0;border-radius:8px;background:var(--surface-2);padding:8px 10px;color:var(--dim);font-size:12px;line-height:1.7}
+/* 检索模式的头：一句话说明检索范围，别让人以为在搜总结 */
+.search-head{margin:2px 0 10px;border-radius:8px;background:var(--surface-2);padding:7px 10px;color:var(--dim);font-size:12px;line-height:1.7}
 
 /* 行内动作：只剩「编辑」+「更多」两个入口 */
 .memory-actions{display:flex;align-items:center;gap:10px;margin-top:4px}

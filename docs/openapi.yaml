@@ -1087,37 +1087,63 @@ paths:
       - $ref: '#/components/parameters/CharacterId'
     get:
       tags: [Memories]
-      summary: 获取长期记忆列表
+      summary: 检索角色的长期记忆（关键词 + 分类 + 状态，游标分页）
+      description: 时间线只载最近数百条，这个接口走全库检索。按 `(updatedAt, id)` 做 keyset 分页：记忆会不断更新，用 offset 会漏条目或重复，所以游标是不透明字符串，客户端原样回传即可。非法 `category` / `status` / `scope` 视为未传，不报错。响应是裸对象，不套 `ApiResponse` 外壳（与 `/timeline` 一致）。
       parameters:
         - name: q
           in: query
-          schema: { type: string }
+          description: 按内容做不区分大小写的子串匹配。
+          schema: { type: string, maxLength: 200 }
         - name: category
           in: query
-          schema: { type: string }
-        - name: scopeId
+          schema: { type: string, enum: [FACT, PREFERENCE, RELATIONSHIP, COMMITMENT, GOAL, EVENT, SUMMARY, OTHER] }
+        - name: status
           in: query
-          schema: { type: string, format: uuid }
-        - $ref: '#/components/parameters/Page'
-        - $ref: '#/components/parameters/PageSize'
+          description: 不传则排除回收站（TRASHED）。
+          schema: { type: string, enum: [ACTIVE, SUPERSEDED, ARCHIVED, INVALIDATED, TRASHED] }
+        - name: scope
+          in: query
+          schema: { type: string, enum: [CHARACTER_GLOBAL, USER_PRIVATE, EXTERNAL_IDENTITY] }
+        - name: cursor
+          in: query
+          description: 上一页返回的 nextCursor，原样回传。
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 30, minimum: 1, maximum: 100 }
       responses:
         '200':
-          description: 记忆列表
+          description: 记忆检索结果
           content:
             application/json:
               schema:
-                allOf:
-                  - $ref: '#/components/schemas/ApiResponse'
-                  - type: object
-                    properties:
-                      data:
-                        type: object
-                        properties:
-                          items:
-                            type: array
-                            items: { $ref: '#/components/schemas/MemoryItem' }
-                          page: { type: integer }
-                          pageSize: { type: integer }
+                type: object
+                required: [items, total, nextCursor]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, category, content, status, scopeType, importance, createdAt, updatedAt]
+                      properties:
+                        id: { type: string, format: uuid }
+                        category: { type: string }
+                        content: { type: string }
+                        status: { type: string }
+                        scopeType: { type: string, enum: [CHARACTER_GLOBAL, USER_PRIVATE, EXTERNAL_IDENTITY] }
+                        importance: { type: number }
+                        validTo: { type: string, format: date-time, nullable: true }
+                        createdAt: { type: string, format: date-time }
+                        updatedAt: { type: string, format: date-time }
+                  total:
+                    type: integer
+                    description: 当前筛选条件下的总条数（不受游标影响）。
+                  nextCursor:
+                    type: string
+                    nullable: true
+                    description: 没有下一页时为 null。
+        '404':
+          $ref: '#/components/responses/NotFound'
                           total: { type: integer }
         '401':
           $ref: '#/components/responses/Unauthorized'
