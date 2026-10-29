@@ -19,6 +19,13 @@ export type ModelProvider = {
   models: string[];
   /** 是否有 `GET /models`。没有的那家（智谱）界面要提示走内置清单 */
   supportsModelList: boolean;
+  /**
+   * 开放平台 / 控制台地址：用户去这里注册、充值、领取自己的 Key。
+   * 表单里挂在「API 地址」右侧，省得用户从别处找入口。
+   * 空 = 没有固定入口（自定义），界面不显示链接。
+   * ⚠️ 只放**平台根入口或官方 Key 页面**，别拼带参数的深链，改版就会 404。
+   */
+  consoleUrl?: string;
 };
 
 const PROVIDERS: ModelProvider[] = [
@@ -29,6 +36,7 @@ const PROVIDERS: ModelProvider[] = [
     // 这两项是 2026-10 对本机 Key 实际拉 `GET /models` 拿到的结果，不是抄文档
     models: ["deepseek-flash", "deepseek-v4-pro"],
     supportsModelList: true,
+    consoleUrl: "https://platform.deepseek.com/",
   },
   {
     key: "openai",
@@ -36,6 +44,7 @@ const PROVIDERS: ModelProvider[] = [
     baseUrl: "https://api.openai.com/v1",
     models: ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini"],
     supportsModelList: true,
+    consoleUrl: "https://platform.openai.com/api-keys",
   },
   {
     key: "qwen",
@@ -43,6 +52,7 @@ const PROVIDERS: ModelProvider[] = [
     baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
     models: ["qwen-plus", "qwen-max", "qwen-turbo", "qwen-long"],
     supportsModelList: true,
+    consoleUrl: "https://bailian.console.aliyun.com/",
   },
   {
     key: "kimi",
@@ -50,6 +60,7 @@ const PROVIDERS: ModelProvider[] = [
     baseUrl: "https://api.moonshot.cn/v1",
     models: ["kimi-k2.6", "kimi-k2-thinking", "moonshot-v1-32k"],
     supportsModelList: true,
+    consoleUrl: "https://platform.moonshot.cn/console/api-keys",
   },
   {
     key: "zhipu",
@@ -58,6 +69,7 @@ const PROVIDERS: ModelProvider[] = [
     baseUrl: "https://open.bigmodel.cn/api/paas/v4",
     models: ["glm-4.6", "glm-4.7-flash", "glm-4-flash"],
     supportsModelList: false,
+    consoleUrl: "https://open.bigmodel.cn/usercenter/apikeys",
   },
   {
     key: "hunyuan",
@@ -65,6 +77,7 @@ const PROVIDERS: ModelProvider[] = [
     baseUrl: "https://api.hunyuan.cloud.tencent.com/v1",
     models: ["hunyuan-turbos-latest", "hunyuan-lite", "hunyuan-t1-latest"],
     supportsModelList: true,
+    consoleUrl: "https://console.cloud.tencent.com/hunyuan",
   },
   {
     key: "minimax",
@@ -72,6 +85,7 @@ const PROVIDERS: ModelProvider[] = [
     baseUrl: "https://api.minimaxi.com/v1",
     models: ["MiniMax-M2.7", "MiniMax-M2.7-highspeed", "MiniMax-M2.5"],
     supportsModelList: true,
+    consoleUrl: "https://platform.minimaxi.com/",
   },
   {
     key: "siliconflow",
@@ -80,6 +94,7 @@ const PROVIDERS: ModelProvider[] = [
     baseUrl: "https://api.siliconflow.cn/v1",
     models: [],
     supportsModelList: true,
+    consoleUrl: "https://cloud.siliconflow.cn/account/ak",
   },
   {
     key: "custom",

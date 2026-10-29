@@ -8,6 +8,7 @@ import {
   parseVideoCards,
   parseWatchedVideo,
   parseBiliOwner,
+  parseBiliMe,
   parseScore,
   readAuthor,
   readBiliError,
@@ -142,6 +143,39 @@ async function main() {
   assert.equal(parseBiliOwner({ ok: false, error: { code: "not_logged_in" } }), null);
   assert.equal(parseBiliOwner(null), null);
 
+  // me show 的真实返回：头像 / 主页地址 / 等级都要读出来
+  assert.deepEqual(
+    parseBiliMe({
+      ok: true,
+      data: {
+        mid: 3747573877706483,
+        name: "北海大肥鱼",
+        sign: "无可奈何花落去",
+        level: 2,
+        face: "https://i2.hdslb.com/bfs/face/abc.jpg",
+        url: "https://space.bilibili.com/3747573877706483",
+      },
+    }),
+    {
+      mid: "3747573877706483",
+      name: "北海大肥鱼",
+      face: "https://i2.hdslb.com/bfs/face/abc.jpg",
+      level: 2,
+      sign: "无可奈何花落去",
+      homeUrl: "https://space.bilibili.com/3747573877706483",
+    },
+  );
+  // 协议相对的头像地址要补 https，否则浏览器当本地路径
+  assert.equal(parseBiliMe({ ok: true, data: { mid: 1, face: "//i0.hdslb.com/x.jpg" } })?.face, "https://i0.hdslb.com/x.jpg");
+  // CLI 没给 url 就按 mid 拼主页
+  assert.equal(parseBiliMe({ ok: true, data: { mid: 7, name: "阿七" } })?.homeUrl, "https://space.bilibili.com/7");
+  // 兼容包一层 profile 的形状
+  assert.equal(parseBiliMe({ ok: true, data: { profile: { mid: 9, name: "九" } } })?.name, "九");
+  // 没登录 / 空数据：返回 null，不能造空壳
+  assert.equal(parseBiliMe({ ok: false, error: { code: "not_logged_in" } }), null);
+  assert.equal(parseBiliMe({ ok: true, data: {} }), null);
+  assert.equal(parseBiliMe(null), null);
+
   // ---- 7. 打分 ----
   assert.equal(parseScore("判断：值得\n分数：16\n理由：有实测数据"), 16);
   assert.equal(parseScore("判断：跳过\n分数: 8\n理由：标题党"), 8, "半角冒号也要认");
@@ -171,6 +205,7 @@ async function main() {
   console.log("   判词否定优先（「不值得」不再判成值得）：通过");
   console.log("   宽松 JSON / BV 提取 / 错误码：通过");
   console.log("   当前主人解析（mid 数字 / owner 为 null）：通过");
+  console.log("   我的资料解析（头像 / 主页地址 / 没登录返回 null）：通过");
   console.log("   打分解析（0-20 / 缺省为 null / 越界夹住）：通过");
   console.log("   公开脱敏闸（@ / 长数字 / 私密句）：通过");
 }

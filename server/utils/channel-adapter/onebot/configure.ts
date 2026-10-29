@@ -11,15 +11,35 @@ import { getPrisma } from "../../prisma";
 import type { OnebotConnectionConfig } from "./client";
 import { ONEBOT_PLATFORM } from "./types";
 
-export type OnebotBindingRecord = { id: string; characterId: string; routingKey: string | null };
+export type OnebotBindingRecord = {
+  id: string;
+  characterId: string;
+  routingKey: string | null;
+  /** 群聊限流：每 replyWindowMinutes 分钟最多 replyLimitPerWindow 条；0 条 = 不限。 */
+  replyWindowMinutes: number;
+  replyLimitPerWindow: number;
+  /** 群聊是否仅当被 @ 时才回复（已回退到连接默认值，私聊总是回复）。 */
+  replyOnlyWhenMentioned: boolean;
+  /** 主人能否在群里触发她刷一轮 B站（已回退到连接默认值）。 */
+  groupBiliRunEnabled: boolean;
+};
 
 export type OnebotConnectionRecord = {
   id: string;
   platform: string;
   config: OnebotConnectionConfig;
-  /** 群聊中是否仅当被 @ 时才回复（私聊总是回复）。 */
+  /** 群聊回复策略的连接级默认值：各 binding 未单独覆盖时生效（私聊总是回复）。 */
   replyOnlyWhenMentioned: boolean;
+  /** 是否允许群主/管理员让她拟群公告草稿。连接级，默认关闭。 */
+  groupAnnouncementEnabled: boolean;
+  /** 「刷一轮 B站」的连接级默认值：各 binding 未单独覆盖时生效。 */
+  groupBiliRunEnabled: boolean;
+  /** 主人 QQ 号；空 = 未设置，群里 B站 指令不生效。连接级。 */
+  ownerQq: string;
+  /** 主人称呼（可留空）；留空时回退到外部身份/群名片。 */
+  ownerName: string;
   bindings: OnebotBindingRecord[];
+  reloadRequestedAt?: string;
 };
 
 /**
@@ -66,17 +86,24 @@ function readConfig(credentials: string | null, accountKey: string | null): Oneb
 /**
  * 加载所有应服务的 OneBot 连接及其活动角色绑定。凭据残缺（无法解密）的连接被跳过而不崩溃。
  */
-export async function loadOnebotConnections(platform: string = ONEBOT_PLATFORM): Promise<OnebotConnectionRecord[]> {
+export async function loadOnebotConnections(
+  platform: string = ONEBOT_PLATFORM,
+  /** 仅测试用：读取 DISABLED 连接，避免本机正在运行的适配器把测试连接当成真实连接。 */
+  options: { includeDisabled?: boolean } = {},
+): Promise<OnebotConnectionRecord[]> {
   const prisma = getPrisma();
   const connections = await prisma.platformConnection.findMany({
-    where: { platform, status: { not: "DISABLED" } },
+    where: options.includeDisabled ? { platform } : { platform, status: { not: "DISABLED" } },
     select: {
       id: true,
       platform: true,
       platformAccountKey: true,
       credentialsCiphertext: true,
       metadata: true,
-      characterBindings: { where: { status: "ACTIVE" }, select: { id: true, characterId: true, routingKey: true } },
+      characterBindings: {
+        where: { status: "ACTIVE" },
+        select: { id: true, characterId: true, routingKey: true, config: true },
+      },
     },
   });
 
@@ -93,19 +120,51 @@ export async function loadOnebotConnections(platform: string = ONEBOT_PLATFORM):
     }
 
     const metadata = (connection.metadata ?? {}) as Record<string, unknown>;
+    // 连接级默认「仅被 @ 时才回复」：见啥回啥会接走别人的聊天，还容易触发风控。
     const replyOnlyWhenMentioned =
-      typeof metadata.replyOnlyWhenMentioned === "boolean" ? metadata.replyOnlyWhenMentioned : false;
+      typeof metadata.replyOnlyWhenMentioned === "boolean" ? metadata.replyOnlyWhenMentioned : true;
+    const groupAnnouncementEnabled = metadata.groupAnnouncementEnabled === true;
+    const groupBiliRunEnabled = metadata.groupBiliRunEnabled === true;
+    const ownerQq = typeof metadata.ownerQq === "string" ? metadata.ownerQq.trim() : "";
+    const ownerName = typeof metadata.ownerName === "string" ? metadata.ownerName.trim() : "";
 
     records.push({
       id: connection.id,
       platform: connection.platform,
       config: readConfig(credentials, connection.platformAccountKey),
       replyOnlyWhenMentioned,
-      bindings: connection.characterBindings.map((binding) => ({
-        id: binding.id,
-        characterId: binding.characterId,
-        routingKey: binding.routingKey,
-      })),
+      groupAnnouncementEnabled,
+      groupBiliRunEnabled,
+      ownerQq,
+      ownerName,
+      reloadRequestedAt: typeof metadata.onebotReloadRequestedAt === "string"
+        ? metadata.onebotReloadRequestedAt : undefined,
+      bindings: connection.characterBindings.map((binding) => {
+        const config = (binding.config && typeof binding.config === "object" && !Array.isArray(binding.config))
+          ? binding.config as Record<string, unknown>
+          : {};
+        const rawWindow = config.replyWindowMinutes;
+        // 老字段 replyLimitPer10Min 迁移：窗口固定 10 分钟、条数原样带过来。
+        const rawLimit = config.replyLimitPerWindow ?? config.replyLimitPer10Min;
+        return {
+          id: binding.id,
+          characterId: binding.characterId,
+          routingKey: binding.routingKey,
+          replyWindowMinutes: typeof rawWindow === "number" && Number.isFinite(rawWindow) && rawWindow >= 1
+            ? Math.min(Math.round(rawWindow), 1440)
+            : 10,
+          replyLimitPerWindow: typeof rawLimit === "number" && Number.isFinite(rawLimit) && rawLimit > 0
+            ? Math.min(Math.round(rawLimit), 100)
+            : 0,
+          // binding 没写就沿用连接默认值，这样老数据不丢、新绑定也有个起点。
+          replyOnlyWhenMentioned: typeof config.replyOnlyWhenMentioned === "boolean"
+            ? config.replyOnlyWhenMentioned
+            : replyOnlyWhenMentioned,
+          groupBiliRunEnabled: typeof config.groupBiliRunEnabled === "boolean"
+            ? config.groupBiliRunEnabled
+            : groupBiliRunEnabled,
+        };
+      }),
     });
   }
   return records;

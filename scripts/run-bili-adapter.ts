@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { loadBiliConnections, type BiliConnectionRecord } from "../server/utils/channel-adapter/bili/configure";
+import { loadBiliConnections, type BiliConnectionRecord, type BiliDutyConfig } from "../server/utils/channel-adapter/bili/configure";
 import { runDutyRound } from "../server/utils/channel-adapter/bili/duty-pipeline";
 import {
   shouldRunDuty,
@@ -45,7 +45,7 @@ const inFlight = new Set<string>();
  * 结果窗口内每分钟都会触发一轮（perDay 只能限条数，限不住频次）。
  * 现在改成从 BiliRoundReport 的创建时间反推，重启后也不会重复刷。
  */
-async function refreshState(bindingId: string): Promise<BiliDutyState> {
+async function refreshState(bindingId: string, config: BiliDutyConfig): Promise<BiliDutyState> {
   const now = new Date();
   const today = toDayKey(now);
   const since = new Date(now.getTime() - STATE_LOOKBACK_MS);
@@ -54,7 +54,10 @@ async function refreshState(bindingId: string): Promise<BiliDutyState> {
     select: { pickedCount: true, createdAt: true, day: true },
   });
   // 额度按自然日算（每天上限），窗口标记按窗口业务日算（跨午夜同一个夜）
-  const picked = reports.filter((report) => report.day === today).reduce((sum, report) => sum + report.pickedCount, 0);
+  const resetAt = config.quotaResetAt ? new Date(config.quotaResetAt) : null;
+  const picked = reports
+    .filter((report) => report.day === today && (!resetAt || report.createdAt >= resetAt))
+    .reduce((sum, report) => sum + report.pickedCount, 0);
   return { day: today, picked, windowsRun: windowsRunFromTimestamps(reports.map((report) => report.createdAt)) };
 }
 
@@ -67,7 +70,7 @@ async function serveConnection(record: BiliConnectionRecord): Promise<void> {
     if (inFlight.has(binding.id)) {
       log({ event: "bili-duty-skip", bindingId: binding.id, reason: "上一轮还没跑完" });
     } else {
-      const state = await refreshState(binding.id);
+      const state = await refreshState(binding.id, config);
       const decision = shouldRunDuty(now, config, state, false);
 
       if (decision.due && decision.window) {

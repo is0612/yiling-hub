@@ -250,6 +250,18 @@ async function main() {
   assert.equal(actionClamped.favMinScore, 20, "收藏阈分夹到 0-20");
   assert.equal(actionClamped.dynamicMinScore, 0, "动态阈分同样夹住");
 
+  // 日报档位与今日额度重置：默认薄版、没重置过；非法值回默认
+  assert.equal(parseDutyInput({}).reportLevel, "brief");
+  assert.equal(parseDutyInput({ reportLevel: "full" }).reportLevel, "full");
+  assert.equal(parseDutyInput({ reportLevel: "off" }).reportLevel, "off");
+  assert.equal(parseDutyInput({ reportLevel: "nonsense" }).reportLevel, "brief");
+  assert.equal(parseDutyInput({}).quotaResetAt, "");
+  assert.equal(
+    parseDutyInput({ quotaResetAt: "2026-10-29T08:00:00Z" }).quotaResetAt,
+    "2026-10-29T08:00:00.000Z",
+  );
+  assert.equal(parseDutyInput({ quotaResetAt: "not-a-date" }).quotaResetAt, "");
+
   console.log("✅ test-bili-duty 全部通过");
   console.log("   谷时窗口判断（含跨午夜）：通过");
   console.log("   跨午夜归一 / 从报告重建窗口标记：通过");

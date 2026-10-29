@@ -347,4 +347,18 @@ bili-desk 把这些全塞在一个 `AGENTS.md` 里。搬进 yiling-hub 之后必
 写「某某跳过」能省掉一次 `video watch`（单条最慢几十分钟，是整条链路最贵的操作）。
 
 跳过的理由也会落库了：`judgeVideo` 给的 `理由` 现在对 `skipped` 同样写入 `BiliSeenVideo.reason`
+
+## 12. 控制台补全（2026-10-29）
+
+对齐 bili-desk 的「细」，但不改值班脚本化流水线：
+
+| 项 | 实现 | 说明 |
+| --- | --- | --- |
+| 动态命令表 | `schema-catalog.ts` | 读 `bili schema`，映射分组/参数/写操作；5 分钟缓存，失败回退 `catalog.ts`。本机 102 条 + 4 条面板入口 + selfcheck = 107 条 |
+| 菜单默认收起 | `useBiliDesk.ts` `MENU_VERSION = 3` | 动态命令大多 `common=false`，老配置升级时合并一次默认隐藏集，不把侧栏铺满 |
+| 日报档位 | `duty.reportLevel` | `full`（挑中+跳过+过程）/ `brief`（只写挑中）/ `off`（只记额度与判重） |
+| 重置今日额度 | `POST /api/admin/bili/duty/reset` | 写 `duty.quotaResetAt`；只影响额度统计，不删报告/判重 |
+| 札记编辑 | `/api/admin/bili/journal` | 直接读写角色全局长期记忆的 EVENT 条目；软删除进回收站，改动写审计 |
+
+仍未做的是 **agent 工具循环**（方案 A）：值班仍是固定脚本，模型只负责粗筛与终判。
 （此前一律写「跳过」），所以「跳过理由统一写两个字」这类约定能在运行记录里直接看到。

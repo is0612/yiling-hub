@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Connection, Cpu, InfoFilled, Promotion, Refresh, Select } from "@element-plus/icons-vue";
+import { Refresh, TopRight } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
 import type { Character } from "~/utils/mock-data";
 import { MODEL_PROVIDERS, buildModelOptions, providerByBaseUrl, providerByKey } from "~/utils/model-catalog";
@@ -8,6 +8,15 @@ import { MODEL_PROVIDERS, buildModelOptions, providerByBaseUrl, providerByKey } 
  * 模型设置：从「角色设置」弹窗里搬出来的。
  * 弹窗要装 9 个字段 + 6 段说明，在 1440×900 的笔记本上一屏放不下，
  * 而 el-dialog 是整层遮罩滚动 —— 打开后连保存按钮都看不到。这里跟「记忆设置」同形态。
+ *
+ * 页面排序（先分层，再谈样式）：
+ *   主角  连接三件套（服务商 → API 地址 → API Key）。错一个整页都白配。
+ *   次    模型名称。地址对了但模型选错，照样跑不起来。
+ *   再次  五个参数。有「填入推荐值」，不理解也能用。
+ *   背景  今日用量 / 说明。只在排查时才看，所以压到右栏。
+ * 动作：主 = 保存设置（全页唯一实心按钮）；次 = 保存并测试、获取模型；
+ *       三次 = 填入推荐值、刷新用量（文字按钮）。
+ * 保存条吸底：这页往下滚两屏才到底，主操作不能跟着滚出视野。
  */
 const route = useRoute();
 const id = computed(() => String(route.params.id || ""));
@@ -21,84 +30,19 @@ const fetchingModels = ref(false);
 const draftChatModel = ref("");
 const draftChatTemperature = ref(0.7);
 const draftChatMaxTokens = ref(1800);
-const draftChatApiBaseUrl = ref("https://api.deepseek.com");
+const draftChatApiBaseUrl = ref("https://api.openai.com/v1");
 const draftChatApiKey = ref("");
 const clearSavedApiKey = ref(false);
-const draftProviderKey = ref("deepseek");
+const draftProviderKey = ref("openai");
 const draftDailyTokenLimit = ref(0);
 const draftMemoryTokenBudget = ref(1200);
 const draftSnapshotTokenBudget = ref(2000);
-const draftEmojiEnabled = ref(false);
 /** 本页「获取模型」拉回来的列表；换地址就作废 */
 const fetchedModels = ref<string[]>([]);
 
-type ProactiveSettings = NonNullable<Character["proactive"]>;
-
-const PROACTIVE_FALLBACK: ProactiveSettings = {
-  enabled: false,
-  dailyMax: 2,
-  minGapMinutes: 180,
-  quietStart: "23:00",
-  quietEnd: "08:00",
-  userActiveMinutes: 30,
-  minConfidence: 0.4,
-};
-const draftProactive = ref<ProactiveSettings>({ ...PROACTIVE_FALLBACK });
-
-type ProactiveSnapshot = {
-  settings: ProactiveSettings;
-  status: {
-    sentToday: number;
-    pendingCount: number;
-    recipient: string | null;
-    lastSentAt: string | null;
-    gapRemainingMinutes: number;
-    quietNow: boolean;
-    quotaExceeded: boolean;
-    canSendNow: boolean;
-    reason: string;
-    reasonLabel: string;
-  };
-  recent: Array<{
-    id: string;
-    kind: string;
-    goal: string;
-    status: string;
-    content: string | null;
-    confidence: number;
-    sentAt: string | null;
-  }>;
-};
-const proactiveSnapshot = ref<ProactiveSnapshot | null>(null);
-const tryingProactive = ref(false);
-
-const PROACTIVE_KIND_LABELS: Record<string, string> = {
-  SHARE: "分享",
-  ASK: "想问",
-  INVITE: "邀约",
-  CONFIDE: "心里话",
-  CURIOUS: "好奇",
-  FOLLOWUP: "追问",
-};
-
-const PROACTIVE_STATUS_LABELS: Record<string, string> = {
-  PENDING: "待说",
-  SENT: "已发",
-  SKIPPED: "略过",
-  EXPIRED: "过期",
-};
-
-async function loadProactive() {
-  if (!id.value) return;
-  try {
-    proactiveSnapshot.value = await $fetch<ProactiveSnapshot>(
-      `/api/characters/${encodeURIComponent(id.value)}/proactive`,
-    );
-  } catch {
-    // 状态读不到不影响改设置，静默即可。
-    proactiveSnapshot.value = null;
-  }
-}
+/** 已写入数据库那一份表单的指纹，用来判断「有没有没保存的改动」 */
+const savedSignature = ref("");
+const lastSavedAt = ref<Date | null>(null);
 
 type DailyUsage = {
   day: string;
@@ -106,6 +50,7 @@ type DailyUsage = {
   quota: { limit: number; used: number; remaining: number; exceeded: boolean };
 };
 const dailyUsage = ref<DailyUsage | null>(null);
+const loadingUsage = ref(false);
 
 const KIND_LABELS: Record<string, string> = {
   chat: "AI 对话",
@@ -117,15 +62,63 @@ const KIND_LABELS: Record<string, string> = {
   other: "其他",
 };
 
-async function loadUsage() {
-  if (!id.value) return;
+/**
+ * 表单指纹。值 + 「移除 Key」的勾选都要进串：只比有没有填 Key，
+ * 会漏掉「勾了移除但还没保存」这一种改动。
+ */
+const draftSignature = computed(() => JSON.stringify([
+  draftChatModel.value.trim(),
+  draftChatTemperature.value,
+  draftChatMaxTokens.value,
+  draftChatApiBaseUrl.value.trim(),
+  draftChatApiKey.value.trim(),
+  clearSavedApiKey.value,
+  draftDailyTokenLimit.value,
+  draftMemoryTokenBudget.value,
+  draftSnapshotTokenBudget.value,
+]));
+const dirty = computed(() => savedSignature.value !== "" && draftSignature.value !== savedSignature.value);
+
+/** 手动刷新的最短加载时长：本地接口几十毫秒就回来了，转圈一闪而过等于没有反馈 */
+const USAGE_REFRESH_MIN_MS = 1000;
+
+async function loadUsage(silent = true) {
+  if (!id.value || loadingUsage.value) return;
+  loadingUsage.value = true;
+  const startedAt = Date.now();
   try {
     dailyUsage.value = await $fetch<DailyUsage>(`/api/characters/${encodeURIComponent(id.value)}/usage`);
-  } catch {
-    // 看板读不到不影响改设置，静默即可。
+  } catch (error) {
+    // 载入/保存时顺带刷新，读不到不影响改设置；手动点「刷新用量」才提示
     dailyUsage.value = null;
+    if (!silent) ElMessage.error(readError(error, "读取用量失败，请稍后重试。"));
+  } finally {
+    // 只有手动点「刷新用量」才压时长；载入页面和保存后的顺带刷新不该拖着
+    if (!silent) {
+      const remaining = USAGE_REFRESH_MIN_MS - (Date.now() - startedAt);
+      if (remaining > 0) await new Promise((resolve) => setTimeout(resolve, remaining));
+    }
+    loadingUsage.value = false;
   }
 }
+
+/** 保存条上的状态：说明「现在按下去会写什么」，而不是复述按钮文案 */
+const saveStateLabel = computed(() => {
+  if (dirty.value) return "有未保存的改动";
+  const at = lastSavedAt.value;
+  if (!at) return "";
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `已保存 ${pad(at.getHours())}:${pad(at.getMinutes())}`;
+});
+
+/** 额度条：两个数字并排比不出「还剩多少」，加一条进度才算回答了这个问题 */
+const quotaPercent = computed(() => {
+  const quota = dailyUsage.value?.quota;
+  if (!quota || !quota.limit) return null;
+  return Math.min(100, Math.round((quota.used / quota.limit) * 100));
+});
+
+const usageKinds = computed(() => Object.entries(dailyUsage.value?.usage.byKind ?? {}));
 
 /** 三个入口各回各家：对话页、角色管理页、角色记忆页 */
 const backTarget = computed(() => {
@@ -153,6 +146,8 @@ const apiKeyHint = computed(() => {
 
 const currentProvider = computed(() => providerByKey(draftProviderKey.value));
 const providerLabel = computed(() => currentProvider.value?.name ?? "自定义");
+/** 开放平台入口：跟着当前服务商走；自定义没有固定入口，链接就不出现 */
+const consoleUrl = computed(() => currentProvider.value?.consoleUrl ?? "");
 const modelOptions = computed(() => buildModelOptions({
   baseUrl: draftChatApiBaseUrl.value,
   current: draftChatModel.value,
@@ -179,6 +174,15 @@ function applyProvider(key: string) {
   if (preset?.baseUrl) draftChatApiBaseUrl.value = preset.baseUrl;
 }
 
+function resetRecommendedGenerationSettings() {
+  draftChatTemperature.value = 0.8;
+  draftChatMaxTokens.value = 2048;
+  draftDailyTokenLimit.value = 100000;
+  draftMemoryTokenBudget.value = 1600;
+  draftSnapshotTokenBudget.value = 2400;
+  ElMessage.success("已填入日常陪伴推荐参数，点击保存设置后生效。");
+}
+
 /** 地址能反推服务商：直接把地址粘进来时下拉要跟着对上，否则一直停在「自定义」 */
 watch(draftChatApiBaseUrl, (value) => {
   const nextKey = providerByBaseUrl(value)?.key ?? "custom";
@@ -195,17 +199,17 @@ async function loadCharacter() {
     draftChatModel.value = data.chatModel ?? "";
     draftChatTemperature.value = data.chatTemperature ?? 0.7;
     draftChatMaxTokens.value = data.chatMaxTokens ?? 1800;
-    draftChatApiBaseUrl.value = data.chatApiBaseUrl || "https://api.deepseek.com/v1";
+    draftChatApiBaseUrl.value = data.chatApiBaseUrl || "https://api.openai.com/v1";
     draftChatApiKey.value = "";
     clearSavedApiKey.value = false;
     draftDailyTokenLimit.value = data.dailyTokenLimit ?? 0;
     draftMemoryTokenBudget.value = data.memoryTokenBudget ?? 1200;
     draftSnapshotTokenBudget.value = data.snapshotTokenBudget ?? 2000;
-    draftEmojiEnabled.value = data.emojiEnabled === true;
-    draftProactive.value = { ...PROACTIVE_FALLBACK, ...(data.proactive ?? {}) };
     draftProviderKey.value = providerByBaseUrl(draftChatApiBaseUrl.value)?.key ?? "custom";
     fetchedModels.value = [];
-    await Promise.all([loadUsage(), loadProactive()]);
+    savedSignature.value = draftSignature.value;
+    lastSavedAt.value = data.updatedAt ? new Date(data.updatedAt) : null;
+    await loadUsage();
   } catch {
     character.value = null;
     ElMessage.error("加载角色失败，请确认角色仍存在且本地数据库已初始化。");
@@ -235,15 +239,16 @@ async function save(silent = false): Promise<boolean> {
         dailyTokenLimit: draftDailyTokenLimit.value,
         memoryTokenBudget: draftMemoryTokenBudget.value,
         snapshotTokenBudget: draftSnapshotTokenBudget.value,
-        emojiEnabled: draftEmojiEnabled.value,
-        proactive: { ...draftProactive.value },
       },
     });
     character.value = updated;
     draftChatApiKey.value = "";
     clearSavedApiKey.value = false;
+    // 清空 Key 输入框之后才取指纹，否则刚存的这份会一直被当成「未保存」
+    savedSignature.value = draftSignature.value;
+    lastSavedAt.value = new Date();
     if (!silent) ElMessage.success("模型设置已保存。");
-    await Promise.all([loadUsage(), loadProactive()]);
+    await loadUsage();
     return true;
   } catch (error) {
     ElMessage.error(readError(error, "保存失败，请稍后重试。"));
@@ -302,39 +307,12 @@ async function fetchModels() {
   }
 }
 
-/** 试跑前先保存：后台用的是库里那份设置，不先存就等于拿旧设置试。 */
-async function tryProactive() {
-  if (tryingProactive.value || saving.value || !character.value) return;
-  tryingProactive.value = true;
-  try {
-    const saved = await save(true);
-    if (!saved) return;
-    const result = await $fetch<{
-      status: string;
-      reason: string;
-      reasonLabel: string;
-      content: string | null;
-      detail: string | null;
-    }>(`/api/characters/${encodeURIComponent(id.value)}/proactive/try`, { method: "POST" });
-
-    if (result.status === "sent") ElMessage.success(`发出去了：「${result.content ?? ""}」`);
-    else if (result.status === "skipped") ElMessage.warning(`这次没发：${result.reasonLabel}`);
-    else ElMessage.error(`这次失败：${result.reasonLabel}${result.detail ? `（${result.detail}）` : ""}`);
-
-    await Promise.all([loadProactive(), loadUsage()]);
-  } catch (error) {
-    ElMessage.error(readError(error, "试跑失败，请稍后重试。"));
-  } finally {
-    tryingProactive.value = false;
-  }
-}
-
 onMounted(() => void loadCharacter());
 watch(id, () => void loadCharacter());
 </script>
 
 <template>
-  <div class="page-wrap">
+  <div class="page-wrap ms-a">
     <PageHeader
       :eyebrow="'角色管理 / ' + (character?.name ?? '角色') + ' / 模型设置'"
       title="模型设置"
@@ -349,46 +327,42 @@ watch(id, () => void loadCharacter());
     >
       <h4>读不到这个角色</h4>
       <p>角色可能已被删除，或本地数据库还没迁移。返回列表重新选择一个。</p>
-      <button
-        type="button"
-        class="btn"
-        @click="navigateTo('/characters')"
-      >
+      <el-button @click="navigateTo('/characters')">
         返回角色列表
-      </button>
+      </el-button>
     </div>
 
     <div
       v-else
       v-loading="loading"
-      class="settings-grid"
+      class="ms-grid"
     >
-      <div>
-        <!-- 服务商与凭据 -->
-        <section class="surface form-section">
-          <div class="settings-section-head">
-            <div>
-              <div class="form-title">
-                服务商与凭据 <span class="pill pill-purple">连接</span>
+      <div class="ms-main">
+        <!-- ① 连接：三件套共同决定「能不能调通」，放同一块砖里 -->
+        <section class="brick">
+          <div class="brick-head">
+            <div class="brick-head-txt">
+              <div class="brick-heading">
+                <h2 class="brick-title">
+                  连接
+                </h2>
               </div>
-              <p class="section-description">
+              <p class="brick-desc">
                 选服务商会自动填好公开兼容地址和常用模型，也可以完全手填。
               </p>
             </div>
-            <el-icon class="section-icon">
-              <Cpu />
-            </el-icon>
           </div>
 
-          <el-form
-            label-position="top"
-            style="margin-top:18px"
-          >
-            <el-form-item label="服务商">
+          <div class="fields">
+            <div class="field">
+              <div class="field-head">
+                <span class="field-label">服务商</span>
+              </div>
               <el-select
                 :model-value="draftProviderKey"
+                class="field-ctl"
+                aria-label="服务商"
                 placeholder="选择服务商，自动填好地址与常用模型"
-                style="width:100%"
                 @change="applyProvider"
               >
                 <el-option
@@ -398,68 +372,86 @@ watch(id, () => void loadCharacter());
                   :value="preset.key"
                 />
               </el-select>
-              <div class="form-help">
+              <p class="field-help">
                 {{ providerHint }}
-              </div>
-            </el-form-item>
+              </p>
+            </div>
 
-            <el-form-item
-              label="API 地址"
-              required
-            >
+            <div class="field">
+              <!-- 标签行右侧挂开放平台入口：用户卡住的点不是「填什么」，而是「去哪拿 Key」 -->
+              <div class="field-head">
+                <span class="field-label">API 地址</span>
+                <span class="field-req">必填</span>
+                <a
+                  v-if="consoleUrl"
+                  class="field-link"
+                  :href="consoleUrl"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  去 {{ providerLabel }} 开放平台取 Key
+                  <el-icon><TopRight /></el-icon>
+                </a>
+              </div>
               <el-input
                 v-model="draftChatApiBaseUrl"
                 maxlength="500"
+                aria-label="API 地址"
                 placeholder="https://api.deepseek.com/v1"
               />
-              <div class="form-help">
+              <p class="field-help">
                 填 API 根地址，不要追加 /chat/completions。必须 HTTPS；HTTP 仅允许本机地址。
-              </div>
-            </el-form-item>
+              </p>
+            </div>
 
-            <el-form-item label="API Key">
+            <div class="field">
+              <div class="field-head">
+                <span class="field-label">API Key</span>
+              </div>
               <el-input
                 v-model="draftChatApiKey"
                 type="password"
                 show-password
                 autocomplete="new-password"
                 maxlength="8192"
+                aria-label="API Key"
                 :placeholder="apiKeyPlaceholder"
               />
-              <div class="form-help">
+              <p class="field-help">
                 {{ apiKeyHint }}
-              </div>
+              </p>
               <el-checkbox
                 v-if="apiKeySource === 'character'"
                 v-model="clearSavedApiKey"
+                class="field-check"
               >
                 移除此角色单独保存的 API Key
               </el-checkbox>
-            </el-form-item>
-          </el-form>
+            </div>
+          </div>
         </section>
 
-        <!-- 模型与生成参数 -->
-        <section class="surface form-section">
-          <div class="settings-section-head">
-            <div>
-              <div class="form-title">
-                模型与生成参数
+        <!-- ② 模型 -->
+        <section class="brick">
+          <div class="brick-head">
+            <div class="brick-head-txt">
+              <div class="brick-heading">
+                <h2 class="brick-title">
+                  模型
+                </h2>
               </div>
-              <p class="section-description">
-                模型名可以点选，也可以直接输入厂商文档里的任意名字。
+              <p class="brick-desc">
+                选项来自内置目录；「获取模型」会先保存再向服务商拉取真实列表，失败的原始提示会直接显示。
               </p>
             </div>
           </div>
 
-          <el-form
-            label-position="top"
-            style="margin-top:18px"
-          >
-            <el-form-item
-              label="模型名称"
-              required
-            >
+          <div class="fields">
+            <div class="field">
+              <div class="field-head">
+                <span class="field-label">模型名称</span>
+                <span class="field-req">必填</span>
+              </div>
               <div class="model-row">
                 <el-select
                   v-model="draftChatModel"
@@ -467,6 +459,7 @@ watch(id, () => void loadCharacter());
                   filterable
                   allow-create
                   default-first-option
+                  aria-label="模型名称"
                   placeholder="选择，或直接输入模型名"
                 >
                   <el-option
@@ -476,268 +469,190 @@ watch(id, () => void loadCharacter());
                     :value="model"
                   />
                 </el-select>
-                <button
-                  type="button"
-                  class="btn"
-                  :disabled="saving || testing || fetchingModels"
+                <el-button
+                  :loading="fetchingModels"
+                  :disabled="saving || testing"
                   @click="fetchModels"
                 >
                   <el-icon><Refresh /></el-icon>{{ fetchingModels ? "获取中…" : "获取模型" }}
-                </button>
+                </el-button>
               </div>
-              <div class="form-help">
-                选项来自内置目录；「获取模型」会先保存再向服务商拉取真实列表，失败的原始提示会直接显示。
-              </div>
-            </el-form-item>
-
-            <el-form-item label="温度">
-              <el-slider
-                v-model="draftChatTemperature"
-                :min="0"
-                :max="2"
-                :step="0.1"
-                show-input
-              />
-              <div class="form-help">
-                越低越稳定、越像在照本宣科；越高越发散，也越容易跑题。
-              </div>
-            </el-form-item>
-
-            <el-form-item label="最大输出 Token">
-              <el-input-number
-                v-model="draftChatMaxTokens"
-                :min="256"
-                :max="8192"
-                :step="256"
-              />
-              <div class="form-help">
-                数值越大，回复可能越长，单次请求的消耗也越高。
-              </div>
-            </el-form-item>
-
-            <el-form-item label="每日 token 额度">
-              <el-input-number
-                v-model="draftDailyTokenLimit"
-                :min="0"
-                :max="10000000"
-                :step="10000"
-              />
-              <div class="form-help">
-                0 = 不限。按东八区自然日累计全部调用（对话 / QQ / 值班 / 总结）；用完后对话直接拒绝，QQ 与值班静默跳过。
-              </div>
-            </el-form-item>
-
-            <el-form-item label="记忆注入预算（token）">
-              <el-input-number
-                v-model="draftMemoryTokenBudget"
-                :min="0"
-                :max="20000"
-                :step="200"
-              />
-              <div class="form-help">
-                每次对话最多带多少记忆。0 = 用默认 1200。超出预算时按「相关度 × 新鲜度衰减 × 重要度」取到这个上限为止。
-              </div>
-            </el-form-item>
-
-            <el-form-item label="阶段总结注入预算（token）">
-              <el-input-number
-                v-model="draftSnapshotTokenBudget"
-                :min="0"
-                :max="20000"
-                :step="200"
-              />
-              <div class="form-help">
-                一篇周期总结动辄两三千字，所以和记忆分开算预算，否则两者会互相挤掉。0 = 用默认 2000。
-              </div>
-            </el-form-item>
-
-            <el-form-item label="QQ 渠道发表情">
-              <el-switch v-model="draftEmojiEnabled" />
-              <div class="form-help">
-                开启后 QQ 回复偶尔会在正文之后单独跟一条表情。默认关闭；上一条刚发过表情的话，10 分钟内不会再发。网页对话与 B站 私信不受影响。
-              </div>
-            </el-form-item>
-          </el-form>
+            </div>
+          </div>
         </section>
 
-        <!-- 主动找话 -->
-        <section class="surface form-section">
-          <div class="settings-section-head">
-            <div>
-              <div class="form-title">
-                主动找话
-                <span
-                  class="pill"
-                  :class="draftProactive.enabled ? 'pill-green' : ''"
-                >{{ draftProactive.enabled ? "已开启" : "默认关闭" }}</span>
+        <!-- ③ 生成参数：每个旋钮都是「标签 + 一句为什么 + 控件」 -->
+        <section class="brick">
+          <div class="brick-head">
+            <div class="brick-head-txt">
+              <div class="brick-heading">
+                <h2 class="brick-title">
+                  生成参数
+                </h2>
               </div>
-              <p class="section-description">
-                想开口的时候，她自己先发一条 QQ 私信。不是定时群发：先攒「想做但还没做的事」，再由硬闸门决定这一刻能不能说。
+              <p class="brick-desc">
+                推荐方案适合日常陪伴与角色对话，兼顾表达变化、记忆和用量。点「填入推荐值」，再保存生效。
               </p>
             </div>
-            <el-icon class="section-icon">
-              <Promotion />
-            </el-icon>
+            <el-button
+              text
+              class="head-act"
+              @click="resetRecommendedGenerationSettings"
+            >
+              填入推荐值
+            </el-button>
           </div>
 
-          <el-form
-            label-position="top"
-            style="margin-top:18px"
-          >
-            <el-form-item label="开启主动找话">
-              <el-switch v-model="draftProactive.enabled" />
-              <div class="form-help">
-                默认关闭——这是唯一一条「她先开口」的路径，开着的话你得先接受她突然找你。收件人取的是这个角色最近一次 QQ 私聊的对象，没私聊过就不会发。
+          <div class="knob-group">
+            <div class="knob-group-head">
+              <h3 class="knob-group-title">
+                回复表现
+              </h3>
+              <span class="knob-group-note">从日常陪伴推荐方案开始，再按实际效果微调</span>
+            </div>
+
+            <div class="knob">
+              <div class="knob-label">
+                温度
               </div>
-            </el-form-item>
-
-            <template v-if="draftProactive.enabled">
-              <el-form-item label="每天最多几条">
-                <el-input-number
-                  v-model="draftProactive.dailyMax"
-                  :min="0"
-                  :max="24"
-                />
-                <div class="form-help">
-                  0 = 关掉这个口子。按东八区自然日计，和 token 额度同一把尺量日子。
-                </div>
-              </el-form-item>
-
-              <el-form-item label="两条之间至少隔多久（分钟）">
-                <el-input-number
-                  v-model="draftProactive.minGapMinutes"
-                  :min="15"
-                  :max="1440"
-                  :step="15"
-                />
-                <div class="form-help">
-                  默认 180 分钟。间隔太短，她会变成「刚聊完又凑上来」。
-                </div>
-              </el-form-item>
-
-              <el-form-item label="安静时段">
-                <div class="quiet-row">
-                  <el-time-select
-                    v-model="draftProactive.quietStart"
-                    start="00:00"
-                    step="00:30"
-                    end="23:30"
-                    placeholder="23:00"
-                  />
-                  <span class="quiet-sep">到</span>
-                  <el-time-select
-                    v-model="draftProactive.quietEnd"
-                    start="00:00"
-                    step="00:30"
-                    end="23:30"
-                    placeholder="08:00"
-                  />
-                </div>
-                <div class="form-help">
-                  允许跨午夜（23:00 到 08:00 就是整夜闭嘴）。起止填成一样会被拒绝保存，因为那等于没有安静时段。
-                </div>
-              </el-form-item>
-
-              <el-form-item label="刚聊过就先不打扰（分钟）">
-                <el-input-number
-                  v-model="draftProactive.userActiveMinutes"
-                  :min="0"
-                  :max="720"
-                  :step="10"
-                />
-                <div class="form-help">
-                  你在这段时间内说过话，她就不会主动开口——那样叫接话，不叫主动找。0 = 不判这条。
-                </div>
-              </el-form-item>
-
-              <el-form-item label="最低置信度">
+              <p class="field-help">
+                推荐 0.8：为角色聊天保留一些表达变化。若容易跑题或人设不稳，可降到 0.6；不同模型效果会有差异。
+              </p>
+              <div class="knob-ctl">
                 <el-slider
-                  v-model="draftProactive.minConfidence"
+                  v-model="draftChatTemperature"
+                  class="knob-slider"
                   :min="0"
-                  :max="1"
-                  :step="0.05"
-                  show-input
+                  :max="2"
+                  :step="0.1"
+                  :aria-label="'温度'"
                 />
-                <div class="form-help">
-                  她会给每件「想做的事」打 0–1 分，低于这个值就不开口。调高更安静。
-                </div>
-              </el-form-item>
-            </template>
-          </el-form>
-
-          <div class="proactive-foot">
-            <div class="proactive-state">
-              <template v-if="proactiveSnapshot">
-                <span
-                  class="pill"
-                  :class="proactiveSnapshot.status.canSendNow ? 'pill-green' : ''"
-                >{{ proactiveSnapshot.status.reasonLabel }}</span>
-                <span class="proactive-meta">
-                  今天 {{ proactiveSnapshot.status.sentToday }} / {{ proactiveSnapshot.settings.dailyMax }} 条 ·
-                  池子 {{ proactiveSnapshot.status.pendingCount }} 条 ·
-                  收件人 {{ proactiveSnapshot.status.recipient ?? "还没有" }}
-                </span>
-              </template>
-              <span
-                v-else
-                class="proactive-meta"
-              >还读不到当前状态，保存后刷新一次。</span>
+                <el-input-number
+                  v-model="draftChatTemperature"
+                  class="knob-number narrow"
+                  :min="0"
+                  :max="2"
+                  :step="0.1"
+                  :precision="1"
+                  :controls="false"
+                  aria-label="温度数值"
+                />
+              </div>
             </div>
-            <button
-              type="button"
-              class="btn"
-              :disabled="tryingProactive || saving"
-              @click="tryProactive"
-            >
-              <el-icon><Promotion /></el-icon>{{ tryingProactive ? "试跑中…" : "立即试一次" }}
-            </button>
+
+            <div class="knob">
+              <div class="knob-label">
+                最大输出 Token
+              </div>
+              <p class="field-help">
+                推荐 2048：给聊天回复和结构化输出留余量。这是单次输出上限，不代表每次都会用满；推理模型若经常截断需另行调高。
+              </p>
+              <div class="knob-ctl">
+                <el-input-number
+                  v-model="draftChatMaxTokens"
+                  class="knob-number"
+                  :min="256"
+                  :max="8192"
+                  :step="256"
+                  aria-label="最大输出 Token"
+                />
+              </div>
+            </div>
           </div>
 
-          <div class="form-help">
-            「立即试一次」只跳过时间类限制（安静时段 / 间隔 / 每日上限）；开关、收件人和当日额度照判，否则这个按钮就等于绕过所有保护。
-          </div>
-
-          <div
-            v-if="proactiveSnapshot?.recent.length"
-            class="proactive-recent"
-          >
-            <div class="recent-head">
-              最近的想法
+          <div class="knob-group">
+            <div class="knob-group-head">
+              <h3 class="knob-group-title">
+                用量与记忆
+              </h3>
+              <span class="knob-group-note">预算越高，上下文越多，用量也可能增加</span>
             </div>
-            <div
-              v-for="item in proactiveSnapshot.recent.slice(0, 5)"
-              :key="item.id"
-              class="recent-row"
-            >
-              <span class="pill">{{ PROACTIVE_KIND_LABELS[item.kind] ?? item.kind }}</span>
-              <span class="recent-text">{{ item.status === "SENT" ? (item.content ?? item.goal) : item.goal }}</span>
-              <span class="recent-status">{{ PROACTIVE_STATUS_LABELS[item.status] ?? item.status }}</span>
+
+            <div class="knob">
+              <div class="knob-label">
+                每日 token 额度
+              </div>
+              <p class="field-help">
+                建议先设 100,000：观察几天用量后再调整。按东八区统计所有调用，达到额度后会暂停相关调用；这不是金额上限，0 表示不限。
+              </p>
+              <div class="knob-ctl">
+                <el-input-number
+                  v-model="draftDailyTokenLimit"
+                  class="knob-number"
+                  :min="0"
+                  :max="10000000"
+                  :step="10000"
+                  aria-label="每日 token 额度"
+                />
+              </div>
+            </div>
+
+            <div class="knob">
+              <div class="knob-label">
+                记忆注入预算（token）
+              </div>
+              <p class="field-help">
+                推荐 1600：比基础预算多留一些相关记忆，适合持续陪伴。预算并非严格硬上限，首条记忆始终放行；0 回退到系统默认 1200。
+              </p>
+              <div class="knob-ctl">
+                <el-input-number
+                  v-model="draftMemoryTokenBudget"
+                  class="knob-number"
+                  :min="0"
+                  :max="20000"
+                  :step="200"
+                  aria-label="记忆注入预算"
+                />
+              </div>
+            </div>
+
+            <div class="knob">
+              <div class="knob-label">
+                阶段总结注入预算（token）
+              </div>
+              <p class="field-help">
+                推荐 2400：给过往经历留更多上下文，与长期记忆预算独立。首条总结始终放行，可能超出预算；0 回退到系统默认 2000。
+              </p>
+              <div class="knob-ctl">
+                <el-input-number
+                  v-model="draftSnapshotTokenBudget"
+                  class="knob-number"
+                  :min="0"
+                  :max="20000"
+                  :step="200"
+                  aria-label="阶段总结注入预算"
+                />
+              </div>
             </div>
           </div>
         </section>
 
-        <div class="form-actions">
-          <button
-            type="button"
-            class="btn"
-            :disabled="saving || testing || fetchingModels"
+        <!-- 吸底操作条：往下滚也能按到主操作 -->
+        <div class="act-bar">
+          <span
+            class="act-state"
+            :class="{ dirty }"
+          >{{ saveStateLabel }}</span>
+          <el-button
+            :loading="testing"
+            :disabled="saving"
             @click="testConnection"
           >
-            <el-icon><Connection /></el-icon>{{ testing ? "测试中…" : "保存并测试" }}
-          </button>
-          <button
-            type="button"
-            class="btn primary"
-            :disabled="saving || testing || fetchingModels"
+            {{ testing ? "测试中…" : "保存并测试" }}
+          </el-button>
+          <el-button
+            type="primary"
+            :loading="saving"
+            :disabled="testing"
             @click="save(false)"
           >
-            <el-icon><Select /></el-icon>{{ saving ? "保存中…" : "保存设置" }}
-          </button>
+            {{ saving ? "保存中…" : "保存设置" }}
+          </el-button>
         </div>
       </div>
 
-      <aside class="settings-side">
-        <section class="surface panel side-panel">
+      <aside class="ms-side">
+        <section class="brick">
           <div class="card-head">
             <h2>当前配置</h2>
             <span class="sub">已写入数据库</span>
@@ -757,117 +672,280 @@ watch(id, () => void loadCharacter());
           <div class="metric-row">
             <span>温度 / 上限</span><span class="metric-value">{{ character?.chatTemperature ?? "—" }} · {{ character?.chatMaxTokens ?? "—" }} tokens</span>
           </div>
-          <div class="info-callout side-callout">
-            <el-icon><InfoFilled /></el-icon><span>模型未配置时，对话与自动归档会留在队列里，不会用规则摘要冒充 AI 输出。</span>
-          </div>
+          <p class="side-note">
+            模型未配置时，对话与自动归档会留在队列里，不会用规则摘要冒充 AI 输出。
+          </p>
         </section>
 
-        <section class="surface panel side-panel">
+        <section class="brick">
           <div class="card-head">
             <h2>今日用量</h2>
             <span class="sub">{{ dailyUsage?.day ?? "—" }}</span>
           </div>
-          <div class="metric-row">
-            <span>已用 token</span>
-            <span class="metric-value">
-              {{ dailyUsage ? dailyUsage.usage.totalTokens.toLocaleString() : "—" }}
-              <template v-if="dailyUsage?.quota.limit"> / {{ dailyUsage.quota.limit.toLocaleString() }}</template>
-            </span>
+
+          <div class="usage-top">
+            <span class="usage-value">{{ dailyUsage ? dailyUsage.usage.totalTokens.toLocaleString() : "—" }}</span>
+            <span
+              v-if="dailyUsage?.quota.limit"
+              class="usage-limit"
+            >/ {{ dailyUsage.quota.limit.toLocaleString() }} · {{ quotaPercent }}%</span>
+            <span
+              v-else
+              class="usage-limit"
+            >不限额度</span>
           </div>
+          <div
+            v-if="quotaPercent !== null"
+            class="usage-bar"
+            role="img"
+            :aria-label="`今日用量 ${quotaPercent}%`"
+          >
+            <div
+              class="usage-fill"
+              :class="{ warn: quotaPercent >= 90 }"
+              :style="{ width: quotaPercent + '%' }"
+            />
+          </div>
+
           <div class="metric-row">
             <span>调用次数</span><span class="metric-value">{{ dailyUsage?.usage.calls ?? 0 }}</span>
           </div>
           <div
-            v-for="(value, kind) in dailyUsage?.usage.byKind ?? {}"
+            v-for="[kind, value] in usageKinds"
             :key="kind"
             class="metric-row"
           >
             <span>{{ KIND_LABELS[String(kind)] ?? kind }}</span>
             <span class="metric-value">{{ value.totalTokens.toLocaleString() }} · {{ value.calls }} 次</span>
           </div>
-          <div
-            class="form-help"
-            style="margin-top:8px"
-          >
-            额度用完时这里不会自动清零 —— 统计的是真实花费，调高额度或等次日恢复。
+
+          <div class="usage-foot">
+            <el-button
+              text
+              :loading="loadingUsage"
+              @click="loadUsage(false)"
+            >
+              {{ loadingUsage ? "刷新中…" : "刷新用量" }}
+            </el-button>
+            <span class="usage-note">额度用完不会自动清零：统计的是真实花费，调高额度或等次日恢复。</span>
           </div>
-          <button
-            type="button"
-            class="btn sm"
-            style="margin-top:10px"
-            @click="loadUsage"
-          >
-            <el-icon><Refresh /></el-icon>刷新用量
-          </button>
         </section>
 
-        <section class="surface panel">
-          <div class="side-icon">
-            <el-icon><Cpu /></el-icon>
+        <section class="brick">
+          <div class="card-head">
+            <h2>几个要知道的点</h2>
           </div>
-          <h2 class="section-heading">
-            几个要知道的点
-          </h2>
-          <div class="rule-item">
-            <span class="rule-number">01</span><div><strong>Key 不会回传网页</strong><p>保存后页面只显示"已保存"，原文无法再读出；留空即保持不变。</p></div>
+          <div class="rule">
+            <span class="rule-number">01</span>
+            <div>
+              <strong>Key 不会回传网页</strong>
+              <p>保存后页面只显示「已保存」，原文无法再读出；留空即保持不变。</p>
+            </div>
           </div>
-          <div class="rule-item">
-            <span class="rule-number">02</span><div><strong>测试与拉取都先保存</strong><p>两步都用服务端已存的配置发起请求，所以会先写入数据库。</p></div>
+          <div class="rule">
+            <span class="rule-number">02</span>
+            <div>
+              <strong>测试与拉取都先保存</strong>
+              <p>两步都用服务端已存的配置发起请求，所以会先写入数据库。</p>
+            </div>
           </div>
-          <div class="rule-item">
-            <span class="rule-number">03</span><div><strong>内置清单会过期</strong><p>厂商改名很常见，清单只作起点；能拉取就以拉取结果为准。</p></div>
+          <div class="rule">
+            <span class="rule-number">03</span>
+            <div>
+              <strong>内置清单会过期</strong>
+              <p>厂商改名很常见，清单只作起点；能拉取就以拉取结果为准。</p>
+            </div>
           </div>
+          <p class="side-note">
+            这里的配置只影响该角色的 AI 对话与自动归档提炼，不改变其他角色。
+          </p>
         </section>
       </aside>
     </div>
-
-    <p class="footer-note">
-      这里的配置只影响该角色的 AI 对话与自动归档提炼，不改变其他角色。
-    </p>
   </div>
 </template>
 
 <style scoped>
-.settings-grid{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:18px;align-items:start}
-.settings-section-head{display:flex;align-items:flex-start;justify-content:space-between;gap:15px}
-.form-title{display:flex;align-items:center;gap:9px;color:var(--text);font-size:14px;font-weight:700}
-.section-icon{color:var(--brand);font-size:18px}
-.form-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:20px}
+/* ══════════════════════════════════════════════════════════════
+   沿用 A 套「色块平铺」：白砖、零描边、零阴影，
+   层次只靠明度差 + 间距。需要盖掉全局类的地方带 `.ms-a` 前缀（(0,3,0)），
+   Element 内部结构走 :deep()，两条都靠组件样式晚于 main.css 加载取胜。
+   取值只从 token 取：间距 --sp-1..7、圆角 10/8/6、
+   字号 12 / 14 / 16 / 22（六档里的四档）、正文色 text / text-2 / dim。
+   --faint（2.52:1）只留给序号和分隔符，不承载信息。
+   ══════════════════════════════════════════════════════════════ */
 
-/* 模型下拉 + 「获取模型」同行：select 吃掉剩余宽度 */
-.model-row{display:flex;width:100%;gap:8px}
-.model-select{min-width:0;flex:1}
+.ms-grid { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: var(--sp-5); align-items: start; }
+.ms-main { display: flex; min-width: 0; flex-direction: column; gap: var(--sp-4); }
 
-/* 安静时段两个时刻选择器 + 「到」 */
-.quiet-row{display:flex;align-items:center;gap:8px}
-.quiet-sep{color:var(--dim);font-size:12px}
+/* 一块砖 = 一组「同一件事」的字段。砖与砖 16，砖内字段也 16，
+   但砖头（标题 + 说明）靠字号与颜色差就能认出来，不再多画一条分隔线 */
+.ms-a .brick { border-radius: 10px; background: var(--surface); padding: var(--sp-5); }
 
-.proactive-foot{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:6px;padding-top:14px;border-top:1px solid var(--line)}
-.proactive-state{display:flex;flex-wrap:wrap;align-items:center;gap:8px;min-width:0}
-.proactive-meta{color:var(--faint);font-size:12px;line-height:1.7}
+.brick-head { display: flex; align-items: flex-start; gap: var(--sp-4); }
+.brick-head-txt { min-width: 0; flex: 1; }
+.brick-heading { display: flex; align-items: center; gap: var(--sp-2); }
+.brick-title { margin: 0; color: var(--text); font-size: 16px; font-weight: 700; letter-spacing: -.01em; line-height: 1.4; }
+.brick-desc { max-width: 44em; margin: var(--sp-1) 0 0; color: var(--dim); font-size: 12px; line-height: 1.65; }
+.head-act { flex: none; }
 
-.proactive-recent{margin-top:14px}
-.recent-head{margin-bottom:6px;color:var(--text-2);font-size:12px;font-weight:600}
-.recent-row{display:flex;align-items:center;gap:8px;padding:5px 0;border-top:1px dashed var(--line)}
-.recent-text{min-width:0;flex:1;overflow:hidden;color:var(--dim);font-size:12px;text-overflow:ellipsis;white-space:nowrap}
-.recent-status{flex:0 0 auto;color:var(--faint);font-size:12px}
+/* ── 字段（竖排：标签 → 控件 → 一句解释） ───────────── */
+.fields { display: flex; flex-direction: column; gap: var(--sp-4); margin-top: var(--sp-4); }
+.field { display: flex; min-width: 0; flex-direction: column; gap: var(--sp-2); }
+/* 标签行：左标签 + 右侧开放平台入口。基线对齐，链接不能比标签高出一截 */
+.field-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--sp-1) var(--sp-2); }
+.field-label { color: var(--text-2); font-size: 14px; font-weight: 600; line-height: 1.5; }
+.field-req { color: var(--dim); font-size: 12px; font-weight: 500; }
+/* 12px 文字链接只能用 --brand-strong（#bf3a63）：--brand 只有 3.2:1，不到 AA */
+.field-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+  border-radius: var(--radius-xs);
+  color: var(--brand-strong);
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: none;
+  transition: color .14s var(--ease);
+}
+.field-link:hover { color: var(--brand-btn-h); text-decoration: underline; }
+.field-link:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+.field-link .el-icon { font-size: 13px; }
+.field-ctl { width: 100%; }
+/* main.css 的 .form-help 落在 --faint 上，那是装饰色；说明文字要读得清，改 --dim */
+/* 行宽用 em 不用 ch：中文一个字的宽度也是 1em，62ch 只够放 ~31 个汉字 */
+.ms-a .field-help { max-width: 44em; margin: 0; color: var(--dim); font-size: 12px; line-height: 1.7; }
+.field-check { align-self: flex-start; height: 20px; }
 
-.settings-side{display:flex;flex-direction:column;gap:16px}
-.settings-side .panel{padding:18px 20px}
-.side-icon{display:flex;width:36px;height:36px;align-items:center;justify-content:center;margin-bottom:12px;border-radius:var(--radius);background:var(--brand-soft);color:var(--brand);font-size:18px}
-.card-head{display:flex;align-items:center;gap:10px;margin-bottom:8px}
-.card-head h2{margin:0;color:var(--text-2);font-size:14px;font-weight:700}
-.card-head .sub{color:var(--faint);font:400 12px/1 Consolas,monospace}
-.side-callout{margin-top:14px}
-.rule-item{display:flex;gap:10px;margin-top:18px}
-.rule-number{display:flex;width:24px;height:24px;flex:0 0 auto;align-items:center;justify-content:center;border-radius:var(--radius-xs);background:var(--brand-soft);color:var(--brand-strong);font-size:12px;font-weight:700}
-.rule-item strong{color:var(--text-2);font-size:12px;font-weight:600}
-.rule-item p{margin-top:4px;color:var(--dim);font-size:12px;line-height:1.8}
+/* 模型下拉 + 「获取模型」同行：select 吃掉剩余宽度，按钮不吃 */
+.model-row { display: flex; width: 100%; align-items: center; gap: var(--sp-2); }
+.model-select { min-width: 0; flex: 1; }
 
-.empty-block{min-height:240px;border-radius:10px;background:var(--surface);padding:34px 24px 30px}
-.empty-block h4{margin:0 0 7px;color:var(--text);font-size:16px;font-weight:600}
-.empty-block p{max-width:460px;margin:0 0 16px;color:var(--dim);font-size:14px;line-height:1.7}
+/* ── 参数（横排：左边说「调它有什么用」，右边落控件） ── */
+/* 分两列改成一行一条：说明在半个卡片宽里会折成五六行，把控件挤出视线；
+   换成行之后所有控件落在同一条竖线上，扫一眼就知道当前值 */
+.knob-group { margin-top: var(--sp-4); border-top: 1px solid var(--surface-3); padding-top: var(--sp-4); }
+.knob-group + .knob-group { margin-top: var(--sp-5); }
+.knob-group-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--sp-1) var(--sp-3); }
+.knob-group-title { margin: 0; color: var(--text); font-size: 14px; font-weight: 700; }
+.knob-group-note { color: var(--dim); font-size: 12px; }
+.knob {
+  display: grid;
+  grid-template-areas:
+    "label ctl"
+    "help  help";
+  grid-template-columns: minmax(0, 1fr) 268px;
+  align-items: start;
+  gap: var(--sp-2) var(--sp-5);
+  padding: var(--sp-3) 0;
+}
+.knob-label { grid-area: label; color: var(--text-2); font-size: 14px; font-weight: 600; line-height: 1.5; }
+.knob-ctl { display: flex; grid-area: ctl; align-items: center; gap: var(--sp-2); }
+.knob .field-help { grid-area: help; }
+.knob + .knob { border-top: 1px solid var(--surface-3); }
+.knob-slider { min-width: 88px; flex: 1; }
+.knob-number { width: 100%; }
+.knob-number.narrow { width: 84px; flex: none; }
+.knob-ctl :deep(.el-input-number .el-input__inner) { text-align: left; font-variant-numeric: tabular-nums; }
+.ms-a :deep(.el-slider) { --el-slider-height: 4px; }
+.ms-a :deep(.el-slider__button) { width: 14px; height: 14px; border-width: 2px; }
 
-@media(max-width:1050px){.settings-grid{grid-template-columns:1fr}.settings-side{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:15px}}
-@media(max-width:640px){.settings-side{grid-template-columns:1fr}}
+/* ── 吸底操作条 ─────────────────────────────────── */
+/* 页面要滚两屏多，主操作必须留在视线里。--bg 不透明垫底，
+   上方补 16px 渐隐，避免控件「贴边被切断」的错觉 */
+.act-bar {
+  position: sticky;
+  bottom: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  background: var(--bg);
+  padding: var(--sp-3) 0 var(--sp-4);
+}
+.act-bar::before {
+  content: "";
+  position: absolute;
+  right: 0;
+  bottom: 100%;
+  left: 0;
+  height: var(--sp-4);
+  background: linear-gradient(to bottom, rgba(244, 246, 249, 0), var(--bg));
+  pointer-events: none;
+}
+.act-state { margin-right: auto; color: var(--dim); font-size: 12px; font-weight: 600; }
+.act-state.dirty { color: var(--brand-strong); }
+
+/* 按钮：36px 与输入框同高；主按钮用 --brand-btn 实色（--brand 只做图标/焦点环） */
+.ms-a :deep(.el-button) {
+  height: var(--ctl-h);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--sp-4);
+  font-size: 14px;
+  font-weight: 600;
+}
+.ms-a :deep(.el-button--primary) { background: var(--brand-btn); border-color: var(--brand-btn); }
+.ms-a :deep(.el-button--primary:hover),
+.ms-a :deep(.el-button--primary:focus-visible) { background: var(--brand-btn-h); border-color: var(--brand-btn-h); }
+.ms-a :deep(.el-button.is-text) { padding: 0 6px; color: var(--brand-strong); }
+.ms-a :deep(.el-button.is-text:hover) { background: var(--brand-soft); color: var(--brand-btn-h); }
+.ms-a :deep(.el-button .el-icon) { font-size: 14px; }
+
+/* ── 右栏 ───────────────────────────────────────── */
+.ms-side { display: flex; flex-direction: column; gap: var(--sp-4); }
+.ms-side .brick { padding: var(--sp-4) var(--sp-5); }
+.card-head { display: flex; align-items: baseline; gap: var(--sp-2); margin-bottom: var(--sp-2); }
+.card-head h2 { margin: 0; color: var(--text-2); font-size: 14px; font-weight: 700; }
+.card-head .sub { margin-left: auto; color: var(--dim); font-size: 12px; font-variant-numeric: tabular-nums; }
+
+/* 行线用最淡的 --surface-3，读数区不描边 */
+.ms-a .metric-row { border-bottom: 0; padding: var(--sp-2) 0; color: var(--dim); }
+.ms-a .metric-row + .metric-row { border-top: 1px solid var(--surface-3); }
+.ms-side .metric-value { max-width: 62%; color: var(--text-2); text-align: right; word-break: break-word; }
+.ms-a .pill { border: 0; }
+
+.usage-top { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--sp-2); margin: var(--sp-2) 0 var(--sp-2); }
+/* 用量数字是这一栏的主角：比旁边的限值大两档 */
+.usage-value { color: var(--text); font-size: 22px; font-weight: 700; letter-spacing: -.015em; font-variant-numeric: tabular-nums; }
+.usage-limit { color: var(--dim); font-size: 12px; font-weight: 600; }
+.usage-bar { height: 6px; overflow: hidden; border-radius: 3px; background: var(--surface-3); }
+.usage-fill { height: 100%; border-radius: 3px; background: var(--brand); transition: width .3s var(--ease); }
+.usage-fill.warn { background: var(--amber); }
+.usage-foot { display: flex; align-items: flex-start; gap: var(--sp-2); margin-top: var(--sp-3); }
+.usage-note { flex: 1; color: var(--dim); font-size: 12px; line-height: 1.6; }
+.side-note { margin: var(--sp-3) 0 0; border-radius: var(--radius-sm); background: var(--surface-2); padding: var(--sp-3); color: var(--dim); font-size: 12px; line-height: 1.7; }
+
+.rule { display: flex; gap: var(--sp-3); margin-top: var(--sp-3); }
+.rule-number { flex: 0 0 auto; color: var(--faint); font: 700 12px/1.7 Consolas, monospace; }
+.rule strong { color: var(--text-2); font-size: 14px; font-weight: 600; }
+.rule p { margin: 3px 0 0; color: var(--dim); font-size: 12px; line-height: 1.7; }
+
+/* 空态：一句话 + 一颗按钮，不围虚线框 */
+.empty-block { border-radius: 10px; background: var(--surface); padding: var(--sp-6) var(--sp-5); }
+.empty-block h4 { margin: 0 0 6px; color: var(--text); font-size: 16px; font-weight: 600; }
+.empty-block p { max-width: 34em; margin: 0 0 var(--sp-4); color: var(--dim); font-size: 14px; line-height: 1.7; }
+
+/* 1050 以下右栏掉到主内容下面：先读配置，再看数据 */
+@media (max-width: 1050px) {
+  .ms-grid { grid-template-columns: minmax(0, 1fr); }
+  .ms-side { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-4); }
+  .ms-side .brick:last-child { grid-column: 1 / -1; }
+}
+@media (max-width: 720px) {
+  .ms-a .brick { padding: var(--sp-4); }
+  .knob {
+    grid-template-areas: "label" "ctl" "help";
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .knob-ctl { justify-content: flex-start; }
+  .knob-number { max-width: 200px; }
+  .model-row { flex-wrap: wrap; }
+}
+@media (max-width: 640px) {
+  .ms-side { grid-template-columns: minmax(0, 1fr); }
+  .field-link { margin-left: 0; }
+  .act-bar { flex-wrap: wrap; }
+  .act-state { width: 100%; }
+}
 </style>

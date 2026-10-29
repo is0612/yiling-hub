@@ -50,7 +50,7 @@ export default defineEventHandler(async (event) => {
       credentialsCiphertext: true,
       characterBindings: {
         where: { status: "ACTIVE" },
-        select: { id: true, characterId: true, routingKey: true, character: { select: { name: true } } },
+        select: { id: true, characterId: true, routingKey: true, config: true, character: { select: { name: true } } },
       },
     },
   });
@@ -68,12 +68,36 @@ export default defineEventHandler(async (event) => {
       metadata: connection.metadata,
       /** 管理员页回看明文：只是本机协议端的访问令牌，方便核对填没填对。模型的 API Key 仍然只存不读。 */
       credentials: withCredentials ? await readCredentials(connection.credentialsCiphertext) : null,
-      bindings: connection.characterBindings.map((binding) => ({
-        id: binding.id,
-        characterId: binding.characterId,
-        characterName: binding.character.name,
-        routingKey: binding.routingKey,
-      })),
+      bindings: connection.characterBindings.map((binding) => {
+        const config = (binding.config && typeof binding.config === "object" && !Array.isArray(binding.config))
+          ? binding.config as Record<string, unknown>
+          : {};
+        // 兼容旧字段 replyLimitPer10Min：窗口固定 10 分钟。
+        const rawLimit = config.replyLimitPerWindow ?? config.replyLimitPer10Min;
+        const rawWindow = config.replyWindowMinutes;
+        // 「群聊怎么回」「刷 B站」已挪到角色（binding），未覆盖时回退连接级默认值。
+        const meta = (connection.metadata && typeof connection.metadata === "object")
+          ? connection.metadata as Record<string, unknown>
+          : {};
+        return {
+          id: binding.id,
+          characterId: binding.characterId,
+          characterName: binding.character.name,
+          routingKey: binding.routingKey,
+          replyWindowMinutes: typeof rawWindow === "number" && Number.isFinite(rawWindow) && rawWindow >= 1
+            ? Math.min(Math.round(rawWindow), 1440)
+            : 10,
+          replyLimitPerWindow: typeof rawLimit === "number" && Number.isFinite(rawLimit) && rawLimit > 0
+            ? Math.min(Math.round(rawLimit), 100)
+            : 0,
+          replyOnlyWhenMentioned: typeof config.replyOnlyWhenMentioned === "boolean"
+            ? config.replyOnlyWhenMentioned
+            : meta.replyOnlyWhenMentioned === true,
+          groupBiliRunEnabled: typeof config.groupBiliRunEnabled === "boolean"
+            ? config.groupBiliRunEnabled
+            : meta.groupBiliRunEnabled === true,
+        };
+      }),
     });
   }
 

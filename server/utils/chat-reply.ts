@@ -17,6 +17,15 @@ export type ConversationReplyInput = {
    * 只在网页 AI 对话里传：QQ/B站 被动回复的对话方不一定是同一个人，默认不注入。
    */
   userAddress?: string;
+  /**
+   * 渠道对话的说话人上下文。网页对话不传；QQ 群/私聊用它区分「主人」和「群友」。
+   * 只放显示名，不放平台账号 ID。
+   */
+  speaker?: {
+    displayName?: string;
+    isOwner: boolean;
+    ownerDisplayName?: string;
+  };
   model?: string;
   apiKey?: string;
   apiBaseUrl?: string;
@@ -44,7 +53,7 @@ export type ConversationReplyResult = {
   usage?: { promptTokens?: number; completionTokens?: number; totalTokens?: number };
 };
 
-const PROMPT_TEMPLATE_VERSION = "conversation-retrieval-v3";
+const PROMPT_TEMPLATE_VERSION = "conversation-retrieval-v4";
 
 export const STYLE_EXAMPLES_HEADING = "## 对话示例（只学语气，不要照抄）";
 
@@ -99,7 +108,7 @@ function readUsage(value: unknown): ConversationReplyResult["usage"] {
   };
 }
 
-function systemPrompt(withFaces = false, withUserAddress = false): string {
+function systemPrompt(withFaces = false, withUserAddress = false, withSpeaker = false): string {
   const lines = [
     "YILING_CONVERSATION_REPLY_V3",
     "You are the conversational character in Yiling Hub. Read characterName as your display identity and characterPrompt as your persona instructions; follow that persona and respond naturally to the current user's message.",
@@ -114,6 +123,15 @@ function systemPrompt(withFaces = false, withUserAddress = false): string {
     lines.push(
       "userAddress is the name or title this user goes by in this conversation. Use it the way a person would — now and then, not in every sentence — and never swap in another title or invent a name.",
       "When the persona fixes a different form of address, userAddress wins: it is what the user asked to be called.",
+    );
+  }
+  if (withSpeaker) {
+    // 渠道里的「主人」是一个具体的人，不是角色自己。没有这段，模型会顺着人设自称主人。
+    lines.push(
+      "speaker describes the person talking to you in this channel. It contains display names only; never ask for or reveal account IDs.",
+      "You are the character, not your own owner. Never claim to be your own owner, and never treat a group member as your owner unless speaker.isOwner is true.",
+      "If speaker.isOwner is true, this is your owner: recognize them and answer as their companion. If it is false, this is someone else — do not call them owner and do not pretend they are.",
+      "ownerDisplayName, when present, is your owner's name. If someone asks who your owner is, answer with that name. If it is absent, say you do not know their name yet instead of guessing.",
     );
   }
   lines.push(
@@ -163,11 +181,21 @@ export async function generateConversationReply(input: ConversationReplyInput): 
   // that the model can read. The scope origin is included because it changes how the model
   // must treat the context, not because it identifies the memory's storage location.
   const userAddress = input.userAddress?.trim().slice(0, 40) ?? "";
+  const speakerName = input.speaker?.displayName?.trim().slice(0, 80) ?? "";
+  const ownerDisplayName = input.speaker?.ownerDisplayName?.trim().slice(0, 80) ?? "";
+  const speaker = input.speaker
+    ? {
+        ...(speakerName ? { displayName: speakerName } : {}),
+        isOwner: input.speaker.isOwner === true,
+        ...(ownerDisplayName ? { ownerDisplayName } : {}),
+      }
+    : null;
 
   const promptInput = {
     characterName: input.characterName,
     characterPrompt: composeCharacterPrompt(input.characterPrompt, input.styleExamples),
     ...(userAddress ? { userAddress } : {}),
+    ...(speaker ? { speaker } : {}),
     currentMessage: input.currentMessage,
     ...(emojiFaces.length ? { availableFaces: emojiFaces } : {}),
     recentMessages: input.recentMessages.map((entry) => ({
@@ -210,7 +238,7 @@ export async function generateConversationReply(input: ConversationReplyInput): 
           max_tokens: maxTokens,
           response_format: { type: "json_object" },
           messages: [
-            { role: "system", content: systemPrompt(emojiFaces.length > 0, Boolean(userAddress)) },
+            { role: "system", content: systemPrompt(emojiFaces.length > 0, Boolean(userAddress), Boolean(speaker)) },
             { role: "user", content: JSON.stringify(promptInput) },
           ],
         }),

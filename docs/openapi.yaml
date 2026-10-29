@@ -313,6 +313,10 @@ paths:
                 accessToken: { type: string, maxLength: 500, description: 'qq-onebot WS Token' }
                 httpToken: { type: string, maxLength: 500, description: 'qq-onebot HTTP Token' }
                 replyOnlyWhenMentioned: { type: boolean, description: 'qq-onebot 群聊仅被 @ 时回复' }
+                groupAnnouncementEnabled: { type: boolean, description: 'qq-onebot 是否允许群主/管理员让她拟群公告草稿（默认 false；确认后才发布）' }
+                groupBiliRunEnabled: { type: boolean, description: 'qq-onebot 是否允许主人在群里让她刷一轮 B站（默认 false）' }
+                ownerQq: { type: string, maxLength: 20, description: 'qq-onebot 主人 QQ 号；群里的 B站 指令只认这个号，留空 = 未设置' }
+                ownerName: { type: string, maxLength: 60, description: 'qq-onebot 主人称呼；写入对话上下文，留空时用外部身份/群名片' }
                 dataHome: { type: string, maxLength: 500, description: 'bili 可选，bili CLI 的配置目录（credential / owner / seen 所在，等价 BILI_CLI_HOME；留空用 %APPDATA%\\bili-cli）' }
                 biliBin: { type: string, maxLength: 500, description: 'bili 可选，bili 可执行文件路径' }
       responses:
@@ -344,6 +348,37 @@ paths:
           description: 仅管理员可访问
         '404':
           $ref: '#/components/responses/NotFound'
+  /admin/channels/{connectionId}/reload:
+    post:
+      tags: [Auth]
+      summary: 请求 QQ 适配器重新读取设置并连接（仅管理员）
+      description: |
+        将 onebotReloadRequestedAt 原子写入连接 metadata，由独立运行的新版
+        yarn onebot:run 进程消费；不执行系统命令、不启动进程。
+        metadata.onebotReloadAppliedAt 与请求一致表示已用该配置连接过网关，当前连通以 status 为准。
+        适配器未运行时请求保持等待，首次启动或旧版进程升级需人工启动一次。
+      parameters:
+        - name: connectionId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '202':
+          description: 请求已持久化，尚不代表重连成功
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [requestedAt, message]
+                properties:
+                  requestedAt: { type: string, format: date-time }
+                  message: { type: string }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: 仅管理员可访问
+        '404':
+          description: QQ 连接不存在或已停用
   /admin/channels/{connectionId}/bindings:
     post:
       tags: [Auth]
@@ -364,6 +399,9 @@ paths:
               properties:
                 characterId: { type: string, format: uuid }
                 routingKey: { type: string, maxLength: 255 }
+                replyWindowMinutes: { type: integer, minimum: 1, maximum: 1440, description: '群聊限流窗口（分钟），默认 10。' }
+                replyLimitPerWindow: { type: integer, minimum: 0, maximum: 100, description: '窗口内最多回复几条；0 = 不限。第 N+1 条起静默。' }
+                replyLimitPer10Min: { type: integer, minimum: 0, maximum: 100, description: '兼容旧字段，等价于 replyWindowMinutes=10 的 replyLimitPerWindow。' }
       responses:
         '200':
           description: 绑定结果
@@ -871,7 +909,7 @@ paths:
         - name: kinds
           in: query
           description: 逗号分隔的种类子集，可选值 message / memory / snapshot；留空或非法值按全部处理。
-          schema: { type: string, example: memory,snapshot }
+          schema: { type: string, example: "memory,snapshot" }
         - name: limit
           in: query
           description: 返回条数上限，默认 300，最大 500。
@@ -1144,7 +1182,6 @@ paths:
                     description: 没有下一页时为 null。
         '404':
           $ref: '#/components/responses/NotFound'
-                          total: { type: integer }
         '401':
           $ref: '#/components/responses/Unauthorized'
     post:
@@ -1472,6 +1509,61 @@ paths:
           description: 该快照不能以当前模式重新生成
         '503':
           description: 模型未配置
+  /characters/{characterId}/snapshots/{snapshotId}/review:
+    parameters:
+      - $ref: '#/components/parameters/CharacterId'
+      - name: snapshotId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      tags: [Snapshots]
+      summary: 逐条采纳或忽略重新提炼提出的长期记忆建议
+      description: |
+        只处理 `result = NOT_APPLIED_REGENERATION` 且尚未处置过的条目。
+        采纳复用与周期任务相同的落库逻辑（去重、来源消息、审计），
+        忽略只记录决定、不改动任何记忆。处置结果存在 memory_reviews，不回写快照。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [changeIndex, decision]
+              properties:
+                changeIndex:
+                  type: integer
+                  minimum: 0
+                  description: 对应快照 structuredContent.memoryChangesApplied 的数组下标
+                decision:
+                  type: string
+                  enum: [ACCEPT, IGNORE]
+              additionalProperties: false
+      responses:
+        '200':
+          description: 已处置
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [snapshotId, changeIndex, decision]
+                properties:
+                  snapshotId: { type: string, format: uuid }
+                  changeIndex: { type: integer }
+                  decision: { type: string, enum: [ACCEPTED, IGNORED] }
+                  outcome:
+                    type: string
+                    nullable: true
+                    enum: [CREATED, REPLACED, INVALIDATED, DUPLICATE_IGNORED, null]
+                    description: 采纳的实际结果；忽略时为 null
+                  memoryItemId: { type: string, format: uuid, nullable: true }
+                  supersededMemoryId: { type: string, format: uuid, nullable: true }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 条目已处置过、不是待审核状态，或指向的记忆已被后续归档改动（此时只能忽略）
   /snapshots/{snapshotId}:
     parameters:
       - name: snapshotId

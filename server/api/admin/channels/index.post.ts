@@ -30,7 +30,25 @@ export default defineEventHandler(async (event) => {
 async function createOnebotConnection(body: Record<string, unknown>) {
   const qqNumber = readTrimmedString(body?.qqNumber, "QQ 号", 100, { required: true });
   const displayName = readTrimmedString(body?.displayName, "显示名", 120) || `QQ 小号 ${qqNumber}`;
-  const replyOnlyWhenMentioned = typeof body?.replyOnlyWhenMentioned === "boolean" ? body.replyOnlyWhenMentioned : false;
+  // 群聊回复策略默认「仅被 @ 时才回复」——见啥回啥会把别人的聊天也接走，还容易触发风控。
+  const replyOnlyWhenMentioned = typeof body?.replyOnlyWhenMentioned === "boolean" ? body.replyOnlyWhenMentioned : true;
+  // 群管理动作默认关闭：只开「群公告」，且只认群主/管理员。踢人/禁言不在本期范围。
+  const groupAnnouncementEnabled = body?.groupAnnouncementEnabled === true;
+  const groupBiliRunEnabled = body?.groupBiliRunEnabled === true;
+  // 主人 QQ：群里的 B站 指令只认这个号。留空 = 未设置；省略字段 = 不改旧值。
+  let ownerQq: string | undefined;
+  if (body?.ownerQq !== undefined) {
+    ownerQq = readTrimmedString(body?.ownerQq, "主人 QQ 号", 20);
+    if (ownerQq && !/^\d{5,15}$/u.test(ownerQq)) {
+      throw createError({ statusCode: 400, statusMessage: "主人 QQ 号必须是 5 到 15 位数字。" });
+    }
+    if (ownerQq && ownerQq === qqNumber) {
+      throw createError({ statusCode: 400, statusMessage: "主人 QQ 不能和小号自己相同。" });
+    }
+  }
+  const ownerName = body?.ownerName === undefined
+    ? undefined
+    : readTrimmedString(body?.ownerName, "主人称呼", 60);
   const submittedWsUrl = readTrimmedString(body?.wsUrl, "WS 地址", 500);
   const submittedHttpUrl = readTrimmedString(body?.httpUrl, "HTTP API 地址", 500);
   const submittedAccessToken = readTrimmedString(body?.accessToken, "WS Token", 500);
@@ -70,7 +88,8 @@ async function createOnebotConnection(body: Record<string, unknown>) {
     httpToken,
   })), "utf8");
 
-  const connection = await prisma.platformConnection.upsert({
+  const connection = await prisma.$transaction(async (tx) => {
+    const saved = await tx.platformConnection.upsert({
     where: { platform_platformAccountKey: { platform: "qq-onebot", platformAccountKey: qqNumber } },
     create: {
       platform: "qq-onebot",
@@ -78,14 +97,36 @@ async function createOnebotConnection(body: Record<string, unknown>) {
       displayName,
       status: "DISCONNECTED",
       credentialsCiphertext,
-      metadata: { qqNumber, replyOnlyWhenMentioned },
+      metadata: {
+        qqNumber,
+        replyOnlyWhenMentioned,
+        groupAnnouncementEnabled,
+        groupBiliRunEnabled,
+        ...(ownerQq !== undefined ? { ownerQq } : {}),
+        ...(ownerName !== undefined ? { ownerName } : {}),
+      },
     },
     update: {
       displayName,
       credentialsCiphertext,
-      metadata: { qqNumber, replyOnlyWhenMentioned },
     },
     select: { id: true, platform: true, displayName: true, platformAccountKey: true, status: true },
+    });
+    // 原子合并，避免保存表单清掉 runner 的重载状态。
+    await tx.$executeRaw`
+      UPDATE platform_connections
+      SET metadata = COALESCE(metadata, '{}'::jsonb)
+        || ${JSON.stringify({
+          qqNumber,
+          replyOnlyWhenMentioned,
+          groupAnnouncementEnabled,
+          groupBiliRunEnabled,
+          ...(ownerQq !== undefined ? { ownerQq } : {}),
+          ...(ownerName !== undefined ? { ownerName } : {}),
+        })}::jsonb
+      WHERE id = ${saved.id}::uuid
+    `;
+    return saved;
   });
 
   return {

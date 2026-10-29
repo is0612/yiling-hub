@@ -26,6 +26,10 @@ export type BiliDutyConfig = {
   zone: string;
   /** 抽帧数（0 = 不抽）。 */
   frames: number;
+  /** 日报详细度：full = 挑中+跳过+过程；brief = 只写挑中；off = 只记额度。 */
+  reportLevel: "full" | "brief" | "off";
+  /** 「重置今日额度」的时间；早于它的报告不再计入当天已挑条数。空 = 没重置过。 */
+  quotaResetAt: string;
   /** 是否开公开评论。 */
   autoComment: boolean;
   /** 每轮最多公开评论条数。 */
@@ -92,6 +96,8 @@ export const BILI_DUTY_DEFAULTS: BiliDutyConfig = {
   keywords: [],
   zone: "all",
   frames: 0,
+  reportLevel: "brief",
+  quotaResetAt: "",
   autoComment: false,
   commentPerRound: 1,
   mentionName: "",
@@ -139,6 +145,14 @@ export function parseDutyInput(input: unknown): BiliDutyConfig {
     : [];
   const dmMode = duty.dmMode === "both" || duty.dmMode === "off" ? duty.dmMode : "only";
   const taste = typeof duty.taste === "string" ? duty.taste.trim().slice(0, TASTE_MAX_CHARS) : "";
+  const reportLevel = duty.reportLevel === "full" || duty.reportLevel === "off"
+    ? duty.reportLevel
+    : "brief";
+  const quotaResetAt = typeof duty.quotaResetAt === "string"
+    && duty.quotaResetAt.trim()
+    && !Number.isNaN(Date.parse(duty.quotaResetAt))
+    ? new Date(duty.quotaResetAt).toISOString()
+    : "";
   return {
     perDay: num(duty.perDay, BILI_DUTY_DEFAULTS.perDay, 0, 50),
     peakValley: bool(duty.peakValley, BILI_DUTY_DEFAULTS.peakValley),
@@ -147,6 +161,8 @@ export function parseDutyInput(input: unknown): BiliDutyConfig {
     keywords,
     zone: typeof duty.zone === "string" && duty.zone.trim() ? duty.zone.trim() : "all",
     frames: num(duty.frames, BILI_DUTY_DEFAULTS.frames, 0, 30),
+    reportLevel,
+    quotaResetAt,
     autoComment: bool(duty.autoComment, BILI_DUTY_DEFAULTS.autoComment),
     commentPerRound: num(duty.commentPerRound, BILI_DUTY_DEFAULTS.commentPerRound, 0, 20),
     mentionName: typeof duty.mentionName === "string" ? duty.mentionName.trim() : "",

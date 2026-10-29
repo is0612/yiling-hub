@@ -20,6 +20,9 @@ export default defineEventHandler(async (event) => {
           snapshots: {
             orderBy: [{ createdAt: "desc" }, { version: "desc" }],
             include: {
+              reviews: {
+                select: { changeIndex: true, decision: true, memoryItemId: true, outcome: true },
+              },
               sources: {
                 select: {
                   sourceType: true,

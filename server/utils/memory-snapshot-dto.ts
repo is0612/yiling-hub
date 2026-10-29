@@ -15,6 +15,8 @@ export type MemorySnapshotDto = {
   generatedBy?: string;
   model?: { name?: string; provider?: string; promptTemplateVersion?: string };
   analysis?: SnapshotAnalysis;
+  /** 模型提出、但没过 confidence/来源校验被丢弃的长期记忆变化条数 */
+  reviewRejected?: number;
   sourceMessages: Array<{
     id: string;
     role: string;
@@ -23,6 +25,13 @@ export type MemorySnapshotDto = {
     occurredAt: string;
     conversationTitle: string | null;
   }>;
+};
+
+type SnapshotReview = {
+  changeIndex: number;
+  decision: string;
+  memoryItemId: string | null;
+  outcome: string | null;
 };
 
 type SnapshotRecord = {
@@ -36,6 +45,7 @@ type SnapshotRecord = {
   structuredContent: unknown;
   status: string;
   createdAt: Date;
+  reviews?: SnapshotReview[];
   sources: Array<{
     sourceType: string;
     sourceRef?: string;
@@ -76,10 +86,12 @@ function readRows<T>(value: unknown, mapper: (record: Record<string, unknown>) =
   });
 }
 
-function readSnapshotAnalysis(value: unknown): SnapshotAnalysis | undefined {
+function readSnapshotAnalysis(value: unknown, reviews: SnapshotReview[] = []): SnapshotAnalysis | undefined {
   const root = asRecord(value);
   const analysis = asRecord(root?.analysis);
   if (!analysis) return undefined;
+  // 人工处置结果按数组下标对齐：快照不可变，决定单独存表。
+  const reviewByIndex = new Map(reviews.map((review) => [review.changeIndex, review]));
 
   const withEvidence = (record: Record<string, unknown>) => {
     const evidenceMessageIds = readEvidenceIds(record.evidenceMessageIds);
@@ -118,27 +130,45 @@ function readSnapshotAnalysis(value: unknown): SnapshotAnalysis | undefined {
     differencesFromPrevious: Array.isArray(analysis.differencesFromPrevious)
       ? analysis.differencesFromPrevious.filter((item): item is string => typeof item === "string").map((item) => item.slice(0, 1000)).slice(0, 30)
       : [],
-    memoryChangesApplied: readRows(root?.memoryChangesApplied, (record) => {
-      const action = readString(record.action, 40);
-      const result = readString(record.result, 80);
-      if (!action || !result) return null;
-      const category = readString(record.category, 40);
-      const content = readString(record.content);
-      const memoryItemId = readString(record.memoryItemId, 100);
-      const supersededMemoryId = readString(record.supersededMemoryId, 100);
-      const confidence = typeof record.confidence === "number" && Number.isFinite(record.confidence) ? record.confidence : undefined;
-      const evidenceMessageIds = readEvidenceIds(record.evidenceMessageIds);
-      return {
-        action,
-        result,
-        ...(category ? { category } : {}),
-        ...(content ? { content } : {}),
-        ...(memoryItemId ? { memoryItemId } : {}),
-        ...(supersededMemoryId ? { supersededMemoryId } : {}),
-        ...(confidence !== undefined ? { confidence } : {}),
-        ...(evidenceMessageIds.length ? { evidenceMessageIds } : {}),
-      };
-    }),
+    // 这里不能走 readRows：处置结果要按下标对齐，得保留原始索引。
+    memoryChangesApplied: (Array.isArray(root?.memoryChangesApplied) ? root.memoryChangesApplied : [])
+      .slice(0, 80)
+      .flatMap((raw, index) => {
+        const record = asRecord(raw);
+        if (!record) return [];
+        const action = readString(record.action, 40);
+        const result = readString(record.result, 80);
+        if (!action || !result) return [];
+        const category = readString(record.category, 40);
+        const content = readString(record.content);
+        const memoryItemId = readString(record.memoryItemId, 100);
+        const supersededMemoryId = readString(record.supersededMemoryId, 100);
+        const supersededCategory = readString(record.supersededCategory, 40);
+        const supersededContent = readString(record.supersededContent);
+        const confidence = typeof record.confidence === "number" && Number.isFinite(record.confidence) ? record.confidence : undefined;
+        const evidenceMessageIds = readEvidenceIds(record.evidenceMessageIds);
+        const review = reviewByIndex.get(index);
+        return [{
+          action,
+          result,
+          ...(category ? { category } : {}),
+          ...(content ? { content } : {}),
+          ...(memoryItemId ? { memoryItemId } : {}),
+          ...(supersededMemoryId ? { supersededMemoryId } : {}),
+          // 审核建议必须能对上「这条记忆现在写的是什么」，否则「更新」等于没有对照组。
+          ...(supersededCategory ? { supersededCategory } : {}),
+          ...(supersededContent ? { supersededContent } : {}),
+          ...(confidence !== undefined ? { confidence } : {}),
+          ...(evidenceMessageIds.length ? { evidenceMessageIds } : {}),
+          ...(review
+            ? {
+                reviewDecision: review.decision === "ACCEPTED" ? "ACCEPTED" as const : "IGNORED" as const,
+                ...(review.memoryItemId ? { reviewMemoryItemId: review.memoryItemId } : {}),
+                ...(review.outcome ? { reviewOutcome: review.outcome } : {}),
+              }
+            : {}),
+        }];
+      }),
   };
 }
 
@@ -203,9 +233,14 @@ export function toMemorySnapshotDtos(
     .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.version - a.version)
     .map((record) => {
       const current = record.status === "CURRENT";
+      const structured = asRecord(record.structuredContent);
       const model = readModel(record.structuredContent);
-      const generatedBy = readString(asRecord(record.structuredContent)?.generatedBy, 100);
-      const analysis = readSnapshotAnalysis(record.structuredContent);
+      const generatedBy = readString(structured?.generatedBy, 100);
+      const analysis = readSnapshotAnalysis(record.structuredContent, record.reviews ?? []);
+      const rejectedRaw = structured?.memoryChangesRejected;
+      const reviewRejected = typeof rejectedRaw === "number" && Number.isFinite(rejectedRaw)
+        ? Math.max(0, Math.floor(rejectedRaw))
+        : 0;
       return {
         id: record.id,
         number: sequenceByKey.get(record.snapshotKey) ?? 1,
@@ -221,6 +256,7 @@ export function toMemorySnapshotDtos(
         ...(generatedBy ? { generatedBy } : {}),
         ...(model ? { model } : {}),
         ...(analysis ? { analysis } : {}),
+        ...(reviewRejected ? { reviewRejected } : {}),
         sourceMessages: record.sources
           .filter((source) => source.sourceType === "MESSAGE" && source.message)
           .map((source) => ({

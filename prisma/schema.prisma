@@ -82,6 +82,12 @@ enum MemoryItemStatus {
   TRASHED
 }
 
+/// 人工对「重新提炼提出的长期记忆变化」的处置结果。
+enum MemoryReviewDecision {
+  ACCEPTED
+  IGNORED
+}
+
 enum SnapshotKind {
   AUTOMATIC
   MANUAL
@@ -373,6 +379,7 @@ model MemorySnapshot {
   memoryScope        MemoryScope            @relation(fields: [memoryScopeId], references: [id], onDelete: Cascade)
   sources            MemorySnapshotSource[]
   derivedMemoryItems MemoryItem[]           @relation("MemoryItemDerivedFromSnapshot")
+  reviews            MemoryReview[]
   jobs               MemoryJob[]
 
   @@unique([snapshotKey, version])
@@ -397,6 +404,26 @@ model MemorySnapshotSource {
   @@index([messageId])
   @@index([memoryItemId])
   @@map("memory_snapshot_sources")
+}
+
+/// 人对某条审核建议的处置。对应快照 structuredContent.memoryChangesApplied[changeIndex]。
+/// 单独存表而不回写快照：快照是不可变的审计产物，人的决定不该改它。
+model MemoryReview {
+  id              String               @id @default(uuid()) @db.Uuid
+  snapshotId      String               @db.Uuid
+  changeIndex     Int
+  decision        MemoryReviewDecision
+  /// 采纳后实际写入或受影响的记忆条目；忽略时为空。
+  memoryItemId    String?              @db.Uuid
+  /// 采纳结果：CREATED / REPLACED / INVALIDATED / DUPLICATE_IGNORED。
+  outcome         String?              @db.VarChar(40)
+  decidedByUserId String               @db.Uuid
+  decidedAt       DateTime             @default(now()) @db.Timestamptz(6)
+  snapshot        MemorySnapshot       @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
+
+  @@unique([snapshotId, changeIndex])
+  @@index([snapshotId, decision])
+  @@map("memory_reviews")
 }
 
 model CharacterMemorySetting {
@@ -443,6 +470,27 @@ model MemoryJob {
   @@index([status, runAt])
   @@index([memoryScopeId, periodStart, periodEnd])
   @@map("memory_jobs")
+}
+
+/// QQ 群公告草稿。管理员在群里让角色拟稿，确认后才发布；草稿有有效期，
+/// 避免几天后一句「确认发布」把过期内容发出去。
+model OnebotGroupAnnouncement {
+  id           String    @id @default(uuid()) @db.Uuid
+  connectionId String    @db.Uuid
+  groupId      String    @db.VarChar(64)
+  requestedBy  String    @db.VarChar(64)
+  characterId  String?   @db.Uuid
+  topic        String    @db.Text
+  content      String    @db.Text
+  /// PENDING / PUBLISHING / PUBLISHED / FAILED / EXPIRED / CANCELLED
+  status       String    @default("PENDING") @db.VarChar(20)
+  error        String?   @db.Text
+  createdAt    DateTime  @default(now()) @db.Timestamptz(6)
+  expiresAt    DateTime  @db.Timestamptz(6)
+  publishedAt  DateTime? @db.Timestamptz(6)
+
+  @@index([connectionId, groupId, status, createdAt], map: "onebot_group_announcements_connection_group_status_idx")
+  @@map("onebot_group_announcements")
 }
 
 model AuditLog {

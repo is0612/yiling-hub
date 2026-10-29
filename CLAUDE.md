@@ -48,7 +48,15 @@ AI 对话的检索范围按身份隔离：`resolveChatMemoryScopes()` 只放行�
 
 前端渠道入口按平台拆成两个页面，**不要再合并回一个通用「渠道管理」页**（`app/pages/channels.vue` 已删除）：QQ 小号在「系统管理 → QQ 渠道」（`app/pages/qq.vue`，只列 `qq-onebot`，含四步接入引导），B站 在「系统管理 → B站 值班台」（`app/pages/bili/index.vue`，账号创建、绑定角色、值班设置都在里面）。两个页面共用 `/api/admin/channels` 系列接口；QQ 凭据不回显，保存时地址/Token 留空表示沿用旧值（`channels/index.post.ts` 里的合并逻辑，别改成直接覆盖）。
 
+QQ 群里的「去刷一轮 B站」只认连接设置里的**主人 QQ**（`metadata.ownerQq`），并且要同时打开 `metadata.groupBiliRunEnabled`；主人称呼（`metadata.ownerName`）会作为 `speaker.ownerDisplayName` 写进对话提示词（只传称呼、不传账号 ID），让她认得出主人；群友发同一句话直接忽略，不能进入普通聊天。执行复用 `runDutyRound`（额度/模型/bili CLI/评论收藏动态与值班台一致），先回执再后台跑，同一角色不并发。没有 B站 绑定时只回复提示，不得假装跑过。
+
+QQ 群发言限流按「绑定」配置（`CharacterChannelBinding.config.replyWindowMinutes` / `replyLimitPerWindow`，上限 0 = 不限；旧 `replyLimitPer10Min` 兼容）：滚动窗口只统计这条鱼在该群的 `ASSISTANT` 消息，达到上限后静默、不调模型；群公告流程不受限。它无法协调群里其他账号/系统的发言，别宣称能执行跨鱼群规。
+
+QQ 群公告走「草稿 → 管理员确认」两段（`onebot/announcement.ts`，表 `onebot_group_announcements`）：连接级开关 `metadata.groupAnnouncementEnabled` 默认关；只认群主/管理员（`sender.role`，缺失按 member），普通成员触发无效；管理员 @ 她说「写个群公告：主题」才拟稿，草稿 10 分钟有效，回复「确认发布」才调 SnowLuma `_send_group_notice`。草稿用 `PENDING → PUBLISHING` 原子认领，重复事件不得二次发布；成功/失败都写审计。前提是小号已是群管理员；踢人、禁言等破坏性动作不要顺手放开。
+
 QQ 表情走「模型返回 faces 字段 → 渠道拼 face 段」：清单在 `onebot/faces.ts`（精选，非 QQ 完整 face 表），能力由 `ChannelMessageInput.faceCatalog` 声明而非平台名判断，角色开关 `modelConfig.emojiEnabled` 默认关，上一条刚发过表情则 10 分钟内不再发。**表情必须单独一条消息**，表情 id 只记在 `metadata.faceIds`、绝不进 `content`。别再退回「从 reply 文本里认 `[face]` 占位符」的做法 —— 正文一旦混进段标记就会被原样当文字发出去。发送侧要查 OneBot 返回的 `retcode`：出错时 HTTP 仍是 200。
+
+B站 命令台以 `bili schema` 为准（`schema-catalog.ts`，5 分钟缓存，失败回退手写 `catalog.ts`），不要再扩手写清单；侧栏靠 `common` + 菜单隐藏清单，`MENU_VERSION` 变更时合并默认隐藏集。值班新增日报档位 `reportLevel`（full/brief/off）、今日额度重置 `quotaResetAt`、札记编辑（直接改角色全局 EVENT 记忆，软删除进回收站）；这些都不改变脚本化流水线，agent 工具循环仍未做。
 
 B站 值班的终判除了「值得/跳过」还要给 0-20 分，分数进 `bili_seen_videos.score` 并驱动两个对外动作：收藏（`duty.favMinScore`，默认 0 = 关）和发动态（`duty.autoDynamic`，默认关）。两条动作都记账在 `bili_actions`（按 `bindingId + day + kind`），因为「每天几次 / 隔多久」这类判定不能存在内存里 —— 进程一重启就归零，而账号那边的痕迹删不掉。**分数缺失必须是 `null` 不是 `0`**：0 分会被当成当天最低分压掉别的东西。发动态前必须过 `sanitizePublicText()`，那是唯一面向陌生人的写操作。B站 侧栏命令目录用 `catalog.ts` 的 `common` 标记决定默认可见性，存「隐藏清单 + 版本号」，别改回「全部铺开」。
 

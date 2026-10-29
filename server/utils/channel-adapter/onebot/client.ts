@@ -11,9 +11,11 @@
 import {
   onebotConversationKey,
   readOnebotDisplayName,
+  readOnebotGroupRole,
   readOnebotMessageId,
   readOnebotMessageText,
   readOnebotUserId,
+  type OnebotGroupRole,
   type OnebotMessageType,
   type OnebotSegment,
 } from "./types";
@@ -40,6 +42,8 @@ export type OnebotResolvedEvent = {
   displayName: string;
   content: string;
   selfId: string;
+  /** 群成员身份；私聊或网关未提供时为 member。 */
+  senderRole: OnebotGroupRole;
 };
 
 export type OnebotHandlers = {
@@ -85,6 +89,7 @@ export function resolveOnebotEvent(data: unknown): OnebotResolvedEvent | null {
     displayName: readOnebotDisplayName(data),
     content,
     selfId: String(record?.self_id ?? ""),
+    senderRole: readOnebotGroupRole(data),
   };
 }
 
@@ -105,20 +110,29 @@ function withWsAccessToken(url: string, token: string | undefined): string {
 /**
  * Connects to the OneBot gateway and dispatches message events. Resolves with a `close`
  * function once the socket is open; the returned promise rejects on the first connection
- * failure so the caller can back off and retry. The socket auto-reconnects internally on
- * unexpected drops and reports status through `handlers.onStatus`.
+ * failure so the supervisor can back off and retry. Abort also cancels a pending handshake;
+ * the returned close function waits for onclose before a replacement socket is started.
  */
 export function connectOnebot(
   config: OnebotConnectionConfig,
   handlers: OnebotHandlers,
-): Promise<() => void> {
+  signal?: AbortSignal,
+): Promise<() => Promise<void>> {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new Error("ONEBOT_STOPPED"));
+      return;
+    }
     const socket = new WebSocket(withWsAccessToken(config.wsUrl, config.accessToken));
     let probeTimer: ReturnType<typeof setInterval> | null = null;
     let settled = false;
     let closedByCaller = false;
+    let resolveClosed!: () => void;
+    const closed = new Promise<void>((done) => { resolveClosed = done; });
+    let probeAbort: AbortController | undefined;
 
     const clearProbe = () => {
+      probeAbort?.abort();
       if (probeTimer) {
         clearInterval(probeTimer);
         probeTimer = null;
@@ -129,7 +143,10 @@ export function connectOnebot(
       clearProbe();
       probeTimer = setInterval(async () => {
         try {
+          probeAbort?.abort();
+          probeAbort = new AbortController();
           await fetch(config.httpUrl + "/get_status", {
+            signal: probeAbort.signal,
             headers: config.httpToken ? { authorization: "Bearer " + config.httpToken } : {},
           });
         } catch {
@@ -152,9 +169,13 @@ export function connectOnebot(
       } catch {
         // already closing
       }
+      return closed;
     };
+    const abort = () => { void close(); };
+    signal?.addEventListener("abort", abort, { once: true });
 
     socket.onopen = () => {
+      if (closedByCaller) { void close(); return; }
       handlers.onStatus?.("ready");
       startProbe();
       if (!settled) {
@@ -177,16 +198,29 @@ export function connectOnebot(
       }
     };
 
+    /**
+     * 一个 socket 的 error 可能连发几百次（网关不可达时实测 9 秒 835 次，还能把调用栈打爆）。
+     * 只认第一次：close() 里置了 closedByCaller，后续事件直接丢掉，
+     * 否则每一发都会写一次状态、刷一行日志，页面上看到的就是状态反复跳。
+     *
+     * ⚠️ 光丢弃还不够：握手失败时有些运行时不派发 close 事件，socket 卡在 CONNECTING，
+     * 这个 Promise 就永远不 settle —— supervisor 会一直等它，再也不重试。
+     * 所以这里主动 reject，让退避重连照常进行。
+     */
     socket.onerror = () => {
+      if (closedByCaller) return;
       handlers.onStatus?.("error", "ONEBOT_WS_ERROR");
+      void close();
       if (!settled) {
         settled = true;
-        reject(new Error("ONEBOT_WS_ERROR: OneBot WebSocket 连接失败。"));
+        reject(new Error("ONEBOT_WS_ERROR"));
       }
     };
 
     socket.onclose = (event) => {
       clearProbe();
+      signal?.removeEventListener("abort", abort);
+      resolveClosed();
       // 带上关闭码：1006 是网络/握手异常，1008 通常是鉴权或策略拒绝，两者排查方向完全不同。
       handlers.onStatus?.("disconnected", `code=${event.code}${event.reason ? ` reason=${event.reason}` : ""}`);
       if (!settled) {
@@ -211,6 +245,21 @@ export async function sendOnebotPrivateMessage(
   message: OnebotOutgoingMessage,
 ): Promise<void> {
   await sendOnebotApi(config, "send_private_msg", { user_id: Number(userId), message });
+}
+
+/**
+ * 发布群公告。SnowLuma 的扩展动作，要求登录的小号在群里是管理员。
+ * OneBot v11 标准没有公告接口；换网关时要确认动作名与参数。
+ */
+export async function sendOnebotGroupNotice(
+  config: OnebotConnectionConfig,
+  groupId: string,
+  content: string,
+): Promise<void> {
+  await sendOnebotApi(config, "_send_group_notice", {
+    group_id: Number(groupId),
+    content,
+  });
 }
 
 /** Sends a group message through the OneBot HTTP API. */

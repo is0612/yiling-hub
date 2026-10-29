@@ -93,6 +93,11 @@
 
 - 自动 AI 快照可以提交 `REGENERATE_SNAPSHOT` 任务；Worker 在同一 `snapshotKey` 下创建递增版本、将旧的当前版本标记为 `SUPERSEDED`，并保存审计日志。
 - 为避免历史周期重放覆盖当前状态，重新提炼提出的长期记忆变化会写入新快照供审核，但不会自动修改当前 `MemoryItem`。
+- 审核清单与正常生成走同一套门槛：低于 `MIN_MEMORY_CONFIDENCE`、或拿不出本周期真实来源消息的条目不会进入清单，只在 `memoryChangesRejected` 里计数（页面上显示为「另 N 条未通过来源校验」），避免把零校验的脏数据摆到最需要人判断的位置。
+- `UPDATE` / `INVALIDATE` 类的审核条目除 `supersededMemoryId` 外还带 `supersededCategory` 与 `supersededContent`（被指向记忆在提炼当时的原文），否则「更新成什么」没有对照组。证据 ID 只保留本周期真实存在、能回溯到来源列表的那些。
+- 审核建议可以逐条**采纳**或**忽略**（`POST /characters/{id}/snapshots/{snapshotId}/review`）。采纳调用与 Worker 自动生成完全相同的落库函数 `applyMemoryChange`，因此去重、来源消息、`validFrom`、审计与自动路径一致，只是审计动作前缀为 `memory.review_`；忽略只记录决定，不改动任何记忆。
+- 处置结果存 `memory_reviews`（`snapshotId + changeIndex` 唯一），**不回写快照正文** —— 快照是不可变的审计产物，人的决定单独可查，快照照旧能证明「当时模型提了什么」。
+- 采纳时用数据库里最新的记忆状态做对照，而不是提炼当时的快照：这条记忆可能已被后面的归档改过。若目标记忆已不是 `ACTIVE`，接口返回 409 并提示只能忽略，不会静默失败。证据消息若已被保留期限清理，只丢来源指针，不阻塞采纳。
 - 后台任务可取消 `QUEUED`/`RETRY_WAIT` 状态的任务；支持的快照任务可从 `FAILED`、`RETRY_WAIT` 或 `CANCELLED` 手动重新入队。`RUNNING` 任务不支持强制取消。
 
 ## 9. 对话时检索

@@ -8,24 +8,36 @@
  */
 import {
   ChatDotRound,
-  Connection,
   CopyDocument,
   Delete,
   Download,
-  MagicStick,
-  Monitor,
+  FolderOpened,
   Plus,
   Refresh,
   Right,
   Setting,
   User,
+  VideoPlay,
   Warning,
 } from "@element-plus/icons-vue";
 import { ElMessage, ElMessageBox } from "element-plus";
+import type { Character } from "~/utils/mock-data";
 
 useHead({ title: "QQ 渠道 · 忆灵小窝" });
 
-type ChannelBinding = { id: string; characterId: string; characterName: string; routingKey: string | null };
+type ChannelBinding = {
+  id: string;
+  characterId: string;
+  characterName: string;
+  routingKey: string | null;
+  /** 群聊限流窗口（分钟）与窗口内上限；上限 0 = 不限。 */
+  replyWindowMinutes: number;
+  replyLimitPerWindow: number;
+  /** 群聊是否仅被 @ 时才回复（后端已回退到连接默认值）。 */
+  replyOnlyWhenMentioned: boolean;
+  /** 主人能否在群里触发刷一轮 B站（后端已回退到连接默认值）。 */
+  groupBiliRunEnabled: boolean;
+};
 /** 接口回显的明文凭据（管理员页可见）；解不开时为 null。 */
 type QqCredentials = { wsUrl?: string; httpUrl?: string; accessToken?: string; httpToken?: string };
 type QqConnection = {
@@ -56,9 +68,198 @@ const { data, pending, refresh, error } = await useAsyncData("qq-connections", a
 const connections = computed(() => data.value ?? []);
 const loading = computed(() => pending.value);
 const hasConnections = computed(() => connections.value.length > 0);
+const hasLoadError = computed(() => Boolean(error.value));
+
+/**
+ * 一张卡对应一条绑定（角色 ↔ 号/群）：群号、群聊回复、限流、刷 B站 都是绑定级，
+ * 跟着绑定走；发表情、主动找话是角色级，多绑定时在每张卡里复用（改的是同一个角色）。
+ * 角色基本只有一个，所以通常就一张卡。
+ */
+const boundBindings = computed(() => {
+  const result: Array<{ binding: ChannelBinding; connection: QqConnection; character: Character }> = [];
+  for (const connection of connections.value) {
+    for (const binding of connection.bindings) {
+      const character = characters.value.find((item) => item.id === binding.characterId);
+      if (character) result.push({ binding, connection, character });
+    }
+  }
+  return result;
+});
+
+async function refreshCharacters() {
+  await loadCharacters();
+}
+
+/** 角色卡里改了绑定级或角色级字段，都回来刷新一次（连接列表 + 角色列表）。 */
+async function onBehaviorSaved() {
+  await refresh();
+  await refreshCharacters();
+}
+
+// ── 这条链路上的两个进程 ────────────────────────────────
+/**
+ * SnowLuma（网关本体）+ 适配器（yarn onebot:run）+ 网关端口通不通，一次拿到。
+ * 三样分开显示，是因为它们的失败长得一模一样：日志里都是连不上 3001，
+ * 但可能是「网关没启动」「网关起了 WS 节点没开」「适配器没起」三件完全不同的事。
+ */
+type SnowlumaStatus = {
+  home: string;
+  /** 目录从哪来：saved=页面上填过 env=环境变量 process/scan=自动找到 default=没找到，用的默认值 */
+  source: "saved" | "env" | "process" | "scan" | "default";
+  /** start.bat 在不在 */
+  installed: boolean;
+  running: boolean;
+  panelPort: number;
+};
+type RuntimeStatus = {
+  adapter: { running: boolean; pid?: number; startedAt?: string };
+  snowluma: SnowlumaStatus;
+  /** 适配器要连的那个端口通不通；读不到连接配置时为 null */
+  gateway: { wsUrl: string; host: string; port: number; reachable: boolean } | null;
+};
+
+const runtime = ref<RuntimeStatus | null>(null);
+const adapterStatus = computed(() => runtime.value?.adapter ?? null);
+const snowluma = computed(() => runtime.value?.snowluma ?? null);
+const gateway = computed(() => runtime.value?.gateway ?? null);
+
+const adapterStarting = ref(false);
+const snowlumaStarting = ref(false);
+const homeEditing = ref(false);
+const homeSaving = ref(false);
+const homeDraft = ref("");
+let runtimePollTimer: ReturnType<typeof setTimeout> | null = null;
+
+function clockOf(value?: string) {
+  if (!value) return "";
+  const at = new Date(value);
+  if (Number.isNaN(at.getTime())) return "";
+  const pad = (input: number) => String(input).padStart(2, "0");
+  return ` · 从 ${pad(at.getHours())}:${pad(at.getMinutes())} 起`;
+}
+
+const adapterStateText = computed(() => {
+  const status = adapterStatus.value;
+  if (!status) return "正在检查…";
+  if (!status.running) return "未运行";
+  return `运行中 · PID ${status.pid}${clockOf(status.startedAt)}`;
+});
+
+const snowlumaStateText = computed(() => {
+  const status = snowluma.value;
+  if (!status) return "正在检查…";
+  if (!status.installed) return "没找到程序";
+  return status.running ? `已启动 · 面板 ${status.panelPort}` : "未启动";
+});
+
+/** 只有「它自己认出来」的才标，用户填的和默认值不用解释 */
+const snowlumaSourceLabel = computed(() => {
+  switch (snowluma.value?.source) {
+    case "process": return "自动找到 · 已运行的进程";
+    case "scan": return "自动找到 · 扫出来的";
+    case "env": return "来自 SNOWLUMA_HOME";
+    default: return "";
+  }
+});
+
+async function loadRuntime() {
+  try {
+    runtime.value = await $fetch<RuntimeStatus>("/api/admin/channels/onebot/runtime");
+    if (!homeEditing.value) homeDraft.value = runtime.value.snowluma.home;
+  } catch {
+    runtime.value = null;
+  }
+}
+
+/** 点完按钮盯一段时间：起进程要几秒，端口起来才算真的好了 */
+async function pollRuntime(deadline: number, ready: () => boolean) {
+  await loadRuntime();
+  if (ready() || Date.now() > deadline) return;
+  runtimePollTimer = setTimeout(() => void pollRuntime(deadline, ready), 1000);
+}
+
+function readStatus(error: unknown) {
+  return (error as { statusCode?: number }).statusCode;
+}
+
+async function startAdapter() {
+  if (adapterStarting.value || adapterStatus.value?.running) return;
+  adapterStarting.value = true;
+  try {
+    const result = await $fetch<{ message: string }>("/api/admin/channels/onebot/runtime/adapter", { method: "POST" });
+    ElMessage.success(result.message);
+    void pollRuntime(Date.now() + 10_000, () => adapterStatus.value?.running === true);
+  } catch (error) {
+    // 409 = 已经有一个在跑，不算失败
+    if (readStatus(error) === 409) {
+      ElMessage.info(readErrorMessage(error, "适配器已经在运行。"));
+      await loadRuntime();
+    } else {
+      ElMessage.error(readErrorMessage(error, "启动失败，请手动运行 yarn onebot:run。"));
+    }
+  } finally {
+    adapterStarting.value = false;
+  }
+}
+
+async function startSnowluma() {
+  if (snowlumaStarting.value || snowluma.value?.running) return;
+  snowlumaStarting.value = true;
+  try {
+    const result = await $fetch<{ message: string }>("/api/admin/channels/onebot/runtime/snowluma", { method: "POST" });
+    ElMessage.success(result.message);
+    // 它要加载 QQ 客户端钩子，比适配器慢，给 40 秒
+    void pollRuntime(Date.now() + 40_000, () => snowluma.value?.running === true);
+  } catch (error) {
+    if (readStatus(error) === 409) {
+      ElMessage.info(readErrorMessage(error, "SnowLuma 已经在运行。"));
+      await loadRuntime();
+    } else {
+      ElMessage.error(readErrorMessage(error, "启动失败，请手动双击 start.bat。"));
+    }
+  } finally {
+    snowlumaStarting.value = false;
+  }
+}
+
+function toggleHomeEdit() {
+  homeEditing.value = !homeEditing.value;
+  if (homeEditing.value && runtime.value) homeDraft.value = runtime.value.snowluma.home;
+}
+
+/** 刚装完没被扫到的时候再试一次：失败不进缓存，重拉就会重新找 */
+async function rescanSnowluma() {
+  await loadRuntime();
+  if (snowluma.value && !snowluma.value.installed) {
+    ElMessage.info("还是没找到，把目录手动填进来吧。");
+  }
+}
+
+async function saveHome() {
+  if (homeSaving.value) return;
+  homeSaving.value = true;
+  try {
+    await $fetch("/api/admin/channels/onebot/runtime/snowluma", {
+      method: "PUT",
+      body: { home: homeDraft.value },
+    });
+    ElMessage.success("目录已记住。");
+    homeEditing.value = false;
+    await loadRuntime();
+  } catch (error) {
+    ElMessage.error(readErrorMessage(error, "这个目录用不了，看看里面有没有 start.bat。"));
+  } finally {
+    homeSaving.value = false;
+  }
+}
 
 watch(error, (value) => {
   if (value) ElMessage.error(readErrorMessage(value, "无法读取渠道连接。"));
+});
+
+onMounted(loadRuntime);
+onBeforeUnmount(() => {
+  if (runtimePollTimer) clearTimeout(runtimePollTimer);
 });
 
 const statusMap: Record<string, { label: string; tone: string }> = {
@@ -76,65 +277,38 @@ function formatDateTime(value: string | null) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-function readMentionOnly(connection: QqConnection) {
-  return connection.metadata?.replyOnlyWhenMentioned === true;
+function ownerQqOf(connection: QqConnection) {
+  return typeof connection.metadata?.ownerQq === "string" ? connection.metadata.ownerQq : "";
 }
 
 /**
- * 协议端二选一：SnowLuma 与 NapCat 都是 OneBot v11，填的地址一样，差别只在「怎么装、开几个 token」。
- * 默认选 SnowLuma —— NapCat 自己的 README 就推荐它做 GUI 替代，且自带 WebUI 省一步。
+ * 协议端只用 SnowLuma：自带网页面板（不用另装面板）、挂在本机已登录的 QQNT 客户端上。
+ * 只有一种方案，就不需要「二选一」的选择器和它那套 tagline —— 直接落到唯一那份配置说明。
  */
-type ProxyKind = "snowluma" | "napcat";
-
-type ProxyPreset = {
-  key: ProxyKind;
+type ProxyGuide = {
   name: string;
-  tagline: string;
   repo: string;
   /** 配置 OneBot 的那个页面地址，不是面板首页。 */
   panel: string;
-  /** 一步一步点哪儿：每条一个动作，值直接写死在句子里。 */
-  steps: string[];
+  /** 面板内按顺序完成的配置动作。 */
+  steps: { title: string; detail: string }[];
   /** 最容易踩的那一处，单独高亮。 */
   warn: string;
 };
 
-const PROXY_PRESETS: ProxyPreset[] = [
-  {
-    key: "snowluma",
-    name: "SnowLuma",
-    tagline: "自带网页面板，装完直接点。第一次弄建议用它。",
-    repo: "https://github.com/SnowLuma/SnowLuma/releases",
-    panel: "http://127.0.0.1:5099/config",
-    steps: [
-      "打开上面的地址，登录面板。首次的账号密码打印在协议端的启动日志里，只出现一次 —— 登录后先把密码改掉。",
-      "左栏选中你的 QQ 小号那一栏。",
-      "右边「节点配置分类」切到「WS 服务端」：列表里已有端口 3001 的节点（比如 ws-default）就直接点它，别再新建 —— 两个节点抢同一个端口，后启动的那个起不来；列表是空的才点「新建」，弹窗里的默认值（端口 3001、数组、Universal）不用改，直接按「创建节点」。",
-      "再切到「HTTP API」：已有节点就把端口从默认的 3000 改成 3002 —— 3000 是本站 dev server 的端口，撞上就一条消息都发不出去；列表是空的才「新建」一个端口 3002 的。",
-      "复制这两个节点的令牌（弹窗里授权 Token 旁的复制图标，之后点开节点也能复制）：WS 的填进下面「WS Token」，HTTP 的填「HTTP Token」。",
-      "保存，重启协议端。",
-    ],
-    warn: "⚠️ 端口和令牌都在 /config 页，不在 /settings（那里只有备份、存储、外观，翻不到任何 OneBot 项）。两个令牌是不一样的，填反了握手直接 401。",
-  },
-  {
-    key: "napcat",
-    name: "NapCatQQ",
-    tagline: "用的人最多、教程最多；面板里要多点几步。",
-    repo: "https://github.com/NapNeko/NapCatQQ/releases",
-    panel: "http://127.0.0.1:6099/webui/",
-    steps: [
-      "打开上面的地址，用启动终端里显示的 token 登录。",
-      "「网络配置」→「新建」→ 类型选「HTTP 服务器」：端口填 3002（默认的 3000 会撞本站 dev server）。",
-      "再「新建」→ 类型选「WebSocket 服务器」：端口填 3001。",
-      "两个都设同一个 Access Token，记下来。",
-      "保存，重启 NapCat。",
-    ],
-    warn: "NapCat 通常只有一个 Access Token，下面两个框填同一个值即可。",
-  },
-];
-
-const proxyKind = ref<ProxyKind>("snowluma");
-const proxy = computed(() => PROXY_PRESETS.find((item) => item.key === proxyKind.value) ?? PROXY_PRESETS[0]!);
+const PROXY: ProxyGuide = {
+  name: "SnowLuma",
+  repo: "https://github.com/SnowLuma/SnowLuma/releases",
+  panel: "http://127.0.0.1:5099/config",
+  steps: [
+    { title: "打开面板并登录", detail: "面板地址通常是上方链接。首次账号和密码在启动 SnowLuma 时打开的黑色终端窗口里；每台设备生成的登录信息不同。登录后先修改密码，再在左侧选中 QQ 小号。" },
+    { title: "配置 WebSocket 服务端", detail: "切到「WS 服务端」。已有 3001 节点就直接使用；没有再新建，端口填 3001。" },
+    { title: "配置 HTTP API", detail: "切到「HTTP API」。已有节点就把端口改为 3002；没有再新建。不要用 3000。" },
+    { title: "分别复制两个 Token", detail: "复制 WS 节点和 HTTP 节点的授权 Token，分别填到 QQ 渠道的对应输入框。" },
+    { title: "保存并重启 SnowLuma", detail: "WS 与 HTTP 的 Token 可能不同，不要填反。" },
+  ],
+  warn: "面板地址通常固定为 http://127.0.0.1:5099/config；启动终端里找的是首次登录账号和密码，不是地址。找不到时，重新启动 SnowLuma 并查看新打开的黑色终端窗口。已有同端口节点时请修改或复用，不要重复创建。",
+};
 
 // ── 添加 / 编辑 ─────────────────────────────────────────────
 const editVisible = ref(false);
@@ -149,7 +323,9 @@ const form = reactive({
   httpUrl: "",
   accessToken: "",
   httpToken: "",
-  replyOnlyWhenMentioned: true,
+  groupAnnouncementEnabled: false,
+  ownerQq: "",
+  ownerName: "",
 });
 
 function resetForm() {
@@ -159,7 +335,9 @@ function resetForm() {
   form.httpUrl = "";
   form.accessToken = "";
   form.httpToken = "";
-  form.replyOnlyWhenMentioned = true;
+  form.groupAnnouncementEnabled = false;
+  form.ownerQq = "";
+  form.ownerName = "";
 }
 
 function openCreate() {
@@ -183,7 +361,9 @@ async function openEdit(connection: QqConnection) {
   resetForm();
   form.qqNumber = connection.appId || "";
   form.displayName = connection.appId ? connection.displayName : "";
-  form.replyOnlyWhenMentioned = readMentionOnly(connection);
+  form.groupAnnouncementEnabled = connection.metadata?.groupAnnouncementEnabled === true;
+  form.ownerQq = typeof connection.metadata?.ownerQq === "string" ? connection.metadata.ownerQq : "";
+  form.ownerName = typeof connection.metadata?.ownerName === "string" ? connection.metadata.ownerName : "";
   editVisible.value = true;
 
   /**
@@ -205,7 +385,59 @@ async function openEdit(connection: QqConnection) {
   }
 }
 
-async function submitConnection() {
+function reloadPending(connection: QqConnection) {
+  const requested = connection.metadata?.onebotReloadRequestedAt;
+  return typeof requested === "string" && requested !== connection.metadata?.onebotReloadAppliedAt;
+}
+
+/**
+ * 提交重连请求后自动盯一会儿：适配器通常一两秒就重连完，但页面不会自己变 ——
+ * 人只能在中间态（未连接 / 重连中）点刷新，正好看到「连接异常」那一帧，像是坏了。
+ */
+const reloadPolling = ref(false);
+let reloadPollTimer: ReturnType<typeof setTimeout> | null = null;
+
+function stopReloadPolling() {
+  if (reloadPollTimer) {
+    clearTimeout(reloadPollTimer);
+    reloadPollTimer = null;
+  }
+  reloadPolling.value = false;
+}
+
+async function pollReload(deadline: number) {
+  if (Date.now() > deadline) {
+    stopReloadPolling();
+    // 15 秒还没被适配器消费，多半是适配器没在跑，而不是配置错了
+    if (connections.value.some(reloadPending)) {
+      ElMessage.warning("适配器一直没响应重连请求，确认 yarn onebot:run 正在运行。");
+    }
+    return;
+  }
+  if (!connections.value.some(reloadPending)) {
+    stopReloadPolling();
+    return;
+  }
+  reloadPollTimer = setTimeout(async () => {
+    try {
+      await refresh();
+    } catch {
+      // 这一轮读失败就等下一轮，别把人从轮询里踢出去
+    }
+    void pollReload(deadline);
+  }, 1500);
+}
+
+function startReloadPolling() {
+  if (import.meta.server) return;
+  stopReloadPolling();
+  reloadPolling.value = true;
+  void pollReload(Date.now() + 15000);
+}
+
+onBeforeUnmount(stopReloadPolling);
+
+async function submitConnection(reconnect = false) {
   if (saving.value) return;
   if (!form.qqNumber.trim()) {
     ElMessage.warning("请填写 QQ 号。");
@@ -213,7 +445,7 @@ async function submitConnection() {
   }
   saving.value = true;
   try {
-    await $fetch("/api/admin/channels", {
+    const saved = await $fetch<{ id: string }>("/api/admin/channels", {
       method: "POST",
       body: {
         platform: "qq-onebot",
@@ -223,12 +455,24 @@ async function submitConnection() {
         httpUrl: form.httpUrl.trim(),
         accessToken: form.accessToken,
         httpToken: form.httpToken,
-        replyOnlyWhenMentioned: form.replyOnlyWhenMentioned,
+        groupAnnouncementEnabled: form.groupAnnouncementEnabled,
+        ownerQq: form.ownerQq.trim(),
+        ownerName: form.ownerName.trim(),
       },
     });
-    ElMessage.success(editingId.value ? "已保存，重启 yarn onebot:run 生效。" : "已添加，下一步绑定角色并运行 yarn onebot:run。");
+    if (reconnect) {
+      try {
+        await $fetch(`/api/admin/channels/${encodeURIComponent(saved.id)}/reload`, { method: "POST" });
+        ElMessage.success("设置已保存，重新连接请求已提交。请查看连接卡片的处理状态。");
+      } catch (reloadError) {
+        ElMessage.warning(readErrorMessage(reloadError, "设置已保存，但重新连接请求失败，请稍后重试。"));
+      }
+    } else {
+      ElMessage.success("设置已保存。运行中的新版 QQ 适配器会自动读取新设置。");
+    }
     editVisible.value = false;
     await refresh();
+    if (reconnect) startReloadPolling();
   } catch (error) {
     ElMessage.error(readErrorMessage(error, "保存失败，请稍后重试。"));
   } finally {
@@ -249,6 +493,12 @@ function openBind(connection: QqConnection) {
   bindVisible.value = true;
 }
 
+/** 选中已绑定过的角色时带回原来的群号，避免重新保存把群号清掉。 */
+function onBindCharacterChange(characterId: string) {
+  const existing = bindTarget.value?.bindings.find((item) => item.characterId === characterId);
+  bindForm.routingKey = existing?.routingKey ?? "";
+}
+
 async function submitBind() {
   if (bindSaving.value || !bindTarget.value) return;
   if (!bindForm.characterId) {
@@ -259,7 +509,10 @@ async function submitBind() {
   try {
     await $fetch(`/api/admin/channels/${encodeURIComponent(bindTarget.value.id)}/bindings`, {
       method: "POST",
-      body: { characterId: bindForm.characterId, routingKey: bindForm.routingKey.trim() },
+      body: {
+        characterId: bindForm.characterId,
+        routingKey: bindForm.routingKey.trim(),
+      },
     });
     ElMessage.success("角色已绑定。");
     bindVisible.value = false;
@@ -306,13 +559,34 @@ async function removeConnection(connection: QqConnection) {
   }
 }
 
-async function copyCommand(command: string) {
+async function copyText(text: string, successMessage: string) {
   try {
-    await navigator.clipboard.writeText(command);
-    ElMessage.success("命令已复制。");
+    await navigator.clipboard.writeText(text);
+    ElMessage.success(successMessage);
   } catch {
     ElMessage.warning("复制失败，请手动选中。");
   }
+}
+
+function copyCommand(command: string) {
+  return copyText(command, "命令已复制。");
+}
+
+function copyInstallGuide() {
+  const panelSteps = PROXY.steps
+    .map((step, index) => `${index + 1}. ${step.title}：${step.detail}`)
+    .join("\n");
+  const prompt = [
+    `请一步一步帮我在 Windows 上安装并配置 ${PROXY.name}，让它通过 OneBot v11 连接到本机 yiling-hub。`,
+    "请先询问并检查我电脑上的 QQ 版本、协议端是否已安装和项目运行状态；每次只指导一个阶段，用简单中文说明需要做什么、在哪里操作、完成后如何确认。",
+    `官方发布页：${PROXY.repo}`,
+    `管理面板：${PROXY.panel}`,
+    "配置目标：正向 WebSocket 服务端端口 3001；HTTP API 端口 3002（不要使用 3000）；按协议端要求配置 Token。",
+    `面板配置要点：\n${panelSteps}`,
+    "之后指导我在 yiling-hub 的 QQ 渠道添加 QQ 小号，地址使用 ws://127.0.0.1:3001 和 http://127.0.0.1:3002，绑定一个角色，再运行 yarn onebot:run。以出现 onebot-connected 并完成一条收发测试作为验收。",
+    "安全要求：只使用上面的官方发布页，不下载来历不明的软件；不要替我登录 QQ、处理扫码/验证码或绕过安全提示；不要要求我把 QQ 密码、验证码、WS/HTTP Token、API Key 发给你。需要输入凭据时告诉我在本机哪个页面自行填写；运行命令、安装软件或修改配置前先解释影响并等我确认。",
+  ].join("\n\n");
+  return copyText(prompt, "AI 安装教程已复制。");
 }
 </script>
 
@@ -375,6 +649,26 @@ async function copyCommand(command: string) {
         </div>
 
         <div
+          v-else-if="hasLoadError && !connections.length"
+          class="qq-empty is-error"
+          role="alert"
+        >
+          <span class="empty-icon is-error"><el-icon><Warning /></el-icon></span>
+          <div class="empty-copy">
+            <h3>连接列表暂时无法读取</h3>
+            <p>检查管理员登录状态或服务连接后重试。当前不会影响已经运行的 OneBot 适配器。</p>
+          </div>
+          <button
+            type="button"
+            class="btn"
+            :disabled="loading"
+            @click="refresh()"
+          >
+            <el-icon><Refresh /></el-icon>重试
+          </button>
+        </div>
+
+        <div
           v-else-if="!connections.length"
           class="qq-empty"
         >
@@ -417,14 +711,27 @@ async function copyCommand(command: string) {
               >{{ statusMap[connection.status]?.label ?? connection.status }}</span>
             </div>
 
+            <el-alert
+              v-if="connection.metadata?.onebotReloadRequestedAt"
+              class="reload-status"
+              :type="reloadPending(connection) ? 'warning' : 'info'"
+              :closable="false"
+              :title="reloadPending(connection) ? '等待适配器重新连接' : '适配器已按新设置连接过网关'"
+              :description="reloadPending(connection)
+                ? (reloadPolling
+                  ? '正在自动刷新（每 1.5 秒），一般一两秒就完成。若 15 秒还停在这里，先确认 SnowLuma 在跑、3001 端口有监听。'
+                  : '点「刷新」查看结果。若一直等待，请先启动 yarn onebot:run；旧版进程需手动关闭并启动一次。')
+                : '实际是否连通请查看上方连接状态；历史重连完成不代表当前在线。'"
+              show-icon
+            />
             <dl class="conn-facts">
               <div>
                 <dt>最近活动</dt>
                 <dd>{{ formatDateTime(connection.lastEventAt) }}</dd>
               </div>
               <div>
-                <dt>群聊</dt>
-                <dd>{{ readMentionOnly(connection) ? "仅被 @ 时回复" : "所有消息都回复" }}</dd>
+                <dt>主人</dt>
+                <dd>{{ ownerQqOf(connection) || "未设置" }}</dd>
               </div>
               <div>
                 <dt>适配器</dt>
@@ -432,16 +739,19 @@ async function copyCommand(command: string) {
               </div>
             </dl>
 
-            <div class="conn-bind">
+            <div
+              class="conn-bind"
+              :class="{ 'needs-binding': !connection.bindings.length }"
+            >
               <div class="bind-h">
-                <span>已绑定角色</span>
+                <span>{{ connection.bindings.length ? "已绑定角色" : "下一步：绑定角色" }}</span>
                 <span class="n">{{ connection.bindings.length }}</span>
               </div>
               <p
                 v-if="!connection.bindings.length"
                 class="bind-empty"
               >
-                还没绑定角色 —— 这个号现在不会回复任何消息。
+                连接已保存，但还不会回复消息。绑定角色后即可开始接收对话。
               </p>
               <ul
                 v-else
@@ -486,114 +796,81 @@ async function copyCommand(command: string) {
               <button
                 type="button"
                 class="abtn"
+                :class="{ 'is-lead': !connection.bindings.length }"
                 @click="openBind(connection)"
               >
-                <el-icon><User /></el-icon>绑定角色
+                <el-icon><User /></el-icon>{{ connection.bindings.length ? "添加绑定" : "绑定角色" }}
               </button>
             </div>
           </article>
         </div>
       </section>
 
-      <div class="guide">
-        <!-- ① 先讲清楚消息怎么走：小白最缺的是这张图，不是操作步骤 -->
-        <section class="brick flow-card">
-          <div class="card-h">
-            <h2>消息怎么走</h2>
-            <span class="card-sub">看懂这条线，第 3 步填什么心里就有数</span>
-          </div>
-          <figure class="flow-fig">
-            <div class="flow">
-              <div class="flow-node">
-                <span class="flow-icon"><el-icon><ChatDotRound /></el-icon></span>
-                <span class="flow-name">你的 QQ 小号</span>
-                <span class="flow-desc">官方客户端登录着，窗口不能关</span>
-              </div>
-              <div
-                class="flow-arrow"
-                aria-hidden="true"
-              >
-                <el-icon><Right /></el-icon>
-              </div>
-              <div class="flow-node">
-                <span class="flow-icon"><el-icon><Connection /></el-icon></span>
-                <span class="flow-name">协议端</span>
-                <span class="flow-desc">SnowLuma 或 NapCat，把 QQ 消息翻译出来</span>
-              </div>
-              <div
-                class="flow-arrow"
-                aria-hidden="true"
-              >
-                <el-icon><Right /></el-icon>
-              </div>
-              <div class="flow-node">
-                <span class="flow-icon"><el-icon><Monitor /></el-icon></span>
-                <span class="flow-name">本站适配器</span>
-                <span class="flow-desc"><code>yarn onebot:run</code>，接住消息</span>
-              </div>
-              <div
-                class="flow-arrow"
-                aria-hidden="true"
-              >
-                <el-icon><Right /></el-icon>
-              </div>
-              <div class="flow-node is-end">
-                <span class="flow-icon"><el-icon><MagicStick /></el-icon></span>
-                <span class="flow-name">角色</span>
-                <span class="flow-desc">带着记忆回复，再原路发回 QQ</span>
-              </div>
-            </div>
-            <figcaption class="flow-foot">
-              中间那段走的是 <code>OneBot v11</code> —— 所以不管装哪个协议端，第 3 步填的地址都一样。
-              前三个都在你自己电脑上跑，只有最后一步发生在这里。
-            </figcaption>
-          </figure>
-        </section>
+      <!-- 角色在这个渠道上的行为：群号、群聊回复、限流、刷B站是绑定级；发表情、主动找话是角色级 -->
+      <section
+        v-if="boundBindings.length"
+        class="behave"
+      >
+        <div class="sec-label">
+          <h2>角色在 QQ 上的行为</h2>
+          <span class="count">{{ boundBindings.length }}</span>
+          <span class="note">只对 QQ 生效，网页对话与 B站 不受影响</span>
+        </div>
+        <div class="behave-grid">
+          <QqCharacterBehavior
+            v-for="item in boundBindings"
+            :key="item.binding.id"
+            :binding-id="item.binding.id"
+            :character-id="item.character.id"
+            :character-name="item.character.name"
+            :connection-id="item.connection.id"
+            :connection-name="item.connection.displayName"
+            :routing-key="item.binding.routingKey"
+            :reply-window-minutes="item.binding.replyWindowMinutes"
+            :reply-limit-per-window="item.binding.replyLimitPerWindow"
+            :reply-only-when-mentioned="item.binding.replyOnlyWhenMentioned"
+            :group-bili-run-enabled="item.binding.groupBiliRunEnabled"
+            :emoji-enabled="item.character.emojiEnabled === true"
+            :proactive="item.character.proactive"
+            @saved="onBehaviorSaved"
+          />
+        </div>
+      </section>
 
-        <!-- ② 四步：一句话一件事，细节收进折叠 -->
+      <div class="guide">
         <section class="brick steps-card">
           <div class="card-h">
-            <h2>四步接通</h2>
-            <span class="card-sub">第一次大约十分钟</span>
+            <div class="card-title-group">
+              <h2>安装与接入</h2>
+              <span class="card-sub">按顺序完成 4 步</span>
+            </div>
+            <button
+              type="button"
+              class="guide-copy"
+              @click="copyInstallGuide"
+            >
+              <el-icon><CopyDocument /></el-icon>复制安装教程
+            </button>
           </div>
           <ol class="steps">
             <li class="step">
               <span class="step-no">1</span>
               <div class="step-body">
-                <h3>装一个协议端，把 QQ 挂上去</h3>
+                <h3>下载并登录 QQ 小号</h3>
                 <p>
-                  协议端是个小软件，作用是替你把 QQ 的消息翻译成程序能读的格式。两个选一个装就行 ——
-                  它们说的是同一套协议，填的地址也一样。
+                  装 {{ PROXY.name }}（自带网页配置面板，不用另装面板），装好后用 QQ 客户端登录小号。
+                  它是挂在这个已登录的客户端上收发消息的，所以那个窗口全程别关。
                 </p>
-                <div class="pick">
-                  <button
-                    v-for="preset in PROXY_PRESETS"
-                    :key="preset.key"
-                    type="button"
-                    class="pick-option"
-                    :class="{ active: proxyKind === preset.key }"
-                    @click="proxyKind = preset.key"
-                  >
-                    <span class="pick-name">
-                      {{ preset.name }}
-                      <span
-                        v-if="preset.key === 'snowluma'"
-                        class="pick-badge"
-                      >推荐</span>
-                    </span>
-                    <span class="pick-desc">{{ preset.tagline }}</span>
-                  </button>
-                </div>
                 <p class="step-line">
                   <a
-                    :href="proxy.repo"
+                    :href="PROXY.repo"
                     target="_blank"
                     rel="noopener noreferrer"
-                  ><el-icon><Download /></el-icon>{{ proxy.name }} 下载页</a>
-                  <span class="sep">·</span>装好后用<strong>官方 QQ 客户端</strong>登录小号，那个窗口全程别关 —— 协议端是挂在这个已登录的窗口上收发消息的，不是自己扫码。
+                  ><el-icon><Download /></el-icon>下载 {{ PROXY.name }}</a>
+                  <span class="sep">·</span>选最新的 win-x64 包，自带 Node 运行时，不用另外装环境。
                 </p>
                 <p class="step-note">
-                  怎么确认挂上了：看协议端自己的日志，出现 <code>login detected … UIN=你的小号</code> 才算数。
+                  建议使用小号，避免主号承担非官方协议的风控风险。
                 </p>
               </div>
             </li>
@@ -601,30 +878,121 @@ async function copyCommand(command: string) {
             <li class="step">
               <span class="step-no">2</span>
               <div class="step-body">
-                <h3>在协议端里开两个口子</h3>
-                <p>
-                  一个收消息（WebSocket，端口 3001），一个发消息（HTTP，端口 3002）。
-                  面板地址：<a
-                    :href="proxy.panel"
+                <h3>开启收发接口</h3>
+                <!-- 网关本体没起来的话，下面的面板链接点了也是白打，所以先解决它 -->
+                <div class="run-row">
+                  <span
+                    class="run-state"
+                    :class="{
+                      'is-on': snowluma?.running,
+                      'is-warn': Boolean(snowluma?.installed) && !snowluma?.running,
+                    }"
+                  >
+                    <span class="dot" />SnowLuma {{ snowlumaStateText }}
+                    <span
+                      v-if="snowlumaSourceLabel"
+                      class="run-tag"
+                    >{{ snowlumaSourceLabel }}</span>
+                  </span>
+                  <button
+                    v-if="snowluma?.installed && !snowluma.running"
+                    type="button"
+                    class="abtn is-lead"
+                    :disabled="snowlumaStarting"
+                    @click="startSnowluma"
+                  >
+                    <el-icon><VideoPlay /></el-icon>
+                    {{ snowlumaStarting ? "正在打开…" : "启动 SnowLuma" }}
+                  </button>
+                  <button
+                    v-if="snowluma?.installed"
+                    type="button"
+                    class="tlink"
+                    @click="toggleHomeEdit"
+                  >
+                    <el-icon><FolderOpened /></el-icon>换目录
+                  </button>
+                  <button
+                    v-if="snowluma && !snowluma.installed"
+                    type="button"
+                    class="tlink"
+                    @click="rescanSnowluma"
+                  >
+                    <el-icon><Refresh /></el-icon>重新找一遍
+                  </button>
+                </div>
+                <p
+                  v-if="snowluma && !snowluma.installed"
+                  class="run-warn"
+                >
+                  没找到 <code>{{ snowluma.home }}\start.bat</code>。自动找的时候扫过下载、桌面、文档、
+                  Program Files 和各盘根目录下两层，都没中。把「一眼能看到 start.bat 的那一层」填到下面，
+                  只填一次；刚装完还没被扫到的，点上面「重新找一遍」。
+                </p>
+                <div
+                  v-if="snowluma && (!snowluma.installed || homeEditing)"
+                  class="home-edit"
+                >
+                  <input
+                    v-model="homeDraft"
+                    class="home-input"
+                    spellcheck="false"
+                    placeholder="D:\Tools\SnowLuma"
+                    aria-label="SnowLuma 安装目录"
+                  >
+                  <button
+                    type="button"
+                    class="abtn is-lead"
+                    :disabled="homeSaving"
+                    @click="saveHome"
+                  >
+                    {{ homeSaving ? "保存中…" : "保存目录" }}
+                  </button>
+                </div>
+                <p class="endpoint-intro">
+                  打开协议端面板：<a
+                    :href="PROXY.panel"
                     target="_blank"
                     rel="noopener noreferrer"
-                  ><code>{{ proxy.panel }}</code></a>，粘到浏览器地址栏就能打开。
+                  ><code>{{ PROXY.panel }}</code></a>
+                </p>
+                <ol class="endpoint-steps">
+                  <li>
+                    <span class="endpoint-index">1</span>
+                    <span class="endpoint-copy"><b>开启 WebSocket 服务端</b><span>端口 <code>3001</code>，用于接收 QQ 消息</span></span>
+                  </li>
+                  <li>
+                    <span class="endpoint-index">2</span>
+                    <span class="endpoint-copy"><b>开启 HTTP API</b><span>端口 <code>3002</code>，用于发送 QQ 消息</span></span>
+                  </li>
+                  <li>
+                    <span class="endpoint-index">3</span>
+                    <span class="endpoint-copy"><b>设置并记下 Token</b><span>WS 与 HTTP 分别设置，两个值可能不同</span></span>
+                  </li>
+                </ol>
+                <p class="endpoint-note">
+                  HTTP 不要用 3000，这个端口通常被本站占用。
                 </p>
                 <details class="step-more">
                   <summary>
                     <span class="caret"><el-icon><Right /></el-icon></span>
-                    面板里具体点哪儿（{{ proxy.steps.length }} 步）
+                    {{ PROXY.name }} 面板配置细节
                   </summary>
-                  <ol class="mini">
+                  <ol class="panel-steps">
                     <li
-                      v-for="(step, index) in proxy.steps"
-                      :key="index"
+                      v-for="(step, index) in PROXY.steps"
+                      :key="step.title"
+                      class="panel-step"
                     >
-                      {{ step }}
+                      <span class="panel-step-no">{{ index + 1 }}</span>
+                      <div class="panel-step-copy">
+                        <strong>{{ step.title }}</strong>
+                        <p>{{ step.detail }}</p>
+                      </div>
                     </li>
                   </ol>
                   <p class="warn">
-                    {{ proxy.warn }}
+                    {{ PROXY.warn }}
                   </p>
                 </details>
               </div>
@@ -633,13 +1001,10 @@ async function copyCommand(command: string) {
             <li class="step">
               <span class="step-no">3</span>
               <div class="step-body">
-                <h3>回到这里填连接，再绑一个角色</h3>
+                <h3>添加连接并绑定角色</h3>
                 <p>
-                  把 QQ 号、两个地址、两个 Token 填进「添加 QQ 小号」。地址按上一步的端口来：WS 是
-                  <code>ws://127.0.0.1:3001</code>，HTTP 是 <code>http://127.0.0.1:3002</code>。
-                </p>
-                <p>
-                  保存后在这张卡上点「绑定角色」—— 不绑角色，消息进来了也没人回。
+                  填 QQ 号、WS 地址 <code>ws://127.0.0.1:3001</code>、HTTP 地址
+                  <code>http://127.0.0.1:3002</code> 和协议端 Token。保存后绑定一个角色。
                 </p>
                 <button
                   type="button"
@@ -654,20 +1019,59 @@ async function copyCommand(command: string) {
             <li class="step">
               <span class="step-no">4</span>
               <div class="step-body">
-                <h3>启动适配器</h3>
+                <h3>启动并测试</h3>
                 <p>
-                  项目根目录执行下面这条，看到 <code>onebot-connected</code> 就通了。
-                  这个窗口要一直开着，关掉就不回消息。
+                  适配器是个独立进程，得一直开着才能收发。点下面的按钮会打开一个命令行窗口，
+                  替你在项目根目录跑 <code>yarn onebot:run</code>；窗口里出现
+                  <code>onebot-connected</code> 就通了，再用另一个 QQ 号发消息测试。
                 </p>
-                <button
-                  type="button"
-                  class="cmd"
-                  title="点击复制"
-                  @click="copyCommand('yarn onebot:run')"
+                <div class="run-row">
+                  <button
+                    type="button"
+                    class="abtn is-lead"
+                    :disabled="adapterStarting || adapterStatus?.running"
+                    @click="startAdapter"
+                  >
+                    <el-icon><VideoPlay /></el-icon>
+                    {{ adapterStatus?.running ? "已在运行" : adapterStarting ? "正在打开…" : "启动适配器" }}
+                  </button>
+                  <button
+                    type="button"
+                    class="tlink"
+                    @click="copyCommand('yarn onebot:run')"
+                  >
+                    <el-icon><CopyDocument /></el-icon>复制命令
+                  </button>
+                  <span
+                    class="run-state"
+                    :class="{ 'is-on': adapterStatus?.running }"
+                  >
+                    <span class="dot" />{{ adapterStateText }}
+                  </span>
+                  <span
+                    v-if="gateway"
+                    class="run-state"
+                    :class="gateway.reachable ? 'is-on' : 'is-warn'"
+                  >
+                    <span class="dot" />{{ gateway.reachable
+                      ? `网关 ${gateway.port} 已监听`
+                      : `网关 ${gateway.port} 没人接` }}
+                  </span>
+                </div>
+                <p
+                  v-if="gateway && !gateway.reachable"
+                  class="run-warn"
                 >
-                  <code>yarn onebot:run</code>
-                  <el-icon><CopyDocument /></el-icon>
-                </button>
+                  适配器要连的 <code>{{ gateway.port }}</code> 端口没有进程应答 ——
+                  也就是 <strong>SnowLuma 没启动</strong>（或它里面的 WS 节点没开）。
+                  回第 2 步点「启动 SnowLuma」，等面板能打开、日志里出现 <code>login detected</code>，
+                  这边会自己连上。期间适配器日志会一直刷 <code>code=1006</code>，那是它在按
+                  1/2/4/8/16/30 秒退避重试，不是坏了。
+                </p>
+                <p class="step-note">
+                  关掉那个命令行窗口就等于停。已经手动开着适配器时不要再点（会开出第二个，两个抢同一条连接）。
+                  窗口一闪就没的话，多半是 <code>yarn</code> 不在 PATH —— 按「复制命令」自己开终端跑，把报错贴出来。
+                </p>
               </div>
             </li>
           </ol>
@@ -685,6 +1089,10 @@ async function copyCommand(command: string) {
               <dd>小号还没在官方 QQ 客户端里登上，或者那个窗口被关了。</dd>
             </div>
             <div class="fix-row">
+              <dt>适配器日志一直刷 <code>code=1006</code></dt>
+              <dd>3001 上没人监听：SnowLuma 根本没启动，或它里面的 WS 节点没开。先跑 <code>start.bat</code> 再看面板。</dd>
+            </div>
+            <div class="fix-row">
               <dt>适配器报连不上 3001</dt>
               <dd>协议端里 WS 节点没开，或端口不是 3001 —— 回第 2 步核对。</dd>
             </div>
@@ -698,11 +1106,11 @@ async function copyCommand(command: string) {
             </div>
             <div class="fix-row">
               <dt>群里太吵</dt>
-              <dd>到「连接设置」的「群聊里怎么回」勾上「只有被 @ 时才回复」。</dd>
+              <dd>到上面「角色在 QQ 上的行为」里，把「群聊里怎么回」改成「仅被 @ 时回复」。</dd>
             </div>
             <div class="fix-row">
-              <dt>想让她发表情</dt>
-              <dd>去「角色 → 模型设置」打开「QQ 渠道发表情」。</dd>
+              <dt>想让她发表情 / 主动找话 / 刷 B站</dt>
+              <dd>都在上面「角色在 QQ 上的行为」里，不用去角色设置或连接设置。</dd>
             </div>
           </dl>
         </section>
@@ -720,7 +1128,7 @@ async function copyCommand(command: string) {
         label-position="top"
         class="cq-form"
         autocomplete="off"
-        @submit.prevent="submitConnection"
+        @submit.prevent="submitConnection(false)"
       >
         <div class="cq-sec is-first">
           <div class="cq-sec-h">
@@ -796,7 +1204,7 @@ async function copyCommand(command: string) {
                 show-password
                 autocomplete="new-password"
                 :disabled="credLoading"
-                :placeholder="editingId ? '留空 = 沿用原值' : 'NapCat 与上面填同一个'"
+                :placeholder="editingId ? '留空 = 沿用原值' : 'HTTP 节点的授权 Token'"
               />
             </el-form-item>
           </div>
@@ -811,15 +1219,46 @@ async function copyCommand(command: string) {
 
         <div class="cq-sec">
           <div class="cq-sec-h">
-            <span>群聊里怎么回</span>
+            <span>主人</span>
+          </div>
+          <el-form-item label="主人 QQ 号（可留空）">
+            <el-input
+              v-model="form.ownerQq"
+              maxlength="15"
+              placeholder="只有这个 QQ 能让她去刷 B站"
+            />
+          </el-form-item>
+          <el-form-item label="主人称呼（可留空）">
+            <el-input
+              v-model="form.ownerName"
+              maxlength="60"
+              placeholder="例如：烟火清凉；留空则用 QQ 昵称"
+            />
+          </el-form-item>
+          <p class="cq-hint">
+            留空主人 QQ = 群里的 B站 指令不会生效。主人称呼会写进对话上下文，让她认得出你；留空时用 QQ 昵称。
+          </p>
+        </div>
+
+        <div class="cq-sec">
+          <div class="cq-sec-h">
+            <span>群管理（可选）</span>
           </div>
           <el-form-item class="cq-check">
-            <el-checkbox v-model="form.replyOnlyWhenMentioned">
-              只有被 @ 时才回复
+            <el-checkbox v-model="form.groupAnnouncementEnabled">
+              允许群主/管理员让她拟群公告
             </el-checkbox>
           </el-form-item>
           <p class="cq-hint">
-            不勾就是群里每条都回 —— 人多的群会很吵。私聊不受这条影响，永远是回的。
+            开启后，群里只有<strong>群主或管理员</strong> @ 她并说「写个群公告：主题」，她才会拟稿；
+            草稿回复后，管理员回复「确认发布」才真正发出。普通成员说什么都不会触发。
+          </p>
+          <p class="cq-warn">
+            <el-icon><Warning /></el-icon>
+            <span>
+              前提：QQ 里先把这个小号设为群管理员，否则发布会被拒绝。
+              本期只开放群公告，不开放踢人、禁言等操作。
+            </span>
           </p>
         </div>
       </el-form>
@@ -827,7 +1266,7 @@ async function copyCommand(command: string) {
       <template #footer>
         <div class="cq-foot">
           <span class="cq-foot-note">
-            {{ editingId ? "改完记得重启 yarn onebot:run" : "同一个 QQ 号再存一次是更新，不会重复创建" }}
+            {{ editingId ? "点击保存并重新连接，无需手动重启终端" : "首次使用仍需启动一次 yarn onebot:run" }}
           </span>
           <span class="cq-foot-actions">
             <el-button @click="editVisible = false">
@@ -836,9 +1275,10 @@ async function copyCommand(command: string) {
             <el-button
               type="primary"
               :loading="saving"
-              @click="submitConnection"
+              :disabled="credLoading"
+              @click="submitConnection(true)"
             >
-              保存
+              保存并重新连接
             </el-button>
           </span>
         </div>
@@ -861,6 +1301,7 @@ async function copyCommand(command: string) {
             v-model="bindForm.characterId"
             placeholder="选择要绑定的角色"
             style="width:100%"
+            @change="onBindCharacterChange"
           >
             <el-option
               v-for="character in characters"
@@ -878,6 +1319,7 @@ async function copyCommand(command: string) {
         </el-form-item>
         <p class="cq-hint">
           填了群号就只在这个群里回复。想同时听多个群，给同一个角色多绑几条，每条填一个群号。
+          群聊回复策略、发言限流、刷 B站 这些在下面「角色在 QQ 上的行为」里按角色改。
         </p>
       </el-form>
 
@@ -917,9 +1359,28 @@ async function copyCommand(command: string) {
 .brick { border-radius: 10px; background: var(--surface); padding: 18px 20px 16px; }
 
 /* 卡片标题：短标签，不跟正文抢 */
-.card-h { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.card-h { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.card-title-group { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
 .card-h h2 { margin: 0; color: var(--text-2); font-size: 14px; font-weight: 700; }
 .card-sub { color: var(--dim); font-size: 12px; }
+.guide-copy {
+  display: inline-flex;
+  min-height: 34px;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--surface-3);
+  border-radius: 7px;
+  background: var(--surface);
+  padding: 0 10px;
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background .14s var(--ease), border-color .14s var(--ease), color .14s var(--ease);
+}
+.guide-copy:hover { border-color: var(--brand); background: var(--brand-soft); color: var(--brand-strong); }
+.guide-copy .el-icon { font-size: 14px; }
+.guide-copy:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
 
 /* 区块标题（连接列表） */
 .sec-label { display: flex; align-items: baseline; gap: 8px; margin-bottom: var(--sp-3); }
@@ -927,48 +1388,47 @@ async function copyCommand(command: string) {
 .sec-label .count { color: var(--dim); font-size: 12px; font-variant-numeric: tabular-nums; }
 .sec-label .note { margin-left: auto; color: var(--dim); font-size: 12px; }
 
-/* ── ① 流程图 ─────────────────────────────────────── */
-.flow-fig { margin: 14px 0 0; }
-.flow { display: flex; align-items: stretch; gap: 8px; }
-/* 四块等宽：节点内容长短不一，flex:1 让它们齐平，箭头宽度独立。
-   竖向居中 —— 说明文字断成两行的那块，图标和标题不会贴顶 */
-.flow-node {
-  display: flex;
-  min-width: 0;
-  flex: 1;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
+/* 第 4 步：启动按钮 + 复制命令 + 运行状态同一行 */
+.run-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 10px 0 0; }
+.run-state { display: inline-flex; align-items: center; gap: 6px; color: var(--dim); font-size: 12px; }
+.run-state .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--line-strong); }
+.run-state.is-on { color: #0b7a54; }
+.run-state.is-on .dot { background: var(--green); }
+.run-state.is-warn { color: #8f5c05; }
+.run-state.is-warn .dot { background: #d79a2b; }
+/* 「自动找到」标：路径不是用户填的就说一声，省得他以为自己填过 */
+.run-tag { margin-left: 2px; border-radius: 999px; background: var(--surface-2); padding: 1px 7px; color: var(--dim); font-size: 12px; }
+/* 网关没接上：这不是错误弹窗该干的事，写成一块常驻的说明 */
+.run-warn {
+  margin: 10px 0 0;
   border-radius: 8px;
-  background: var(--surface-3);
-  padding: 14px 10px 12px;
-  text-align: center;
-}
-/* 终点用品牌软底：整张图只上这一处颜色 */
-.flow-node.is-end { background: var(--brand-soft); }
-.flow-icon {
-  display: grid;
-  width: 32px;
-  height: 32px;
-  place-items: center;
-  border-radius: 50%;
-  background: var(--surface);
-  color: var(--text-2);
-  font-size: 16px;
-}
-.flow-node.is-end .flow-icon { color: var(--brand); }
-.flow-name { color: var(--text); font-size: 14px; font-weight: 600; line-height: 1.4; }
-.flow-desc { color: var(--dim); font-size: 12px; line-height: 1.55; }
-.flow-node.is-end .flow-desc { color: #8f3a55; }
-.flow-arrow { display: flex; flex: none; align-items: center; color: var(--faint); font-size: 16px; }
-.flow-foot {
-  margin: 12px 0 0;
-  color: var(--dim);
+  background: #fdf6e7;
+  padding: 10px 12px;
+  color: #7a4f06;
   font-size: 12px;
-  line-height: 1.75;
-  max-width: 74ch;
+  line-height: 1.8;
 }
+.run-warn code { background: rgba(255, 255, 255, .75); border-radius: 4px; padding: 1px 4px; }
+
+/* 目录输入只在「找不到 start.bat」或点了「换目录」时出现，所以不值得占一整行版面 */
+.home-edit { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; margin-top: var(--sp-2); }
+.home-input {
+  flex: 1 1 280px;
+  min-width: 0;
+  height: 34px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--surface-2);
+  padding: 0 10px;
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+.home-input::placeholder { color: var(--dim); }
+.home-input:focus { outline: 2px solid var(--brand); outline-offset: -2px; background: var(--surface-3); }
+
+/* 行为卡：一张卡一个角色，宽度封顶 760 —— 开关型设置拉满全宽会被中间的空白扯散 */
+.behave-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(520px, 760px)); justify-content: start; gap: var(--sp-4); }
 
 /* ── ② 四步 ───────────────────────────────────────── */
 .steps { display: flex; flex-direction: column; margin: 6px 0 0; padding: 0; list-style: none; }
@@ -998,6 +1458,40 @@ async function copyCommand(command: string) {
 /* 正文字号 14、行宽 68ch：这几段是要照着做的，别拉成一行 100 多字 */
 .step-body p { max-width: 68ch; margin: 0 0 8px; color: var(--text-2); font-size: 14px; line-height: 1.75; }
 .step-body p:last-child { margin-bottom: 0; }
+.endpoint-intro { margin-bottom: 10px !important; }
+.endpoint-steps {
+  display: grid;
+  gap: 8px;
+  max-width: 620px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.endpoint-steps li {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-height: 52px;
+  border-radius: 8px;
+  background: var(--surface-2);
+  padding: 8px 12px;
+}
+.endpoint-index {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--brand-soft);
+  color: var(--brand-strong);
+  font-size: 12px;
+  font-weight: 700;
+}
+.endpoint-copy { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
+.endpoint-copy b { color: var(--text); font-size: 14px; font-weight: 600; }
+.endpoint-copy > span { color: var(--dim); font-size: 12px; line-height: 1.5; }
+.endpoint-note { margin-top: 8px !important; color: #8f5c05 !important; font-size: 12px !important; }
 .step-body strong { color: var(--text); font-weight: 600; }
 .step-note { color: var(--dim) !important; font-size: 12px !important; line-height: 1.7 !important; }
 /* 行内链接：不整体 flex，否则那句长文案会变成一个独立 flex item，
@@ -1008,36 +1502,6 @@ async function copyCommand(command: string) {
 .step-body a:hover { text-decoration: underline; text-underline-offset: 3px; }
 .step-line .el-icon { margin-right: 2px; font-size: 13px; vertical-align: -2px; }
 .sep { margin: 0 5px; color: var(--faint); }
-
-/* 协议端二选一：选中态只换底色，不加描边。
-   宽度跟着内容收在 640：两个 300 的卡配一行说明刚好，拉满 1100 会像两条横幅 */
-.pick { display: grid; max-width: 640px; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 12px 0; }
-.pick-option {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  border: 0;
-  border-radius: 8px;
-  background: var(--surface-2);
-  padding: 10px 12px;
-  text-align: left;
-  cursor: pointer;
-  transition: background .14s var(--ease);
-}
-.pick-option:hover { background: var(--surface-3); }
-.pick-option.active { background: var(--brand-soft); }
-.pick-name { display: flex; align-items: center; gap: 6px; color: var(--text); font-size: 14px; font-weight: 600; }
-.pick-option.active .pick-name { color: var(--brand-strong); }
-.pick-badge {
-  border-radius: 999px;
-  background: var(--brand-btn);
-  padding: 2px 6px;
-  color: #fff;
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 1.3;
-}
-.pick-desc { color: var(--dim); font-size: 12px; line-height: 1.6; }
 
 /* 折叠：默认只露一句话，想动手再展开 */
 .step-more { margin-top: 10px; }
@@ -1058,18 +1522,45 @@ async function copyCommand(command: string) {
 .step-more summary:hover { background: var(--surface-3); }
 .step-more .caret { display: inline-flex; color: var(--faint); font-size: 12px; transition: transform .14s var(--ease); }
 .step-more[open] .caret { transform: rotate(90deg); }
-.mini {
+.panel-steps {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  margin: 10px 0 0;
-  padding-left: 20px;
-  color: var(--text-2);
-  font-size: 14px;
-  line-height: 1.7;
+  gap: 0;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
 }
-.mini li { max-width: 66ch; }
-.mini li::marker { color: var(--brand); font-weight: 700; }
+.panel-step {
+  position: relative;
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 10px;
+  padding: 0 0 14px;
+}
+.panel-step:not(:last-child)::before {
+  position: absolute;
+  top: 25px;
+  bottom: 0;
+  left: 12px;
+  width: 2px;
+  background: var(--surface-3);
+  content: "";
+}
+.panel-step-no {
+  z-index: 1;
+  display: grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--brand-soft);
+  color: var(--brand-strong);
+  font-size: 12px;
+  font-weight: 700;
+}
+.panel-step-copy { min-width: 0; padding-top: 2px; }
+.panel-step-copy strong { color: var(--text); font-size: 14px; font-weight: 700; }
+.panel-step-copy p { max-width: 66ch; margin: 3px 0 0; color: var(--text-2); font-size: 14px; line-height: 1.65; }
 
 /* 警告块：左竖条 + 软底。文字用 #8f5c05（4.7:1），--amber 只有 4.26:1 */
 .warn {
@@ -1129,8 +1620,6 @@ async function copyCommand(command: string) {
   font-family: ui-monospace, Consolas, monospace;
   font-size: 12px;
 }
-.flow-node.is-end code,
-.flow-node code { background: rgba(255, 255, 255, .7); }
 .cmd code { background: none; padding: 0; color: inherit; font-size: 14px; }
 
 /* ── 连接卡 ───────────────────────────────────────── */
@@ -1143,6 +1632,7 @@ async function copyCommand(command: string) {
   padding: 16px 18px 12px;
 }
 .conn-card.is-skeleton { gap: 10px; }
+.reload-status { margin-top: 14px; }
 .conn-head { display: flex; align-items: flex-start; gap: 11px; }
 .conn-icon {
   display: grid;
@@ -1173,6 +1663,9 @@ async function copyCommand(command: string) {
 .conn-facts dd code { background: none; padding: 0; font-size: 12px; }
 
 .conn-bind { margin-top: 14px; border-top: 1px solid var(--surface-3); padding-top: 12px; }
+.conn-bind.needs-binding { border-radius: 8px; background: var(--amber-soft); padding: 10px 12px; }
+.conn-bind.needs-binding .bind-h { color: #8f5c05; }
+.conn-bind.needs-binding .bind-empty { color: var(--text-2); }
 .bind-h { display: flex; align-items: baseline; gap: 6px; color: var(--dim); font-size: 12px; font-weight: 600; }
 .bind-h .n { font-variant-numeric: tabular-nums; }
 .bind-empty { margin: 6px 0 0; color: var(--text-2); font-size: 14px; line-height: 1.6; }
@@ -1228,7 +1721,7 @@ async function copyCommand(command: string) {
 .tlink.is-danger:hover { background: var(--red-soft); color: var(--red); }
 
 /* 空态：一行说完 + 右边给按钮。不做 240px 高的大白块 ——
-   这一屏真正要读的是下面的流程图，空态抢走一半高度反而把人挡住。 */
+   这一屏真正要读的是下面的接入步骤，空态抢走一半高度反而把人挡住。 */
 .qq-empty {
   display: flex;
   align-items: center;
@@ -1251,7 +1744,10 @@ async function copyCommand(command: string) {
 .empty-copy { min-width: 0; flex: 1; }
 .empty-copy h3 { margin: 0; color: var(--text); font-size: 14px; font-weight: 700; }
 .empty-copy p { margin: 3px 0 0; color: var(--dim); font-size: 12px; line-height: 1.65; }
-.qq-empty .btn.primary { flex: none; }
+.qq-empty .btn.primary,
+.qq-empty > .btn { flex: none; }
+.qq-empty.is-error { background: var(--red-soft); }
+.empty-icon.is-error { background: #fff; color: var(--red); }
 
 /* 页头按钮：A 套的次要按钮是纯文字，hover 才出下划线 */
 .qq-a .btn { height: 36px; border: 0; background: none; box-shadow: none; padding: 0 10px; color: var(--text-2); border-radius: 8px; }
@@ -1304,30 +1800,20 @@ async function copyCommand(command: string) {
   .conn-grid { grid-template-columns: minmax(0, 1fr); }
   .fix-row { grid-template-columns: minmax(0, 1fr); gap: 3px; }
 }
-/* 流程图横向排到 900 才折：1080 的视口里 4 块各还有 180，竖排反而更像一个列表 */
-@media (max-width: 900px) {
-  .flow { flex-direction: column; }
-  /* 竖排时箭头要朝下：转 90° 比换图标省事，也不会错位 */
-  .flow-arrow { justify-content: center; padding: 1px 0; }
-  .flow-arrow .el-icon { transform: rotate(90deg); }
-  .flow-node { flex-direction: row; gap: 10px; align-items: center; padding: 11px 12px; text-align: left; }
-  /* 名字定宽：竖排时四个说明文字才能左对齐，不然每个节点各起一行 */
-  .flow-node .flow-name { flex: 0 0 auto; min-width: 88px; }
-  .flow-node .flow-desc { flex: 1; }
-}
 @media (max-width: 720px) {
   .brick { padding: 16px 15px 14px; }
   .conn-card { padding: 14px 15px 10px; }
   .conn-facts { grid-template-columns: minmax(0, 1fr); gap: 10px; }
   .sec-label .note { display: none; }
   .conn-foot { flex-wrap: wrap; }
-  .pick { grid-template-columns: minmax(0, 1fr); }
+  .behave-grid { grid-template-columns: minmax(0, 1fr); }
   .step { grid-template-columns: 24px minmax(0, 1fr); gap: 10px; }
-  .flow-node { flex-wrap: wrap; }
+  .endpoint-steps li { grid-template-columns: 24px minmax(0, 1fr); padding: 8px 10px; }
   /* 空态换行：文案先占满一行，按钮落到下一行、和文案左边缘对齐 */
   .qq-empty { flex-wrap: wrap; align-items: flex-start; row-gap: 10px; }
   .empty-copy { flex-basis: calc(100% - 54px); }
-  .qq-empty .btn.primary { margin-left: 54px; }
+  .qq-empty .btn.primary,
+  .qq-empty > .btn { margin-left: 54px; }
 }
 @media (max-width: 560px) {
   .cq-id,

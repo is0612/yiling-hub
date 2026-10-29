@@ -710,6 +710,14 @@ const regeneratedAiSnapshot = snapshotsAfterAiRegeneration.find((snapshot) => sn
 assert(regeneratedAiSnapshot?.kind === "AUTOMATIC" && regeneratedAiSnapshot.version === 2 && regeneratedAiSnapshot.status === "当前版本", "AI regeneration should create version 2 as the current automatic snapshot.");
 assert(snapshotsAfterAiRegeneration.some((snapshot) => snapshot.id === aiSnapshot.id && snapshot.status === "已被替代"), "AI regeneration must preserve and supersede the original version.");
 assert(regeneratedAiSnapshot.analysis?.memoryChangesApplied.some((change) => change.result === "NOT_APPLIED_REGENERATION"), "Regeneration should disclose proposed memory changes without silently applying them to current long-term memory.");
+// 审核清单是最需要人判断的一份数据，证据 ID 必须能在本快照的来源消息里逐条对上。
+const regeneratedSourceIds = new Set((regeneratedAiSnapshot.sourceMessages || []).map((source) => source.id));
+assert(
+  (regeneratedAiSnapshot.analysis?.memoryChangesApplied || [])
+    .filter((change) => change.result === "NOT_APPLIED_REGENERATION")
+    .every((change) => (change.evidenceMessageIds || []).every((messageId) => regeneratedSourceIds.has(messageId))),
+  "Regeneration review entries must only keep evidence IDs present in the snapshot's own source messages.",
+);
 
 const queuedCancelableRegeneration = await request(`/api/characters/${created.id}/snapshots`, {
   method: "POST",

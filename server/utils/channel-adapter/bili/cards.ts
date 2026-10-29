@@ -426,3 +426,41 @@ export function parseBiliOwner(json: unknown): BiliOwner | null {
   if (!mid && !name) return null;
   return { mid, name: name || mid };
 }
+
+/**
+ * `bili me show` 的账号资料：
+ * `{ ok: true, data: { mid, name, sign, level, coins, face, sex, url } }`。
+ *
+ * face 是 i0/i2.hdslb.com 的头像地址，前端直连加载（`referrerpolicy="no-referrer"`，
+ * 和视频封面同一个路子，服务端不缓存二进制）。url 就是主页地址，CLI 给了就用，没给就按 mid 拼。
+ */
+export type BiliMe = {
+  mid: string;
+  name: string;
+  face: string;
+  level: number;
+  sign: string;
+  homeUrl: string;
+};
+
+export function parseBiliMe(json: unknown): BiliMe | null {
+  const data = asRecord(unwrapBiliData(json));
+  // 兼容两种形状：资料直接在 data 上，或包一层 data.profile。
+  const me = asRecord(data?.profile) ?? data;
+  if (!me) return null;
+  const mid = pickId(me.mid) || pickId(me.uid);
+  const name = pickString(me.name) || pickString(me.uname);
+  if (!mid && !name) return null;
+
+  let face = pickString(me.face);
+  if (face.startsWith("//")) face = `https:${face}`;
+  const homeUrl = pickString(me.url) || (mid ? `https://space.bilibili.com/${mid}` : "");
+  return {
+    mid,
+    name: name || mid,
+    face,
+    level: pickNumber(me.level),
+    sign: pickString(me.sign),
+    homeUrl,
+  };
+}

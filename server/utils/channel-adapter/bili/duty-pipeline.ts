@@ -61,6 +61,15 @@ export type BiliDutyRoundResult = {
   seenVideos: number;
   /** 投递结果。 */
   delivered: { dm: boolean; comments: number; fav: number; dynamic: boolean };
+  /** 本轮挑中并给出评价的视频（给群回执/接口展示用，最多不超过额度）。 */
+  pickedItems: Array<{
+    bvid: string;
+    title: string;
+    url: string;
+    score: number | null;
+    reason: string;
+    comment: string;
+  }>;
   error?: string;
   /** 过程中值得记一笔的事（风控、限流、命令失败等）。 */
   notes: string[];
@@ -470,7 +479,14 @@ export async function runDutyRound(record: BiliConnectionRecord, binding: { id: 
   const now = new Date();
   const today = toDayKey(now);
   const notes: string[] = [];
-  const empty = { picked: 0, skipped: 0, watched: 0, seenVideos: 0, delivered: { dm: false, comments: 0, fav: 0, dynamic: false } };
+  const empty = {
+    picked: 0,
+    skipped: 0,
+    watched: 0,
+    seenVideos: 0,
+    delivered: { dm: false, comments: 0, fav: 0, dynamic: false },
+    pickedItems: [] as BiliDutyRoundResult["pickedItems"],
+  };
 
   const character = await prisma.character.findUnique({
     where: { id: binding.characterId },
@@ -500,12 +516,14 @@ export async function runDutyRound(record: BiliConnectionRecord, binding: { id: 
   });
   const seenBvids = new Set(seenVideos.map((v) => v.bvid));
 
-  // 今天已挑条数 = 今天报告的 pickedCount 之和
+  // 今天已挑条数 = 今天报告的 pickedCount 之和；「重置今日额度」之后只数新报告。
   const todayReports = await prisma.biliRoundReport.findMany({
     where: { bindingId: binding.id, day: today },
-    select: { pickedCount: true, roundIndex: true },
+    select: { pickedCount: true, roundIndex: true, createdAt: true },
   });
-  const pickedToday = todayReports.reduce((sum, r) => sum + r.pickedCount, 0);
+  const resetAt = config.quotaResetAt ? new Date(config.quotaResetAt) : null;
+  const countedReports = resetAt ? todayReports.filter((report) => report.createdAt >= resetAt) : todayReports;
+  const pickedToday = countedReports.reduce((sum, r) => sum + r.pickedCount, 0);
   const remaining = remainingQuota(config, { day: today, picked: pickedToday, windowsRun: [] });
   if (remaining <= 0) {
     return { ok: false, ...empty, picked: pickedToday, seenVideos: seenBvids.size, notes, error: "今天额度已用完" };
@@ -741,7 +759,18 @@ export async function runDutyRound(record: BiliConnectionRecord, binding: { id: 
   // 以前 notes 只在内存里返回、接口也没透出去，页面只剩「本轮没有挑中的视频」，
   // 排查「全跳过」时完全无从下手（2026-10-28 就是这么踩的）。
   const notesBlock = notes.length ? `--- 过程记录 ---\n${notes.map((note) => `- ${note}`).join("\n")}` : "";
-  const contentToStore = [reportContent || "（本轮没有挑中的视频）", notesBlock].filter(Boolean).join("\n\n");
+  const skippedBlock = skipped.length
+    ? `--- 跳过 ---\n${skipped
+        .slice(0, 30)
+        .map((item) => `- ${item.candidate.title.slice(0, 40)}（${item.reason || "跳过"}）`)
+        .join("\n")}`
+    : "";
+  const contentToStore = config.reportLevel === "off"
+    ? "（日报已关闭，只记录额度与判重）"
+    : [
+        reportContent || "（本轮没有挑中的视频）",
+        ...(config.reportLevel === "full" ? [skippedBlock, notesBlock] : []),
+      ].filter(Boolean).join("\n\n");
 
   // 人格札记：替换掉 bili-desk 的 human-world.md，落成角色长期记忆。
   // 只在挑中视频时写 —— 「刷了 5 条一条没挑」不值得占用长期记忆，那种情况值班台
@@ -817,6 +846,14 @@ export async function runDutyRound(record: BiliConnectionRecord, binding: { id: 
     watched: watchedCount,
     seenVideos: seenBvids.size + picked.length + skipped.length,
     delivered,
+    pickedItems: picked.map((item) => ({
+      bvid: item.candidate.bvid,
+      title: item.candidate.title,
+      url: item.candidate.url,
+      score: item.score,
+      reason: item.reason,
+      comment: item.comment,
+    })),
     notes,
   };
 }

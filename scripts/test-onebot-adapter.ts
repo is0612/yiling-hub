@@ -6,6 +6,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "../src/generated/prisma/client";
 import { encryptApiKey } from "../server/utils/credential-encryption";
 import { loadOnebotConnections } from "../server/utils/channel-adapter/onebot/configure";
+import { markOnebotReloadApplied } from "../server/utils/channel-adapter/onebot/runtime";
 import { createOnebotMessageHandler } from "../server/utils/channel-adapter/onebot/serve";
 import { connectOnebot, resolveOnebotEvent } from "../server/utils/channel-adapter/onebot/client";
 
@@ -98,9 +99,10 @@ try {
       platform: "qq-onebot",
       platformAccountKey: "123456789",
       displayName: "测试 QQ 小号",
-      status: "DISCONNECTED",
+      // 本机可能正跑着真实适配器；DISABLED 让它不会被 runner 加载，测试用直连验证协议层。
+      status: "DISABLED",
       credentialsCiphertext,
-      metadata: {},
+      metadata: { onebotReloadRequestedAt: "2026-10-29T00:00:00.000Z", keep: { nested: true }, replyOnlyWhenMentioned: false },
     },
   });
   const binding = await prisma.characterChannelBinding.create({
@@ -111,14 +113,28 @@ try {
 
   // 2. The adapter discovers the connection and decrypts its credentials.
   // 只按本用例自己建的 id 找：库里可能还躺着真实连接（本地联调用的那个），断言总数会被它带偏。
-  const records = await loadOnebotConnections();
+  const records = await loadOnebotConnections(undefined, { includeDisabled: true });
   const record = records.find((item) => item.id === connectionId);
   assert(record, "The adapter must discover the OneBot connection.");
   assert.equal(record.config.wsUrl, "ws://127.0.0.1:4030");
   assert.equal(record.config.httpUrl, "http://127.0.0.1:4031");
   assert.equal(record.config.accessToken, "mock-ws-token");
   assert.equal(record.config.httpToken, "mock-http-token");
+  // 这个用例显式设了「所有消息都回复」，后面才好用「不 @ 也回」的群消息验证端到端链路。
+  // 「默认仅 @ 回复」这个安全默认值由 configure.ts 兜底（没写时取 true），不在这里重复断言。
   assert.equal(record.replyOnlyWhenMentioned, false);
+  assert.equal(record.reloadRequestedAt, "2026-10-29T00:00:00.000Z");
+  // A newer request/config save must survive acknowledgment of the initial loaded request.
+  await prisma.platformConnection.update({ where: { id: connectionId }, data: {
+    metadata: { onebotReloadRequestedAt: "2026-10-29T00:00:01.000Z", keep: { nested: true }, replyOnlyWhenMentioned: true },
+  } });
+  await markOnebotReloadApplied(connectionId, record.reloadRequestedAt!);
+  const acknowledged = await prisma.platformConnection.findUniqueOrThrow({ where: { id: connectionId } });
+  assert.deepEqual(acknowledged.metadata, {
+    onebotReloadRequestedAt: "2026-10-29T00:00:01.000Z",
+    onebotReloadAppliedAt: "2026-10-29T00:00:00.000Z",
+    keep: { nested: true }, replyOnlyWhenMentioned: true,
+  });
 
   // 3. Unit-check the segment flattening + event resolution before the live round-trip.
   const resolved = resolveOnebotEvent({
@@ -282,13 +298,154 @@ try {
   );
 
   const stillOneHandshake = await readHandshakes();
-  assert.equal(stillOneHandshake.length, 1, "整个用例期间连接一直活着，不该再有第二次握手。");
+  assert.equal(
+    stillOneHandshake.length,
+    1,
+    `整个用例期间连接一直活着，不该再有第二次握手。握手记录：${JSON.stringify(stillOneHandshake)}`,
+  );
+
+  // 8. 群公告：管理员拟稿 → 回复草稿 → 确认发布才真正调用公告接口。普通成员不能触发。
+  await prisma.platformConnection.update({
+    where: { id: connectionId },
+    data: { metadata: { onebotReloadRequestedAt: "2026-10-29T00:00:01.000Z", keep: { nested: true }, replyOnlyWhenMentioned: false, groupAnnouncementEnabled: true } },
+  });
+  record.groupAnnouncementEnabled = true;
+
+  const readNotices = async () => ((await (await fetch("http://127.0.0.1:4031/__mock/notices")).json()) as {
+    notices: Array<{ body: Record<string, unknown> }>;
+  }).notices;
+  const emitAs = (messageId: number, userId: number, role: string, text: string) => fetch("http://127.0.0.1:4031/__mock/emit", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      event: {
+        post_type: "message",
+        message_type: "group",
+        self_id: 123456789,
+        message_id: messageId,
+        user_id: userId,
+        group_id: 999,
+        sender: { user_id: userId, nickname: role === "owner" ? "群主" : role === "admin" ? "管理员" : "群友", role },
+        message: [{ type: "at", data: { qq: 123456789 } }, { type: "text", data: { text } }],
+      },
+    }),
+  });
+
+  const beforeAnnouncement = (await readSent()).length;
+  await emitAs(10, 222, "owner", " 写个群公告：周末活动");
+  await waitFor(async () => (await readSent()).length >= beforeAnnouncement + 1);
+  const draftReply = String((await readSent())[beforeAnnouncement]!.body.message);
+  assert(draftReply.includes("公告草稿"), "管理员请求后必须先回复草稿，而不是直接发公告。");
+  assert(draftReply.includes("CI 公告草稿"), "草稿正文来自模型。");
+  assert.equal((await readNotices()).length, 0, "未确认前不能调用公告接口。");
+
+  const pendingRows = await prisma.onebotGroupAnnouncement.findMany({ where: { connectionId } });
+  assert.equal(pendingRows.length, 1, "必须落一条待确认草稿。");
+  assert.equal(pendingRows[0]!.status, "PENDING");
+  assert.equal(pendingRows[0]!.requestedBy, "222");
+
+  await emitAs(11, 222, "owner", "确认发布");
+  await waitFor(async () => (await readNotices()).length >= 1);
+  const notices = await readNotices();
+  assert.equal(notices.length, 1, "确认一次只发一条公告。");
+  assert.equal(notices[0]!.body.group_id, 999);
+  assert(String(notices[0]!.body.content).includes("CI 公告草稿"), "公告内容必须是确认过的那份草稿。");
+  const published = await prisma.onebotGroupAnnouncement.findUniqueOrThrow({ where: { id: pendingRows[0]!.id } });
+  assert.equal(published.status, "PUBLISHED");
+  assert(published.publishedAt, "发布成功必须记录时间。");
+  const audit = await prisma.auditLog.findFirst({
+    where: { entityType: "PlatformConnection", entityId: connectionId, action: "channel.group_announcement_published" },
+  });
+  assert(audit, "群公告发布必须留审计记录。");
+
+  // 普通成员即使 @ 她也只能走普通聊天，不能产生草稿或公告。
+  const beforeMember = (await readSent()).length;
+  await emitAs(12, 333, "member", "写个群公告：我来发");
+  await waitFor(async () => (await readSent()).length >= beforeMember + 1);
+  assert.equal((await prisma.onebotGroupAnnouncement.count({ where: { connectionId } })), 1, "普通成员不能新增草稿。");
+  assert.equal((await readNotices()).length, 1, "普通成员不能发布公告。");
+
+  // 重复投递确认事件不能二次发布。
+  await emitAs(11, 222, "owner", "确认发布");
+  await sleep(1200);
+  assert.equal((await readNotices()).length, 1, "重复确认不能重复发布。");
+
+  // 9. 群发言频率：每 10 分钟最多 2 条时，第 3 条必须静默（不调模型、不发消息）。
+  await prisma.characterChannelBinding.update({
+    where: { id: bindingId },
+    data: { config: { replyWindowMinutes: 10, replyLimitPerWindow: 2 } },
+  });
+  record.bindings[0]!.replyWindowMinutes = 10;
+  record.bindings[0]!.replyLimitPerWindow = 2;
+
+  const emitToGroup = (groupId: number, messageId: number, text: string, userId = 444) => fetch("http://127.0.0.1:4031/__mock/emit", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      event: {
+        post_type: "message",
+        message_type: "group",
+        self_id: 123456789,
+        message_id: messageId,
+        user_id: userId,
+        group_id: groupId,
+        sender: { user_id: userId, nickname: userId === 222 ? "主人" : "群友", role: "member" },
+        message: [{ type: "text", data: { text } }],
+      },
+    }),
+  });
+  const groupReplies = async () => (await readSent()).filter(
+    (item) => item.action === "send_group_msg" && Number(item.body.group_id) === 1001,
+  );
+  const groupAssistantCount = async () => {
+    const conversation = await prisma.conversation.findFirst({
+      where: { channelBindingId: bindingId, externalConversationId: "g:1001" },
+      select: { id: true },
+    });
+    return conversation
+      ? prisma.message.count({ where: { conversationId: conversation.id, role: "ASSISTANT" } })
+      : 0;
+  };
+
+  await emitToGroup(1001, 20, "第一条");
+  await waitFor(async () => (await groupAssistantCount()) >= 1);
+  await emitToGroup(1001, 21, "第二条");
+  await waitFor(async () => (await groupAssistantCount()) >= 2);
+  await emitToGroup(1001, 22, "第三条应该被静默");
+  await sleep(1500);
+  assert.equal(await groupAssistantCount(), 2, "达到每 10 分钟上限后不能再落助手消息。");
+  const sentTexts = (await groupReplies()).map((item) => String(item.body.message));
+  assert(!sentTexts.some((text) => text.includes("第三条应该被静默")), "被静默的请求不能发出回复。");
+  const rateConversation = await prisma.conversation.findFirst({
+    where: { channelBindingId: bindingId, externalConversationId: "g:1001" },
+    select: { id: true },
+  });
+  assert(rateConversation, "限流群也要有会话记录。");
+
+  // 10. 群聊 B站 指令只认主人：群友触发被忽略，主人触发才得到回执/提示。
+  record.groupBiliRunEnabled = true;
+  record.bindings[0]!.groupBiliRunEnabled = true;
+  record.ownerQq = "222";
+  const biliReplies = async () => (await readSent()).filter(
+    (item) => item.action === "send_group_msg" && Number(item.body.group_id) === 1002,
+  );
+  await emitToGroup(1002, 30, "去刷一轮B站", 333);
+  await sleep(1000);
+  assert.equal((await biliReplies()).length, 0, "非主人发 B站 指令不能有任何回复。");
+
+  await emitToGroup(1002, 31, "去刷一轮B站", 222);
+  await waitFor(async () => (await biliReplies()).length >= 1);
+  const biliReply = String((await biliReplies())[0]!.body.message);
+  assert(biliReply.includes("B站"), "主人触发后必须给出 B站 相关回执。");
+  assert(biliReply.includes("还没绑定"), "测试角色没有 B站 绑定时必须明确提示，不能假装跑了。");
 
   closeGateway();
 
-  console.log("OneBot 渠道端到端测试通过：WS token 鉴权与单次握手、事件接入、CQ 码解析、凭据解密、角色绑定路由、记忆检索、模型回复、表情段发送与冷却、消息持久化、外部身份 upsert、回发平台与幂等去重。");
+  console.log("OneBot 渠道端到端测试通过：WS token 鉴权与单次握手、事件接入、CQ 码解析、凭据解密、角色绑定路由、记忆检索、模型回复、表情段发送与冷却、消息持久化、外部身份 upsert、回发平台与幂等去重、群公告草稿与确认发布、普通成员越权拦截、按群滚动 10 分钟回复上限、B站 指令主人专属。");
 } finally {
   for (const child of children) child.kill();
+  await prisma.onebotGroupAnnouncement.deleteMany({ where: { connectionId } }).catch(() => undefined);
+  await prisma.auditLog.deleteMany({ where: { entityType: "PlatformConnection", entityId: connectionId } }).catch(() => undefined);
   if (conversationId) await prisma.conversation.deleteMany({ where: { channelBindingId: bindingId } }).catch(() => undefined);
   await prisma.characterChannelBinding.deleteMany({ where: { connectionId } }).catch(() => undefined);
   await prisma.memoryScope.deleteMany({ where: { characterId } }).catch(() => undefined);

@@ -26,6 +26,21 @@ async function readJson(request) {
   return JSON.parse(body);
 }
 
+function plainCompletion(body, content) {
+  return {
+    id: "chatcmpl-ci-test",
+    object: "chat.completion",
+    created: Math.floor(Date.now() / 1000),
+    model: typeof body.model === "string" ? body.model : "ci-memory-test",
+    choices: [{
+      index: 0,
+      message: { role: "assistant", content },
+      finish_reason: "stop",
+    }],
+    usage: { prompt_tokens: 80, completion_tokens: 40, total_tokens: 120 },
+  };
+}
+
 function chatCompletion(body, content) {
   return {
     id: "chatcmpl-ci-test",
@@ -65,6 +80,15 @@ const server = http.createServer(async (request, response) => {
       : undefined;
     if (!userMessage) {
       sendJson(response, 400, { error: { message: "Missing structured input" } });
+      return;
+    }
+
+    // 群公告走裸文本调用，userPrompt 不是 JSON；用系统提示里的标记区分。
+    if (typeof systemMessage?.content === "string" && systemMessage.content.includes("YILING_GROUP_ANNOUNCEMENT_V1")) {
+      sendJson(response, 200, plainCompletion(
+        body,
+        "【CI 公告草稿】本周六晚八点群活动，欢迎大家参加；有想聊的话题可以直接在群里说。",
+      ));
       return;
     }
 

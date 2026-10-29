@@ -1,50 +1,172 @@
 import "dotenv/config";
+import fs from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { loadOnebotConnections } from "../server/utils/channel-adapter/onebot/configure";
+import { markOnebotReloadApplied } from "../server/utils/channel-adapter/onebot/runtime";
+import { createOnebotRunner } from "../server/utils/channel-adapter/onebot/runner";
 import { createOnebotMessageHandler } from "../server/utils/channel-adapter/onebot/serve";
-import { superviseOnebotConnection } from "../server/utils/channel-adapter/onebot/supervise";
+import { superviseOnebotConnection, waitOnebot } from "../server/utils/channel-adapter/onebot/supervise";
 import { getPrisma } from "../server/utils/prisma";
 
 const prisma = getPrisma();
-let running = true;
-process.on("SIGINT", () => {
-  running = false;
-});
-process.on("SIGTERM", () => {
-  running = false;
-});
+const shutdown = new AbortController();
 
+/**
+ * 「我在跑」的标记文件。网页上的「启动适配器」靠它判断要不要再拉一个，
+ * 也靠它告诉用户到底起没起来 —— 否则只能靠猜为什么状态一直没变。
+ * 放在 .data/（已在 .gitignore 里，且不会被 nuxt 重启清空）。
+ */
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const STATE_FILE = path.join(REPO_ROOT, ".data", "onebot-adapter.json");
+
+async function markRunning() {
+  try {
+    await fs.mkdir(path.dirname(STATE_FILE), { recursive: true });
+    await fs.writeFile(
+      STATE_FILE,
+      JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString(), cwd: REPO_ROOT }),
+      "utf8",
+    );
+  } catch {
+    // 写不了也不影响适配器本身干活
+  }
+}
+
+async function markStopped() {
+  try {
+    const raw = await fs.readFile(STATE_FILE, "utf8");
+    const parsed = JSON.parse(raw) as { pid?: number };
+    // 别的实例接管了这个文件时不要误删
+    if (parsed.pid === process.pid) await fs.rm(STATE_FILE, { force: true });
+  } catch {
+    // 文件不在或读不动都无所谓
+  }
+}
+/**
+ * 掉线多久才写「连接异常」。
+ * 重连本身通常一两秒就完成（保存设置触发的重启、网关短暂抖动），
+ * 第一时间把状态标红，页面就会停在「连接异常」上 —— 其实早就连回去了。
+ * 这段时间里先写「未连接」（如实反映 socket 断了），超过阈值才升级成异常。
+ */
+const ERROR_AFTER_MS = 4000;
 function log(entry: Record<string, unknown>) {
   process.stdout.write(JSON.stringify({ at: new Date().toISOString(), ...entry }) + "\n");
 }
+const runner = createOnebotRunner({
+  load: loadOnebotConnections,
+  shouldStop: () => shutdown.signal.aborted,
+  start(record) {
+    const controller = new AbortController();
+    let applied = false;
+    /** 连续失败的起点；连上一次就清空。用来判断「掉线多久了」而不是「失败了几次」 */
+    let failingSince: number | null = null;
+    let escalateTimer: ReturnType<typeof setTimeout> | null = null;
+    // Serialize writes so shutdown can drain them and old status cannot race the new run.
+    let writes = Promise.resolve();
+
+    /** 上一次真正写下去的状态：重试循环里同样的值不必反复写库 */
+    let lastStatus: string | null = null;
+    const queueStatus = (next: "CONNECTED" | "DISCONNECTED" | "ERROR") => {
+      if (next === lastStatus) return;
+      lastStatus = next;
+      writes = writes.then(async () => {
+        if (controller.signal.aborted) return;
+        await prisma.platformConnection.updateMany({
+          where: { id: record.id, status: { not: "DISABLED" } },
+          data: { status: next },
+        });
+      }).catch(() => log({ event: "onebot-status-write-failed", connectionId: record.id }));
+    };
+
+    /**
+     * 掉线先写「未连接」，超过 ERROR_AFTER_MS 再升级成「连接异常」。
+     *
+     * 升级必须靠定时器而不是等下一个失败事件：连不上时 connectOnebot 是直接 reject 的，
+     * 之后每轮重试都不会再触发 onStatus —— 只按事件算的话状态会永远停在未连接。
+     */
+    const beginFailing = () => {
+      const now = Date.now();
+      failingSince ??= now;
+      const elapsed = now - failingSince;
+      // 已经超过阈值就直接记异常，别再从「未连接」重来 —— 否则每轮重试都在两个状态之间来回跳
+      if (elapsed >= ERROR_AFTER_MS) {
+        queueStatus("ERROR");
+        return;
+      }
+      queueStatus("DISCONNECTED");
+      if (escalateTimer) return;
+      escalateTimer = setTimeout(() => {
+        escalateTimer = null;
+        if (failingSince !== null && !controller.signal.aborted) queueStatus("ERROR");
+      }, ERROR_AFTER_MS - elapsed);
+    };
+
+    const supervised = superviseOnebotConnection({
+      record,
+      handleEvent: createOnebotMessageHandler(record),
+      log,
+      signal: controller.signal,
+      onStatusChange(status) {
+        if (status !== "ready") {
+          beginFailing();
+          return;
+        }
+        failingSince = null;
+        if (escalateTimer) {
+          clearTimeout(escalateTimer);
+          escalateTimer = null;
+        }
+        queueStatus("CONNECTED");
+        if (!applied && record.reloadRequestedAt) {
+          // Merge only our key into the current row. Never write stale metadata back.
+          writes = writes
+            .then(() => (controller.signal.aborted ? undefined : markOnebotReloadApplied(record.id, record.reloadRequestedAt!)))
+            .then(() => { applied = true; })
+            .catch(() => log({ event: "onebot-reload-apply-failed", connectionId: record.id }));
+        }
+      },
+    });
+    return {
+      stop: () => {
+        if (escalateTimer) {
+          clearTimeout(escalateTimer);
+          escalateTimer = null;
+        }
+        controller.abort();
+      },
+      done: supervised.finally(() => writes),
+    };
+  },
+});
+const stop = () => {
+  shutdown.abort();
+  void runner.stop();
+};
+process.on("SIGINT", stop);
+process.on("SIGTERM", stop);
 
 async function main() {
-  const records = await loadOnebotConnections();
-  if (records.length === 0) {
-    log({ event: "onebot-no-connections", hint: "请先在「系统管理 → QQ 渠道」添加 QQ 小号连接并绑定角色。" });
+  await markRunning();
+  try {
+    while (!shutdown.signal.aborted) {
+      try {
+        await runner.reconcile();
+      } catch {
+        log({ event: "onebot-config-poll-failed" });
+      }
+      await waitOnebot(1000, shutdown.signal);
+    }
+  } finally {
+    await runner.stop();
+    await prisma.$disconnect();
+    process.off("SIGINT", stop);
+    process.off("SIGTERM", stop);
+    await markStopped();
   }
-
-  await Promise.all(
-    records.map((record) =>
-      superviseOnebotConnection({
-        record,
-        handleEvent: createOnebotMessageHandler(record),
-        log,
-        shouldStop: () => !running,
-        onStatusChange: (status) => {
-          const next = status === "ready" ? "CONNECTED" : "ERROR";
-          prisma.platformConnection
-            .update({ where: { id: record.id }, data: { status: next } })
-            .catch(() => undefined);
-        },
-      }),
-    ),
-  );
-
-  await prisma.$disconnect();
 }
 
-main().catch(async (error) => {
-  console.error("QQ 小号（OneBot）适配器启动失败：", error);
-  await prisma.$disconnect();
-  process.exit(1);
+main().catch(() => {
+  log({ event: "onebot-runner-failed" });
+  process.exitCode = 1;
 });

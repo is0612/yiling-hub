@@ -33,6 +33,12 @@ export type ChannelMessageInput = {
   authorPlatformUid?: string;
   /** Optional author display name for identity metadata. */
   authorDisplayName?: string;
+  /** 当前说话人是不是主人；只用于提示词，不参与鉴权。 */
+  speaker?: {
+    displayName?: string;
+    isOwner: boolean;
+    ownerDisplayName?: string;
+  };
   content: string;
   /**
    * 这个渠道能发的表情清单。**传了就等于声明「本渠道支持表情」**——B站 私信没有表情段，
@@ -227,6 +233,7 @@ export async function handleChannelMessage(input: ChannelMessageInput): Promise<
     generated = await generateConversationReply({
       characterName: character.name,
       characterPrompt: character.basePrompt.slice(0, 12_000),
+      ...(input.speaker ? { speaker: input.speaker } : {}),
       styleExamples: (character.styleExamples ?? "").slice(0, 8000),
       model: chatSettings.model,
       apiKey,

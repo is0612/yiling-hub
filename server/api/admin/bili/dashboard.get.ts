@@ -29,13 +29,16 @@ export default defineEventHandler(async (event) => {
             orderBy: [{ roundIndex: "asc" }],
             select: { id: true, roundIndex: true, pickedCount: true, content: true, createdAt: true },
           });
-          const pickedToday = reports.reduce((sum, r) => sum + r.pickedCount, 0);
+          const resetAt = connection.duty.quotaResetAt ? new Date(connection.duty.quotaResetAt) : null;
+          const pickedToday = reports
+            .filter((report) => !resetAt || report.createdAt >= resetAt)
+            .reduce((sum, report) => sum + report.pickedCount, 0);
 
           const seenToday = await prisma.biliSeenVideo.findMany({
             where: { bindingId: binding.id, seenAt: { gte: new Date(`${today}T00:00:00+08:00`) } },
             orderBy: [{ seenAt: "desc" }],
             take: 50,
-            select: { id: true, bvid: true, title: true, author: true, result: true, reason: true, seenAt: true },
+            select: { id: true, bvid: true, title: true, author: true, result: true, reason: true, score: true, seenAt: true },
           });
 
           const remaining = remainingQuota(connection.duty, { day: today, picked: pickedToday, windowsRun: [] });
@@ -62,6 +65,7 @@ export default defineEventHandler(async (event) => {
               author: v.author,
               result: v.result,
               reason: v.reason,
+              score: v.score,
               seenAt: v.seenAt.toISOString(),
             })),
           };

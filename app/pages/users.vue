@@ -1,5 +1,13 @@
 <script setup lang="ts">
-import { Clock, Refresh, UserFilled } from "@element-plus/icons-vue";
+/**
+ * 用户管理。
+ *
+ * 内容排序：① 有几个账号、几个管理员、几个停用（统计带）② 账号清单（要动手的就是「重置密码 / 停用」）
+ * ③ 最近登录活动（审计，排最后，默认只露 8 条）。
+ * 表格用 CSS grid 排：原来的「角色」「角色数」两列并进账号格（管理员徽章 + 「1 个角色」），
+ * 7 列压到 5 列，一行不用横向滚。
+ */
+import { Clock, Refresh } from "@element-plus/icons-vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 
 type AdminUser = {
@@ -44,6 +52,11 @@ function labelOf(user: AdminUser) {
   return user.displayName || user.email || user.username;
 }
 
+/** 头像只放一个字，和身份卡一致 */
+function initialOf(user: AdminUser) {
+  return Array.from(labelOf(user))[0] ?? "?";
+}
+
 async function loadUsers() {
   loading.value = true;
   try {
@@ -58,6 +71,9 @@ async function loadUsers() {
 
 type AuditItem = { id: string; action: string; createdAt: string; actor: string | null; details: unknown };
 const auditItems = ref<AuditItem[]>([]);
+const auditExpanded = ref(false);
+/** 审计只是参考信息，默认露 8 条就够 —— 30 行会把页面拉得很长 */
+const visibleAudit = computed(() => (auditExpanded.value ? auditItems.value : auditItems.value.slice(0, 8)));
 const actionLabels: Record<string, string> = {
   "auth.login": "登录",
   "auth.login_failed": "登录失败",
@@ -136,11 +152,11 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="page-wrap">
+  <div class="page-wrap users-a">
     <PageHeader
       eyebrow="系统管理 / 用户管理"
       title="用户管理"
-      description="查看使用本系统的账号与活动统计。这里只显示账号信息，不包含任何人的对话或记忆内容。"
+      description="使用本系统的账号与活动统计。这里只有账号信息，不含任何人的对话或记忆内容。"
     >
       <template #actions>
         <button
@@ -154,185 +170,146 @@ onMounted(() => {
       </template>
     </PageHeader>
 
-    <div class="kpi-row is-three">
-      <div class="kpi">
-        <div class="k">
-          全部账号
-        </div>
-        <div class="v">
-          {{ users.length }}<small>个</small>
-        </div>
-        <div class="foot">
-          只显示账号信息，不含对话与记忆内容
-        </div>
+    <div class="band">
+      <div class="band-cell">
+        <span class="band-k">全部账号</span>
+        <span class="band-v">{{ users.length }}<small>个</small></span>
+        <span class="band-f">只显示账号信息，不含对话与记忆</span>
       </div>
-      <div class="kpi">
-        <div class="k">
-          管理员
-        </div>
-        <div class="v">
-          {{ adminCount }}<small>个</small>
-        </div>
-        <div class="foot">
-          可管理用户、渠道与系统设置
-        </div>
+      <div class="band-cell">
+        <span class="band-k">管理员</span>
+        <span class="band-v">{{ adminCount }}<small>个</small></span>
+        <span class="band-f">可管理用户、渠道与系统设置</span>
       </div>
-      <div class="kpi">
-        <div class="k">
-          已停用
-        </div>
-        <div class="v">
-          {{ disabledCount }}<small>个</small>
-        </div>
-        <div class="foot">
-          停用后无法登录，数据保留
-        </div>
+      <div class="band-cell">
+        <span class="band-k">已停用</span>
+        <span class="band-v">{{ disabledCount }}<small>个</small></span>
+        <span class="band-f">停用后无法登录，数据保留</span>
       </div>
     </div>
 
-    <div class="card table-card">
+    <div class="tbl">
+      <div class="tbl-head">
+        <span>账号</span>
+        <span>状态</span>
+        <span>注册时间</span>
+        <span>最后活跃</span>
+        <span />
+      </div>
+
       <div
-        v-loading="loading"
-        class="users-table"
+        v-if="loading && !users.length"
+        class="tbl-body"
       >
-        <el-table
-          :data="users"
-          style="width: 100%"
+        <div
+          v-for="i in 3"
+          :key="'sk-' + i"
+          class="tbl-row is-skeleton"
         >
-          <el-table-column
-            label="账号"
-            min-width="200"
-          >
-            <template #default="{ row }">
-              <div class="user-cell">
-                <div class="user-avatar">
-                  <el-icon><UserFilled /></el-icon>
-                </div>
-                <div>
-                  <div class="user-name">
-                    {{ labelOf(row as AdminUser) }}
-                  </div>
-                  <div class="user-sub">
-                    {{ (row as AdminUser).email || (row as AdminUser).username }}
-                  </div>
-                </div>
+          <span class="sk" />
+        </div>
+      </div>
+
+      <p
+        v-else-if="!users.length"
+        class="tbl-empty"
+      >
+        还没有账号。
+      </p>
+
+      <div
+        v-else
+        class="tbl-body"
+      >
+        <div
+          v-for="user in users"
+          :key="user.id"
+          class="tbl-row"
+        >
+          <div class="cell-user">
+            <span class="user-avatar">{{ initialOf(user) }}</span>
+            <div class="user-copy">
+              <div class="user-name">
+                {{ labelOf(user) }}
+                <span
+                  v-if="user.role === 'ADMIN'"
+                  class="role-badge"
+                >管理员</span>
               </div>
-            </template>
-          </el-table-column>
-          <el-table-column
-            label="角色"
-            width="110"
-          >
-            <template #default="{ row }">
-              <span
-                class="pill"
-                :class="(row as AdminUser).role === 'ADMIN' ? 'pill-purple' : 'pill-gray'"
-              >{{ (row as AdminUser).role === "ADMIN" ? "管理员" : "用户" }}</span>
-            </template>
-          </el-table-column>
-          <el-table-column
-            label="状态"
-            width="100"
-          >
-            <template #default="{ row }">
-              <span
-                class="pill"
-                :class="(row as AdminUser).status === 'ACTIVE' ? 'pill-green' : 'pill-rose'"
-              >{{ (row as AdminUser).status === "ACTIVE" ? "正常" : "已停用" }}</span>
-            </template>
-          </el-table-column>
-          <el-table-column
-            label="角色数"
-            width="90"
-            align="center"
-          >
-            <template #default="{ row }">
-              {{ (row as AdminUser).characterCount }}
-            </template>
-          </el-table-column>
-          <el-table-column
-            label="注册时间"
-            width="150"
-          >
-            <template #default="{ row }">
-              {{ formatDateTime((row as AdminUser).createdAt) }}
-            </template>
-          </el-table-column>
-          <el-table-column
-            label="最后活跃"
-            width="150"
-          >
-            <template #default="{ row }">
-              {{ formatDateTime((row as AdminUser).lastActiveAt) }}
-            </template>
-          </el-table-column>
-          <el-table-column
-            label="操作"
-            width="170"
-            fixed="right"
-          >
-            <template #default="{ row }">
-              <div class="row-actions">
-                <button
-                  type="button"
-                  class="card-link"
-                  @click="openReset(row as AdminUser)"
-                >
-                  重置密码
-                </button>
-                <button
-                  v-if="(row as AdminUser).status === 'ACTIVE'"
-                  type="button"
-                  class="card-link is-danger"
-                  @click="toggleStatus(row as AdminUser)"
-                >
-                  停用
-                </button>
-                <button
-                  v-else
-                  type="button"
-                  class="card-link is-ok"
-                  @click="toggleStatus(row as AdminUser)"
-                >
-                  启用
-                </button>
+              <div class="user-sub">
+                {{ user.email || user.username }}<span class="sep">·</span>{{ user.characterCount }} 个角色
               </div>
-            </template>
-          </el-table-column>
-        </el-table>
+            </div>
+          </div>
+          <span>
+            <span
+              class="pill"
+              :class="user.status === 'ACTIVE' ? 'pill-green' : 'pill-rose'"
+            >{{ user.status === "ACTIVE" ? "正常" : "已停用" }}</span>
+          </span>
+          <span class="time">{{ formatDateTime(user.createdAt) }}</span>
+          <span class="time">{{ formatDateTime(user.lastActiveAt) }}</span>
+          <span class="row-actions">
+            <button
+              type="button"
+              class="tlink"
+              @click="openReset(user)"
+            >
+              重置密码
+            </button>
+            <button
+              v-if="user.status === 'ACTIVE'"
+              type="button"
+              class="tlink is-danger"
+              @click="toggleStatus(user)"
+            >
+              停用
+            </button>
+            <button
+              v-else
+              type="button"
+              class="tlink is-ok"
+              @click="toggleStatus(user)"
+            >
+              启用
+            </button>
+          </span>
+        </div>
       </div>
     </div>
 
-    <div class="sec-h">
+    <div class="sec-label">
       <h2>最近登录活动</h2>
-      <span class="sub">{{ auditItems.length }} 条</span>
+      <span class="count">{{ auditItems.length }}</span>
+      <button
+        v-if="auditItems.length > 8"
+        type="button"
+        class="more"
+        @click="auditExpanded = !auditExpanded"
+      >
+        {{ auditExpanded ? "收起" : `展开全部 ${auditItems.length} 条` }}
+      </button>
     </div>
-    <div class="card audit-panel">
+
+    <div class="audit-panel">
       <div
         v-if="!auditItems.length"
-        class="card-empty"
+        class="audit-empty"
       >
         <el-icon><Clock /></el-icon>
-        <span>还没有登录记录</span>
-        <span>账号登录、失败与登出都会留下审计记录</span>
+        <span>还没有登录记录 —— 账号登录、失败与登出都会留在这里</span>
       </div>
       <div
-        v-for="item in auditItems"
+        v-for="item in visibleAudit"
         :key="item.id"
         class="audit-row"
       >
         <span
-          class="audit-action"
+          class="audit-act"
           :class="{ 'is-fail': item.action === 'auth.login_failed' }"
-        >
-          {{ actionLabels[item.action] || item.action }}
-        </span>
-        <span class="audit-actor">
-          {{ item.actor || "—" }}
-        </span>
-        <span class="audit-time">
-          {{ formatDateTime(item.createdAt) }}
-        </span>
+        >{{ actionLabels[item.action] || item.action }}</span>
+        <span class="audit-actor">{{ item.actor || "—" }}</span>
+        <span class="audit-time">{{ formatDateTime(item.createdAt) }}</span>
       </div>
     </div>
 
@@ -341,53 +318,197 @@ onMounted(() => {
       title="重置密码"
       width="420px"
     >
-      <p class="reset-hint">
-        为「{{ resetTarget ? labelOf(resetTarget) : "" }}」设置一个新密码，对方登录后可自行修改。
+      <p class="dlg-lead">
+        为「{{ resetTarget ? labelOf(resetTarget) : "" }}」设置新密码，对方登录后可自行修改。
       </p>
-      <el-input
-        v-model="resetPassword"
-        type="password"
-        show-password
-        placeholder="至少 10 位，含字母与数字"
-      />
+      <el-form
+        label-position="top"
+        class="dlg-form"
+        @submit.prevent="submitReset"
+      >
+        <el-form-item label="新密码">
+          <el-input
+            v-model="resetPassword"
+            type="password"
+            show-password
+            autocomplete="new-password"
+            placeholder="至少 10 位，含字母与数字"
+          />
+        </el-form-item>
+      </el-form>
+      <p class="dlg-hint">
+        由字母和数字组成、长度不少于 10 位。重置后通过安全渠道把新密码告知对方。
+      </p>
       <template #footer>
-        <el-button @click="dialogVisible = false">
-          取消
-        </el-button>
-        <el-button
-          type="primary"
-          :loading="resetting"
-          @click="submitReset"
-        >
-          确认重置
-        </el-button>
+        <div class="dlg-foot">
+          <span class="dlg-foot-note">重置不会退出对方已登录的设备</span>
+          <span class="dlg-foot-actions">
+            <el-button @click="dialogVisible = false">
+              取消
+            </el-button>
+            <el-button
+              type="primary"
+              :loading="resetting"
+              @click="submitReset"
+            >
+              确认重置
+            </el-button>
+          </span>
+        </div>
       </template>
     </el-dialog>
   </div>
 </template>
 
 <style scoped>
-.table-card{padding:6px 0 4px}
-.users-table{min-height:120px}
-.user-cell{display:flex;align-items:center;gap:10px}
-.user-avatar{display:flex;width:30px;height:30px;flex:0 0 auto;align-items:center;justify-content:center;border-radius:var(--radius-sm);background:var(--brand-soft);color:var(--brand);font-size:14px}
-.user-name{color:var(--text-2);font-size:14px;font-weight:600}
-.user-sub{margin-top:2px;color:var(--faint);font-size:12px}
-.row-actions{display:flex;align-items:center;gap:12px}
-.card-link.is-danger{color:var(--red)}
-.card-link.is-danger:hover{color:#b02338}
-.card-link.is-ok{color:var(--green)}
-.reset-hint{margin:0 0 12px;color:var(--dim);font-size:12px;line-height:1.7}
+/* A 套：白砖、零描边、零阴影。全部规则挂在 .users-a 下。 */
+.users-a .btn { height: 36px; border: 0; background: none; box-shadow: none; padding: 0 10px; color: var(--text-2); border-radius: 8px; }
+.users-a .btn:hover { color: var(--text); text-decoration: underline; text-underline-offset: 3px; }
 
-.audit-panel{padding:6px 18px 8px}
-.audit-row{display:flex;align-items:center;gap:14px;border-bottom:1px solid var(--line);padding:10px 0;font-size:12px}
-.audit-row:last-child{border-bottom:0}
-.audit-action{flex:0 0 96px;color:var(--text-2);font-weight:600}
-.audit-action.is-fail{color:var(--red)}
-.audit-actor{min-width:0;flex:1;overflow:hidden;color:var(--dim);text-overflow:ellipsis;white-space:nowrap}
-.audit-time{color:var(--faint);font-size:12px;white-space:nowrap}
+/* 统计带 */
+.band {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0 24px;
+  margin-bottom: var(--sp-4);
+  border-radius: 10px;
+  background: var(--surface);
+  padding: 16px 20px 17px;
+}
+.band-cell { display: flex; min-width: 0; flex-direction: column; gap: 4px; }
+.band-k { color: var(--dim); font-size: 12px; }
+.band-v { color: var(--text); font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -.01em; line-height: 1.25; }
+.band-v small { margin-left: 3px; color: var(--dim); font-size: 12px; font-weight: 500; letter-spacing: 0; }
+.band-f { overflow: hidden; color: var(--dim); font-size: 12px; line-height: 1.5; text-overflow: ellipsis; white-space: nowrap; }
 
-@media(max-width:700px){
-  .audit-action{flex:0 0 auto}
+/* ── 表格（CSS grid，5 列） ───────────────────────── */
+.tbl { border-radius: 10px; background: var(--surface); padding: 4px 8px 8px; }
+.tbl-head,
+.tbl-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.7fr) 76px 132px 132px 148px;
+  gap: 12px;
+  align-items: center;
+}
+.tbl-head {
+  border-bottom: 1px solid var(--surface-3);
+  padding: 12px 10px 9px;
+  color: var(--dim);
+  font-size: 12px;
+  font-weight: 600;
+}
+.tbl-body { display: flex; flex-direction: column; }
+.tbl-row { padding: 10px; border-radius: 8px; transition: background .13s var(--ease); }
+.tbl-row:hover { background: var(--surface-2); }
+.tbl-row.is-skeleton { display: block; padding: 16px 10px; }
+.tbl-row.is-skeleton .sk { display: block; height: 16px; border-radius: 5px; }
+.tbl-empty { padding: 32px 10px; color: var(--dim); font-size: 14px; text-align: center; }
+
+.cell-user { display: flex; min-width: 0; align-items: center; gap: 10px; }
+/* 首字头像：和身份页、QQ 卡片同一套 */
+.user-avatar {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  flex: none;
+  place-items: center;
+  border-radius: 8px;
+  background: var(--brand-soft);
+  color: var(--brand-strong);
+  font-size: 14px;
+  font-weight: 700;
+}
+.user-copy { min-width: 0; }
+.user-name { display: flex; align-items: center; gap: 6px; color: var(--text); font-size: 14px; font-weight: 600; line-height: 1.4; }
+/* 角色徽章贴在名字后面：比单开一列「角色」省 110px，且一眼看出谁是管理员 */
+.role-badge { border-radius: 4px; background: var(--brand-soft); padding: 1px 5px; color: var(--brand-strong); font-size: 12px; font-weight: 600; line-height: 1.5; }
+.user-sub { margin-top: 2px; color: var(--dim); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.user-sub .sep { margin: 0 5px; color: var(--faint); }
+.time { color: var(--dim); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.row-actions { display: flex; align-items: center; gap: 4px; justify-content: flex-end; }
+
+/* 文字按钮：常态静音，hover 才上色；危险动作不给常驻红色 */
+.tlink {
+  display: inline-flex;
+  height: 28px;
+  align-items: center;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  padding: 0 8px;
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background .14s var(--ease), color .14s var(--ease);
+}
+.tlink:hover { background: var(--surface-3); color: var(--brand-strong); }
+.tlink.is-danger:hover { background: var(--red-soft); color: var(--red); }
+.tlink.is-ok:hover { background: var(--green-soft); color: #0b7a54; }
+
+/* ── 登录活动 ─────────────────────────────────────── */
+.sec-label { display: flex; align-items: baseline; gap: 8px; margin: var(--sp-5) 0 var(--sp-3); }
+.sec-label h2 { margin: 0; color: var(--text-2); font-size: 14px; font-weight: 700; }
+.sec-label .count { color: var(--dim); font-size: 12px; font-variant-numeric: tabular-nums; }
+.sec-label .more { margin-left: auto; border: 0; background: none; padding: 0; color: var(--brand-strong); font-size: 12px; font-weight: 600; cursor: pointer; }
+.sec-label .more:hover { text-decoration: underline; }
+
+.audit-panel { border-radius: 10px; background: var(--surface); padding: 4px 18px 6px; }
+.audit-row {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr) 128px;
+  gap: 16px;
+  align-items: baseline;
+  border-top: 1px solid var(--surface-3);
+  padding: 9px 0;
+  font-size: 14px;
+}
+.audit-row:first-child { border-top: 0; }
+.audit-act { color: var(--text-2); font-weight: 600; }
+.audit-act.is-fail { color: var(--red); }
+.audit-actor { color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.audit-time { color: var(--dim); font-size: 12px; font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+.audit-empty { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 26px 8px; color: var(--dim); font-size: 12px; }
+.audit-empty .el-icon { color: var(--faint); font-size: 14px; }
+
+/* ── 重置密码弹窗 ─────────────────────────────────── */
+.dlg-lead { margin: 0 0 14px; color: var(--dim); font-size: 12px; line-height: 1.75; }
+.dlg-form :deep(.el-form-item) { margin-bottom: 0; }
+.dlg-hint { margin: 10px 0 0; color: var(--dim); font-size: 12px; line-height: 1.7; }
+.dlg-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.dlg-foot-note { color: var(--dim); font-size: 12px; text-align: left; }
+.dlg-foot-actions { display: flex; }
+
+/* ── 自适应 ───────────────────────────────────────── */
+@media (max-width: 1080px) {
+  /* 先砍「注册时间」，剩下的还用得上 */
+  .tbl-head,
+  .tbl-row { grid-template-columns: minmax(0, 1.6fr) 76px 132px 148px; }
+  .tbl-head span:nth-child(3),
+  .tbl-row > .time:first-of-type { display: none; }
+}
+@media (max-width: 820px) {
+  .tbl-head { display: none; }
+  /* 窄屏两行：账号 + 状态在上，操作在下 */
+  .tbl-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px 10px;
+    padding: 12px 10px;
+  }
+  .cell-user { grid-column: 1; }
+  .tbl-row > span:nth-child(2) { grid-column: 2; justify-self: end; }
+  .tbl-row > .time { display: none; }
+  .row-actions { grid-column: 1 / -1; justify-content: flex-start; }
+  .audit-row { grid-template-columns: 76px minmax(0, 1fr); }
+  .audit-time { display: none; }
+}
+@media (max-width: 560px) {
+  /* 三个数字仍排一行，脚注直接收掉 —— 竖着堆三层要占掉半屏 */
+  .band { gap: 0 12px; padding: 14px 16px 15px; }
+  .band-f { display: none; }
+  .dlg-foot { flex-direction: column-reverse; align-items: stretch; }
+  .dlg-foot-actions { justify-content: flex-end; }
+  .dlg-foot-note { text-align: center; }
 }
 </style>

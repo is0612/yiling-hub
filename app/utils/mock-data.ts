@@ -74,8 +74,15 @@ export type SnapshotAnalysis = {
     content?: string;
     memoryItemId?: string;
     supersededMemoryId?: string;
+    /** 被这条建议指向的旧记忆当前的内容 / 类别，用来做「改成什么 vs 现在是什么」的对照 */
+    supersededCategory?: string;
+    supersededContent?: string;
     confidence?: number;
     evidenceMessageIds?: string[];
+    /** 人工处置结果；undefined 表示还没人处理过 */
+    reviewDecision?: "ACCEPTED" | "IGNORED";
+    reviewMemoryItemId?: string;
+    reviewOutcome?: string;
   }>;
 };
 
@@ -103,6 +110,7 @@ export type Snapshot = {
   generatedBy?: string;
   model?: { name?: string; provider?: string; promptTemplateVersion?: string };
   analysis?: SnapshotAnalysis;
+  reviewRejected?: number;
   sourceMessages?: SnapshotSourceMessage[];
 };
 

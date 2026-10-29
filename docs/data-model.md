@@ -17,8 +17,10 @@
 | memory_items | 长期记忆条目 | 应保留状态、有效期、置信度和来源 |
 | memory_snapshots | 周期或手动快照的版本 | 周期范围清晰；逻辑快照版本不重复 |
 | memory_snapshot_sources | 快照与来源的多对多关系 | 来源关系可追溯 |
+| memory_reviews | 人对审核建议的处置结果 | `(snapshot_id, change_index)` 唯一；不回写快照正文 |
 | character_memory_settings | 默认与角色级周期设置 | 生效周期与待生效周期分开保存；时区合法；原始消息清理须显式启用 |
 | memory_jobs | 持久化后台任务 | `idempotency_key` 唯一 |
+| onebot_group_announcements | QQ 群公告草稿与发布状态 | 草稿有有效期；`PENDING → PUBLISHING` 原子认领，避免重复发布 |
 | audit_logs | 关键管理操作审计 | 不写入密钥或不必要的敏感正文 |
 
 ## 2. 关系概览
@@ -63,6 +65,7 @@ The initial model set includes:
 - `MemoryScope`, `MemoryItem`
 - `MemorySnapshot`, `MemorySnapshotSource`
 - `CharacterMemorySetting`, `MemoryJob`
+- `OnebotGroupAnnouncement`
 - `AuditLog`
 
 Prisma enum values are uppercase internally. The HTTP API uses lower-case enum strings for user-facing status/role values where specified by `docs/openapi.yaml`; the API service must perform explicit mapping and validation rather than persisting arbitrary strings.

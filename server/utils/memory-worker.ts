@@ -6,11 +6,10 @@ import type { PrismaClient } from "../../src/generated/prisma/client";
 import {
   analyzeMemoryPeriod,
   isMemoryModelConfigured,
-  makeMemoryDedupeKey,
   type MemoryAiMessage,
-  type MemoryCategoryValue,
   type MemoryChange,
 } from "./memory-ai";
+import { applyMemoryChange, normalizeMemoryText } from "./memory-change-apply";
 
 const LEASE_MS = 5 * 60 * 1000;
 const MAX_SOURCE_MESSAGES = 250;
@@ -49,10 +48,6 @@ function selectAiMessages(messages: Array<{
     occurredAt: message.occurredAt.toISOString(),
     content: message.content.slice(0, 1200),
   }));
-}
-
-function normalizeMemoryText(value: string): string {
-  return value.normalize("NFKC").toLocaleLowerCase().replace(/[\s\p{P}\p{S}]+/gu, " ").trim();
 }
 
 function validConfidence(change: MemoryChange): boolean {
@@ -680,182 +675,69 @@ export async function processNextMemoryJob(
         activeItems.map((item) => item.category + ":" + normalizeMemoryText(item.content)),
       );
 
+      // 模型提出但没通过校验的条数。没有这个数字，人分不清「模型没提」和「提了但不合格」。
+      let rejectedChangeCount = 0;
+
       for (const change of aiResult.analysis.memoryChanges) {
-        if (isRegeneration) {
-          appliedChanges.push({ action: change.action, result: "NOT_APPLIED_REGENERATION", category: change.category, content: change.content, confidence: change.confidence, evidenceMessageIds: change.evidenceMessageIds, ...(change.relatedMemoryId ? { relatedMemoryId: change.relatedMemoryId } : {}) });
+        // 置信度门槛必须排在重新提炼分支之前：审核清单是最需要人看的一份数据，
+        // 不能变成唯一一条绕过 MIN_MEMORY_CONFIDENCE 的路径。
+        if (!validConfidence(change)) {
+          rejectedChangeCount += 1;
           continue;
         }
-        if (!validConfidence(change)) continue;
         const evidence = change.evidenceMessageIds
           .map((id) => messagesById.get(id))
           .filter((message): message is NonNullable<typeof message> => Boolean(message));
-        if (evidence.length === 0) continue;
-        const primaryEvidence = [...evidence].sort((a, b) => a.occurredAt.getTime() - b.occurredAt.getTime())[0]!;
-        const validFrom = primaryEvidence.occurredAt;
-        const relatedId = change.relatedMemoryId;
+        if (evidence.length === 0) {
+          rejectedChangeCount += 1;
+          continue;
+        }
 
-        if (change.action === "ADD") {
-          const signature = change.category + ":" + normalizeMemoryText(change.content);
-          if (existingItemSignatures.has(signature)) {
-            appliedChanges.push({
-              action: "ADD",
-              result: "DUPLICATE_IGNORED",
-              category: change.category,
-              content: change.content,
-              evidenceMessageIds: change.evidenceMessageIds,
-            });
-            continue;
-          }
-
-          const dedupeKey = makeMemoryDedupeKey(change.category, change.content);
-          const keyUsed = existingDedupeKeys.has(dedupeKey) || Boolean(await tx.memoryItem.findFirst({
-            where: { memoryScopeId: job.memoryScopeId, dedupeKey },
-            select: { id: true },
-          }));
-          existingDedupeKeys.add(dedupeKey);
-          const created = await tx.memoryItem.create({
-            data: {
-              memoryScopeId: job.memoryScopeId,
-              category: change.category as MemoryCategoryValue,
-              content: change.content,
-              confidence: change.confidence,
-              status: "ACTIVE",
-              validFrom,
-              sourceMessageId: primaryEvidence.id,
-              sourceSnapshotId: snapshot.id,
-              dedupeKey: keyUsed ? null : dedupeKey,
-            },
-            select: { id: true },
-          });
-          existingItemSignatures.add(signature);
-          await tx.auditLog.create({
-            data: {
-              actorType: "WORKER",
-              characterId: scope.characterId,
-              action: "memory.ai_added",
-              entityType: "MemoryItem",
-              entityId: created.id,
-              details: {
-                category: change.category,
-                confidence: change.confidence,
-                evidenceMessageIds: change.evidenceMessageIds,
-                snapshotId: snapshot.id,
-              },
-            },
-          });
+        if (isRegeneration) {
+          // relatedMemoryId 已由 memory-ai 校验过属于本轮输入记忆，直接取当期快照里的原文做对照。
+          const relatedItem = change.relatedMemoryId ? currentItems.get(change.relatedMemoryId) ?? null : null;
           appliedChanges.push({
-            action: "ADD",
-            result: "CREATED",
-            memoryItemId: created.id,
+            action: change.action,
+            result: "NOT_APPLIED_REGENERATION",
             category: change.category,
             content: change.content,
             confidence: change.confidence,
-            evidenceMessageIds: change.evidenceMessageIds,
+            // 只留本周期真实存在、能回溯到原文的证据，UI 的「依据 #N」才对得上来源列表。
+            evidenceMessageIds: evidence.map((message) => message.id),
+            ...(change.relatedMemoryId ? { supersededMemoryId: change.relatedMemoryId } : {}),
+            ...(relatedItem
+              ? { supersededCategory: relatedItem.category, supersededContent: relatedItem.content }
+              : {}),
           });
           continue;
         }
 
-        if (!relatedId || handledMemoryIds.has(relatedId) || !eligibleModelMemoryIds.has(relatedId)) continue;
-        const previous = currentItems.get(relatedId);
-        if (!previous) continue;
-
-        if (change.action === "INVALIDATE") {
-          const invalidated = await tx.memoryItem.updateMany({
-            where: { id: relatedId, memoryScopeId: job.memoryScopeId, status: "ACTIVE" },
-            data: { status: "INVALIDATED", validTo: primaryEvidence.occurredAt },
-          });
-          if (invalidated.count !== 1) continue;
-          handledMemoryIds.add(relatedId);
-          await tx.auditLog.create({
-            data: {
-              actorType: "WORKER",
-              characterId: scope.characterId,
-              action: "memory.ai_invalidated",
-              entityType: "MemoryItem",
-              entityId: relatedId,
-              details: {
-                reason: change.changeReason ?? change.content,
-                confidence: change.confidence,
-                evidenceMessageIds: change.evidenceMessageIds,
-                snapshotId: snapshot.id,
-              },
-            },
-          });
-          appliedChanges.push({
-            action: "INVALIDATE",
-            result: "INVALIDATED",
-            memoryItemId: relatedId,
-            content: change.content,
-            evidenceMessageIds: change.evidenceMessageIds,
-          });
-          continue;
-        }
-
-        if (
-          change.action === "UPDATE" &&
-          (previous.category !== change.category || normalizeMemoryText(previous.content) !== normalizeMemoryText(change.content))
-        ) {
-          const superseded = await tx.memoryItem.updateMany({
-            where: { id: relatedId, memoryScopeId: job.memoryScopeId, status: "ACTIVE" },
-            data: { status: "SUPERSEDED", validTo: primaryEvidence.occurredAt },
-          });
-          if (superseded.count !== 1) continue;
-          handledMemoryIds.add(relatedId);
-          const dedupeKey = makeMemoryDedupeKey(change.category, change.content);
-          const keyUsed = existingDedupeKeys.has(dedupeKey) || Boolean(await tx.memoryItem.findFirst({
-            where: { memoryScopeId: job.memoryScopeId, dedupeKey },
-            select: { id: true },
-          }));
-          existingDedupeKeys.add(dedupeKey);
-          const created = await tx.memoryItem.create({
-            data: {
-              memoryScopeId: job.memoryScopeId,
-              category: change.category as MemoryCategoryValue,
-              content: change.content,
-              confidence: change.confidence,
-              status: "ACTIVE",
-              validFrom,
-              sourceMessageId: primaryEvidence.id,
-              sourceSnapshotId: snapshot.id,
-              dedupeKey: keyUsed ? null : dedupeKey,
-            },
-            select: { id: true },
-          });
-          existingItemSignatures.add(change.category + ":" + normalizeMemoryText(change.content));
-          await tx.auditLog.create({
-            data: {
-              actorType: "WORKER",
-              characterId: scope.characterId,
-              action: "memory.ai_updated",
-              entityType: "MemoryItem",
-              entityId: created.id,
-              details: {
-                supersededMemoryId: relatedId,
-                previousContent: previous.content.slice(0, 1000),
-                newContent: change.content,
-                confidence: change.confidence,
-                evidenceMessageIds: change.evidenceMessageIds,
-                snapshotId: snapshot.id,
-              },
-            },
-          });
-          appliedChanges.push({
-            action: "UPDATE",
-            result: "REPLACED",
-            memoryItemId: created.id,
-            supersededMemoryId: relatedId,
-            category: change.category,
-            content: change.content,
-            confidence: change.confidence,
-            evidenceMessageIds: change.evidenceMessageIds,
-          });
-        }
+        const applied = await applyMemoryChange(
+          tx,
+          {
+            memoryScopeId: job.memoryScopeId,
+            characterId: scope.characterId,
+            snapshotId: snapshot.id,
+            actorType: "WORKER",
+            auditActionPrefix: "memory.ai_",
+            // 自动生成用周期时点的记忆快照做对照；人工采纳才用数据库里的最新值。
+            resolvePrevious: async (memoryId) => currentItems.get(memoryId) ?? null,
+            canTarget: (memoryId) => eligibleModelMemoryIds.has(memoryId),
+            handledMemoryIds,
+            existingItemSignatures,
+            existingDedupeKeys,
+          },
+          change,
+          evidence,
+        );
+        if (applied) appliedChanges.push(applied);
       }
 
       // Keep applied mutation results with the immutable snapshot used to produce them.
       const finalStructuredContent = {
         ...structuredContent,
         memoryChangesApplied: appliedChanges,
+        memoryChangesRejected: rejectedChangeCount,
       };
       await tx.memorySnapshot.update({
         where: { id: snapshot.id },

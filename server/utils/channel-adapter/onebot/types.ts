@@ -26,7 +26,28 @@ export type OnebotSender = {
   user_id?: unknown;
   nickname?: unknown;
   card?: unknown;
+  /** 群成员身份：owner / admin / member。私聊事件通常没有这个字段。 */
+  role?: unknown;
 };
+
+export type OnebotGroupRole = "owner" | "admin" | "member";
+
+/**
+ * 群成员身份。网关没给 role 时一律按 member 处理 —— 群管理动作宁可少做，
+ * 也不能因为字段缺失把普通成员当成管理员。
+ */
+export function readOnebotGroupRole(data: unknown): OnebotGroupRole {
+  const record = data as { sender?: { role?: unknown } | null } | null;
+  const role = record?.sender?.role;
+  if (role === "owner" || role === "admin") return role;
+  return "member";
+}
+
+/** 只有群主与管理员能触发生效的群管理动作。 */
+export function isOnebotGroupAdmin(data: unknown): boolean {
+  const role = readOnebotGroupRole(data);
+  return role === "owner" || role === "admin";
+}
 
 /** The message event envelope delivered by the gateway over WS. */
 export type OnebotMessageEvent = {

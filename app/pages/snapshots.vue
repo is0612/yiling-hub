@@ -1,7 +1,7 @@
 ﻿<script setup lang="ts">
 import { ArrowDown, Calendar, Files, MagicStick, Refresh, Search } from "@element-plus/icons-vue";
 import { ElMessage, ElMessageBox } from "element-plus";
-import type { Character, Snapshot, SnapshotSourceMessage } from "~/utils/mock-data";
+import type { Character, Snapshot, SnapshotAnalysis, SnapshotSourceMessage } from "~/utils/mock-data";
 
 const characters = useCharacterList();
 await useCharacterListData();
@@ -123,10 +123,79 @@ function showSourceMessage(source: SnapshotSourceMessage) {
     { confirmButtonText: "关闭", type: "info", customClass: "source-message-dialog" },
   );
 }
-function memoryChangeLabel(action: string, result: string) {
+function memoryChangeLabel(action: string, result: string, reviewDecision?: "ACCEPTED" | "IGNORED", reviewOutcome?: string) {
   const actionLabel = action === "ADD" ? "新增" : action === "UPDATE" ? "更新" : action === "INVALIDATE" ? "标记失效" : action;
+  // 处置过之后，结论就该写在标题上 —— 否则标题说「未应用」、右边说「已采纳」，自相矛盾。
+  if (reviewDecision === "ACCEPTED") {
+    return actionLabel + " · " + (reviewOutcome === "DUPLICATE_IGNORED" ? "已采纳（内容重复）" : "已采纳");
+  }
+  if (reviewDecision === "IGNORED") return actionLabel + " · 已忽略";
   const resultLabel = result === "CREATED" ? "已创建" : result === "REPLACED" ? "已替换旧记忆" : result === "INVALIDATED" ? "已失效" : result === "DUPLICATE_IGNORED" ? "忽略重复项" : result === "NOT_APPLIED_REGENERATION" ? "仅供审核（未应用）" : result;
   return actionLabel + " · " + resultLabel;
+}
+
+/**
+ * 重新提炼写出的是「建议」，不会自动落库。列表页得先说一句，
+ * 否则跑完之后唯一的线索只有 v2，人不会点进去翻到最后一块。
+ */
+function pendingReviewCount(snapshot: Snapshot) {
+  const changes = snapshot.analysis?.memoryChangesApplied || [];
+  return changes.filter((item) => item.result === "NOT_APPLIED_REGENERATION" && !item.reviewDecision).length;
+}
+
+type MemoryChangeRow = SnapshotAnalysis["memoryChangesApplied"][number];
+
+/** 只有重新提炼留下、且还没人处理过的条目才给操作按钮 */
+function reviewPending(item: MemoryChangeRow) {
+  return item.result === "NOT_APPLIED_REGENERATION" && !item.reviewDecision;
+}
+
+function reviewResultMessage(decision: "ACCEPT" | "IGNORE", outcome: string | null) {
+  if (decision === "IGNORE") return "已忽略这条建议，不会改动任何记忆。";
+  if (outcome === "DUPLICATE_IGNORED") return "内容与已有记忆相同，没有重复新建。";
+  if (outcome === "REPLACED") return "已采纳：原记忆标记为已被替代，新内容已写入。";
+  if (outcome === "INVALIDATED") return "已采纳：目标记忆已标记失效。";
+  return "已采纳，已写入长期记忆。";
+}
+
+/** 采纳会真的写库，先按变更类型说清楚会发生什么 */
+function confirmAccept(item: MemoryChangeRow) {
+  const detail = item.action === "ADD"
+    ? "会把这条作为新的长期记忆写入，角色之后就可能提到它。"
+    : item.action === "UPDATE"
+      ? "会新建这条记忆，并把下面那条「当前记忆」标记为已被替代。"
+      : "会把下面那条「当前记忆」标记为失效，之后不再参与检索。";
+  return ElMessageBox.confirm(detail, "采纳这条建议", {
+    confirmButtonText: "采纳",
+    cancelButtonText: "取消",
+    type: "warning",
+  }).then(() => true).catch(() => false);
+}
+
+const reviewingKey = ref("");
+
+async function reviewChange(changeIndex: number, decision: "ACCEPT" | "IGNORE", item: MemoryChangeRow) {
+  if (!detail.value || reviewingKey.value) return;
+  if (decision === "ACCEPT" && !(await confirmAccept(item))) return;
+
+  const snapshotId = detail.value.id;
+  const key = changeIndex + ":" + decision;
+  reviewingKey.value = key;
+  try {
+    const result = await $fetch<{ outcome: string | null }>(
+      `/api/characters/${encodeURIComponent(id.value)}/snapshots/${encodeURIComponent(snapshotId)}/review`,
+      { method: "POST", body: { changeIndex, decision } },
+    );
+    ElMessage.success(reviewResultMessage(decision, result.outcome));
+    // 刷新后保持原来选中哪一份、以及来源消息是开还是收。
+    const keepSources = sourcesOpen.value;
+    await loadSnapshots(snapshotId);
+    sourcesOpen.value = keepSources;
+  } catch (error) {
+    ElMessage.error(errorMessage(error));
+  } finally {
+    reviewingKey.value = "";
+  }
 }
 
 async function switchCharacter(nextId: string) {
@@ -328,10 +397,16 @@ watch(id, () => void loadSnapshots());
                 >
                   <span class="snap-row-top">
                     <span class="snap-row-title">第 {{ snapshot.number }} 份 <span class="snap-row-ver">v{{ snapshot.version }}</span></span>
-                    <span
-                      class="pill"
-                      :class="statusTone(snapshot.status)"
-                    >{{ snapshot.status }}</span>
+                    <span class="snap-row-tags">
+                      <span
+                        v-if="pendingReviewCount(snapshot)"
+                        class="pill pill-amber"
+                      >待审核 {{ pendingReviewCount(snapshot) }}</span>
+                      <span
+                        class="pill"
+                        :class="statusTone(snapshot.status)"
+                      >{{ snapshot.status }}</span>
+                    </span>
                   </span>
                   <span class="snap-row-sum">{{ snapshot.summary }}</span>
                   <span class="snap-row-meta">
@@ -480,15 +555,53 @@ watch(id, () => void loadSnapshots());
                   v-if="detail.analysis.memoryChangesApplied.length"
                   class="a-block"
                 >
-                  <h4>长期记忆变化与审核建议</h4>
+                  <h4>
+                    长期记忆变化与审核建议
+                    <span
+                      v-if="detail.reviewRejected"
+                      class="a-rejected"
+                    >另 {{ detail.reviewRejected }} 条未通过来源校验</span>
+                  </h4>
                   <article
                     v-for="(item, index) in detail.analysis.memoryChangesApplied"
                     :key="'change-' + index"
                     class="a-item"
                   >
-                    <strong>{{ memoryChangeLabel(item.action, item.result) }}</strong>
+                    <strong>{{ memoryChangeLabel(item.action, item.result, item.reviewDecision, item.reviewOutcome) }}</strong>
                     <p>{{ item.content || '关联记忆 ' + (item.memoryItemId || item.supersededMemoryId || '—') }}</p>
-                    <small v-if="item.evidenceMessageIds?.length">依据 {{ evidenceLabel(item.evidenceMessageIds) }}</small>
+                    <!-- 没有这一行，「更新」等于没有对照组：看得见要改成什么，看不见现在是什么 -->
+                    <div
+                      v-if="item.supersededContent"
+                      class="a-prev"
+                    >
+                      <span>当前记忆</span>{{ item.supersededContent }}
+                    </div>
+                    <div
+                      v-if="item.evidenceMessageIds?.length || reviewPending(item)"
+                      class="a-foot"
+                    >
+                      <small v-if="item.evidenceMessageIds?.length">依据 {{ evidenceLabel(item.evidenceMessageIds) }}</small>
+                      <span
+                        v-if="reviewPending(item)"
+                        class="a-actions"
+                      >
+                        <el-button
+                          size="small"
+                          :loading="reviewingKey === index + ':ACCEPT'"
+                          @click="reviewChange(index, 'ACCEPT', item)"
+                        >
+                          采纳
+                        </el-button>
+                        <el-button
+                          size="small"
+                          text
+                          :loading="reviewingKey === index + ':IGNORE'"
+                          @click="reviewChange(index, 'IGNORE', item)"
+                        >
+                          忽略
+                        </el-button>
+                      </span>
+                    </div>
                   </article>
                 </div>
               </section>
@@ -628,6 +741,7 @@ watch(id, () => void loadSnapshots());
 .snap-row:hover{background:var(--surface-2)}
 .snap-row.on{background:var(--brand-soft);box-shadow:inset 2px 0 0 var(--brand)}
 .snap-row-top{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.snap-row-tags{display:flex;align-items:center;gap:6px;flex:none}
 .snap-row-title{color:var(--text);font-size:14px;font-weight:600;line-height:1.45}
 .snap-row.on .snap-row-title{color:var(--brand-strong)}
 .snap-row-ver{color:var(--dim);font-weight:500}
@@ -661,6 +775,15 @@ watch(id, () => void loadSnapshots());
 .a-item p{margin:4px 0 0;color:var(--dim);font-size:14px;line-height:1.8;white-space:pre-wrap;overflow-wrap:anywhere}
 .a-item strong + p{margin-top:4px}
 .a-item small{display:block;margin-top:6px;color:var(--dim);font-size:12px}
+/* 审核建议的对照组：只说「要改成什么」而不说「现在是什么」，更新类建议没法判断 */
+.a-prev{display:flex;align-items:baseline;gap:8px;margin-top:8px;border-left:2px solid var(--line-strong);padding-left:9px;color:var(--dim);font-size:12px;line-height:1.75;white-space:pre-wrap;overflow-wrap:anywhere}
+.a-prev span{flex:none;color:var(--text-2);font-weight:600}
+.a-rejected{margin-left:8px;color:#8f5c05;font-weight:500}
+/* 依据留左边，处置结果和「采纳 / 忽略」靠右：一条建议的结论比它的出处更该被先看到 */
+.a-foot{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:8px}
+.a-foot small{margin-top:0}
+.a-actions{margin-left:auto;flex:none;display:flex;align-items:center;gap:6px}
+.a-actions .el-button + .el-button{margin-left:0}
 .a-list{margin:0;padding-left:18px;color:var(--dim);font-size:14px;line-height:1.9}
 
 /* ── 来源消息（默认收起） ──────────────────────────── */

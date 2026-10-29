@@ -8,6 +8,7 @@ const httpPort = Number(process.env.ONEBOT_MOCK_HTTP_PORT ?? 4031);
 const wsPort = Number(process.env.ONEBOT_MOCK_WS_PORT ?? 4030);
 
 const sentMessages = [];
+const sentNotices = [];
 const wsClients = new Set();
 const handshakes = [];
 /** 配了就要求 WS 握手带 token，两种合法带法与 SnowLuma 一致（查询参数 / Bearer 头）。 */
@@ -48,6 +49,12 @@ const httpServer = http.createServer(async (req, res) => {
     return json(res, 200, { status: "ok", retcode: 0, data: { message_id: 100000 + sentMessages.length } });
   }
 
+  if (req.method === "POST" && path === "/_send_group_notice") {
+    const body = await readJson(req);
+    sentNotices.push({ body, at: new Date().toISOString() });
+    return json(res, 200, { status: "ok", retcode: 0, data: {} });
+  }
+
   if (req.method === "POST" && path === "/__mock/emit") {
     const body = await readJson(req);
     const frame = JSON.stringify(body.event);
@@ -61,12 +68,17 @@ const httpServer = http.createServer(async (req, res) => {
     return json(res, 200, { messages: sentMessages });
   }
 
+  if (req.method === "GET" && path === "/__mock/notices") {
+    return json(res, 200, { notices: sentNotices });
+  }
+
   if (req.method === "GET" && path === "/__mock/handshakes") {
     return json(res, 200, { handshakes });
   }
 
   if (req.method === "POST" && path === "/__mock/reset") {
     sentMessages.length = 0;
+    sentNotices.length = 0;
     handshakes.length = 0;
     return json(res, 200, { ok: true });
   }

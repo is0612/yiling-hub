@@ -93,11 +93,48 @@ async function main() {
   assert.equal(BILI_DUTY_DEFAULTS.zone, "all");
   assert.equal(BILI_DUTY_DEFAULTS.dmMode, "only");
 
+  // 5. 札记：落在角色全局长期记忆，按 binding 前缀能查回；软删除后不再出现在列表
+  const scope = await prisma.memoryScope.create({
+    data: { characterId, scopeType: "CHARACTER_GLOBAL", scopeKey: `character:${characterId}:global` },
+  });
+  const journal = await prisma.memoryItem.create({
+    data: {
+      memoryScopeId: scope.id,
+      category: "EVENT",
+      content: "我在 B站 看了 3 条视频，挑中了 1 条。",
+      confidence: 1,
+      dedupeKey: `bili-journal:${bindingId}:test`,
+      validFrom: new Date(),
+    },
+  });
+  const journalled = await prisma.memoryItem.findMany({
+    where: {
+      memoryScopeId: scope.id,
+      deletedAt: null,
+      OR: [
+        { dedupeKey: { startsWith: `bili-duty:${bindingId}:` } },
+        { dedupeKey: { startsWith: `bili-journal:${bindingId}:` } },
+      ],
+    },
+  });
+  assert.equal(journalled.length, 1, "札记必须能按 binding 前缀查回。");
+  await prisma.memoryItem.update({
+    where: { id: journal.id },
+    data: { status: "TRASHED", statusBeforeTrash: journal.status, deletedAt: new Date() },
+  });
+  const afterDelete = await prisma.memoryItem.findMany({
+    where: { memoryScopeId: scope.id, deletedAt: null, dedupeKey: { startsWith: `bili-journal:${bindingId}:` } },
+  });
+  assert.equal(afterDelete.length, 0, "软删除后的札记不再出现在列表。");
+
   console.log("✅ test-bili-db 全部通过");
   console.log(`   判重表唯一约束幂等：通过`);
   console.log(`   值班配置解析（覆盖 + 默认）：通过`);
+  console.log(`   札记写入 / 查询 / 软删除：通过`);
 
-  // 清理测试数据（级联删除）
+  // 清理测试数据（含角色全局记忆范围，Character 对 MemoryScope 是 Restrict）
+  await prisma.memoryItem.deleteMany({ where: { memoryScopeId: scope.id } });
+  await prisma.memoryScope.deleteMany({ where: { characterId } });
   await prisma.character.delete({ where: { id: characterId } });
   await prisma.platformConnection.delete({ where: { id: connectionId } });
   await prisma.user.delete({ where: { id: ownerId } });
