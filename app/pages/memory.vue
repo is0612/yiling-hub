@@ -79,14 +79,24 @@ const conversationSaving = ref(false);
 const draftConversationTitle = ref("");
 const draftTranscript = ref("");
 const timelineEntries = ref<TimelineEntry[]>([]);
+/** 服务端直接数的全量条数（不受「只载最近 N 条」影响） */
+const timelineCounts = ref({ message: 0, event: 0, memory: 0, snapshot: 0 });
 const timelineLoading = ref(false);
 const recycleBinOpen = ref(false);
 const recycleBinLoading = ref(false);
 const recycleBinEntries = ref<RecycleBinEntry[]>([]);
 const recycleBinBusyIds = ref<string[]>([]);
-const recordedMessageCount = computed(() => timelineEntries.value.filter((entry) => entry.type === "message").length);
-const recordedEventCount = computed(() => timelineEntries.value.filter((entry) => entry.type === "event").length);
+/**
+ * 统计带用服务端的全量计数，不用「已载入条数」——
+ * 这条流默认只载记忆和总结（不含消息），拿载入数当统计会显示成 0。
+ */
+const recordedMessageCount = computed(() => timelineCounts.value.message);
+const recordedEventCount = computed(() => timelineCounts.value.event);
 const commitmentCount = computed(() => timelineEntries.value.filter((entry) => entry.type === "memory" && entry.title === "承诺与约定" && entry.tag === "长期记忆").length);
+/** 记忆 + 总结的总量 vs 实际载入量：差值为「没载进来的更早记录」 */
+const loadedTotal = computed(() => timelineEntries.value.length);
+const knownTotal = computed(() => timelineCounts.value.memory + timelineCounts.value.snapshot);
+const truncated = computed(() => knownTotal.value > loadedTotal.value);
 /**
  * 来源筛选，而不是「渠道」筛选：服务端 timeline 的 channel 里混了两个维度 ——
  * 真实渠道（连接名 / 本地会话）和长期记忆的范围（长期记忆 / 私人记忆）。
@@ -126,10 +136,12 @@ const character = computed<Character>(() => currentCharacter.value ?? emptyChara
 const activeFilter = ref("全部记录");
 const channelFilter = ref(SOURCE_ALL);
 const query = ref("");
+/**
+ * 这页是「记忆中枢」，不是聊天记录查看器：主列表默认只放长期记忆和阶段总结。
+ * 对话原文去 /chat 看（统计带上有入口），否则聊天一多就会把记忆挤出取数窗口。
+ */
 const filterOptions = [
   { label: "全部记录", type: undefined },
-  { label: "对话记录", type: "message" as TimelineType },
-  { label: "重要事件", type: "event" as TimelineType },
   { label: "长期记忆", type: "memory" as TimelineType },
   { label: "阶段总结", type: "snapshot" as TimelineType },
 ];
@@ -153,18 +165,28 @@ watch([activeFilter, channelFilter, query], () => {
   visibleCount.value = PAGE_SIZE;
 });
 
-/** 筛选 chip 后面跟随的条数（不受搜索框影响，方便一眼看出各类型有多少存量） */
+/** 筛选 chip 后面跟随的条数：用服务端全量计数，不是「载入了多少条」 */
 function countFor(label: string) {
   const type = filterOptions.find((option) => option.label === label)?.type;
-  return type ? timelineEntries.value.filter((entry) => entry.type === type).length : timelineEntries.value.length;
+  if (type === "memory") return timelineCounts.value.memory;
+  if (type === "snapshot") return timelineCounts.value.snapshot;
+  return knownTotal.value;
 }
+
+type TimelineResponse = { entries: TimelineEntry[]; counts: { message: number; event: number; memory: number; snapshot: number } };
 
 async function loadTimeline() {
   timelineLoading.value = true;
   try {
-    timelineEntries.value = await $fetch<TimelineEntry[]>(`/api/characters/${encodeURIComponent(id.value)}/timeline`);
+    // kinds 只取记忆与总结：额度全给记忆（400 条），消息不再抢窗口
+    const result = await $fetch<TimelineResponse>(
+      `/api/characters/${encodeURIComponent(id.value)}/timeline?kinds=memory,snapshot&limit=400`,
+    );
+    timelineEntries.value = result.entries;
+    timelineCounts.value = result.counts;
   } catch {
     timelineEntries.value = [];
+    timelineCounts.value = { message: 0, event: 0, memory: 0, snapshot: 0 };
     ElMessage.error("记忆时间线读取失败，请检查本地开发服务器日志。");
   } finally {
     timelineLoading.value = false;
@@ -593,7 +615,15 @@ watch(id, () => void loadCharacter());
         <div class="sb-cell">
           <span class="sb-k">已记录对话</span>
           <span class="sb-v">{{ timelineLoading ? "—" : recordedMessageCount }}<small>条</small></span>
-          <span class="sb-f">平台事件 {{ timelineLoading ? "—" : recordedEventCount }} 项</span>
+          <span class="sb-f">
+            平台事件 {{ timelineLoading ? "—" : recordedEventCount }} 项 ·
+            <button
+              type="button"
+              class="ms-link"
+              :disabled="!character.id || !recordedMessageCount"
+              @click="navigateTo('/chat?c=' + character.id)"
+            >看原文</button>
+          </span>
         </div>
         <div class="sb-cell">
           <span class="sb-k">绑定渠道</span>
@@ -759,6 +789,13 @@ watch(id, () => void loadCharacter());
                     </div>
                   </div>
                 </article>
+                <p
+                  v-if="truncated"
+                  class="tl-note"
+                >
+                  这里只列最近 {{ loadedTotal }} 条（共 {{ knownTotal }} 条记忆与总结）。更早的还查不到，
+                  搜索与分页还没做。
+                </p>
                 <button
                   v-if="filteredEntries.length > visibleCount"
                   type="button"
@@ -1087,6 +1124,8 @@ watch(id, () => void loadCharacter());
 
 .load-more{width:100%;margin-top:4px;border:0;border-radius:8px;background:none;padding:12px 0;color:var(--dim);font-size:12px;font-weight:600;cursor:pointer;transition:background .14s var(--ease),color .14s var(--ease)}
 .load-more:hover{background:var(--surface-2);color:var(--brand-strong)}
+/* 截断说明：只在「库里比载入的多」时出现，别让人以为记忆丢了 */
+.tl-note{margin:8px 0 0;border-radius:8px;background:var(--surface-2);padding:8px 10px;color:var(--dim);font-size:12px;line-height:1.7}
 
 /* 行内动作：只剩「编辑」+「更多」两个入口 */
 .memory-actions{display:flex;align-items:center;gap:10px;margin-top:4px}

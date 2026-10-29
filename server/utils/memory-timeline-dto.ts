@@ -99,7 +99,7 @@ export function toMemoryTimelineDtos(input: {
   messages: MessageRecord[];
   memoryItems: MemoryRecord[];
   snapshots: SnapshotRecord[];
-}, timeZone = "Asia/Shanghai"): MemoryTimelineEntryDto[] {
+}, timeZone = "Asia/Shanghai", limit = 300): MemoryTimelineEntryDto[] {
   const records: TimedEntry[] = [];
 
   for (const message of input.messages) {
@@ -163,6 +163,6 @@ export function toMemoryTimelineDtos(input: {
 
   return records
     .sort((a, b) => b.timestamp - a.timestamp)
-    .slice(0, 300)
+    .slice(0, limit)
     .map(({ entry }) => entry);
 }
