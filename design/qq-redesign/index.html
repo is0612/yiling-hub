@@ -1,0 +1,808 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QQ 渠道 · 设计稿</title>
+<style>
+  :root {
+    --bg: #f4f6f9;
+    --card: #ffffff;
+    --line: #e6e9ef;
+    --line-strong: #dbe0e9;
+    --rule: #b9c3d3;
+    --ink: #101620;
+    --ink-2: #454f5e;
+    --dim: #68717f;
+    --signal: #d94a76;
+    --signal-btn: #c9416b;
+    --signal-soft: #fdf0f4;
+    --signal-line: #f6d3df;
+    --live: #0f8f63;
+    --live-soft: #e8f6f0;
+    --break: #c92b41;
+    --break-soft: #fdecee;
+    --amber: #a06a06;
+    --amber-soft: #fdf6e7;
+    --radius: 10px;
+    --radius-sm: 8px;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --ease: cubic-bezier(.2,.7,.3,1);
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html { background: var(--bg); }
+
+  body {
+    min-height: 100vh;
+    background: var(--bg);
+    color: var(--ink);
+    font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    padding: 32px 24px 72px;
+  }
+
+  .shell { max-width: 1120px; margin: 0 auto; }
+
+  /* ── 页头 ───────────────────────────────── */
+  .page-head {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: end;
+    gap: 8px 24px;
+    margin-bottom: 24px;
+  }
+
+  .eyebrow {
+    grid-column: 1;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: .02em;
+    color: var(--dim);
+  }
+
+  .page-head h1 {
+    grid-column: 1;
+    font-size: 26px;
+    font-weight: 650;
+    line-height: 1.25;
+    letter-spacing: -.01em;
+  }
+
+  .lede {
+    grid-column: 1;
+    max-width: 52ch;
+    margin-top: 4px;
+    font-size: 14px;
+    color: var(--ink-2);
+  }
+
+  .head-actions {
+    grid-column: 2;
+    grid-row: 1 / span 3;
+    display: flex;
+    gap: 8px;
+    align-self: center;
+  }
+
+  .btn {
+    height: 36px;
+    padding: 0 14px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius-sm);
+    background: var(--card);
+    color: var(--ink-2);
+    font-size: 14px;
+    font-weight: 550;
+    cursor: pointer;
+    transition: border-color .16s var(--ease), background .16s var(--ease), color .16s var(--ease);
+  }
+
+  .btn:hover { border-color: #c8cfda; color: var(--ink); }
+
+  .btn-primary {
+    border-color: transparent;
+    background: var(--signal-btn);
+    color: #fff;
+  }
+
+  .btn-primary:hover { background: #b8375f; color: #fff; }
+
+  .btn:focus-visible,
+  .dial-opt:focus-visible,
+  summary:focus-visible,
+  .hop-fix:focus-visible {
+    outline: 2px solid var(--signal);
+    outline-offset: 2px;
+  }
+
+  /* ── 链路轨 ─────────────────────────────── */
+  .route {
+    position: relative;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 20px 22px 18px;
+    margin-bottom: 16px;
+  }
+
+  .route-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 4px 12px;
+    margin-bottom: 18px;
+  }
+
+  .route-head b { font-size: 14px; font-weight: 650; }
+  .route-head span { font-size: 12px; color: var(--dim); }
+
+  .track {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    list-style: none;
+  }
+
+  .hop {
+    position: relative;
+    display: grid;
+    grid-template-columns: 14px minmax(0, 1fr);
+    column-gap: 10px;
+    row-gap: 7px;
+    align-content: start;
+    padding-right: 16px;
+  }
+
+  /* 段与段之间的线：贴着圆点垂直居中，右端留出 12px 间隙 */
+  .hop:not(:last-child)::after {
+    content: "";
+    position: absolute;
+    top: 6px;
+    left: 14px;
+    right: 0;
+    height: 2px;
+    background: var(--line-strong);
+    z-index: 0;
+  }
+
+  .dot {
+    position: relative;
+    z-index: 1;
+    grid-column: 1;
+    grid-row: 1;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--card);
+    border: 2px solid var(--line-strong);
+  }
+
+  .hop.is-live .dot { border-color: var(--live); background: var(--live); }
+  .hop.is-live:not(:last-child)::after { background: var(--live); }
+  .hop.is-break .dot { border-color: var(--break); background: var(--break); }
+  .hop.is-break:not(:last-child)::after {
+    background: repeating-linear-gradient(90deg, var(--break) 0 6px, transparent 6px 11px);
+  }
+  .hop.is-dead .dot { border-color: var(--line-strong); background: #eef1f6; }
+  .hop.is-dead:not(:last-child)::after {
+    background: repeating-linear-gradient(90deg, var(--line-strong) 0 4px, transparent 4px 10px);
+  }
+
+  /* 文字跨满两列，从第二行起：和圆点左对齐，且不会被第一行那条连线穿过 */
+  .hop-body {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .hop-name {
+    font-size: 12px;
+    font-weight: 650;
+    color: var(--ink);
+    letter-spacing: .01em;
+  }
+
+  .hop-fact {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--dim);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .hop-state {
+    font-size: 12px;
+    font-weight: 550;
+    color: var(--live);
+  }
+
+  .hop.is-break .hop-state { color: var(--break); }
+  .hop.is-dead .hop-state { color: #9aa3b1; }
+  .hop.is-dead .hop-name { color: var(--dim); }
+
+  .route-foot {
+    display: none;
+    align-items: center;
+    gap: 10px;
+    margin-top: 16px;
+    padding: 10px 12px;
+    border-radius: var(--radius-sm);
+    background: var(--break-soft);
+    border: 1px solid #f6ccd3;
+    font-size: 12px;
+    color: #8f2130;
+  }
+
+  .route.is-broken .route-foot { display: flex; }
+
+  .hop-fix {
+    margin-left: auto;
+    border: 1px solid #e7aebb;
+    border-radius: 6px;
+    background: #fff;
+    color: var(--break);
+    font-size: 12px;
+    font-weight: 600;
+    padding: 3px 10px;
+    cursor: pointer;
+  }
+
+  /* ── 卡片通用 ───────────────────────────── */
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 20px 22px;
+    margin-bottom: 16px;
+  }
+
+  .card-head {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    margin-bottom: 16px;
+  }
+
+  .card-head h2 { font-size: 16px; font-weight: 650; }
+  .card-head .sub { font-size: 12px; color: var(--dim); }
+  .card-head .grow { flex: 1; }
+
+  /* ── 小号卡 ─────────────────────────────── */
+  .conn {
+    display: grid;
+    grid-template-columns: 44px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 14px;
+    padding: 18px 22px;
+  }
+
+  .avatar {
+    width: 44px;
+    height: 44px;
+    border-radius: var(--radius-sm);
+    display: grid;
+    place-items: center;
+    background: var(--signal-soft);
+    border: 1px solid var(--signal-line);
+    color: var(--signal);
+    font-size: 18px;
+    font-weight: 700;
+  }
+
+  .conn-id { min-width: 0; }
+
+  .conn-name {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 16px;
+    font-weight: 650;
+    line-height: 1.3;
+  }
+
+  .conn-name .qq {
+    font-family: var(--mono);
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--dim);
+  }
+
+  .conn-meta {
+    margin-top: 3px;
+    font-size: 12px;
+    color: var(--dim);
+    display: flex;
+    gap: 14px;
+    flex-wrap: wrap;
+  }
+
+  .conn-meta .mono { font-family: var(--mono); }
+
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    height: 22px;
+    padding: 0 9px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  .pill-live { background: var(--live-soft); color: var(--live); }
+  .pill-live::before {
+    content: "";
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+  }
+
+  .pill-quiet { background: #f1f3f7; color: var(--dim); }
+
+  .conn-actions { display: flex; gap: 8px; }
+
+  /* ── 参与度刻度 ─────────────────────────── */
+  .dial {
+    position: relative;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+    padding: 4px;
+    border-radius: 999px;
+    background: #f1f3f7;
+  }
+
+  .dial::before {
+    content: "";
+    position: absolute;
+    inset: 4px auto 4px 4px;
+    width: calc((100% - 24px) / 3);
+    border-radius: 999px;
+    background: var(--card);
+    border: 1px solid var(--line);
+    box-shadow: 0 1px 2px rgba(16, 24, 40, .06);
+    transform: translateX(0);
+    transition: transform .22s var(--ease);
+  }
+
+  .dial[data-at="1"]::before { transform: translateX(calc(100% + 8px)); }
+  .dial[data-at="2"]::before { transform: translateX(calc(200% + 16px)); }
+
+  .dial-opt {
+    position: relative;
+    z-index: 1;
+    display: grid;
+    gap: 2px;
+    padding: 9px 6px 10px;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+    cursor: pointer;
+    text-align: center;
+    transition: color .2s var(--ease);
+  }
+
+  .dial-opt b {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--ink-2);
+  }
+
+  .dial-opt span {
+    font-size: 12px;
+    color: var(--dim);
+  }
+
+  .dial-opt[aria-checked="true"] b { color: var(--signal); }
+  .dial-opt[aria-checked="true"] span { color: #a8546f; }
+
+  .dial-note {
+    margin-top: 12px;
+    font-size: 12px;
+    color: var(--dim);
+    max-width: 74ch;
+  }
+
+  /* ── 参数仪表 ───────────────────────────── */
+  .meters {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 1px;
+    margin-top: 18px;
+    background: var(--line);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+  }
+
+  .meter {
+    background: var(--card);
+    padding: 12px 14px 13px;
+    display: grid;
+    gap: 3px;
+    min-width: 0;
+  }
+
+  .meter dt {
+    font-size: 12px;
+    color: var(--dim);
+  }
+
+  .meter dd {
+    font-family: var(--mono);
+    font-size: 18px;
+    font-weight: 600;
+    line-height: 1.3;
+    color: var(--ink);
+    letter-spacing: -.01em;
+  }
+
+  .meter dd small {
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--dim);
+    margin-left: 2px;
+  }
+
+  .meters.is-hidden { display: none; }
+
+  /* ── 折叠区 ─────────────────────────────── */
+  details.card { padding: 0; }
+
+  summary {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 18px 22px;
+    cursor: pointer;
+    list-style: none;
+  }
+
+  summary::-webkit-details-marker { display: none; }
+
+  summary h2 { font-size: 16px; font-weight: 650; }
+
+  summary .sub { font-size: 12px; color: var(--dim); }
+
+  .caret {
+    margin-left: auto;
+    width: 8px; height: 8px;
+    border-right: 1.5px solid var(--dim);
+    border-bottom: 1.5px solid var(--dim);
+    transform: rotate(-45deg);
+    transition: transform .2s var(--ease);
+  }
+
+  details[open] .caret { transform: rotate(135deg); }
+
+  .steps-body {
+    padding: 0 22px 20px;
+    display: grid;
+    gap: 16px;
+    border-top: 1px solid var(--line);
+    padding-top: 18px;
+    margin-top: -2px;
+  }
+
+  .step {
+    position: relative;
+    padding-left: 26px;
+  }
+
+  .step::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 9px;
+    width: 5px; height: 5px;
+    border-radius: 50%;
+    background: var(--rule);
+    box-shadow: 0 0 0 4px var(--card);
+  }
+
+  .step:not(:last-child)::after {
+    content: "";
+    position: absolute;
+    left: 2px;
+    top: 18px;
+    bottom: -24px;
+    width: 1px;
+    background: var(--rule);
+  }
+
+  .step h3 { font-size: 14px; font-weight: 650; margin-bottom: 3px; }
+
+  .step p { font-size: 12px; color: var(--ink-2); max-width: 66ch; }
+
+  code {
+    font-family: var(--mono);
+    font-size: 12px;
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: #f1f3f7;
+    color: var(--ink-2);
+  }
+
+  /* ── 窄屏 ───────────────────────────────── */
+  @media (max-width: 860px) {
+    body { padding: 20px 14px 56px; }
+
+    .page-head { grid-template-columns: 1fr; }
+    .head-actions { grid-column: 1; grid-row: auto; margin-top: 12px; }
+
+    .track { grid-template-columns: 1fr; gap: 16px; }
+
+    .hop {
+      padding-right: 0;
+      grid-template-columns: 14px minmax(0, 1fr);
+      row-gap: 0;
+    }
+
+    .dot { grid-row: 1 / span 2; }
+    .hop-body { grid-column: 2; grid-row: 1; }
+
+    .hop:not(:last-child)::after {
+      top: 16px;
+      left: 6px;
+      right: auto;
+      bottom: -18px;
+      width: 2px;
+      height: auto;
+    }
+
+    .card-head { flex-direction: column; align-items: flex-start; gap: 2px; }
+
+    .conn { grid-template-columns: 44px minmax(0, 1fr); }
+    .conn-actions { grid-column: 1 / -1; }
+    .conn-actions .btn { flex: 1; justify-content: center; }
+
+    .meters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .dial { grid-template-columns: 1fr; border-radius: var(--radius-sm); }
+    .dial::before { display: none; }
+    .dial-opt { border-radius: var(--radius-sm); text-align: left; padding: 10px 12px; }
+    .dial-opt[aria-checked="true"] { background: var(--card); border: 1px solid var(--line); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; animation: none !important; }
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <header class="page-head">
+    <div class="eyebrow">系统管理 / QQ 渠道</div>
+    <h1>QQ 渠道</h1>
+    <p class="lede">用个人 QQ 小号挂 AI：协议端把消息翻译成 OneBot v11 推过来，角色带着记忆回复。</p>
+    <div class="head-actions">
+      <button class="btn" type="button">刷新</button>
+      <button class="btn btn-primary" type="button">添加 QQ 小号</button>
+    </div>
+  </header>
+
+  <!-- 链路：页面的骨架，不是插图 -->
+  <section class="route" id="route" aria-label="链路状态">
+    <div class="route-head">
+      <b>这条链路现在通到哪</b>
+      <span>断在哪一环，后面的整段都不会动</span>
+    </div>
+
+    <ol class="track">
+      <li class="hop is-live">
+        <span class="dot" aria-hidden="true"></span>
+        <div class="hop-body">
+          <span class="hop-name">QQ 小号</span>
+          <span class="hop-fact">2243049685</span>
+          <span class="hop-state">已登录</span>
+        </div>
+      </li>
+
+      <li class="hop is-live" data-hop="gateway">
+        <span class="dot" aria-hidden="true"></span>
+        <div class="hop-body">
+          <span class="hop-name">协议端网关</span>
+          <span class="hop-fact">127.0.0.1:3001</span>
+          <span class="hop-state">握手完成</span>
+        </div>
+      </li>
+
+      <li class="hop is-live" data-hop="adapter">
+        <span class="dot" aria-hidden="true"></span>
+        <div class="hop-body">
+          <span class="hop-name">本机适配器</span>
+          <span class="hop-fact">pid 3424</span>
+          <span class="hop-state">运行中</span>
+        </div>
+      </li>
+
+      <li class="hop is-live" data-hop="character">
+        <span class="dot" aria-hidden="true"></span>
+        <div class="hop-body">
+          <span class="hop-name">角色</span>
+          <span class="hop-fact">deepseek鲸鱼娘</span>
+          <span class="hop-state">自然接话</span>
+        </div>
+      </li>
+    </ol>
+
+    <div class="route-foot">
+      <span>网关没应答：先确认协议端开着、端口是 3001，再回来点「重连」。</span>
+      <button class="hop-fix" type="button" id="route-fix">重连</button>
+    </div>
+  </section>
+
+  <!-- 小号 -->
+  <section class="card conn" aria-label="已接入的小号">
+    <div class="avatar" aria-hidden="true">鱼</div>
+
+    <div class="conn-id">
+      <div class="conn-name">
+        QQ 小号
+        <span class="qq">2243049685</span>
+        <span class="pill pill-live">在线</span>
+      </div>
+      <div class="conn-meta">
+        <span>最近活动 18 分钟前</span>
+        <span>绑定角色 <b>deepseek鲸鱼娘</b></span>
+        <span>群 <span class="mono">389834620</span></span>
+      </div>
+    </div>
+
+    <div class="conn-actions">
+      <button class="btn" type="button" id="simulate">模拟断线</button>
+      <button class="btn" type="button">设置</button>
+    </div>
+  </section>
+
+  <!-- 群聊行为：一条参与度刻度 -->
+  <section class="card" aria-label="群聊里的说话方式">
+    <div class="card-head">
+      <h2>她在群里怎么说话</h2>
+      <span class="sub">只对这个号生效，私聊永远是回的</span>
+    </div>
+
+    <div class="dial" data-at="1" role="radiogroup" aria-label="参与度">
+      <button class="dial-opt" role="radio" aria-checked="false" data-mode="mention" type="button">
+        <b>仅被 @ 时回复</b>
+        <span>叫到才应，其余不理</span>
+      </button>
+      <button class="dial-opt" role="radio" aria-checked="true" data-mode="ambient" type="button">
+        <b>自然接话</b>
+        <span>看完整段再决定说一句</span>
+      </button>
+      <button class="dial-opt" role="radio" aria-checked="false" data-mode="all" type="button">
+        <b>所有消息都回复</b>
+        <span>每句都接，群里会刷屏</span>
+      </button>
+    </div>
+
+    <p class="dial-note" id="dial-note">攒一批消息看完整段再开口，接不上就潜水；有人 @ 她或叫到名字时一定回。</p>
+
+    <dl class="meters" id="meters">
+      <div class="meter">
+        <dt>两条之间至少</dt>
+        <dd>90<small>秒</small></dd>
+      </div>
+      <div class="meter">
+        <dt>每天最多</dt>
+        <dd>60<small>句</small></dd>
+      </div>
+      <div class="meter">
+        <dt>安静时段</dt>
+        <dd>23:30–07:30</dd>
+      </div>
+      <div class="meter">
+        <dt>无关闲聊参与</dt>
+        <dd>15<small>%</small></dd>
+      </div>
+    </dl>
+  </section>
+
+  <details class="card" open>
+    <summary>
+      <h2>接入四步</h2>
+      <span class="sub">第一次配置才需要</span>
+      <span class="caret" aria-hidden="true"></span>
+    </summary>
+    <div class="steps-body">
+      <div class="step">
+        <h3>挂一个协议端，把 QQ 挂上去</h3>
+        <p>SnowLuma 或 NapCat 都行。用自己已经登录的号，不是重新扫码。</p>
+      </div>
+      <div class="step">
+        <h3>在协议端里开两个口子</h3>
+        <p>一个收消息 <code>ws://127.0.0.1:3001</code>，一个发消息 <code>http://127.0.0.1:3002</code>。</p>
+      </div>
+      <div class="step">
+        <h3>回到这里填地址与 Token</h3>
+        <p>保存后在这张卡上「绑定角色」，不绑的话消息进来了也没人回。</p>
+      </div>
+      <div class="step">
+        <h3>启动适配器</h3>
+        <p>目录里跑 <code>yarn onebot:run</code>。终端出现 <code>onebot-connected</code> 就通了。</p>
+      </div>
+    </div>
+  </details>
+
+</div>
+
+<script>
+  const route = document.getElementById('route');
+  const simulate = document.getElementById('simulate');
+  const fix = document.getElementById('route-fix');
+  const gateway = document.querySelector('[data-hop="gateway"]');
+  const downstream = [
+    document.querySelector('[data-hop="adapter"]'),
+    document.querySelector('[data-hop="character"]'),
+  ];
+
+  const setLive = (el) => {
+    el.classList.remove('is-break', 'is-dead');
+    el.classList.add('is-live');
+    el.querySelector('.hop-state').textContent = el.dataset.hop === 'gateway'
+      ? '握手完成'
+      : el.dataset.hop === 'adapter' ? '运行中' : '自然接话';
+  };
+
+  const setBroken = () => {
+    route.classList.add('is-broken');
+    gateway.classList.remove('is-live', 'is-dead');
+    gateway.classList.add('is-break');
+    gateway.querySelector('.hop-state').textContent = '连不上';
+    downstream.forEach((el) => {
+      el.classList.remove('is-live', 'is-break');
+      el.classList.add('is-dead');
+      el.querySelector('.hop-state').textContent = el.dataset.hop === 'adapter' ? '等待网关' : '收不到消息';
+    });
+    simulate.textContent = '恢复正常';
+  };
+
+  const setHealthy = () => {
+    route.classList.remove('is-broken');
+    setLive(gateway);
+    downstream.forEach(setLive);
+    simulate.textContent = '模拟断线';
+  };
+
+  simulate.addEventListener('click', () => {
+    route.classList.contains('is-broken') ? setHealthy() : setBroken();
+  });
+
+  fix.addEventListener('click', setHealthy);
+
+  if (new URLSearchParams(location.search).has('broken')) setBroken();
+
+  // 参与度刻度：三档是同一条尺子上的三个位置，模型切换只改刻度位置与参数区
+  const dial = document.querySelector('.dial');
+  const note = document.getElementById('dial-note');
+  const meters = document.getElementById('meters');
+  const notes = {
+    mention: '只有 @ 她、或者叫到「小鱼」「大傻鱼」这类名字才回。最省心，也最省额度。',
+    ambient: '攒一批消息看完整段再开口，接不上就潜水；有人 @ 她或叫到名字时一定回。',
+    all: '每句都回。群里一热闹就刷屏，也最容易一次把额度用完。',
+  };
+
+  dial.addEventListener('click', (event) => {
+    const opt = event.target.closest('.dial-opt');
+    if (!opt) return;
+    [...dial.querySelectorAll('.dial-opt')].forEach((el) => {
+      el.setAttribute('aria-checked', String(el === opt));
+    });
+    const index = [...dial.querySelectorAll('.dial-opt')].indexOf(opt);
+    dial.dataset.at = String(index);
+    note.textContent = notes[opt.dataset.mode];
+    meters.classList.toggle('is-hidden', opt.dataset.mode !== 'ambient');
+  });
+</script>
+</body>
+</html>

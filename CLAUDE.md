@@ -38,7 +38,7 @@ AI 对话的检索范围按身份隔离：`resolveChatMemoryScopes()` 只放行�
 
 鉴权已实现服务端会话：`sessions` 表只存会话令牌的 SHA-256 哈希，Cookie 为 `yiling_session`（HttpOnly / SameSite=Strict / 生产 Secure），密码用 scrypt 校验，登录失败写 `login_attempts` 并按用户名与来源地址限流。所有 `/api` 请求经过同源/跨站校验；业务接口通过 `requireActorUserId()` 从会话取身份。本地开发保留一条受限回退（开发构建 + `YILING_LOCAL_API_ENABLED=true` + 未关闭 `YILING_ALLOW_DEV_OWNER_BYPASS` + 回环 Host），生产构建没有该通道；携带失效 Cookie 时必须重新登录，不能回退成开发身份。回归测试为 `yarn test:auth`、`yarn test:auth-db`，登录/登出/限流链路由冒烟脚本覆盖。
 
-仍未完成的边界：密码重置（需 SMTP）、注册邮箱验证（需 SMTP）、渠道适配器的断线重连、QQ 群聊里的主动参与（主动私聊已实现，见 `docs/proactive-messaging.md`）、渠道按外部用户隔离私人记忆、公网部署加固（HTTPS、反向代理信任、备份演练）；真实模型端到端调用也需要开发者在本机配置 API 后验证。当前 CI 用仅监听回环地址的模拟模型服务验证完整数据流。模型未配置时任务必须留在队列，不得用规则摘要冒充 AI 输出。来源证据必须通过当前周期原始消息 ID 白名单校验；不要把未验证的模型推断当作确定事实自动写入长期记忆。每次代码修改后运行适用的类型检查、测试、lint 与构建；没有实际执行的检查不能声称通过。
+仍未完成的边界：密码重置（需 SMTP）、注册邮箱验证（需 SMTP）、渠道适配器的断线重连、渠道按外部用户隔离私人记忆、公网部署加固（HTTPS、反向代理信任、备份演练）；真实模型端到端调用也需要开发者在本机配置 API 后验证。当前 CI 用仅监听回环地址的模拟模型服务验证完整数据流。模型未配置时任务必须留在队列，不得用规则摘要冒充 AI 输出。来源证据必须通过当前周期原始消息 ID 白名单校验；不要把未验证的模型推断当作确定事实自动写入长期记忆。每次代码修改后运行适用的类型检查、测试、lint 与构建；没有实际执行的检查不能声称通过。
 
 账号模型为「1 个管理员 + 邮箱注册普通用户」：`User.role` 只有 ADMIN/USER；业务接口按会话 `userId` 过滤，天然隔离；管理员接口 `/api/admin/*` 走 `requireAdminActor()`。QQ 渠道只保留 OneBot 一条通道（`server/utils/channel-adapter/onebot/*`）：挂个人号，走 OneBot v11 网关的 WS 收消息 + HTTP API 发消息，WS/HTTP Token 加密入库，消息处理按角色绑定路由、幂等去重、回写平台；回归测试 `yarn test:onebot`。QQ 官方机器人渠道（AppID + AppSecret）已于 2026-10-27 下线，不要再恢复。
 
@@ -52,9 +52,15 @@ QQ 群里的「去刷一轮 B站」只认连接设置里的**主人 QQ**（`meta
 
 QQ 群发言限流按「绑定」配置（`CharacterChannelBinding.config.replyWindowMinutes` / `replyLimitPerWindow`，上限 0 = 不限；旧 `replyLimitPer10Min` 兼容）：滚动窗口只统计这条鱼在该群的 `ASSISTANT` 消息，达到上限后静默、不调模型；群公告流程不受限。它无法协调群里其他账号/系统的发言，别宣称能执行跨鱼群规。
 
+QQ 渠道页顶部的「这条链路通到哪」（`app/components/QqChannelChain.vue`，小号 → 协议端网关 → 本机适配器 → 角色）回答的是「消息为什么不回」——这四种原因以前散在页面各处的小字里，只能靠人挨个核对。断点按**因果**挑，不按显示顺序挑（`app/utils/qq-channel.ts` 的 `resolveChainRoot`）：`platform_connections.status` 只有适配器会写，进程一停就停在最后那个值上，所以必须先看网关、再看适配器，最后才轮到小号；否则适配器没启动时会先报「小号未连接」，把人指去重新登录 QQ。同理，断点之后的段落一律置灰、全页只允许有一个红点，不许四段各标各的。改这段判断前先跑 `yarn test:qq-chain`。
+
+QQ 群聊的「自然接话」走「攒批 → 零成本闸门 → 模型决定说不说」三段（`onebot/group-chat.ts`，文档 `7.1`）：绑定 `config.groupChatMode` 三档 `mention | ambient | all`，默认 ambient。攒批按 `bindingId + conversationKey`（最后一条之后 12 秒，被 @ 时 4 秒，第一条起最多 45 秒），闸门是纯函数（模式 → 安静时段 → 每日上限 → 最短间隔 → 被点名 → 3 分钟内她说过话 → 抽签），不过就整轮丢掉、不落库、不调模型。过闸门也只是「值得看一眼」：`generateConversationReply` 传 `transcript` + `allowSilent`，模型回 `silent` 就什么都不发（usage 照常记账）。**被 @ 的轮次必须 `allowSilent: false`** —— 点名了还说「不想说」比乱回更糟；`mention` 档则完全不攒批。群聊只读角色全局记忆，不拼任何人的 identity scope。不要再退回「群里每句都进模型再逐条回」——2026-10-29 那次 32 秒刷 6 条、把 10 分钟额度一次花完就是这么来的。
+
 QQ 群公告走「草稿 → 管理员确认」两段（`onebot/announcement.ts`，表 `onebot_group_announcements`）：连接级开关 `metadata.groupAnnouncementEnabled` 默认关；只认群主/管理员（`sender.role`，缺失按 member），普通成员触发无效；管理员 @ 她说「写个群公告：主题」才拟稿，草稿 10 分钟有效，回复「确认发布」才调 SnowLuma `_send_group_notice`。草稿用 `PENDING → PUBLISHING` 原子认领，重复事件不得二次发布；成功/失败都写审计。前提是小号已是群管理员；踢人、禁言等破坏性动作不要顺手放开。
 
 QQ 表情走「模型返回 faces 字段 → 渠道拼 face 段」：清单在 `onebot/faces.ts`（精选，非 QQ 完整 face 表），能力由 `ChannelMessageInput.faceCatalog` 声明而非平台名判断，角色开关 `modelConfig.emojiEnabled` 默认关，上一条刚发过表情则 10 分钟内不再发。**表情必须单独一条消息**，表情 id 只记在 `metadata.faceIds`、绝不进 `content`。别再退回「从 reply 文本里认 `[face]` 占位符」的做法 —— 正文一旦混进段标记就会被原样当文字发出去。发送侧要查 OneBot 返回的 `retcode`：出错时 HTTP 仍是 200。
+
+QQ 群看图走「段里取直链 → 视觉模型 → 文字进提示词」的旁路（`server/utils/image-understanding.ts`，文档 `6.1`）：聊天模型（`deepseek-flash` 这类）不接受 `image_url`，所以图必须在进提示词之前变成文字，正文里的 `[图片]` 换成 `[图片：<描述>]`。默认关（不配 `VISION_MODEL` 就完全不动），只认 `data.url`（`data.file` 是文件名），收到就下载（rkey 有时效），地址过公网白名单（含 DNS 解析结果与重定向后的地址），一轮最多 3 张，失败静默降级。**先过群聊闸门再调视觉** —— 被丢掉的那一轮不该为看图花钱；记账 `model_usages.kind = "vision"`。不要再退回「把图塞进聊天请求」：那在纯文本接口上等于整轮 400。
 
 B站 命令台以 `bili schema` 为准（`schema-catalog.ts`，5 分钟缓存，失败回退手写 `catalog.ts`），不要再扩手写清单；侧栏靠 `common` + 菜单隐藏清单，`MENU_VERSION` 变更时合并默认隐藏集。值班新增日报档位 `reportLevel`（full/brief/off）、今日额度重置 `quotaResetAt`、札记编辑（直接改角色全局 EVENT 记忆，软删除进回收站）；这些都不改变脚本化流水线，agent 工具循环仍未做。
 
