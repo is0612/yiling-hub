@@ -138,9 +138,11 @@ const modeIndex = computed(() => {
 
 /** 刻度下面那一句：说清这一档会发生什么，而不是复述选项名 */
 const modeNote = computed(() => {
-  if (bind.groupChatMode === "mention") return "只有 @ 她、或者叫到下面的名字才回。最省心，也最省额度；私聊永远会回。";
-  if (bind.groupChatMode === "all") return "每句都回。群里一热闹就会刷屏，也最容易一次把额度用完。";
-  return "攒一轮消息看完整段再决定接不接；接不上就潜水，不会一句一答。";
+  if (bind.groupChatMode === "mention") {
+    return "只有 @ 她、或者叫到名字才会看；名字也可能是在叫别的鱼，拿不准就不接。参与过的话题还能接一句；私聊永远会回。";
+  }
+  if (bind.groupChatMode === "all") return "每轮都回（不再逐条），群里一热闹就会刷屏，也最容易一次把额度用完。";
+  return "所有消息都可能看一眼：被 @ 一定会回，水群看上下文再决定说不说。";
 });
 
 // 父级保存后会重新拉列表，这里跟着把草稿同步成库里的值
@@ -342,7 +344,7 @@ async function tryOnce() {
           @click="bind.groupChatMode = 'mention'"
         >
           <b>仅被 @ 时回复</b>
-          <span>叫到才应，其余不理</span>
+          <span>叫到才看，判断后回</span>
         </button>
         <button
           type="button"
@@ -352,7 +354,7 @@ async function tryOnce() {
           @click="bind.groupChatMode = 'ambient'"
         >
           <b>自然接话</b>
-          <span>看完整段再决定说一句</span>
+          <span>被 @ 会回，水群看上下文</span>
         </button>
         <button
           type="button"
@@ -362,7 +364,7 @@ async function tryOnce() {
           @click="bind.groupChatMode = 'all'"
         >
           <b>所有消息都回复</b>
-          <span>每句都接，群里会刷屏</span>
+          <span>每轮都接，群里会刷屏</span>
         </button>
       </div>
 
@@ -382,8 +384,8 @@ async function tryOnce() {
           <em>填了群号就只在这个群回复；想同时听多个群，给这个角色多绑几条。</em>
         </div>
 
-        <!-- 别名在「仅被 @」下也生效（后端把「叫到名字」当成被点名），
-             所以它不属于 ambient 专属，只有「每条都回」才用不上 -->
+        <!-- 别名在「仅被 @」下也生效：后端把「叫到名字」当成弱线索，
+             会结合上下文判断是不是在叫她；只有「每条都回」用不上 -->
         <div
           v-if="bind.groupChatMode !== 'all'"
           class="beh-field"
@@ -393,7 +395,7 @@ async function tryOnce() {
             v-model="bind.groupAliases"
             placeholder="小鱼，大傻鱼，小鲸鱼"
           />
-          <em>逗号分隔。没 @ 但叫到这些名字，也算在跟她说话。</em>
+          <em>逗号分隔。没 @ 但叫到这些名字，她会看一眼再决定：群里同名的鱼可能不止一条。</em>
         </div>
 
         <div

@@ -139,36 +139,48 @@ OneBot v11 的 `message` 字段是**分段数组**（CQ 码），例如：
 - 群聊 → `send_group_msg`（`group_id`, `message`）。
 - `message` 可以是纯文本，也可以是段数组（`face` / `image` / `at`）。
 - 群聊怎么回由绑定配置 `groupChatMode` 决定，连接级 `replyOnlyWhenMentioned` 只作老数据的兜底：
-  - `mention`：@ 她、或者叫到 `groupAliases` 里的名字才回，不攒批、不给「不想说」的选项；
-  - `ambient`（默认）：攒一轮（默认最后一条之后 12 秒，被 @ 时 4 秒）再判，详见 7.1；
-  - `all`：每句都回，老行为，群一热闹就刷屏。
+  - `mention`：只把「@ 她 / 叫到 `groupAliases` 里的名字 / 已参与话题的后续」放进判断，不开放无关水群；
+  - `ambient`（默认）：被 @ 后跟进 + 自然水群，详见 7.1；
+  - `all`：每轮都回，保留老行为（不再有单条快速路径）。
+- 群聊统一走一条攒批管道：@ 也要等 `mentionWindowSeconds`（默认 4 秒），换来的是她能看见前几句。
 - 私聊总是回复。
 - 回复按 OneBot HTTP API 发送（默认 `http://127.0.0.1:3000`），带 `Authorization:
   Bearer <token>` 头（SnowLuma 的 HTTP token 与 WS token 可能不同，分别配置）。
 - **发送失败要看 `retcode`**：OneBot v11 出错时 HTTP 仍是 200（被风控、小号下线、群已解散），
   错误只在 body 的 `retcode` 里。只查 `response.ok` 会把「没发出去」记成「发成功」。
 
-### 7.1 群聊自然接话（`group-chat.ts`）
+### 7.1 群聊上下文与自然接话（`group-chat.ts` / `group-context.ts`）
 
-群聊不是一问一答。她在群里应该像个人：接得上就说一句，接不上就潜水。链路是
-「攒批 → 零成本闸门 → 模型决定说不说」，三段缺一不可。
+群聊不是一问一答。她在群里应该像个人：接得上就说一句，接不上就潜水。
+所有群消息走**同一条管道**：「短期上下文 → 攒批 → 零成本闸门 → 一次模型判断并生成回复」。
+`mention | ambient | all` 只是三种放行策略，不再有「@ 走单条、水群走攒批」两套入口。
 
-1. **攒批**：按 `bindingId + conversationKey` 缓冲，最后一条之后安静 `batchWindowSeconds`
-   才处理；从第一条起最多等 45 秒，免得一群人聊个不停她永远等不到开口时机。
-   被 @ 时窗口缩到 `mentionWindowSeconds`（4 秒）。
-2. **闸门**（`evaluateGroupChatGate`，纯函数，不花 token，顺序不能改）：
-   模式 → 安静时段（被 @ 时不挡）→ 每日上限 → 最短间隔 → 被点名 → 她刚说过话（3 分钟内）
-   → `ambientChance` 抽签。全不过就整轮丢掉，连 USER 消息都不落库。
-3. **模型决定**：过闸门只是「值得看一眼」，`generateConversationReply` 传 `transcript` +
-   `allowSilent`，模型返回 `action: "silent"` 就什么都不发（usage 照常记账）。
+1. **短期上下文**（`group-context.ts`，进程内有界，重启丢失是预期降级）：
+   按「绑定 + 群」缓存最近 5 分钟、最多 40 条；被闸门丢掉的消息也在里面，作为下一轮背景。
+   QQ 号在入模前换成 `member_n`，@ 她写 `@self`、@ 别人写 `@member_n`；昵称只做展示，
+   同名不同 QQ 必须是两个成员。回复**发送成功**后才登记话题参与（锚点 + 参与者），
+   3 分钟无相关互动过期、最长活 15 分钟；最多 3 个并行话题，满了淘汰最久没互动的。
+2. **攒批**：按 `bindingId + conversationKey` 缓冲，被 @ 或叫到名字用 `mentionWindowSeconds`（4 秒），
+   `all` 档最多 3 秒，其余用 `batchWindowSeconds`（12 秒）；从第一条起最多等 45 秒。
+3. **闸门**（`evaluateGroupChatGate`，纯函数，不花 token，顺序不能改）：
+   `all` → `mention` 档只放 direct/named/topic → 安静时段（只挡非 direct）→ 每日上限 →
+   最短间隔 → direct → named → 话题候选 → `ambientChance` 抽签。
+   只有真实 @（at 段 QQ 是她）与 `all` 档 `mustReply = true`；名字命中、话题候选、抽签
+   都允许模型沉默，也不绕过安静时段；群规限流、日上限、最短间隔对 direct 同样生效。
+4. **模型决定**：过闸门只是「值得看一眼」。`generateConversationReply` 收
+   `transcript`（本轮，带消息 id 与 member）+ `groupBackground`（只看不回）+
+   `groupAnchors`（参与过的话题）+ `policy.direct`；一次调用同时返回回复与可选的
+   `groupDecision`（relation / 锚点 / 证据 id，全部白名单校验）。
+   `action: "silent"` 就什么都不发（usage 照常记账）；只有发送成功才更新话题。
 
 被 @ 的轮次传 `allowSilent: false` —— 点名了还说「不想说」比乱回更糟。
 群聊只读角色全局记忆，不拼任何人的 identity scope：一轮里好几个人，谁的私人记忆都不该端出来。
-失败与跳过都打一行 `[onebot] 群聊 {"groupId","reason"}`，排查「她为什么没说话」先看这个。
+失败与跳过都打一行 `[onebot] 群聊 {"groupId","reason","direct","topics"}`，排查「她为什么没说话」先看这个。
 
 参数都在绑定的 `config` 里：`groupChatMode` / `batchWindowSeconds` / `mentionWindowSeconds` /
 `minGapSeconds` / `dailyMax` / `quietStart` / `quietEnd` / `ambientChance` / `groupAliases`。
 默认值见 `GROUP_CHAT_DEFAULTS`（自然档：间隔 90 秒、每天 60 句、无关闲聊 15%、23:30-07:30 安静）。
+回归测试：`yarn test:onebot-group-chat`（闸门与攒批）、`yarn test:onebot-group-context`（上下文与话题）。
 
 ### 7.2 表情
 
@@ -257,7 +269,7 @@ QQ 是唯一支持表情段的渠道。链路：
 ## 11. 分阶段
 
 - **M1（本次）**：OneBot v11 协议层 + 配置加载 + 消息处理 + runner + mock 测试。
-- **M2（已完成，2026-10-29）**：群聊自然接话 —— 攒批 + 零成本闸门 + 模型 `silent`，
-  见 7.1。没有做 qq-bridge 那种 agent 工具循环（每轮多几次工具调用，token 是单轮的几倍）。
+- **M2（已完成，2026-10-29；2026-10-30 合并为一条管道）**：群聊自然接话 —— 攒批 + 零成本闸门 + 模型 `silent`，
+  @ 与水群共用同一条上下文管道（提到名字只是弱线索），见 7.1。没有做 qq-bridge 那种 agent 工具循环（每轮多几次工具调用，token 是单轮的几倍）。
 - **M3（部分完成，2026-10-29）**：图片识别已接（6.1「看图旁路」，默认关，需要配视觉模型）。
   语音仍未做：`[语音]` 仍是占位符，转写要另接 ASR，且 QQ 语音文件名与直链的时效性同样需要验证。

@@ -18,9 +18,11 @@ import {
   createGroupChatBuffer,
   evaluateGroupChatGate,
   groupChatDayStart,
+  groupChatWindowMs,
   mentionsCharacterName,
 } from "./group-chat";
-import { ONEBOT_PLATFORM } from "./types";
+import { createGroupContext, type GroupMessageFacts } from "./group-context";
+import { ONEBOT_PLATFORM, readOnebotMentionTargets, readOnebotReplyToId } from "./types";
 import {
   claimPendingAnnouncement,
   createPendingAnnouncement,
@@ -103,10 +105,15 @@ const conversationChains = new Map<string, Promise<unknown>>();
 /** 排到队时已经过了这么久 = 这句话在群里早过去了，补一句只会更怪。 */
 const QUEUE_STALE_MS = 20_000;
 
-/** 她刚说完话的这段时间里，群里再聊大概率还是同一个话题，值得再看一眼。 */
-const RELATED_WINDOW_MS = 3 * 60 * 1000;
-
-type PendingGroupMessage = { event: OnebotResolvedEvent; binding: OnebotBindingRecord; at: number };
+type PendingGroupMessage = {
+  event: OnebotResolvedEvent;
+  binding: OnebotBindingRecord;
+  at: number;
+  /** 这一条真实 @ 了她。 */
+  direct: boolean;
+  /** 这一条正文里出现了她的名字/别名。 */
+  named: boolean;
+};
 
 /** 群里怎么叫她：角色名 + 手填的昵称。@ 由 isSelfMentioned 单独判。 */
 function cueNames(binding: OnebotBindingRecord): string[] {
@@ -399,6 +406,19 @@ function logGroupRound(groupId: string, detail: Record<string, unknown>): void {
 }
 
 export function createOnebotMessageHandler(record: OnebotConnectionRecord) {
+  /** 连接内的短期群聊上下文：背景、成员代号、话题参与。按绑定+群隔离。 */
+  const groupContext = createGroupContext({ selfQq: record.accountQq });
+
+  const factsOf = (event: OnebotResolvedEvent, at: number): GroupMessageFacts => ({
+    messageId: event.messageId,
+    at,
+    senderQq: event.userId,
+    displayName: event.displayName,
+    text: event.content,
+    mentionTargets: readOnebotMentionTargets(event.data, event.selfId || record.accountQq),
+    replyToMessageId: readOnebotReplyToId(event.data),
+  });
+
   /**
    * 一轮群聊的判定与处理。
    *
@@ -409,11 +429,17 @@ export function createOnebotMessageHandler(record: OnebotConnectionRecord) {
     const binding = items[0]!.binding;
     const groupEvent = items[0]!.event;
     const settings = binding.groupChat;
-    const names = cueNames(binding);
-    const cue = items.some((item) => isSelfMentioned(item.event, record.accountQq)
-      || mentionsCharacterName(item.event.content, names));
+    const contextKey = `${binding.id}:${groupEvent.conversationKey}`;
+    const direct = items.some((item) => item.direct);
+    const named = items.some((item) => item.named);
+    const facts = items.map((item) => factsOf(item.event, item.at));
+    const topicCandidate = groupContext.topicCandidate(contextKey, facts);
 
     const prisma = getPrisma();
+    // 群聊消息不再逐条写库，但「这个连接最近还有事件」仍要更新，否则页面会显示成掉线。
+    void prisma.platformConnection
+      .update({ where: { id: record.id }, data: { lastEventAt: new Date() } })
+      .catch(() => undefined);
     const conversation = await prisma.conversation.findFirst({
       where: { channelBindingId: binding.id, externalConversationId: groupEvent.conversationKey },
       select: { id: true },
@@ -440,8 +466,9 @@ export function createOnebotMessageHandler(record: OnebotConnectionRecord) {
     const gate = evaluateGroupChatGate({
       settings,
       now,
-      cue,
-      related: Boolean(lastSpokeAt && now.getTime() - lastSpokeAt.getTime() < RELATED_WINDOW_MS),
+      direct,
+      named,
+      topicCandidate,
       lastSpokeAt,
       spokenToday,
       random: Math.random(),
@@ -456,6 +483,7 @@ export function createOnebotMessageHandler(record: OnebotConnectionRecord) {
       return;
     }
 
+    const currentIds = items.map((item) => item.event.messageId);
     const result = await handleChannelBatch({
       platform: ONEBOT_PLATFORM,
       characterId: binding.characterId,
@@ -468,20 +496,40 @@ export function createOnebotMessageHandler(record: OnebotConnectionRecord) {
         authorPlatformUid: item.event.userId,
         ...(item.event.displayName ? { authorDisplayName: item.event.displayName } : {}),
         content: item.event.content,
+        // 入模的正文把 @ 换成代号；落库仍是原样。
+        promptContent: groupContext.formatText(contextKey, item.event.content),
+        member: groupContext.memberCode(contextKey, item.event.userId),
         ...(item.event.images.length ? { images: item.event.images } : {}),
         occurredAt: new Date(item.at),
       })),
       faceCatalog: ONEBOT_FACES,
-      // 有人点名叫她，就不该「想了想还是不说」。
-      allowSilent: !cue,
+      // 只有真实 @ 与 all 档不允许「想了想还是不说」。
+      allowSilent: !gate.mustReply,
+      group: {
+        direct,
+        background: groupContext.background(contextKey, currentIds),
+        anchors: groupContext.anchors(contextKey),
+      },
       sendReply: createReplySender(record.config, groupEvent),
     });
-    logGroupRound(groupEvent.groupId, { reason: gate.reason, status: result.status, messages: items.length });
+
+    if (result.status === "replied") {
+      groupContext.recordReply(contextKey, facts, { source: direct ? "mention" : "ambient" });
+    } else if (result.status === "silent" && result.groupDecision) {
+      // 沉默但认得出「还是在聊那个话题」：有界地续一下，不新建。
+      groupContext.refreshFromDecision(contextKey, result.groupDecision);
+    }
+    logGroupRound(groupEvent.groupId, {
+      reason: gate.reason,
+      status: result.status,
+      messages: items.length,
+      direct,
+      topics: groupContext.activeTopicCount(contextKey),
+    });
   };
 
   const groupChatBuffer = createGroupChatBuffer<PendingGroupMessage>({
     onFlush: async (key, items) => {
-      // 和 @ 的单条处理走同一把锁：不然攒批与单条会同时改同一个会话。
       await enqueueConversation(key, () => flushGroupRound(items));
     },
   });
@@ -504,15 +552,23 @@ export function createOnebotMessageHandler(record: OnebotConnectionRecord) {
 
     const isGroupMessage = event.messageType === "group" && Boolean(event.groupId);
     const groupChatMode = binding.groupChat.mode;
-    // 有没有人在跟她说话：@ 她，或者叫到她的名字。下面几处都要用，算一次就够。
-    const cued = isGroupMessage && (
-      isSelfMentioned(event, record.accountQq)
-      || mentionsCharacterName(event.content, cueNames(binding))
-    );
+    // 两个信号必须分开：真实 @ 是程序事实，名字只是弱线索（群里可能有好几条同款鱼）。
+    const direct = isGroupMessage && isSelfMentioned(event, record.accountQq);
+    const named = isGroupMessage && mentionsCharacterName(event.content, cueNames(binding));
+    const contextKey = `${binding.id}:${event.conversationKey}`;
+
+    // 先进短期上下文：哪怕这条后面被闸门丢掉，它也是下一轮的背景。
+    if (isGroupMessage && event.content) {
+      groupContext.remember(contextKey, factsOf(event, Date.now()));
+    }
 
     // 「仅 @ 时回复」是对整个群聊的开关，指令类消息也受它约束（保持老行为）。
-    if (isGroupMessage && groupChatMode === "mention" && !cued) {
-      return { status: "ignored", reason: "not_mentioned" };
+    // 名字命中与已参与话题算「可以看一眼」，交给后面的闸门与模型判断。
+    if (isGroupMessage && groupChatMode === "mention") {
+      const facts = [factsOf(event, Date.now())];
+      if (!direct && !named && !groupContext.topicCandidate(contextKey, facts)) {
+        return { status: "ignored", reason: "not_mentioned" };
+      }
     }
 
     if (!event.content) return { status: "ignored", reason: "missing_fields" };
@@ -531,23 +587,18 @@ export function createOnebotMessageHandler(record: OnebotConnectionRecord) {
       return handleBiliRunCommand(event, binding.characterId, sendReply);
     }
 
-    // 自然接话：攒一批再判。指令类（公告、B站）已经在上面的分支里返回，不会走到这里。
-    if (isGroupMessage && groupChatMode === "ambient") {
-      // 点名叫她的走短窗口（4 秒），别人闲聊走整轮窗口；都等这一轮安静下来再判。
-      const windowMs = (cued ? binding.groupChat.mentionWindowSeconds : binding.groupChat.batchWindowSeconds) * 1000;
+    // 群聊统一走一条攒批管道：三档只决定「放不放进来」，不再有单条快速路径。
+    // 指令类（公告、B站）已经在上面的分支里返回，不会走到这里。
+    if (isGroupMessage) {
       groupChatBuffer.push(
-        `${binding.id}:${event.conversationKey}`,
-        { event, binding, at: Date.now() },
-        windowMs,
+        contextKey,
+        { event, binding, at: Date.now(), direct, named },
+        groupChatWindowMs(binding.groupChat, direct || named),
       );
       return { status: "buffered" };
     }
 
-    // 群规限流只拦普通聊天；群公告是管理员显式确认的动作，不在这里静默。
-    if (await isGroupReplyLimited(binding, event)) {
-      return { status: "ignored", reason: "group_reply_limit" };
-    }
-
+    // 私聊：单条直接回，行为不变。
     await getPrisma()
       .platformConnection.update({ where: { id: record.id }, data: { lastEventAt: new Date() } })
       .catch(() => undefined);
@@ -566,7 +617,7 @@ export function createOnebotMessageHandler(record: OnebotConnectionRecord) {
       ...(speaker ? { speaker } : {}),
       characterId: binding.characterId,
       bindingId: binding.id,
-      eventType: event.messageType === "group" ? "GROUP_MESSAGE" : "PRIVATE_MESSAGE",
+      eventType: "PRIVATE_MESSAGE",
       externalConversationId: event.conversationKey,
       externalMessageId: event.messageId,
       authorOpenId: event.userId,

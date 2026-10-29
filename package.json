@@ -55,6 +55,7 @@
     "test:onebot-announcement": "tsx scripts/test-onebot-group-announcement.ts",
     "test:onebot-bili-run": "tsx scripts/test-onebot-bili-run.ts",
     "test:onebot-group-chat": "tsx scripts/test-onebot-group-chat.ts",
+    "test:onebot-group-context": "tsx scripts/test-onebot-group-context.ts",
     "test:qq-chain": "tsx scripts/test-qq-channel-chain.ts",
     "test:proactive": "tsx scripts/test-proactive.ts",
     "test:proactive-db": "tsx scripts/test-proactive-db.ts",
@@ -65,7 +66,7 @@
     "test:bili-llm": "tsx scripts/test-bili-llm.ts",
     "test:bili-cards": "tsx scripts/test-bili-cards.ts",
     "test:identity": "tsx scripts/test-identity.ts",
-    "verify:local": "yarn run db:validate && yarn run db:generate && yarn nuxt prepare && yarn run check:sfc && yarn run typecheck && yarn run test:scheduler && yarn run test:scheduler-db && yarn run test:memory-ai && yarn run test:memory-ai-request && yarn run test:memory-retrieval && yarn run test:memory-budget && yarn run test:model-usage && yarn run test:chat-model-config && yarn run test:chat-reply && yarn run test:chat-private-memory && yarn run test:chat-speaker-context && yarn run test:chat-private-memory-db && yarn run test:chat-request-idempotency-db && yarn run test:auth && yarn run test:auth-db && yarn run test:identity && yarn run test:onebot && yarn run test:onebot-faces && yarn run test:image-understanding && yarn run test:onebot-supervise && yarn run test:onebot-runner && yarn run test:onebot-announcement && yarn run test:onebot-bili-run && yarn run test:onebot-group-chat && yarn run test:qq-chain && yarn run test:proactive && yarn run test:proactive-db && yarn run test:bili-cards && yarn run test:bili-llm && yarn run test:bili-duty && yarn run test:bili-runner && yarn run test:bili-schema && yarn run test:bili-db && yarn run lint && yarn run build"
+    "verify:local": "yarn run db:validate && yarn run db:generate && yarn nuxt prepare && yarn run check:sfc && yarn run typecheck && yarn run test:scheduler && yarn run test:scheduler-db && yarn run test:memory-ai && yarn run test:memory-ai-request && yarn run test:memory-retrieval && yarn run test:memory-budget && yarn run test:model-usage && yarn run test:chat-model-config && yarn run test:chat-reply && yarn run test:chat-private-memory && yarn run test:chat-speaker-context && yarn run test:chat-private-memory-db && yarn run test:chat-request-idempotency-db && yarn run test:auth && yarn run test:auth-db && yarn run test:identity && yarn run test:onebot && yarn run test:onebot-faces && yarn run test:image-understanding && yarn run test:onebot-supervise && yarn run test:onebot-runner && yarn run test:onebot-announcement && yarn run test:onebot-bili-run && yarn run test:onebot-group-chat && yarn run test:onebot-group-context && yarn run test:qq-chain && yarn run test:proactive && yarn run test:proactive-db && yarn run test:bili-cards && yarn run test:bili-llm && yarn run test:bili-duty && yarn run test:bili-runner && yarn run test:bili-schema && yarn run test:bili-db && yarn run lint && yarn run build"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",

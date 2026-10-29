@@ -1,4 +1,4 @@
-import { generateConversationReply, type ConversationContextMessage } from "../chat-reply";
+import { generateConversationReply, type ConversationContextMessage, type ConversationGroupDecision } from "../chat-reply";
 import { isEmojiEnabled, resolveChatModelSettings } from "../chat-model-config";
 import { resolveCharacterApiKey } from "../credential-encryption";
 import {
@@ -35,6 +35,10 @@ export type ChannelTurnMessage = {
   /** Optional author display name for identity metadata. */
   authorDisplayName?: string;
   content: string;
+  /** 给模型看的正文（@ 已代号化）；不传就等于 content。落库仍用 content。 */
+  promptContent?: string;
+  /** 群聊里的成员代号；只有群聊会传。 */
+  member?: string;
   /** 收到这条消息的时刻（不是模型返回的时刻）。 */
   occurredAt?: Date;
   /** 这条消息里带的图。只有接了「看图」旁路才会被读，没配视觉模型时完全忽略。 */
@@ -78,6 +82,13 @@ export type ChannelMessageInput = {
   sendReply: ChannelReplySender;
 };
 
+/** 群聊这一轮的上下文：本轮是否 @ 她、之前几句、她参与过的话题。 */
+export type ChannelGroupTurnContext = {
+  direct: boolean;
+  background: Array<{ id: string; at: number; member: string; speaker: string; text: string }>;
+  anchors: Array<{ id: string; label: string }>;
+};
+
 /** 群聊一轮：几秒内几个人说的话，一次看、最多回一次。 */
 export type ChannelBatchInput = {
   platform: string;
@@ -89,12 +100,14 @@ export type ChannelBatchInput = {
   faceCatalog?: ReadonlyArray<{ id: string; name: string }>;
   /** 允许模型说「这轮不插嘴」。被 @ 时传 false —— 点名了还不回比乱回更糟。 */
   allowSilent?: boolean;
+  /** 群聊上下文；私聊不传。 */
+  group?: ChannelGroupTurnContext;
   sendReply: ChannelReplySender;
 };
 
 export type ChannelMessageResult =
-  | { status: "replied"; conversationId: string }
-  | { status: "silent"; conversationId: string }
+  | { status: "replied"; conversationId: string; groupDecision?: ConversationGroupDecision }
+  | { status: "silent"; conversationId: string; groupDecision?: ConversationGroupDecision }
   | { status: "duplicate" }
   | { status: "ignored"; reason: string };
 
@@ -185,6 +198,8 @@ async function runChannelTurn(input: {
   faceCatalog?: ReadonlyArray<{ id: string; name: string }>;
   /** 允许模型说「这轮我不插嘴」。只有群聊批处理会传。 */
   allowSilent?: boolean;
+  /** 群聊上下文；私聊不传。 */
+  group?: ChannelGroupTurnContext;
   sendReply: ChannelReplySender;
 }): Promise<ChannelMessageResult> {
   const prisma = getPrisma();
@@ -293,7 +308,7 @@ async function runChannelTurn(input: {
         where: { conversationId: existingConversation.id },
         orderBy: [{ occurredAt: "desc" }, { id: "desc" }],
         take: 20,
-        select: { role: true, content: true, occurredAt: true, metadata: true },
+        select: { role: true, content: true, occurredAt: true, metadata: true, externalMessageId: true },
       })
     : [];
 
@@ -320,9 +335,10 @@ async function runChannelTurn(input: {
       occurredAt: item.occurredAt.toISOString(),
     }));
 
+  const modelText = (message: ChannelTurnMessage) => message.promptContent ?? message.content;
   const currentMessage = messages.length === 1
-    ? messages[0]!.content
-    : messages.map((message) => `${message.authorDisplayName || "群友"}：${message.content}`).join("\n");
+    ? modelText(messages[0]!)
+    : messages.map((message) => `${message.authorDisplayName || "群友"}：${modelText(message)}`).join("\n");
 
   const retrievalQuery = [
     currentMessage,
@@ -377,11 +393,19 @@ async function runChannelTurn(input: {
     scope: snapshot.memoryScopeId === globalScope.id ? ("character" as const) : ("private" as const),
   }));
 
-  // 群聊一轮是「几个人在聊」，不是「某个人在对我说话」：交给 transcript，并允许她不说。
-  // 进了群聊批处理就一律用 transcript —— 哪怕这一轮只来了一条，那也是「群里有人说了句话」，
-  // 不是「某个人在私聊里问我」。
+  // 群聊一轮是「几个人在聊」，不是「某个人在对我说话」：交给 transcript。
+  // 进了群聊管道就一律用群聊语境 —— 被 @ 时虽然不允许沉默，但同样需要上下文。
   const allowSilent = input.allowSilent === true && isGroup;
-  const useTranscript = allowSilent || messages.length > 1;
+  const useTranscript = Boolean(input.group) || isGroup || messages.length > 1;
+
+  // 群聊背景里可能混着已经落库的历史（recentMessages 里也有一份），按消息 id 去重，
+  // 免得同一句在提示词里出现两遍。
+  const storedMessageIds = new Set(
+    recentStoredMessages
+      .map((item) => item.externalMessageId)
+      .filter((id): id is string => Boolean(id)),
+  );
+  const backgroundLines = (input.group?.background ?? []).filter((line) => !storedMessageIds.has(line.id));
 
   let generated;
   try {
@@ -399,10 +423,30 @@ async function runChannelTurn(input: {
       ...(useTranscript
         ? {
             transcript: messages.map((message) => ({
+              id: message.externalMessageId,
+              ...(message.member ? { member: message.member } : {}),
               speaker: message.authorDisplayName ?? "",
-              content: message.content,
+              content: message.promptContent ?? message.content,
               ...(message.occurredAt ? { occurredAt: message.occurredAt.toISOString() } : {}),
             })),
+          }
+        : {}),
+      ...(input.group
+        ? {
+            groupChat: true,
+            direct: input.group.direct,
+            ...(backgroundLines.length
+              ? {
+                  groupBackground: backgroundLines.map((line) => ({
+                    id: line.id,
+                    member: line.member,
+                    speaker: line.speaker,
+                    content: line.text,
+                    occurredAt: new Date(line.at).toISOString(),
+                  })),
+                }
+              : {}),
+            ...(input.group.anchors.length ? { groupAnchors: input.group.anchors } : {}),
           }
         : {}),
       ...(allowSilent ? { allowSilent } : {}),
@@ -500,9 +544,10 @@ async function runChannelTurn(input: {
     channelBindingId: input.bindingId,
     conversationId,
   });
+  const decision = generated.groupDecision ? { groupDecision: generated.groupDecision } : {};
   return generated.action === "silent"
-    ? { status: "silent", conversationId }
-    : { status: "replied", conversationId };
+    ? { status: "silent", conversationId, ...decision }
+    : { status: "replied", conversationId, ...decision };
 }
 
 /** 单条路径的结果：不传 allowSilent，所以永远不会是 silent。 */
@@ -545,6 +590,7 @@ export async function handleChannelBatch(input: ChannelBatchInput): Promise<Chan
     externalConversationId: input.externalConversationId,
     messages: input.messages,
     ...(input.faceCatalog ? { faceCatalog: input.faceCatalog } : {}),
+    ...(input.group ? { group: input.group } : {}),
     allowSilent: input.allowSilent !== false,
     sendReply: input.sendReply,
   });

@@ -279,9 +279,122 @@ try {
     "transcript 要带发言人，模型才知道是谁在说。",
   );
 
+  // 群聊上下文：背景、锚点、direct 都进提示词；groupDecision 只认白名单。
+  let groupBody = "";
+  globalThis.fetch = async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    groupBody = typeof init?.body === "string" ? init.body : "";
+    return new Response(JSON.stringify({
+      choices: [{
+        message: {
+          content: JSON.stringify({
+            reply: "那面条这回有机会了",
+            usedMemoryIds: [],
+            usedSnapshotIds: [],
+            groupDecision: {
+              relation: "shared_topic",
+              topicAnchorMessageId: "a1",
+              evidenceMessageIds: ["m2", "invented"],
+            },
+          }),
+        },
+      }],
+      usage: { prompt_tokens: 40, completion_tokens: 10, total_tokens: 50 },
+    }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  const grouped = await generateConversationReply({
+    characterName: "鲸鱼娘",
+    characterPrompt: "你是群里的一个网友。",
+    model: "test-chat-model",
+    apiKey: secretApiKey,
+    apiBaseUrl: privateProviderUrl,
+    currentMessage: "B：火锅\nA：昨天才吃过火锅",
+    transcript: [
+      { id: "m1", member: "member_1", speaker: "A", content: "@self 晚饭吃什么" },
+      { id: "m2", member: "member_2", speaker: "B", content: "火锅" },
+    ],
+    groupChat: true,
+    direct: false,
+    groupBackground: [{ id: "h1", member: "member_1", speaker: "A", content: "周末有空吗" }],
+    groupAnchors: [{ id: "a1", label: "晚饭" }],
+    allowSilent: true,
+    recentMessages: [],
+    memories: [],
+    snapshots: [],
+  });
+  const groupMessages = (JSON.parse(groupBody) as { messages: Array<{ role: string; content: string }> }).messages;
+  const groupSystem = groupMessages.find((item) => item.role === "system")!.content;
+  assert(groupSystem.includes("groupBackground"), "系统提示词要说明背景只看不回。");
+  assert(groupSystem.includes("groupAnchors"), "系统提示词要说明参与过的话题。");
+  assert(groupSystem.includes("policy.direct"), "系统提示词要给出 direct 事实。");
+  const groupInput = JSON.parse(groupMessages.find((item) => item.role === "user")!.content) as Record<string, unknown>;
+  assert.deepEqual(groupInput.policy, { direct: false }, "direct 要以程序事实进提示词。");
+  assert.deepEqual(
+    (groupInput.transcript as Array<{ id: string; member: string }>).map((item) => [item.id, item.member]),
+    [["m1", "member_1"], ["m2", "member_2"]],
+    "transcript 要带消息 id 与成员代号，模型才能引用证据。",
+  );
+  assert.equal((groupInput.groupBackground as Array<{ id: string }>)[0]?.id, "h1");
+  assert.equal((groupInput.groupAnchors as Array<{ id: string }>)[0]?.id, "a1");
+  assert.equal(grouped.groupDecision?.relation, "shared_topic");
+  assert.equal(grouped.groupDecision?.topicAnchorMessageId, "a1", "锚点必须来自本次提供的 groupAnchors。");
+  assert.deepEqual(grouped.groupDecision?.evidenceMessageIds, ["m2"], "编造的证据 id 要被过滤掉。");
+
+  // 非法 relation / 不存在锚点：整段决策丢掉，但回复照常返回。
+  globalThis.fetch = async (): Promise<Response> => new Response(JSON.stringify({
+    choices: [{ message: { content: JSON.stringify({
+      reply: "嗯",
+      usedMemoryIds: [],
+      usedSnapshotIds: [],
+      groupDecision: { relation: "made_up", topicAnchorMessageId: "nope", evidenceMessageIds: ["ghost"] },
+    }) } }],
+    usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 },
+  }), { status: 200, headers: { "content-type": "application/json" } });
+  const badDecision = await generateConversationReply({
+    characterName: "鲸鱼娘",
+    characterPrompt: "你是群里的一个网友。",
+    model: "test-chat-model",
+    apiKey: secretApiKey,
+    apiBaseUrl: privateProviderUrl,
+    currentMessage: "随便聊聊",
+    transcript: [{ id: "m1", member: "member_1", speaker: "A", content: "随便聊聊" }],
+    groupChat: true,
+    groupAnchors: [{ id: "a1", label: "晚饭" }],
+    allowSilent: true,
+    recentMessages: [],
+    memories: [],
+    snapshots: [],
+  });
+  assert.equal(badDecision.reply, "嗯", "决策字段非法不能连累正常回复。");
+  assert.equal(badDecision.groupDecision, undefined, "非法 relation 要整段丢弃。");
+
+  // 被 @ 时必须回：模型返回 silent 也不能被当成「这轮不插嘴」。
+  globalThis.fetch = async (): Promise<Response> => new Response(JSON.stringify({
+    choices: [{ message: { content: JSON.stringify({ action: "silent", reply: "", usedMemoryIds: [], usedSnapshotIds: [] }) } }],
+  }), { status: 200, headers: { "content-type": "application/json" } });
+  await assert.rejects(
+    generateConversationReply({
+      characterName: "鲸鱼娘",
+      characterPrompt: "你是群里的一个网友。",
+      model: "test-chat-model",
+      apiKey: secretApiKey,
+      apiBaseUrl: privateProviderUrl,
+      currentMessage: "@self 在吗",
+      transcript: [{ id: "m1", member: "member_1", speaker: "A", content: "@self 在吗" }],
+      groupChat: true,
+      direct: true,
+      allowSilent: false,
+      recentMessages: [],
+      memories: [],
+      snapshots: [],
+    }),
+    /LLM_INVALID_RESPONSE/,
+    "direct 轮次不能 silent 成功。",
+  );
+
   console.log("Chat reply tests passed: prompt credential isolation, source ID validation, malformed provider response handling, and one retry for malformed model output.");
   console.log("对话示例注入：拼进 characterPrompt、带边界、不新增顶层字段 —— 通过");
   console.log("群聊 silent：允许不说、reply 允许为空、usage 照常记账、transcript 带发言人 —— 通过");
+  console.log("群聊上下文：groupBackground/groupAnchors/policy.direct 进提示词、groupDecision 白名单、被 @ 时不能 silent —— 通过");
 } finally {
   globalThis.fetch = originalFetch;
 }

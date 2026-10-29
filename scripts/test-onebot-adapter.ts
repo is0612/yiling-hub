@@ -429,16 +429,16 @@ try {
       : 0;
   };
 
-  // 三条同时发：并发是这条链路最容易漏的地方 —— 限流查的是「已落库的回复」，
-  // 前一条还在等模型时库里还是 0 条，几条消息会一起放行（2026-10-29 线上 32 秒回了 6 条）。
-  await Promise.all([
-    emitToGroup(1001, 20, "第一条"),
-    emitToGroup(1001, 21, "第二条"),
-    emitToGroup(1001, 22, "第三条应该被静默"),
-  ]);
+  // 三条消息分三轮发：群聊统一攒批后，「同时涌入」会合成一轮，
+  // 这里要验证的是「已经说到上限后还要静默」，所以一条一条等回执。
+  record.bindings[0]!.groupChat.mentionWindowSeconds = 1;
+  await emitToGroup(1001, 20, "第一条");
+  await waitFor(async () => (await groupAssistantCount()) >= 1);
+  await emitToGroup(1001, 21, "第二条");
   await waitFor(async () => (await groupAssistantCount()) >= 2);
+  await emitToGroup(1001, 22, "第三条应该被静默");
   await sleep(2500);
-  assert.equal(await groupAssistantCount(), 2, "同时涌入的超限消息也必须被限流挡住，不能一起放行。");
+  assert.equal(await groupAssistantCount(), 2, "达到上限后的消息必须被限流挡住，不能一起放行。");
   const sentTexts = (await groupReplies()).map((item) => String(item.body.message));
   assert(!sentTexts.some((text) => text.includes("第三条应该被静默")), "被静默的请求不能发出回复。");
   const rateConversation = await prisma.conversation.findFirst({
@@ -508,7 +508,7 @@ try {
 
   closeGateway();
 
-  console.log("OneBot 渠道端到端测试通过：WS token 鉴权与单次握手、事件接入、CQ 码解析、凭据解密、角色绑定路由、记忆检索、模型回复、表情段发送与冷却、消息持久化、外部身份 upsert、回发平台与幂等去重、群公告草稿与确认发布、普通成员越权拦截、按群滚动 10 分钟回复上限（含并发涌入）、群聊仅回 @ 她的、自然接话攒批与闸门、B站 指令主人专属。");
+  console.log("OneBot 渠道端到端测试通过：WS token 鉴权与单次握手、事件接入、CQ 码解析、凭据解密、角色绑定路由、记忆检索、模型回复、表情段发送与冷却、消息持久化、外部身份 upsert、回发平台与幂等去重、群公告草稿与确认发布、普通成员越权拦截、按群滚动 10 分钟回复上限、群聊统一攒批（mention 档只在被叫到时进管道）、自然接话闸门、B站 指令主人专属。");
 } finally {
   for (const child of children) child.kill();
   await prisma.onebotGroupAnnouncement.deleteMany({ where: { connectionId } }).catch(() => undefined);

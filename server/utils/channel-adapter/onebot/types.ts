@@ -155,6 +155,58 @@ export function readOnebotMessageText(data: unknown): string {
   return "";
 }
 
+/** 一条消息里 @ 到的对象，按「是不是她 / 全体 / 别人」分类。同名不算，只看 qq。 */
+export type OnebotMentionTarget = "self" | "other" | "all";
+
+/**
+ * 解析 @ 指向。结构化段优先；字符串消息兼容 `[CQ:at,qq=...]`。
+ * 没有 selfId 时一律记 other —— 宁可少认一次，也不要把别人当成她。
+ */
+export function readOnebotMentionTargets(data: unknown, selfId: string): OnebotMentionTarget[] {
+  const message = (data as { message?: unknown } | null)?.message;
+  const targets = new Set<OnebotMentionTarget>();
+  const push = (raw: string) => {
+    if (raw === "all") targets.add("all");
+    else if (selfId && raw === selfId) targets.add("self");
+    else targets.add("other");
+  };
+  if (Array.isArray(message)) {
+    for (const segment of message) {
+      if (!segment || typeof segment !== "object") continue;
+      const seg = segment as OnebotSegment;
+      if (seg.type !== "at") continue;
+      const qq = seg.data?.qq;
+      if (qq === undefined || qq === null) continue;
+      push(String(qq));
+    }
+  } else if (typeof message === "string") {
+    for (const match of message.matchAll(/\[CQ:at,qq=([^,\]]+)/g)) {
+      if (match[1]) push(match[1]);
+    }
+  }
+  return [...targets];
+}
+
+/** 引用回复的目标消息 id；没有就返回空串（不猜）。 */
+export function readOnebotReplyToId(data: unknown): string {
+  const message = (data as { message?: unknown } | null)?.message;
+  if (Array.isArray(message)) {
+    for (const segment of message) {
+      if (!segment || typeof segment !== "object") continue;
+      const seg = segment as OnebotSegment;
+      if (seg.type !== "reply") continue;
+      const id = seg.data?.id;
+      if (id !== undefined && id !== null) return String(id);
+    }
+    return "";
+  }
+  if (typeof message === "string") {
+    const match = message.match(/\[CQ:reply,id=([^,\]]+)/);
+    return match?.[1] ?? "";
+  }
+  return "";
+}
+
 /** 一张图在 OneBot 事件里的样子。`url` 带 rkey 且有时效，只在收到消息的当口可用。 */
 export type OnebotImageRef = {
   /** 直链；表情包/商城表情常常拿不到，是空字符串。 */

@@ -120,10 +120,12 @@ export function resolveGroupChatSettings(config: unknown, legacyMentionOnly = tr
 export type GroupChatGateInput = {
   settings: GroupChatSettings;
   now: Date;
-  /** 有人 @ 她、叫她的名字，或者用引用回复了她。 */
-  cue: boolean;
-  /** 这一轮在接着她说的话（她最近说过话，或者有人在回她）。 */
-  related: boolean;
+  /** 批次里有真实 @ 她（at 段的 QQ 是她）。 */
+  direct: boolean;
+  /** 正文里出现了她的名字/别名。弱线索：可以看一眼，但不强制回。 */
+  named: boolean;
+  /** 程序从短期话题参与里找到的候选：有人在接着她参与过的话题说。 */
+  topicCandidate: boolean;
   lastSpokeAt: Date | null;
   /** 今天这个群她已说过的句数。 */
   spokenToday: number;
@@ -131,33 +133,56 @@ export type GroupChatGateInput = {
   random: number;
 };
 
-export type GroupChatGateResult = { allowed: boolean; reason: string };
+export type GroupChatGateResult = {
+  allowed: boolean;
+  reason: string;
+  /** 放行后是否「不允许主动沉默」：只有真实 @ 与 all 档为 true。 */
+  mustReply: boolean;
+};
 
 /**
  * 闸门顺序：先判配置性问题（模式），再判时间性问题（安静时段 / 每日上限 / 间隔），
  * 最后才轮到相关性。顺序不能反 —— 反过来会出现「明明已经吵到上限了，还在算该不该接话」。
  *
- * 被 @ 也是一种「有人在跟她说话」：安静时段挡闲聊，但不该挡点名找她。
+ * direct（真实 @）是程序事实，不能被模型或名额改写：它可以绕过安静时段，
+ * 但仍要受每日上限与最短间隔约束；all 档保持旧的「每条都回」行为。
  */
 export function evaluateGroupChatGate(input: GroupChatGateInput): GroupChatGateResult {
-  const { settings, now, cue } = input;
+  const { settings, now, direct } = input;
 
-  if (settings.mode === "mention" && !cue) return { allowed: false, reason: "not_cued" };
   // 「全都回」是用户显式选的，保持老行为，不再叠任何门槛。
-  if (settings.mode === "all") return { allowed: true, reason: "all_messages" };
+  if (settings.mode === "all") return { allowed: true, reason: "all_messages", mustReply: true };
+  if (settings.mode === "mention" && !direct && !input.named && !input.topicCandidate) {
+    return { allowed: false, reason: "not_cued", mustReply: false };
+  }
 
-  if (!cue && inQuietHours(now, settings)) return { allowed: false, reason: "quiet_hours" };
+  if (!direct && inQuietHours(now, settings)) {
+    return { allowed: false, reason: "quiet_hours", mustReply: false };
+  }
   if (settings.dailyMax > 0 && input.spokenToday >= settings.dailyMax) {
-    return { allowed: false, reason: "daily_limit" };
+    return { allowed: false, reason: "daily_limit", mustReply: false };
   }
   if (input.lastSpokeAt && settings.minGapSeconds > 0) {
     const gapMs = now.getTime() - input.lastSpokeAt.getTime();
-    if (gapMs < settings.minGapSeconds * 1000) return { allowed: false, reason: "too_soon" };
+    if (gapMs < settings.minGapSeconds * 1000) {
+      return { allowed: false, reason: "too_soon", mustReply: false };
+    }
   }
-  if (cue) return { allowed: true, reason: "cued" };
-  if (input.related) return { allowed: true, reason: "related" };
-  if (input.random < settings.ambientChance) return { allowed: true, reason: "chance" };
-  return { allowed: false, reason: "not_relevant" };
+  if (direct) return { allowed: true, reason: "direct", mustReply: true };
+  if (input.named) return { allowed: true, reason: "named", mustReply: false };
+  if (input.topicCandidate) return { allowed: true, reason: "topic", mustReply: false };
+  if (input.random < settings.ambientChance) return { allowed: true, reason: "chance", mustReply: false };
+  return { allowed: false, reason: "not_relevant", mustReply: false };
+}
+
+/**
+ * 攒批窗口：被 @ 或叫到名字用短窗口（有人在找她，别让人等一整轮）；
+ * all 档也用短窗口（它要保持「很快回」的手感）；其余走整轮窗口。
+ */
+export function groupChatWindowMs(settings: GroupChatSettings, urgent: boolean): number {
+  if (urgent) return settings.mentionWindowSeconds * 1000;
+  if (settings.mode === "all") return Math.min(settings.mentionWindowSeconds, 3) * 1000;
+  return settings.batchWindowSeconds * 1000;
 }
 
 /** 文字里有没有叫到她的名字。大小写不敏感，去掉空白再比 —— 群里打字很少规范。 */

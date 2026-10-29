@@ -7,6 +7,17 @@ export type ConversationContextMessage = { role: "USER" | "ASSISTANT"; content: 
 export type ConversationMemoryScope = "character" | "private";
 export type ConversationContextMemory = { id: string; category: string; content: string; confidence: number | null; relevanceScore: number; scope: ConversationMemoryScope };
 export type ConversationContextSnapshot = { id: string; summary: string; periodStart: string; periodEnd: string; version: number; relevanceScore: number; scope: ConversationMemoryScope };
+/**
+ * 群聊里模型对这轮对话关系的一个可选判断。只用于短期话题状态的刷新，
+ * 不改变「被 @ 必须回」这类程序事实。
+ */
+export type ConversationGroupRelation = "direct" | "followup" | "shared_topic" | "ambient" | "unrelated";
+export type ConversationGroupDecision = {
+  relation: ConversationGroupRelation;
+  topicAnchorMessageId?: string;
+  evidenceMessageIds: string[];
+};
+
 export type ConversationReplyInput = {
   characterName: string;
   characterPrompt: string;
@@ -35,8 +46,17 @@ export type ConversationReplyInput = {
   /**
    * 群聊一轮里几个人的发言，每行带发言人显示名。传了它就走「群聊」提示词：
    * currentMessage 不再是某一个人的话，她要判断的是「这轮里有没有我的话」。
+   * 带上 id 与 member 代号后，模型才能引用本轮消息做证据。
    */
-  transcript?: Array<{ speaker?: string; content: string; occurredAt?: string }>;
+  transcript?: Array<{ id?: string; member?: string; speaker?: string; content: string; occurredAt?: string }>;
+  /** 明确标记这是群聊：即使 allowSilent=false（被 @）也要用群聊语境。 */
+  groupChat?: boolean;
+  /** 本轮是否真实 @ 了她。程序事实，提示词只能参考，不能推翻。 */
+  direct?: boolean;
+  /** 本轮之前的近期群聊，只供理解，不要求回复。 */
+  groupBackground?: Array<{ id?: string; member?: string; speaker?: string; content: string; occurredAt?: string }>;
+  /** 她参与过、还没过期的话题锚点，模型只能从里面选。 */
+  groupAnchors?: Array<{ id: string; label: string }>;
   /**
    * 允许模型回 silent（这轮不插嘴）。只在群聊传 —— 私聊里「已读不回」比乱回更糟。
    */
@@ -58,6 +78,8 @@ export type ConversationReplyResult = {
   usedSnapshotIds: string[];
   /** 表情 id（最多 1 个）；没传 emojiFaces 时恒为空。渠道自己决定怎么发。 */
   faceIds: string[];
+  /** 群聊里模型对「这轮在跟谁说话」的可选判断；没返回或字段非法时为空。 */
+  groupDecision?: ConversationGroupDecision;
   model: string;
   provider: string;
   promptTemplateVersion: string;
@@ -155,8 +177,11 @@ function systemPrompt(flags: {
     // 群聊的核心是「可以不说话」。不把这句话写死，模型会默认每条都得回，
     // 于是抽签放行一次就等于逼她开口一次 —— 那就又退化成「全都回」了。
     lines.push(
-      "You are reading a QQ group chat. transcript is the round of messages that just came in: several people talking, each line prefixed with the speaker's display name. It is not addressed to you unless someone @ mentions you or calls your name.",
-      "Decide whether to speak at all. Speak when someone is talking to you, when the conversation genuinely invites a line from you, or when you have something of your own to add. Stay silent when the group is talking among themselves, when you would only repeat or summarize what was said, or when you have nothing worth adding.",
+      "You are reading a QQ group chat. transcript is the round of messages that just came in; groupBackground is earlier chatter for context only — you are not replying to it.",
+      "Each transcript line has an id and a member code. @self means someone @ mentions you; @member_n is someone else. A display name is not identity: several bots in this group may share the same or a similar name.",
+      "Decide whether to speak at all. Speak when someone is talking to you, when the conversation genuinely invites a line from you, or when you have something of your own to add. If policy.direct is true, someone @ mentioned you: answer, and do not stay silent.",
+      "Stay silent when the group is talking among themselves, when a message is clearly addressed to another bot or member, when you would only repeat or summarize what was said, or when you have nothing worth adding.",
+      "groupAnchors lists topics you already took part in. You may add to those topics even when the latest question is aimed at someone else, but never answer as if you were the person being asked, and never claim another bot's exchange as your own.",
       "Staying silent is normal: in a real group most rounds end without you saying anything. Never answer every message, never greet people, and never narrate what others just said.",
       "When you do speak, drop in one short line the way a person would in a group chat. Do not @ people unless you actually need their attention.",
     );
@@ -169,7 +194,8 @@ function systemPrompt(flags: {
   );
   if (withGroupChat) {
     lines.push(
-      'Return only a valid JSON object with: action ("reply" or "silent"), reply (string, empty when action is "silent"), usedMemoryIds, and usedSnapshotIds.',
+      'Return only a valid JSON object with: action ("reply" or "silent"), reply (string, empty when action is "silent"), usedMemoryIds, usedSnapshotIds, and an optional groupDecision.',
+      'groupDecision = { relation: "direct" | "followup" | "shared_topic" | "ambient" | "unrelated", topicAnchorMessageId (optional, must be one of groupAnchors[].id), evidenceMessageIds (array of transcript ids that support the judgment) }.',
       'Default to action "silent" when in doubt. A wrong line in a group is worse than saying nothing.',
     );
   } else {
@@ -189,6 +215,36 @@ function systemPrompt(flags: {
     );
   }
   return lines.join("\n");
+}
+
+const GROUP_RELATIONS: readonly ConversationGroupRelation[] = [
+  "direct", "followup", "shared_topic", "ambient", "unrelated",
+];
+
+/**
+ * 群聊决策只做白名单过滤：关系必须是枚举，锚点必须来自本次提供的 groupAnchors，
+ * 证据必须是本轮 transcript 的 id。任何一项不合法就只丢掉这个字段，不影响回复本身。
+ */
+function readGroupDecision(
+  value: unknown,
+  validAnchorIds: Set<string>,
+  validEvidenceIds: Set<string>,
+): ConversationGroupDecision | undefined {
+  const record = asRecord(value);
+  if (!record) return undefined;
+  const relation = typeof record.relation === "string"
+    && (GROUP_RELATIONS as readonly string[]).includes(record.relation)
+    ? record.relation as ConversationGroupRelation
+    : null;
+  if (!relation) return undefined;
+  const anchor = typeof record.topicAnchorMessageId === "string" && validAnchorIds.has(record.topicAnchorMessageId)
+    ? record.topicAnchorMessageId
+    : undefined;
+  return {
+    relation,
+    ...(anchor ? { topicAnchorMessageId: anchor } : {}),
+    evidenceMessageIds: readIdList(record.evidenceMessageIds, validEvidenceIds, 5),
+  };
 }
 
 export async function generateConversationReply(input: ConversationReplyInput): Promise<ConversationReplyResult> {
@@ -232,6 +288,9 @@ export async function generateConversationReply(input: ConversationReplyInput): 
       }
     : null;
 
+  // 群聊语境由调用方显式声明；退回到「有 transcript 也算」，兼容旧调用。
+  const withGroupChat = input.groupChat === true || Boolean(input.transcript?.length);
+
   const promptInput = {
     characterName: input.characterName,
     characterPrompt: composeCharacterPrompt(input.characterPrompt, input.styleExamples),
@@ -241,12 +300,27 @@ export async function generateConversationReply(input: ConversationReplyInput): 
     ...(input.transcript?.length
       ? {
           transcript: input.transcript.map((entry) => ({
+            ...(entry.id ? { id: entry.id } : {}),
+            ...(entry.member ? { member: entry.member } : {}),
             speaker: entry.speaker?.trim().slice(0, 80) || undefined,
             content: entry.content.slice(0, 1200),
             ...(entry.occurredAt ? { occurredAt: entry.occurredAt } : {}),
           })),
         }
       : {}),
+    ...(input.groupBackground?.length
+      ? {
+          groupBackground: input.groupBackground.map((entry) => ({
+            ...(entry.id ? { id: entry.id } : {}),
+            ...(entry.member ? { member: entry.member } : {}),
+            speaker: entry.speaker?.trim().slice(0, 80) || undefined,
+            content: entry.content.slice(0, 600),
+            ...(entry.occurredAt ? { occurredAt: entry.occurredAt } : {}),
+          })),
+        }
+      : {}),
+    ...(input.groupAnchors?.length ? { groupAnchors: input.groupAnchors } : {}),
+    ...(withGroupChat ? { policy: { direct: input.direct === true } } : {}),
     ...(emojiFaces.length ? { availableFaces: emojiFaces } : {}),
     recentMessages: input.recentMessages.map((entry) => ({
       role: entry.role,
@@ -295,7 +369,7 @@ export async function generateConversationReply(input: ConversationReplyInput): 
                 withFaces: emojiFaces.length > 0,
                 withUserAddress: Boolean(userAddress),
                 withSpeaker: Boolean(speaker),
-                withGroupChat: Boolean(input.transcript?.length) && input.allowSilent === true,
+                withGroupChat,
               }),
             },
             { role: "user", content: JSON.stringify(promptInput) },
@@ -334,21 +408,27 @@ export async function generateConversationReply(input: ConversationReplyInput): 
     if (!parsed) throw new Error("LLM_INVALID_RESPONSE: 模型没有返回符合约定的 JSON 对象。");
 
     const reply = typeof parsed.reply === "string" ? parsed.reply.trim().slice(0, 12_000) : "";
-    const withGroupChat = Boolean(input.transcript?.length) && input.allowSilent === true;
     const validMemoryIds = new Set(input.memories.map((memory) => memory.id));
     const validSnapshotIds = new Set(input.snapshots.map((snapshot) => snapshot.id));
     const validFaceIds = new Set(emojiFaces.map((face) => face.id));
+    const validAnchorIds = new Set((input.groupAnchors ?? []).map((anchor) => anchor.id));
+    const validEvidenceIds = new Set((input.transcript ?? []).map((entry) => entry.id).filter((id): id is string => Boolean(id)));
+    const groupDecision = withGroupChat
+      ? readGroupDecision(parsed.groupDecision, validAnchorIds, validEvidenceIds)
+      : undefined;
     const responseModel = typeof payload?.model === "string" ? payload.model : model;
     const base = {
       usedMemoryIds: readIdList(parsed.usedMemoryIds, validMemoryIds),
       usedSnapshotIds: readIdList(parsed.usedSnapshotIds, validSnapshotIds),
+      ...(groupDecision ? { groupDecision } : {}),
       model: responseModel.slice(0, 200),
       provider: endpoint.hostname,
       promptTemplateVersion: PROMPT_TEMPLATE_VERSION,
       usage: readUsage(payload?.usage),
     };
-    // silent 只在群聊里被承认：网页/私聊传了 allowSilent 也不该变成「已读不回」。
-    if (withGroupChat && parsed.action === "silent") {
+    // silent 只在群聊里被承认，且只在调用方允许沉默时：网页/私聊传了 allowSilent 也不该「已读不回」，
+    // 被 @ 的轮次更不允许模型用 silent 逃掉。
+    if (withGroupChat && input.allowSilent === true && parsed.action === "silent") {
       return { action: "silent", reply: "", faceIds: [], ...base };
     }
     if (!reply) throw new Error("LLM_INVALID_RESPONSE: 模型没有返回有效的 reply 文本。");
