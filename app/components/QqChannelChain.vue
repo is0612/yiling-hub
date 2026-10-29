@@ -92,6 +92,7 @@ const hops = computed(() => {
     {
       key: "account",
       name: "QQ 小号",
+      short: "小号",
       fact: props.connection?.appId ? `QQ ${props.connection.appId}` : "未填 QQ 号",
       state: STATUS_LABEL[props.connection?.status ?? ""] ?? "未知",
       mono: true,
@@ -99,6 +100,7 @@ const hops = computed(() => {
     {
       key: "gateway",
       name: "协议端网关",
+      short: "协议端",
       fact: props.gateway ? `${props.gateway.host}:${props.gateway.port}` : "未配置地址",
       state: gatewayState.value,
       mono: true,
@@ -106,6 +108,7 @@ const hops = computed(() => {
     {
       key: "adapter",
       name: "本机适配器",
+      short: "适配器",
       fact: props.adapter?.running && props.adapter.pid ? `pid ${props.adapter.pid}` : "yarn onebot:run",
       state: props.adapter?.running ? "运行中" : props.adapter ? "未运行" : "检查中",
       // pid 和命令都是要照着敲/核对的东西，一律等宽，不随状态变
@@ -114,6 +117,7 @@ const hops = computed(() => {
     {
       key: "character",
       name: "角色",
+      short: "角色",
       fact: props.binding?.characterName ?? "未绑定",
       state: props.binding ? (MODE_LABEL[props.binding.groupChat.mode] ?? "会回复") : "没人接",
       mono: false,
@@ -124,6 +128,17 @@ const hops = computed(() => {
     ...definition,
     tone: props.ready ? chainToneAt(index, root, conditions[index] === true) : "idle",
   }));
+});
+
+/**
+ * 右端那句结论。四段各标自己的状态还不够 —— 人要的是「通没通、断在哪」一句话。
+ * 只取断点那一段的短名，不说「协议端网关」这种四字全称。
+ */
+const verdict = computed(() => {
+  if (!props.ready) return { text: "检查中", tone: "idle" };
+  const root = rootIndex.value;
+  if (root === -1) return { text: "四段全通", tone: "live" };
+  return { text: `断在${hops.value[root]?.short ?? "中途"}`, tone: "break" };
 });
 
 /**
@@ -190,15 +205,10 @@ const fix = computed(() => {
 
 <template>
   <section
-    class="chain"
+    class="linkbar"
     aria-label="QQ 渠道链路状态"
   >
-    <div class="chain-h">
-      <h2>这条链路通到哪</h2>
-      <span class="note">断在哪一环，后面的整段都不会动</span>
-    </div>
-
-    <ol class="track">
+    <ol class="link">
       <li
         v-for="hop in hops"
         :key="hop.key"
@@ -209,60 +219,74 @@ const fix = computed(() => {
           class="dot"
           aria-hidden="true"
         />
-        <div class="hop-body">
-          <span class="hop-name">{{ hop.name }}</span>
-          <span
-            class="hop-fact"
-            :class="{ 'is-mono': hop.mono }"
-          >{{ hop.fact }}</span>
-          <span class="hop-state">{{ hop.state }}</span>
-        </div>
+        <span class="hop-name">{{ hop.name }}</span>
+        <span
+          class="hop-val"
+          :class="{ 'is-mono': hop.mono }"
+        >{{ hop.fact }}</span>
+        <span class="hop-st">{{ hop.state }}</span>
       </li>
     </ol>
 
-    <div
-      v-if="fix"
-      class="chain-fix"
-    >
-      <div class="fix-copy">
-        <b>{{ fix.title }}</b>
-        <p>{{ fix.detail }}</p>
-      </div>
-      <a
-        v-if="fix.href"
-        class="fix-btn"
-        :href="fix.href"
-        target="_blank"
-        rel="noopener noreferrer"
-      >{{ fix.actionLabel }}</a>
+    <div class="link-end">
+      <span
+        class="verdict"
+        :class="`is-${verdict.tone}`"
+      >{{ verdict.text }}</span>
       <button
-        v-else-if="fix.action"
         type="button"
-        class="fix-btn"
-        @click="emit('action', fix.action.kind)"
+        class="link-btn"
+        @click="emit('action', 'edit-connection')"
       >
-        {{ fix.action.label }}
+        连接设置
       </button>
     </div>
   </section>
+
+  <!-- 断点条：和带子分开。带子回答「通没通」，这条才回答「怎么办」 -->
+  <div
+    v-if="fix"
+    class="fixbar"
+  >
+    <b>{{ fix.title }}</b>
+    <p>{{ fix.detail }}</p>
+    <a
+      v-if="fix.href"
+      class="fix-act"
+      :href="fix.href"
+      target="_blank"
+      rel="noopener noreferrer"
+    >{{ fix.actionLabel }}</a>
+    <button
+      v-else-if="fix.action"
+      type="button"
+      class="fix-act"
+      @click="emit('action', fix.action.kind)"
+    >
+      {{ fix.action.label }}
+    </button>
+  </div>
 </template>
 
 <style scoped>
-.chain {
-  border-radius: 10px;
+/* ── 链路带：一条横向的带子，不套卡片 ─────────────────
+   四段并排 + 右端一句结论。段与段之间的连线只在「通了」时出现，
+   断开那一段之后整段不连线 —— 视觉上就停在那儿。 */
+.linkbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--sp-5);
+  border-radius: var(--radius);
   background: var(--surface);
-  padding: 16px 18px 16px;
+  padding: var(--sp-3) var(--sp-4);
+  margin-bottom: var(--sp-3);
 }
 
-.chain-h { display: flex; align-items: baseline; gap: 8px; margin-bottom: 16px; }
-.chain-h h2 { margin: 0; color: var(--text-2); font-size: 14px; font-weight: 700; }
-.chain-h .note { margin-left: auto; color: var(--dim); font-size: 12px; }
-
-/* ── 轨道：四段等宽并排 ─────────────────────────────── */
-.track {
+.link {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 16px;
+  gap: var(--sp-4);
   margin: 0;
   padding: 0;
   list-style: none;
@@ -270,108 +294,147 @@ const fix = computed(() => {
 
 .hop { position: relative; min-width: 0; }
 
+/* 圆点单独占一行：连线走圆点的高度，文字从下一行开始，两者不打架 */
 .dot {
   display: block;
-  width: 11px;
-  height: 11px;
-  border-radius: 50%;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
   background: var(--line-strong);
 }
-.hop.is-live .dot { background: var(--green); }
-.hop.is-break .dot { background: var(--red); }
+.hop-name { display: block; margin-top: 6px; color: var(--text-2); font-size: 12px; font-weight: 600; }
+.hop-val {
+  display: block;
+  margin-top: 2px;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.hop-val.is-mono { font-family: var(--mono); font-size: 12px; font-weight: 500; }
+.hop-st { display: block; margin-top: 1px; color: var(--dim); font-size: 12px; }
 
-/* 连接线画在「本段圆点右侧」，一直到下一段圆点：dot 11px + 3px 呼吸 → left 14 */
 .hop:not(:last-child)::after {
   position: absolute;
-  top: 4.5px;
-  left: 14px;
-  width: calc(100% - 13px);
+  top: 3px;
+  left: 12px;
+  right: calc(var(--sp-4) * -1);
   height: 2px;
   border-radius: 1px;
-  background: var(--line-strong);
+  background: var(--line);
   content: "";
 }
-.hop.is-live:not(:last-child)::after { background: var(--green); }
-/* 断点之后那段用红虚线：不是「还没轮到」，是「就断在这儿」 */
-.hop.is-break:not(:last-child)::after {
-  background: repeating-linear-gradient(90deg, var(--red) 0 6px, transparent 6px 11px);
-}
 
-.hop-body { display: flex; flex-direction: column; gap: 2px; margin-top: 9px; }
-.hop-name { color: var(--text); font-size: 14px; font-weight: 600; line-height: 1.4; }
-.hop-fact {
-  color: var(--dim);
-  font-size: 12px;
-  line-height: 1.5;
-  overflow-wrap: anywhere;
-}
-.hop-fact.is-mono { font-family: ui-monospace, Consolas, monospace; }
-.hop-state { margin-top: 1px; font-size: 12px; font-weight: 600; }
-.hop.is-live .hop-state { color: var(--green); }
-.hop.is-break .hop-state { color: var(--red); }
-.hop.is-idle .hop-state { color: var(--faint); }
+.hop.is-live .dot { background: var(--green); }
+.hop.is-live:not(:last-child)::after { background: var(--green); opacity: .45; }
+.hop.is-break .dot { background: var(--red); }
+.hop.is-break:not(:last-child)::after { background: transparent; }
+.hop.is-break .hop-st { color: var(--red); font-weight: 600; }
+.hop.is-off .dot { background: var(--line-strong); }
 
-/* ── 断点提示：一行原因 + 一个动作 ─────────────────── */
-.chain-fix {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  margin-top: 14px;
-  border-radius: 8px;
-  background: var(--red-soft);
-  padding: 10px 12px;
-}
-.fix-copy { min-width: 0; flex: 1; }
-.fix-copy b { display: block; color: var(--red); font-size: 13px; font-weight: 700; }
-.fix-copy p { margin: 3px 0 0; color: var(--text-2); font-size: 12px; line-height: 1.65; }
+/* 断开后这两段仍在传递信息（号是多少、绑没绑），所以只降到 --dim（5.1:1），
+   不用 --faint —— 它按契约只做装饰，不承载信息。 */
+.hop.is-off .hop-val,
+.hop.is-off .hop-st { color: var(--dim); }
 
-.fix-btn {
+.link-end { display: flex; flex: none; align-items: center; gap: var(--sp-2); }
+
+.verdict {
   display: inline-flex;
-  height: 30px;
+  height: 26px;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.verdict.is-live { background: var(--green-soft); color: var(--green); }
+.verdict.is-break { background: var(--red-soft); color: var(--red); }
+.verdict.is-idle { background: var(--surface-3); color: var(--dim); }
+
+.link-btn {
+  height: 32px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  padding: 0 10px;
+  color: var(--text-2);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background .14s var(--ease), color .14s var(--ease);
+}
+.link-btn:hover { background: var(--surface-3); color: var(--brand-strong); }
+.link-btn:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+
+/* ── 断点条：一行原因 + 一个动作 ───────────────────── */
+.fixbar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-3);
+  border-radius: var(--radius);
+  background: var(--red-soft);
+  padding: var(--sp-3) var(--sp-4);
+}
+.fixbar b { flex: none; color: var(--red); font-size: 14px; font-weight: 700; }
+.fixbar p { min-width: 0; flex: 1; margin: 0; color: var(--text-2); font-size: 14px; line-height: 1.6; }
+
+.fix-act {
+  display: inline-flex;
+  height: 32px;
   flex: none;
   align-items: center;
   border: 0;
-  border-radius: 7px;
+  border-radius: var(--radius-sm);
   background: var(--surface);
-  padding: 0 11px;
+  padding: 0 12px;
   color: var(--red);
-  font-size: 12px;
-  font-weight: 700;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
   white-space: nowrap;
   text-decoration: none;
   cursor: pointer;
   transition: background .14s var(--ease), color .14s var(--ease);
 }
-.fix-btn:hover { background: var(--red); color: #fff; }
-.fix-btn:focus-visible { outline: 2px solid var(--red); outline-offset: 2px; }
+.fix-act:hover { background: var(--red); color: #fff; }
+.fix-act:focus-visible { outline: 2px solid var(--red); outline-offset: 2px; }
 
-/* ── 窄屏：转纵向，圆点在左、竖线穿过 ─────────────────── */
-@media (max-width: 720px) {
-  .chain { padding: 14px 15px; }
-  .chain-h { flex-wrap: wrap; gap: 2px 8px; margin-bottom: 14px; }
-  .chain-h .note { margin-left: 0; }
+/* ── 窄屏：转纵向，但每个跳点只占一行 ───────────────
+   四段各写三行会把带子撑到 300px 高，比它要回答的「通没通」还显眼；
+   竖排时点名、值、状态压成一行，圆点和竖线在左列把四段串起来。 */
+@media (max-width: 860px) {
+  .linkbar { grid-template-columns: minmax(0, 1fr); gap: var(--sp-3); padding: var(--sp-3); }
+  .link { grid-template-columns: minmax(0, 1fr); gap: 10px; }
 
-  .track { grid-template-columns: minmax(0, 1fr); gap: 14px; }
   .hop {
     display: grid;
-    grid-template-columns: 14px minmax(0, 1fr);
-    gap: 10px;
+    grid-template-columns: 12px 68px minmax(0, 1fr) auto;
+    align-items: center;
+    column-gap: var(--sp-2);
   }
-  .dot { grid-column: 1; grid-row: 1; margin-top: 5px; }
-  .hop-body { grid-column: 2; grid-row: 1; margin-top: 0; }
+  .dot { grid-column: 1; grid-row: 1; align-self: start; margin-top: 5px; }
+  .hop-name { grid-column: 2; margin-top: 0; white-space: nowrap; }
+  .hop-val { grid-column: 3; min-width: 0; margin-top: 0; }
+  .hop-st { grid-column: 4; margin-top: 0; text-align: right; }
   .hop:not(:last-child)::after {
-    top: 19px;
-    bottom: -19px;
-    left: 5px;
+    top: 13px;
+    right: auto;
+    bottom: -15px;
+    left: 3px;
     width: 2px;
     height: auto;
   }
-  /* 竖线用纵向渐变，横线那套 dashed 是 90deg，这里必须换 */
-  .hop.is-break:not(:last-child)::after {
-    background: repeating-linear-gradient(180deg, var(--red) 0 6px, transparent 6px 11px);
-  }
 
-  .chain-fix { flex-wrap: wrap; }
-  .fix-btn { margin-left: auto; }
+  .link-end { justify-content: space-between; }
+  .fixbar { flex-wrap: wrap; }
+  .fixbar p { flex-basis: 100%; }
+  .fix-act { margin-left: auto; }
 }
 </style>

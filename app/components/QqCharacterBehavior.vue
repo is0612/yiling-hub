@@ -9,7 +9,7 @@
  * 绑定级保存走 POST /bindings（按 characterId+connectionId upsert），
  * 角色级保存走 PATCH /characters/:id，互不干扰。
  */
-import { Promotion, Right } from "@element-plus/icons-vue";
+import { ArrowRight, Promotion } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
 
 type ProactiveSettings = {
@@ -48,11 +48,8 @@ type ProactiveSnapshot = {
 };
 
 const props = defineProps<{
-  bindingId: string;
   characterId: string;
-  characterName: string;
   connectionId: string;
-  connectionName: string;
   routingKey: string | null;
   replyWindowMinutes: number;
   replyLimitPerWindow: number;
@@ -144,15 +141,6 @@ const modeNote = computed(() => {
   if (bind.groupChatMode === "mention") return "只有 @ 她、或者叫到下面的名字才回。最省心，也最省额度；私聊永远会回。";
   if (bind.groupChatMode === "all") return "每句都回。群里一热闹就会刷屏，也最容易一次把额度用完。";
   return "攒一轮消息看完整段再决定接不接；接不上就潜水，不会一句一答。";
-});
-
-/** 头像里一个字：优先取第一个汉字 —— 名字叫「deepseek鲸鱼娘」时，取到 "d" 很难看 */
-const initial = computed(() => {
-  const chars = Array.from(props.characterName);
-  const cjk = chars.find((char) => /[\u4e00-\u9fa5]/.test(char));
-  if (cjk) return cjk;
-  const latin = chars.slice(0, 2).join("");
-  return latin ? latin.toUpperCase() : "?";
 });
 
 // 父级保存后会重新拉列表，这里跟着把草稿同步成库里的值
@@ -331,20 +319,12 @@ async function tryOnce() {
 </script>
 
 <template>
-  <article class="beh-card">
-    <div class="beh-head">
-      <span class="beh-avatar">{{ initial }}</span>
-      <div class="beh-id">
-        <h3>{{ characterName }}</h3>
-        <p>已绑定到 {{ connectionName }}</p>
-      </div>
-    </div>
-
-    <!-- 绑定级：群聊行为 -->
-    <div class="beh-bind">
-      <div class="beh-bind-h">
-        <b>她在群里怎么说话</b>
-        <span class="beh-sum">只对这个号 / 群生效</span>
+  <div class="beh">
+    <!-- 一组：这个群。绑定级设置都收在这里，改它只影响这一行 -->
+    <section class="grp">
+      <div class="grp-h">
+        <b>这个群</b>
+        <span class="grp-tag">只对这条生效</span>
       </div>
 
       <!-- 一条刻度：三档是同一个维度的强弱，不该是三排开关 -->
@@ -390,597 +370,538 @@ async function tryOnce() {
         {{ modeNote }}
       </p>
 
-      <!-- 四个数就是这套行为现在的实际参数，一眼看完；改在下面的「参数」里 -->
-      <dl
-        v-if="bind.groupChatMode === 'ambient'"
-        class="meters"
-      >
-        <div class="meter">
-          <dt>两条之间至少</dt>
-          <dd>{{ bind.minGapSeconds }}<small>秒</small></dd>
+      <!-- 参数直接摊在组里：以前先摆四个只读数字、再折一层「节奏与限流」，
+           同一批值出现两次，折叠头还跟分组标题长得一样。 -->
+      <div class="beh-grid is-bind">
+        <div class="beh-field">
+          <span class="beh-label">群号（可留空）</span>
+          <el-input
+            v-model="bind.routingKey"
+            placeholder="留空 = 私聊 + 所有群"
+          />
+          <em>填了群号就只在这个群回复；想同时听多个群，给这个角色多绑几条。</em>
         </div>
-        <div class="meter">
-          <dt>每天最多</dt>
-          <dd>
-            {{ bind.dailyMax || "不限" }}<small v-if="bind.dailyMax">句</small>
-          </dd>
-        </div>
-        <div class="meter">
-          <dt>安静时段</dt>
-          <dd class="is-clock">
-            {{ bind.quietStart }}–{{ bind.quietEnd }}
-          </dd>
-        </div>
-        <div class="meter">
-          <dt>无关闲聊参与</dt>
-          <dd>{{ bind.ambientChancePercent }}<small>%</small></dd>
-        </div>
-      </dl>
 
-      <details class="beh-params">
+        <!-- 别名在「仅被 @」下也生效（后端把「叫到名字」当成被点名），
+             所以它不属于 ambient 专属，只有「每条都回」才用不上 -->
+        <div
+          v-if="bind.groupChatMode !== 'all'"
+          class="beh-field"
+        >
+          <span class="beh-label">群里怎么叫她</span>
+          <el-input
+            v-model="bind.groupAliases"
+            placeholder="小鱼，大傻鱼，小鲸鱼"
+          />
+          <em>逗号分隔。没 @ 但叫到这些名字，也算在跟她说话。</em>
+        </div>
+
+        <div
+          v-if="bind.groupChatMode === 'ambient'"
+          class="beh-field"
+        >
+          <span class="beh-label">说话节奏</span>
+          <div class="beh-limit">
+            <span>两条之间至少隔</span>
+            <el-input-number
+              v-model="bind.minGapSeconds"
+              :min="0"
+              :max="3600"
+              :step="30"
+            />
+            <span>秒，每天最多</span>
+            <el-input-number
+              v-model="bind.dailyMax"
+              :min="0"
+              :max="1000"
+              :step="10"
+            />
+            <span>句</span>
+          </div>
+          <em>0 句 = 不限。觉得她太吵就先调小「每天最多」。</em>
+        </div>
+
+        <div
+          v-if="bind.groupChatMode === 'ambient'"
+          class="beh-field"
+        >
+          <span class="beh-label">安静时段</span>
+          <div class="beh-quiet">
+            <el-time-select
+              v-model="bind.quietStart"
+              start="00:00"
+              step="00:30"
+              end="23:30"
+              placeholder="23:30"
+            />
+            <span class="beh-quiet-sep">到</span>
+            <el-time-select
+              v-model="bind.quietEnd"
+              start="00:00"
+              step="00:30"
+              end="23:30"
+              placeholder="07:30"
+            />
+          </div>
+          <em>这段时间里，除了有人 @ 她，都不主动接话。允许跨午夜。</em>
+        </div>
+
+        <div
+          v-if="bind.groupChatMode === 'ambient'"
+          class="beh-field"
+        >
+          <span class="beh-label">无关闲聊的参与概率</span>
+          <div class="beh-limit">
+            <el-input-number
+              v-model="bind.ambientChancePercent"
+              :min="0"
+              :max="100"
+              :step="5"
+            />
+            <span>%</span>
+          </div>
+          <em>跟她完全没关系的聊天，按这个比例放进去看一眼再说。调高更活跃，也更费 token。</em>
+        </div>
+
+        <div class="beh-field">
+          <span class="beh-label">群聊发言限流</span>
+          <div class="beh-limit">
+            <span>每</span>
+            <el-input-number
+              v-model="bind.replyWindowMinutes"
+              :min="1"
+              :max="1440"
+              :step="5"
+            />
+            <span>分钟最多回复</span>
+            <el-input-number
+              v-model="bind.replyLimitPerWindow"
+              :min="0"
+              :max="100"
+              :step="1"
+            />
+            <span>条</span>
+          </div>
+          <em>0 条 = 不限。按群分别计数，只统计她自己的回复。</em>
+        </div>
+      </div>
+
+      <!-- 绑定级开关：只在这个号/群生效，所以留在第一组 -->
+      <div class="toggle">
+        <span class="toggle-copy">
+          <b>主人的 B站 口令</b>
+          <span>主人在群里说口令时跑一轮 B站 值班；主人 QQ 在连接设置里填</span>
+        </span>
+        <el-switch v-model="bind.groupBiliRunEnabled" />
+      </div>
+    </section>
+
+    <!-- 二组：这个角色。角色级开关改一次影响所有绑定，所以单独成组、标题写明 -->
+    <section class="grp">
+      <div class="grp-h">
+        <b>这个角色</b>
+        <span class="grp-tag">所有群共用</span>
+      </div>
+
+      <div class="toggle">
+        <span class="toggle-copy">
+          <b>发表情</b>
+          <span>回复时偶尔单独跟一张表情，10 分钟内不会连发。只影响 QQ，网页对话与 B站 不受影响。</span>
+        </span>
+        <el-switch
+          v-model="emoji"
+          :loading="savingEmoji"
+          @change="onEmojiChange"
+        />
+      </div>
+
+      <div class="toggle">
+        <span class="toggle-copy">
+          <b>看群里的图</b>
+          <span>群友发图时先让视觉模型读成几句描述，她回的就是图里的内容；不开只看到「[图片]」。每张图多一次模型调用，一轮最多读 3 张，读失败不影响回复。</span>
+        </span>
+        <el-switch
+          v-model="imageUnderstanding"
+          :loading="savingImageUnderstanding"
+          @change="onImageUnderstandingChange"
+        />
+      </div>
+
+      <!-- 主动找话带一整套闸门参数，所以它是个可展开的开关行，不是纯开关 -->
+      <details class="more is-toggle">
         <summary>
-          <span class="params-sum">参数</span>
-          <span class="beh-sum">群号、别名、节奏、限流</span>
+          <span class="more-sum">主动找话</span>
+          <span class="grp-tag">她自己先发一条 QQ 私信</span>
           <span class="grow" />
-          <el-icon class="params-caret">
-            <Right />
+          <span
+            class="pill"
+            :class="draft.enabled ? 'pill-green' : 'pill-gray'"
+          >{{ draft.enabled ? "已开启" : "默认关闭" }}</span>
+          <el-icon class="more-caret">
+            <ArrowRight />
           </el-icon>
         </summary>
 
-        <div class="params-body">
-          <div class="beh-field">
-            <span class="beh-label">群号（可留空）</span>
-            <el-input
-              v-model="bind.routingKey"
-              placeholder="留空 = 私聊 + 所有群"
-            />
-            <em>填了群号就只在这个群回复；想同时听多个群，给这个角色多绑几条。</em>
-          </div>
-
-          <div
-            v-if="bind.groupChatMode === 'ambient'"
-            class="beh-field"
-          >
-            <span class="beh-label">群里怎么叫她</span>
-            <el-input
-              v-model="bind.groupAliases"
-              placeholder="小鱼，大傻鱼，小鲸鱼"
-            />
-            <em>逗号分隔。没 @ 但叫到这些名字，也算在跟她说话。</em>
-          </div>
-
-          <div
-            v-if="bind.groupChatMode === 'ambient'"
-            class="beh-field"
-          >
-            <span class="beh-label">说话节奏</span>
-            <div class="beh-limit">
-              <span>两条之间至少隔</span>
-              <el-input-number
-                v-model="bind.minGapSeconds"
-                :min="0"
-                :max="3600"
-                :step="30"
-              />
-              <span>秒，每天最多</span>
-              <el-input-number
-                v-model="bind.dailyMax"
-                :min="0"
-                :max="1000"
-                :step="10"
-              />
-              <span>句</span>
-            </div>
-            <em>0 句 = 不限。觉得她太吵就先调小「每天最多」。</em>
-          </div>
-
-          <div
-            v-if="bind.groupChatMode === 'ambient'"
-            class="beh-field"
-          >
-            <span class="beh-label">安静时段</span>
-            <div class="beh-quiet">
-              <el-time-select
-                v-model="bind.quietStart"
-                start="00:00"
-                step="00:30"
-                end="23:30"
-                placeholder="23:30"
-              />
-              <span class="beh-quiet-sep">到</span>
-              <el-time-select
-                v-model="bind.quietEnd"
-                start="00:00"
-                step="00:30"
-                end="23:30"
-                placeholder="07:30"
-              />
-            </div>
-            <em>这段时间里，除了有人 @ 她，都不主动接话。允许跨午夜。</em>
-          </div>
-
-          <div
-            v-if="bind.groupChatMode === 'ambient'"
-            class="beh-field"
-          >
-            <span class="beh-label">无关闲聊的参与概率</span>
-            <div class="beh-limit">
-              <el-input-number
-                v-model="bind.ambientChancePercent"
-                :min="0"
-                :max="100"
-                :step="5"
-              />
-              <span>%</span>
-            </div>
-            <em>跟她完全没关系的聊天，按这个比例放进去看一眼再说。调高更活跃，也更费 token。</em>
-          </div>
+        <div class="more-body">
+          <p class="beh-lead">
+            不是定时群发：先攒「想做但还没做的事」，再由闸门决定这一刻能不能说。
+            收件人取这个角色最近一次 QQ 私聊的对象，没私聊过就不会发。
+          </p>
 
           <div class="beh-field">
-            <span class="beh-label">群聊发言限流</span>
-            <div class="beh-limit">
-              <span>每</span>
-              <el-input-number
-                v-model="bind.replyWindowMinutes"
-                :min="1"
-                :max="1440"
-                :step="5"
-              />
-              <span>分钟最多回复</span>
-              <el-input-number
-                v-model="bind.replyLimitPerWindow"
-                :min="0"
-                :max="100"
-                :step="1"
-              />
-              <span>条</span>
+            <div class="beh-inline">
+              <span class="beh-label">开启主动找话</span>
+              <el-switch v-model="draft.enabled" />
             </div>
-            <em>0 条 = 不限。按群分别计数，只统计她自己的回复。</em>
+            <em>这是唯一一条「她先开口」的路径；打开前先确认你能接受她突然找你。</em>
           </div>
 
-          <div class="beh-toggle is-tight">
-            <div class="beh-copy">
-              <b>刷一轮 B站</b>
-              <span>主人在群里说口令触发她跑一轮 B站 值班；主人 QQ 在连接设置里填。</span>
+          <template v-if="draft.enabled">
+            <div class="beh-grid">
+              <div class="beh-field">
+                <span class="beh-label">每天最多几条</span>
+                <el-input-number
+                  v-model="draft.dailyMax"
+                  :min="0"
+                  :max="24"
+                />
+                <em>0 = 关掉这个口子。按东八区自然日算。</em>
+              </div>
+              <div class="beh-field">
+                <span class="beh-label">两条之间至少隔多久（分钟）</span>
+                <el-input-number
+                  v-model="draft.minGapMinutes"
+                  :min="15"
+                  :max="1440"
+                  :step="15"
+                />
+                <em>默认 180；太短会变成「刚聊完又凑上来」。</em>
+              </div>
             </div>
-            <el-switch v-model="bind.groupBiliRunEnabled" />
+
+            <div class="beh-field">
+              <span class="beh-label">安静时段</span>
+              <div class="beh-quiet">
+                <el-time-select
+                  v-model="draft.quietStart"
+                  start="00:00"
+                  step="00:30"
+                  end="23:30"
+                  placeholder="23:00"
+                />
+                <span class="beh-quiet-sep">到</span>
+                <el-time-select
+                  v-model="draft.quietEnd"
+                  start="00:00"
+                  step="00:30"
+                  end="23:30"
+                  placeholder="08:00"
+                />
+              </div>
+              <em>允许跨午夜（23:00 到 08:00 就是整夜闭嘴）。起止填成一样会被拒绝保存。</em>
+            </div>
+
+            <div class="beh-grid">
+              <div class="beh-field">
+                <span class="beh-label">刚聊过就先不打扰（分钟）</span>
+                <el-input-number
+                  v-model="draft.userActiveMinutes"
+                  :min="0"
+                  :max="720"
+                  :step="10"
+                />
+                <em>你在这段时间内说过话，她就不主动开口 —— 那样叫接话。0 = 不判这条。</em>
+              </div>
+              <div class="beh-field">
+                <!-- 数字放在标签行右侧，不用 show-input：Element 那条会把轨道挤成一小截 -->
+                <div class="beh-inline">
+                  <span class="beh-label">最低置信度</span>
+                  <span class="beh-value">{{ draft.minConfidence.toFixed(2) }}</span>
+                </div>
+                <el-slider
+                  v-model="draft.minConfidence"
+                  :min="0"
+                  :max="1"
+                  :step="0.05"
+                />
+                <em>她给每件「想做的事」打 0–1 分，低于这个值就不开口。调高更安静。</em>
+              </div>
+            </div>
+          </template>
+
+          <div class="beh-state">
+            <template v-if="snapshot">
+              <span
+                class="pill"
+                :class="snapshot.status.canSendNow ? 'pill-green' : 'pill-gray'"
+              >{{ snapshot.status.reasonLabel }}</span>
+              <span class="beh-meta">
+                今天 {{ snapshot.status.sentToday }} / {{ snapshot.settings.dailyMax }} 条 ·
+                池子 {{ snapshot.status.pendingCount }} 条 ·
+                收件人 {{ snapshot.status.recipient ?? "还没有" }}
+              </span>
+            </template>
+            <span
+              v-else
+              class="beh-meta"
+            >还读不到当前状态，保存后刷新一次。</span>
+            <span class="grow" />
+            <button
+              type="button"
+              class="beh-btn"
+              :disabled="trying || savingProactive"
+              @click="tryOnce"
+            >
+              <el-icon><Promotion /></el-icon>{{ trying ? "试跑中…" : "立即试一次" }}
+            </button>
+            <button
+              type="button"
+              class="beh-btn is-lead"
+              :disabled="savingProactive"
+              @click="saveProactive()"
+            >
+              {{ savingProactive ? "保存中…" : "保存" }}
+            </button>
+          </div>
+
+          <p class="beh-hint">
+            「立即试一次」只跳过时间类限制（安静时段 / 间隔 / 每日上限）；开关、收件人和当日额度照判，
+            否则这个按钮就等于绕过所有保护。
+          </p>
+
+          <div
+            v-if="snapshot?.recent.length"
+            class="beh-recent"
+          >
+            <div
+              v-for="item in snapshot.recent.slice(0, 3)"
+              :key="item.id"
+              class="beh-recent-row"
+            >
+              <span class="beh-kind">{{ KIND_LABELS[item.kind] ?? item.kind }}</span>
+              <span class="beh-recent-text">{{ item.status === "SENT" ? (item.content ?? item.goal) : item.goal }}</span>
+              <span class="beh-recent-status">{{ STATUS_LABELS[item.status] ?? item.status }}</span>
+            </div>
           </div>
         </div>
       </details>
-    </div>
+    </section>
 
-    <!-- 角色级开关：跟群聊策略无关，默认收起，首屏只留一句摘要 -->
-    <details class="beh-extra">
-      <summary>
-        <span class="params-sum">更多开关</span>
-        <span class="beh-sum">发表情 · 看群里的图 · 主动找话</span>
-        <span class="grow" />
-        <el-icon class="params-caret">
-          <Right />
-        </el-icon>
-      </summary>
-
-      <div class="extra-body">
-        <!-- 角色级：发表情（绑定的所有号共用） -->
-        <div class="beh-toggle">
-          <div class="beh-copy">
-            <b>发表情</b>
-            <span>回复时偶尔单独跟一张表情，10 分钟内不会连发。只影响 QQ，网页对话与 B站 不受影响。</span>
-          </div>
-          <el-switch
-            v-model="emoji"
-            :loading="savingEmoji"
-            @change="onEmojiChange"
-          />
-        </div>
-
-        <!-- 角色级：看群里的图（绑定的所有号共用） -->
-        <div class="beh-toggle">
-          <div class="beh-copy">
-            <b>看群里的图</b>
-            <span>群友发图时先让视觉模型读成几句描述，她回的就是图里的内容；不开只看到「[图片]」。每张图多一次模型调用，一轮最多读 3 张，读失败不影响回复。</span>
-          </div>
-          <el-switch
-            v-model="imageUnderstanding"
-            :loading="savingImageUnderstanding"
-            @change="onImageUnderstandingChange"
-          />
-        </div>
-
-        <details class="beh-more">
-          <summary>
-            <span class="caret"><el-icon><Right /></el-icon></span>
-            <b>主动找话</b>
-            <span
-              class="pill"
-              :class="draft.enabled ? 'pill-green' : 'pill-gray'"
-            >{{ draft.enabled ? "已开启" : "默认关闭" }}</span>
-            <span class="beh-sum">她自己先发一条 QQ 私信</span>
-          </summary>
-
-          <div class="beh-body">
-            <p class="beh-lead">
-              不是定时群发：先攒「想做但还没做的事」，再由闸门决定这一刻能不能说。
-              收件人取这个角色最近一次 QQ 私聊的对象，没私聊过就不会发。
-            </p>
-
-            <div class="beh-field">
-              <div class="beh-inline">
-                <span class="beh-label">开启主动找话</span>
-                <el-switch v-model="draft.enabled" />
-              </div>
-              <em>这是唯一一条「她先开口」的路径；打开前先确认你能接受她突然找你。</em>
-            </div>
-
-            <template v-if="draft.enabled">
-              <div class="beh-grid">
-                <div class="beh-field">
-                  <span class="beh-label">每天最多几条</span>
-                  <el-input-number
-                    v-model="draft.dailyMax"
-                    :min="0"
-                    :max="24"
-                  />
-                  <em>0 = 关掉这个口子。按东八区自然日算。</em>
-                </div>
-                <div class="beh-field">
-                  <span class="beh-label">两条之间至少隔多久（分钟）</span>
-                  <el-input-number
-                    v-model="draft.minGapMinutes"
-                    :min="15"
-                    :max="1440"
-                    :step="15"
-                  />
-                  <em>默认 180；太短会变成「刚聊完又凑上来」。</em>
-                </div>
-              </div>
-
-              <div class="beh-field">
-                <span class="beh-label">安静时段</span>
-                <div class="beh-quiet">
-                  <el-time-select
-                    v-model="draft.quietStart"
-                    start="00:00"
-                    step="00:30"
-                    end="23:30"
-                    placeholder="23:00"
-                  />
-                  <span class="beh-quiet-sep">到</span>
-                  <el-time-select
-                    v-model="draft.quietEnd"
-                    start="00:00"
-                    step="00:30"
-                    end="23:30"
-                    placeholder="08:00"
-                  />
-                </div>
-                <em>允许跨午夜（23:00 到 08:00 就是整夜闭嘴）。起止填成一样会被拒绝保存。</em>
-              </div>
-
-              <div class="beh-grid">
-                <div class="beh-field">
-                  <span class="beh-label">刚聊过就先不打扰（分钟）</span>
-                  <el-input-number
-                    v-model="draft.userActiveMinutes"
-                    :min="0"
-                    :max="720"
-                    :step="10"
-                  />
-                  <em>你在这段时间内说过话，她就不主动开口 —— 那样叫接话。0 = 不判这条。</em>
-                </div>
-                <div class="beh-field">
-                  <!-- 数字放在标签行右侧，不用 show-input：Element 那条会把轨道挤成一小截 -->
-                  <div class="beh-inline">
-                    <span class="beh-label">最低置信度</span>
-                    <span class="beh-value">{{ draft.minConfidence.toFixed(2) }}</span>
-                  </div>
-                  <el-slider
-                    v-model="draft.minConfidence"
-                    :min="0"
-                    :max="1"
-                    :step="0.05"
-                  />
-                  <em>她给每件「想做的事」打 0–1 分，低于这个值就不开口。调高更安静。</em>
-                </div>
-              </div>
-            </template>
-
-            <div class="beh-state">
-              <template v-if="snapshot">
-                <span
-                  class="pill"
-                  :class="snapshot.status.canSendNow ? 'pill-green' : 'pill-gray'"
-                >{{ snapshot.status.reasonLabel }}</span>
-                <span class="beh-meta">
-                  今天 {{ snapshot.status.sentToday }} / {{ snapshot.settings.dailyMax }} 条 ·
-                  池子 {{ snapshot.status.pendingCount }} 条 ·
-                  收件人 {{ snapshot.status.recipient ?? "还没有" }}
-                </span>
-              </template>
-              <span
-                v-else
-                class="beh-meta"
-              >还读不到当前状态，保存后刷新一次。</span>
-              <span class="grow" />
-              <button
-                type="button"
-                class="abtn"
-                :disabled="trying || savingProactive"
-                @click="tryOnce"
-              >
-                <el-icon><Promotion /></el-icon>{{ trying ? "试跑中…" : "立即试一次" }}
-              </button>
-              <button
-                type="button"
-                class="abtn is-lead"
-                :disabled="savingProactive"
-                @click="saveProactive()"
-              >
-                {{ savingProactive ? "保存中…" : "保存" }}
-              </button>
-            </div>
-
-            <p class="beh-hint">
-              「立即试一次」只跳过时间类限制（安静时段 / 间隔 / 每日上限）；开关、收件人和当日额度照判，
-              否则这个按钮就等于绕过所有保护。
-            </p>
-
-            <div
-              v-if="snapshot?.recent.length"
-              class="beh-recent"
-            >
-              <div
-                v-for="item in snapshot.recent.slice(0, 3)"
-                :key="item.id"
-                class="beh-recent-row"
-              >
-                <span class="beh-kind">{{ KIND_LABELS[item.kind] ?? item.kind }}</span>
-                <span class="beh-recent-text">{{ item.status === "SENT" ? (item.content ?? item.goal) : item.goal }}</span>
-                <span class="beh-recent-status">{{ STATUS_LABELS[item.status] ?? item.status }}</span>
-              </div>
-            </div>
-          </div>
-        </details>
-      </div>
-    </details>
-    <div class="beh-bind-foot">
+    <!-- 保存条：解绑由外面的行给（它属于行，不属于这张表单） -->
+    <div class="beh-foot">
       <span class="beh-meta">保存后立刻生效，不用重启适配器</span>
       <span class="grow" />
+      <slot name="actions" />
       <button
         type="button"
-        class="abtn is-lead"
+        class="beh-btn is-primary"
         :disabled="savingBind"
         @click="saveBind"
       >
         {{ savingBind ? "保存中…" : "保存" }}
       </button>
     </div>
-  </article>
+  </div>
 </template>
 
 <style scoped>
-/* A 套：白砖、零描边；开关与字段都靠间距分组 */
-.beh-card { border-radius: 10px; background: var(--surface); padding: 16px 18px 14px; }
+/* 这一段是「行的肚子」，不是卡：外面已经有白砖和 16px 内边距，
+   这里只负责把两组内容分开 —— 组间一条 1px，组内靠 12 的间距。 */
+.beh { display: block; }
+.grow { flex: 1; }
 
-.beh-head { display: flex; align-items: center; gap: 10px; }
-.beh-avatar {
-  display: grid;
-  width: 34px;
-  height: 34px;
-  flex: none;
-  place-items: center;
-  border-radius: 8px;
-  background: var(--brand-soft);
-  color: var(--brand-strong);
-  font-size: 14px;
-  font-weight: 700;
+.grp + .grp {
+  margin-top: var(--sp-4);
+  border-top: 1px solid var(--line);
+  padding-top: var(--sp-4);
 }
-.beh-id { min-width: 0; }
-.beh-id h3 { margin: 0; color: var(--text); font-size: 14px; font-weight: 700; line-height: 1.4; overflow-wrap: anywhere; }
-.beh-id p { margin: 2px 0 0; color: var(--dim); font-size: 12px; line-height: 1.5; }
 
-/* 绑定级「群聊行为」区块：一条 1px 起头，内部字段纵向排 */
-.beh-bind { display: flex; flex-direction: column; gap: 12px; margin-top: 12px; border-top: 1px solid var(--surface-3); padding-top: 12px; }
-.beh-bind-h { display: flex; align-items: baseline; gap: 8px; }
-.beh-bind-h b { color: var(--text-2); font-size: 14px; font-weight: 600; }
-.beh-sum { color: var(--dim); font-size: 12px; }
-
-.beh-field { display: flex; flex-direction: column; gap: 5px; }
-.beh-label { color: var(--text-2); font-size: 12px; font-weight: 600; }
-.beh-field em { color: var(--dim); font-size: 12px; font-style: normal; line-height: 1.6; }
-.beh-field :deep(.el-input-number) { width: 140px; }
-.beh-field :deep(.el-radio-group) { align-self: flex-start; }
-.beh-field :deep(.el-radio-button__inner) { font-size: 12px; }
-
-.beh-limit { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; color: var(--text-2); font-size: 12px; }
-.beh-limit :deep(.el-input-number) { width: 120px; }
-
-.beh-bind-foot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; border-radius: 8px; background: var(--surface-2); padding: 8px 10px; }
-.beh-bind-foot .grow { flex: 1; }
+.grp-h { display: flex; align-items: baseline; gap: var(--sp-2); margin-bottom: var(--sp-3); }
+.grp-h b { color: var(--text); font-size: 14px; font-weight: 700; }
+.grp-tag { color: var(--dim); font-size: 12px; }
 
 /* ── 参与度刻度：一条轨道上三个位置 ─────────────────── */
 .dial {
   position: relative;
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
-  border: 1px solid var(--line-strong);
-  border-radius: 8px;
-  background: var(--surface-2);
-  padding: 4px;
+  gap: var(--sp-1);
+  border-radius: var(--radius-sm);
+  background: var(--surface-3);
+  padding: var(--sp-1);
 }
 /* 选中的那块白底滑块：位置由 data-at 决定，动的是它而不是三个按钮各变各的 */
 .dial::before {
   position: absolute;
-  top: 4px;
-  bottom: 4px;
-  left: 4px;
-  width: calc((100% - 24px) / 3);
-  border: 1px solid var(--line);
+  top: var(--sp-1);
+  bottom: var(--sp-1);
+  left: var(--sp-1);
+  width: calc((100% - 16px) / 3);
   border-radius: 6px;
   background: var(--surface);
-  box-shadow: 0 1px 2px rgb(16 22 32 / 6%);
   content: "";
-  transition: transform .22s var(--ease);
+  transition: transform .2s var(--ease);
 }
-.dial[data-at="1"]::before { transform: translateX(calc(100% + 8px)); }
-.dial[data-at="2"]::before { transform: translateX(calc(200% + 16px)); }
+.dial[data-at="1"]::before { transform: translateX(calc(100% + var(--sp-1))); }
+.dial[data-at="2"]::before { transform: translateX(calc(200% + 8px)); }
 
 .dial-opt {
   position: relative;
-  z-index: 1;
   display: flex;
   flex-direction: column;
   gap: 1px;
   border: 0;
   border-radius: 6px;
   background: transparent;
-  padding: 7px 6px;
-  text-align: center;
+  padding: 7px 10px;
+  font: inherit;
+  text-align: left;
   cursor: pointer;
-  transition: color .14s var(--ease);
 }
-.dial-opt b { color: var(--text-2); font-size: 12.5px; font-weight: 600; line-height: 1.4; }
-.dial-opt span { color: var(--dim); font-size: 11.5px; line-height: 1.4; }
+.dial-opt b { color: var(--text-2); font-size: 14px; font-weight: 600; }
+.dial-opt span { color: var(--dim); font-size: 12px; }
 .dial-opt[aria-checked="true"] b { color: var(--brand-strong); font-weight: 700; }
-.dial-opt[aria-checked="true"] span { color: #a8546f; }
-.dial-opt:hover b { color: var(--brand-strong); }
 .dial-opt:focus-visible { outline: 2px solid var(--brand); outline-offset: -2px; }
 
-.dial-note { margin: 0; color: var(--dim); font-size: 12px; line-height: 1.65; }
+.dial-note { margin: var(--sp-2) 0 0; color: var(--dim); font-size: 12px; line-height: 1.65; }
 
-/* ── 四格仪表：一眼看完现在的实际参数 ───────────────── */
-.meters {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 1px;
-  margin: 0;
-  border-radius: 8px;
-  background: var(--surface-3);
-  overflow: hidden;
+/* ── 群参数：两列铺开，标签在上、说明在下 ─────────── */
+.beh-grid.is-bind { margin-top: var(--sp-4); align-items: start; }
+/* 绑定级开关跟在参数后面，靠一条分隔线说明它仍属于这一组 */
+.beh-grid.is-bind + .toggle {
+  margin-top: var(--sp-4);
+  border-top: 1px solid var(--line);
+  /* 上下留一样的 12：以前上 12 下 7，文字看着比开关高半格 */
+  padding: var(--sp-3) 0;
 }
-.meter { background: var(--surface); padding: 8px 10px 9px; }
-.meter dt { color: var(--dim); font-size: 11.5px; line-height: 1.4; }
-.meter dd {
-  margin: 2px 0 0;
-  color: var(--text);
-  font-size: 16px;
-  font-weight: 650;
-  font-variant-numeric: tabular-nums;
-  line-height: 1.25;
-  white-space: nowrap;
-}
-.meter dd small { margin-left: 1px; color: var(--dim); font-size: 11px; font-weight: 500; }
-.meter dd.is-clock { font-size: 13px; font-weight: 600; }
 
-/* ── 参数 / 更多开关：默认折起来，改的时候才展开 ─────── */
-.beh-params,
-.beh-extra { border-top: 1px solid var(--surface-3); }
-.beh-params > summary,
-.beh-extra > summary {
+/* ── 折叠块：改参数的人才展开 ───────────────────────── */
+.more { margin-top: var(--sp-3); border-top: 1px solid var(--line); }
+.more > summary {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 9px 0 0;
+  gap: var(--sp-2);
+  padding: var(--sp-3) 0;
   list-style: none;
   cursor: pointer;
 }
-.beh-params > summary::-webkit-details-marker,
-.beh-extra > summary::-webkit-details-marker { display: none; }
-.params-sum { color: var(--text-2); font-size: 12px; font-weight: 600; }
-.beh-params > summary .grow,
-.beh-extra > summary .grow { flex: 1; }
-.params-caret { color: var(--faint); font-size: 12px; transition: transform .16s var(--ease); }
-.beh-params[open] .params-caret,
-.beh-extra[open] .params-caret { transform: rotate(90deg); }
-.beh-params > summary:hover .params-sum,
-.beh-extra > summary:hover .params-sum { color: var(--brand-strong); }
-.params-body,
-.extra-body { display: flex; flex-direction: column; gap: 12px; padding-top: 12px; }
-.extra-body { gap: 4px; }
+.more > summary::-webkit-details-marker { display: none; }
+.more-sum { color: var(--text-2); font-size: 14px; font-weight: 600; }
+.more > summary .grow { flex: 1; }
+/* 折叠符号跟页面其它地方一致：一个 >，展开时转 90° */
+.more-caret {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  color: var(--dim);
+  font-size: 12px;
+  transition: transform .18s var(--ease), color .14s var(--ease);
+}
+.more[open] .more-caret { transform: rotate(90deg); color: var(--text-2); }
+.more > summary:hover .more-caret { color: var(--brand-strong); }
+.more > summary:hover .more-sum { color: var(--brand-strong); }
+.more-body { display: flex; flex-direction: column; gap: var(--sp-3); padding-top: var(--sp-3); }
 
 /* 开关行：文案在左、开关贴右，中间留白由 flex 撑开 */
-.beh-toggle { display: flex; align-items: flex-start; gap: 16px; margin-top: 12px; border-top: 1px solid var(--surface-3); padding-top: 12px; }
-.beh-toggle.is-tight { border-top: 0; margin-top: 0; padding-top: 0; }
-.beh-copy { min-width: 0; flex: 1; }
-.beh-copy b { display: block; color: var(--text-2); font-size: 14px; font-weight: 600; }
-.beh-copy span { display: block; margin-top: 2px; color: var(--dim); font-size: 12px; line-height: 1.65; }
-.beh-toggle :deep(.el-switch) { flex: none; margin-top: 2px; }
+.toggle { display: flex; align-items: center; gap: var(--sp-3); padding: 7px 0; }
+.toggle + .toggle,
+.more + .toggle,
+.more.is-toggle { border-top: 1px solid var(--line); }
+.toggle-copy { min-width: 0; flex: 1; }
+.toggle-copy b { display: block; color: var(--text); font-size: 14px; font-weight: 600; }
+.toggle-copy span { color: var(--dim); font-size: 12px; line-height: 1.65; }
+.toggle :deep(.el-switch) { flex: none; }
 
-/* 折叠块：默认收起，只有想调参的人才展开 */
-.beh-more { margin-top: 12px; border-top: 1px solid var(--surface-3); padding-top: 12px; }
-.beh-more summary {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  list-style: none;
-  cursor: pointer;
-}
-.beh-more summary::-webkit-details-marker { display: none; }
-.beh-more summary b { color: var(--text-2); font-size: 14px; font-weight: 600; }
-.beh-more .caret { display: inline-flex; color: var(--faint); font-size: 12px; transition: transform .14s var(--ease); }
-.beh-more[open] .caret { transform: rotate(90deg); }
+/* 主动找话：折叠头的形状跟开关行一致，右侧多一个状态药丸 */
+.more.is-toggle { margin-top: 0; }
+.more.is-toggle > summary { padding: var(--sp-3) 0; }
+.more.is-toggle > summary .pill { margin-left: var(--sp-1); }
 
-.beh-body { display: flex; flex-direction: column; gap: 12px; margin-top: 12px; }
-.beh-lead { max-width: 68ch; margin: 0; color: var(--text-2); font-size: 12px; line-height: 1.75; }
+.beh-field { display: flex; flex-direction: column; gap: 5px; }
+.beh-label { color: var(--text-2); font-size: 12px; font-weight: 600; }
+.beh-field em { color: var(--dim); font-size: 12px; font-style: normal; line-height: 1.6; }
+.beh-field :deep(.el-input-number) { width: 140px; }
 
-.beh-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 20px; }
-.beh-inline { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.beh-value { color: var(--text-2); font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
-.beh-field :deep(.el-slider) { width: 100%; }
+.beh-limit { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; color: var(--text-2); font-size: 12px; }
+.beh-limit :deep(.el-input-number) { width: 120px; }
 .beh-quiet { display: flex; align-items: center; gap: 8px; }
 .beh-quiet :deep(.el-select) { width: 120px; }
 .beh-quiet-sep { color: var(--dim); font-size: 12px; }
 
+.beh-body { display: flex; flex-direction: column; gap: 12px; }
+.beh-lead { max-width: 68ch; margin: 0; color: var(--text-2); font-size: 12px; line-height: 1.75; }
+.beh-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 20px; }
+.beh-inline { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.beh-value { color: var(--text-2); font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.beh-field :deep(.el-slider) { width: 100%; }
+
 /* 状态行：能不能发、今天发了几条，然后才是两个动作 */
-.beh-state { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; border-radius: 8px; background: var(--surface-2); padding: 8px 10px; }
+.beh-state {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  padding: var(--sp-2) 10px;
+}
 .beh-state .grow { flex: 1; }
 .beh-meta { color: var(--dim); font-size: 12px; line-height: 1.6; }
-
-.abtn {
-  display: inline-flex;
-  height: 28px;
-  align-items: center;
-  gap: 5px;
-  border: 0;
-  border-radius: 6px;
-  background: none;
-  padding: 0 9px;
-  color: var(--text-2);
-  font-size: 12px;
-  font-weight: 600;
-  white-space: nowrap;
-  cursor: pointer;
-  transition: background .14s var(--ease), color .14s var(--ease);
-}
-.abtn .el-icon { color: var(--faint); font-size: 13px; }
-.abtn:hover:not(:disabled) { background: var(--surface-3); color: var(--brand-strong); }
-.abtn:hover:not(:disabled) .el-icon { color: var(--brand); }
-.abtn.is-lead { background: var(--brand-soft); color: var(--brand-strong); }
-.abtn.is-lead:hover:not(:disabled) { background: var(--brand-line); }
-.abtn:disabled { opacity: .5; cursor: not-allowed; }
-
 .beh-hint { margin: 0; color: var(--dim); font-size: 12px; line-height: 1.7; }
 
-.beh-recent { display: flex; flex-direction: column; gap: 4px; border-top: 1px solid var(--surface-3); padding-top: 8px; }
+.beh-recent { display: flex; flex-direction: column; gap: 4px; border-top: 1px solid var(--line); padding-top: 8px; }
 .beh-recent-row { display: flex; align-items: baseline; gap: 8px; font-size: 12px; line-height: 1.6; }
 .beh-kind { flex: none; color: var(--dim); }
 .beh-recent-text { min-width: 0; flex: 1; overflow: hidden; color: var(--text-2); text-overflow: ellipsis; white-space: nowrap; }
 .beh-recent-status { flex: none; color: var(--dim); }
 
-@media (max-width: 1100px) {
-  /* 半宽卡片放不下四格并排，拆成两行两列 */
-  .meters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+/* ── 保存条 ───────────────────────────────────────── */
+.beh-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  /* 不要 margin-top：保存条上面的那条线就是「主动找话」这一行的下边界，
+     给它留 margin 会让那一行的文字看着贴在上边界上 */
+  border-top: 1px solid var(--line);
+  padding-top: var(--sp-3);
 }
+.beh-foot .grow { flex: 1; }
 
-@media (max-width: 720px) {
-  .beh-grid { grid-template-columns: minmax(0, 1fr); }
-  .beh-state .grow { display: none; }
+.beh-btn {
+  display: inline-flex;
+  height: 30px;
+  align-items: center;
+  gap: 5px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  padding: 0 10px;
+  color: var(--text-2);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background .14s var(--ease), color .14s var(--ease);
+}
+.beh-btn .el-icon { color: var(--faint); font-size: 13px; }
+.beh-btn:hover:not(:disabled) { background: var(--surface-3); color: var(--brand-strong); }
+.beh-btn:hover:not(:disabled) .el-icon { color: var(--brand); }
+.beh-btn.is-lead { background: var(--brand-soft); color: var(--brand-strong); }
+.beh-btn.is-lead:hover:not(:disabled) { background: var(--brand-line); }
+.beh-btn.is-primary { height: 32px; background: var(--brand-btn); padding: 0 14px; color: #fff; }
+.beh-btn.is-primary:hover:not(:disabled) { background: var(--brand-btn-h); color: #fff; }
+.beh-btn:disabled { opacity: .5; cursor: not-allowed; }
 
+@media (max-width: 860px) {
   /* 窄屏刻度改纵向列表：滑块会挡住文字，直接换成选中项白底 */
   .dial { grid-template-columns: minmax(0, 1fr); }
   .dial::before { display: none; }
-  .dial-opt { border-radius: 6px; padding: 8px 10px; text-align: left; }
-  .dial-opt[aria-checked="true"] { border: 1px solid var(--line); background: var(--surface); }
+  .dial-opt[aria-checked="true"] { background: var(--surface); }
+
+  .beh-grid { grid-template-columns: minmax(0, 1fr); }
+  .beh-state .grow { display: none; }
+  .toggle-copy span { display: block; margin-top: 2px; }
 }
 </style>

@@ -7,16 +7,13 @@
  * 一个主操作（添加 QQ 小号），卡片上的按钮一律降成文字按钮。
  */
 import {
-  ChatDotRound,
+  ArrowRight,
   CopyDocument,
   Delete,
   Download,
   FolderOpened,
   Plus,
   Refresh,
-  Right,
-  Setting,
-  User,
   VideoPlay,
   Warning,
 } from "@element-plus/icons-vue";
@@ -107,6 +104,86 @@ const boundBindings = computed(() => {
   }
   return result;
 });
+
+/**
+ * 一行 = 一条绑定（角色 × 号/群）。
+ *
+ * 为什么按绑定组织而不是按「号」：日常真正要调的是「她在这个群里怎么说话」，
+ * 而群号、参与度、限流**本来就在绑定上**。按号铺卡片，这些设置只能塞进号的下面，
+ * 一个号绑三个角色时就变成三种展开方式叠在一起 —— 上一版就是这么乱的。
+ *
+ * 没绑角色的号也占一行：否则那个号在页面上彻底消失，人不知道它还挂着。
+ */
+type BindRow = {
+  key: string;
+  connection: QqConnection;
+  binding: ChannelBinding | null;
+  character: Character | null;
+};
+
+const rows = computed<BindRow[]>(() => {
+  const result: BindRow[] = [];
+  for (const connection of connections.value) {
+    if (!connection.bindings.length) {
+      result.push({ key: `${connection.id}:unbound`, connection, binding: null, character: null });
+      continue;
+    }
+    for (const binding of connection.bindings) {
+      result.push({
+        key: binding.id,
+        connection,
+        binding,
+        character: characters.value.find((item) => item.id === binding.characterId) ?? null,
+      });
+    }
+  }
+  return result;
+});
+
+/** 展开的是哪几行。默认全收着 —— 清单要能一眼扫完，改哪行再展开哪行。 */
+const openRows = ref<string[]>([]);
+function isRowOpen(key: string) {
+  return openRows.value.includes(key);
+}
+function toggleRow(key: string) {
+  openRows.value = isRowOpen(key)
+    ? openRows.value.filter((item) => item !== key)
+    : [...openRows.value, key];
+}
+
+const MODE_LABEL: Record<string, string> = {
+  mention: "仅被 @ 时回",
+  ambient: "自然接话",
+  all: "每条都回",
+};
+
+const boundCount = computed(() => connections.value.reduce((sum, item) => sum + item.bindings.length, 0));
+const characterCount = computed(
+  () => new Set(boundBindings.value.map((item) => item.binding.characterId)).size,
+);
+
+/** 头像位只放一个字，且优先取汉字 —— 名字叫「deepseek鲸鱼娘」时，取到 "d" 很难看 */
+function initialOf(name: string) {
+  const chars = Array.from(name.trim());
+  const cjk = chars.find((char) => /[\u4e00-\u9fa5]/.test(char));
+  if (cjk) return cjk;
+  const latin = chars.slice(0, 2).join("");
+  return latin ? latin.toUpperCase() : "？";
+}
+
+/** 行副标题：先说她管哪些群，多号时再补上是谁的号 —— 单号时那半句是噪音 */
+function whereOf(row: BindRow) {
+  if (!row.binding) return row.connection.appId ? `QQ ${row.connection.appId}` : row.connection.displayName;
+  const scope = row.binding.routingKey ? `只在群 ${row.binding.routingKey}` : "全部群 + 私聊";
+  return connections.value.length > 1 ? `${scope} · ${row.connection.displayName}` : scope;
+}
+
+const lede = computed(() => (hasConnections.value
+  ? "挂一个小号，让她在群里按场合说话。改哪一行，只影响那一行。"
+  : "一个号都还没接进来，先走下面四步。"));
+
+/** 重连请求还没被适配器消费时的那个号：为它留一条常驻提示 */
+const reloadingConnection = computed(() => connections.value.find(reloadPending) ?? null);
 
 async function refreshCharacters() {
   await loadCharacters();
@@ -317,25 +394,6 @@ onBeforeUnmount(() => {
   if (runtimePollTimer) clearTimeout(runtimePollTimer);
 });
 
-const statusMap: Record<string, { label: string; tone: string }> = {
-  CONNECTED: { label: "已连接", tone: "pill-green" },
-  DISCONNECTED: { label: "未连接", tone: "pill-amber" },
-  ERROR: { label: "连接异常", tone: "pill-rose" },
-  DISABLED: { label: "已停用", tone: "pill-gray" },
-};
-
-function formatDateTime(value: string | null) {
-  if (!value) return "从未";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "从未";
-  const pad = (input: number) => String(input).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
-}
-
-function ownerQqOf(connection: QqConnection) {
-  return typeof connection.metadata?.ownerQq === "string" ? connection.metadata.ownerQq : "";
-}
-
 /**
  * 协议端只用 SnowLuma：自带网页面板（不用另装面板）、挂在本机已登录的 QQNT 客户端上。
  * 只有一种方案，就不需要「二选一」的选择器和它那套 tagline —— 直接落到唯一那份配置说明。
@@ -369,6 +427,8 @@ const PROXY: ProxyGuide = {
 const editVisible = ref(false);
 const saving = ref(false);
 const editingId = ref<string | null>(null);
+/** 正在编辑的是哪个号：「删除这个号」必须删它，不能默认删第一个 */
+const editingTarget = ref<QqConnection | null>(null);
 /** 点开「连接设置」后要单独取一次明文凭据，取回来之前别让人往空框里打字（会被回填覆盖）。 */
 const credLoading = ref(false);
 const form = reactive({
@@ -397,6 +457,7 @@ function resetForm() {
 
 function openCreate() {
   editingId.value = null;
+  editingTarget.value = null;
   credLoading.value = false;
   resetForm();
   editVisible.value = true;
@@ -413,6 +474,7 @@ function fillDefaultUrls() {
  */
 async function openEdit(connection: QqConnection) {
   editingId.value = connection.id;
+  editingTarget.value = connection;
   resetForm();
   form.qqNumber = connection.appId || "";
   form.displayName = connection.appId ? connection.displayName : "";
@@ -608,6 +670,8 @@ async function removeConnection(connection: QqConnection) {
   try {
     await $fetch(`/api/admin/channels/${encodeURIComponent(connection.id)}`, { method: "DELETE" });
     ElMessage.success("已删除。");
+    // 号没了，弹窗里那些字段就没有对象了；关掉再刷新，别留一个悬空的表单
+    editVisible.value = false;
     await refresh();
   } catch (error) {
     ElMessage.error(readErrorMessage(error, "删除失败，请稍后重试。"));
@@ -650,9 +714,13 @@ function copyInstallGuide() {
     <PageHeader
       eyebrow="系统管理 / QQ 渠道"
       title="QQ 渠道"
-      description="用个人 QQ 小号挂 AI：协议端把 QQ 消息翻译成 OneBot v11 推过来，角色带着记忆回复。"
+      :description="lede"
     >
-      <template #actions>
+      <!-- 空态时页头不给主操作：同一个动作在屏幕上出现两次会分散注意力 -->
+      <template
+        v-if="hasConnections"
+        #actions
+      >
         <button
           type="button"
           class="btn"
@@ -661,9 +729,7 @@ function copyInstallGuide() {
         >
           <el-icon><Refresh /></el-icon>刷新
         </button>
-        <!-- 还没有号的时候，主操作让给空态那一行 —— 同一个动作在屏幕上出现两次会分散注意力 -->
         <button
-          v-if="hasConnections"
           type="button"
           class="btn primary"
           @click="openCreate"
@@ -673,15 +739,10 @@ function copyInstallGuide() {
       </template>
     </PageHeader>
 
-    <!-- 有连接时把卡片提到教程前面：日常要管的是号，教程只在第一次读 -->
-    <div
-      class="qq-body"
-      :class="{ 'has-list': hasConnections }"
-    >
-      <!-- 四段链路：有号才画 —— 没有号的时候「断在哪」这个问题还不成立 -->
+    <template v-if="hasConnections">
+      <!-- 链路带：一条带子 + 右端一句结论；断的时候下面多一条断点条 -->
       <QqChannelChain
         v-if="primaryConnection"
-        class="chain-slot"
         :connection="primaryConnection"
         :binding="primaryBinding"
         :adapter="adapterStatus"
@@ -692,525 +753,491 @@ function copyInstallGuide() {
         @action="onChainAction"
       />
 
-      <section class="conns">
-        <div class="sec-label">
-          <h2>已接入的号</h2>
-          <span class="count">{{ connections.length }}</span>
-          <span class="note">地址与 Token 加密存库，仅此处回显明文</span>
-        </div>
-
-        <div
-          v-if="loading && !connections.length"
-          class="conn-grid"
-        >
-          <div
-            v-for="i in 2"
-            :key="'sk-' + i"
-            class="conn-card is-skeleton"
-          >
-            <div
-              v-for="n in 4"
-              :key="n"
-              class="sk"
-              :style="{ height: n === 1 ? '36px' : '14px', width: n === 1 ? '60%' : '100%' }"
-            />
-          </div>
-        </div>
-
-        <div
-          v-else-if="hasLoadError && !connections.length"
-          class="qq-empty is-error"
-          role="alert"
-        >
-          <span class="empty-icon is-error"><el-icon><Warning /></el-icon></span>
-          <div class="empty-copy">
-            <h3>连接列表暂时无法读取</h3>
-            <p>检查管理员登录状态或服务连接后重试。当前不会影响已经运行的 OneBot 适配器。</p>
-          </div>
-          <button
-            type="button"
-            class="btn"
-            :disabled="loading"
-            @click="refresh()"
-          >
-            <el-icon><Refresh /></el-icon>重试
-          </button>
-        </div>
-
-        <div
-          v-else-if="!connections.length"
-          class="qq-empty"
-        >
-          <span class="empty-icon"><el-icon><ChatDotRound /></el-icon></span>
-          <div class="empty-copy">
-            <h3>还没有 QQ 小号</h3>
-            <p>按下面四步把协议端跑起来，再回来添加 —— QQ 上的对话才会接到角色身上。</p>
-          </div>
-          <button
-            type="button"
-            class="btn primary"
-            @click="openCreate"
-          >
-            <el-icon><Plus /></el-icon>添加 QQ 小号
-          </button>
-        </div>
-
-        <div
-          v-else
-          class="conn-grid"
-        >
-          <article
-            v-for="connection in connections"
-            :key="connection.id"
-            class="conn-card"
-          >
-            <!-- 一行说清「哪个号、通没通、绑了谁」；细节和删除收进下面的展开区 -->
-            <div class="conn-row">
-              <span class="conn-icon"><el-icon><ChatDotRound /></el-icon></span>
-
-              <div class="conn-id">
-                <div class="conn-name">
-                  {{ connection.displayName }}
-                  <span
-                    v-if="!connection.appId"
-                    class="conn-qq"
-                  >未填 QQ 号</span>
-                  <!-- 名字里已经带号就不重复显示一遍 -->
-                  <span
-                    v-else-if="!connection.displayName.includes(connection.appId)"
-                    class="conn-qq"
-                  >{{ connection.appId }}</span>
-                  <span
-                    class="pill"
-                    :class="statusMap[connection.status]?.tone ?? 'pill-gray'"
-                  >{{ statusMap[connection.status]?.label ?? connection.status }}</span>
-                </div>
-                <div class="conn-meta">
-                  <span>最近活动 {{ formatDateTime(connection.lastEventAt) }}</span>
-                  <span>主人 {{ ownerQqOf(connection) || "未设置" }}</span>
-                </div>
-              </div>
-
-              <div class="conn-actions">
-                <button
-                  type="button"
-                  class="abtn"
-                  @click="openEdit(connection)"
-                >
-                  <el-icon><Setting /></el-icon>设置
-                </button>
-                <button
-                  type="button"
-                  class="abtn"
-                  :class="{ 'is-lead': !connection.bindings.length }"
-                  @click="openBind(connection)"
-                >
-                  <el-icon><User /></el-icon>{{ connection.bindings.length ? "添加绑定" : "绑定角色" }}
-                </button>
-              </div>
-            </div>
-
-            <details class="conn-more">
-              <summary>
-                <span
-                  v-if="connection.bindings.length"
-                  class="more-sum"
-                >已绑定 {{ connection.bindings.length }} 个角色</span>
-                <span
-                  v-else
-                  class="more-sum is-warn"
-                >还没绑角色 · 消息进来没人接</span>
-                <span class="grow" />
-                <span class="more-hint">详情</span>
-                <el-icon class="more-caret">
-                  <Right />
-                </el-icon>
-              </summary>
-
-              <div class="conn-more-body">
-                <el-alert
-                  v-if="connection.metadata?.onebotReloadRequestedAt"
-                  class="reload-status"
-                  :type="reloadPending(connection) ? 'warning' : 'info'"
-                  :closable="false"
-                  :title="reloadPending(connection) ? '等待适配器重新连接' : '适配器已按新设置连接过网关'"
-                  :description="reloadPending(connection)
-                    ? (reloadPolling
-                      ? '正在自动刷新（每 1.5 秒），一般一两秒就完成。若 15 秒还停在这里，先确认 SnowLuma 在跑、3001 端口有监听。'
-                      : '点「刷新」查看结果。若一直等待，请先启动 yarn onebot:run；旧版进程需手动关闭并启动一次。')
-                    : '实际是否连通请查看上方连接状态；历史重连完成不代表当前在线。'"
-                  show-icon
-                />
-
-                <ul
-                  v-if="connection.bindings.length"
-                  class="bind-list"
-                >
-                  <li
-                    v-for="binding in connection.bindings"
-                    :key="binding.id"
-                    class="bind-row"
-                  >
-                    <div class="bind-id">
-                      <b>{{ binding.characterName }}</b>
-                      <span>{{ binding.routingKey ? "只响应群 " + binding.routingKey : "私聊 + 所有群" }}</span>
-                    </div>
-                    <button
-                      type="button"
-                      class="tlink is-danger"
-                      @click="unbind(connection, binding)"
-                    >
-                      解绑
-                    </button>
-                  </li>
-                </ul>
-                <p
-                  v-else
-                  class="bind-empty"
-                >
-                  连接已保存，但还不会回复消息。绑定角色后即可开始接收对话。
-                </p>
-
-                <div class="conn-foot">
-                  <button
-                    type="button"
-                    class="tlink is-danger"
-                    @click="removeConnection(connection)"
-                  >
-                    <el-icon><Delete /></el-icon>删除连接
-                  </button>
-                </div>
-              </div>
-            </details>
-          </article>
-        </div>
-      </section>
-
-      <!-- 角色在这个渠道上的行为：群号、群聊回复、限流、刷B站是绑定级；发表情、主动找话是角色级 -->
-      <section
-        v-if="boundBindings.length"
-        class="behave"
+      <!-- 只在等适配器重连时出现：平时这行不该占版面 -->
+      <div
+        v-if="reloadingConnection"
+        class="reloadbar"
+        role="status"
       >
-        <div class="sec-label">
-          <h2>角色在 QQ 上的行为</h2>
-          <span class="count">{{ boundBindings.length }}</span>
-          <span class="note">只对 QQ 生效，网页对话与 B站 不受影响</span>
-        </div>
-        <div class="behave-grid">
-          <QqCharacterBehavior
-            v-for="item in boundBindings"
-            :key="item.binding.id"
-            :binding-id="item.binding.id"
-            :character-id="item.character.id"
-            :character-name="item.character.name"
-            :connection-id="item.connection.id"
-            :connection-name="item.connection.displayName"
-            :routing-key="item.binding.routingKey"
-            :reply-window-minutes="item.binding.replyWindowMinutes"
-            :reply-limit-per-window="item.binding.replyLimitPerWindow"
-            :reply-only-when-mentioned="item.binding.replyOnlyWhenMentioned"
-            :group-chat="item.binding.groupChat"
-            :group-bili-run-enabled="item.binding.groupBiliRunEnabled"
-            :emoji-enabled="item.character.emojiEnabled === true"
-            :image-understanding="item.character.imageUnderstanding === true"
-            :proactive="item.character.proactive"
-            @saved="onBehaviorSaved"
-          />
-        </div>
-      </section>
-
-      <div class="guide">
-        <!-- 只在第一次配的时候要看：有号了就默认收起，别一直占着首屏 -->
-        <details
-          id="qq-steps"
-          class="brick guide-fold"
-          :open="!hasConnections"
+        <b>{{ reloadPending(reloadingConnection) ? "等待适配器重新连接" : "适配器已按新设置连接过网关" }}</b>
+        <p>
+          {{ reloadPending(reloadingConnection)
+            ? (reloadPolling
+              ? "正在自动刷新（每 1.5 秒），一般一两秒就完成。若 15 秒还停在这里，先确认协议端在跑、3001 端口有监听。"
+              : "点「刷新」查看结果。若一直等待，请先启动适配器；旧版进程需手动关掉再启动一次。")
+            : "实际是否连通看上面那条带子；历史重连完成不代表此刻在线。" }}
+        </p>
+        <button
+          type="button"
+          class="btn"
+          :disabled="loading"
+          @click="refresh()"
         >
-          <summary>
-            <h2>接入四步</h2>
-            <span class="card-sub">第一次配置才需要；通了就不用再打开</span>
-            <span class="grow" />
-            <span class="fold-hint">展开</span>
-            <el-icon class="fold-caret">
-              <Right />
-            </el-icon>
-          </summary>
+          刷新
+        </button>
+      </div>
 
-          <div class="guide-body">
-            <div class="guide-tools">
+      <div class="list-head">
+        <h2>她在哪些群里说话</h2>
+        <span class="count">{{ characterCount }} 个角色 · {{ boundCount }} 处</span>
+        <button
+          v-if="primaryConnection"
+          type="button"
+          class="btn quiet"
+          @click="openBind(primaryConnection)"
+        >
+          <el-icon><Plus /></el-icon>加一条
+        </button>
+      </div>
+
+      <div class="rows">
+        <article
+          v-for="row in rows"
+          :key="row.key"
+          class="row"
+          :class="{ 'is-open': isRowOpen(row.key) }"
+        >
+          <button
+            type="button"
+            class="row-main"
+            :aria-expanded="isRowOpen(row.key)"
+            @click="toggleRow(row.key)"
+          >
+            <span
+              class="ava"
+              aria-hidden="true"
+            >{{ row.character ? initialOf(row.character.name) : "？" }}</span>
+            <span class="who">
+              <b>{{ row.character?.name ?? "还没绑角色" }}</b>
+              <!-- 群/私聊范围与参与度说的是同一件事「她在哪、怎么接」，放一行读完；
+                   分开放时徽标会漂在整条行头的中间，视线要来回跳。 -->
+              <span class="who-sub">
+                <span class="where">{{ whereOf(row) }}</span>
+                <span
+                  v-if="row.binding"
+                  class="mode"
+                  :class="{ 'is-ambient': row.binding.groupChat.mode === 'ambient' }"
+                >{{ MODE_LABEL[row.binding.groupChat.mode] ?? "会回复" }}</span>
+                <span
+                  v-else
+                  class="mode is-todo"
+                >消息进来没人接</span>
+              </span>
+            </span>
+            <span class="quota">
+              <template v-if="row.binding">
+                <b>{{ row.binding.groupChat.dailyMax || "不限" }}</b>
+                <template v-if="row.binding.groupChat.dailyMax"> 句/天</template>
+              </template>
+            </span>
+            <el-icon class="caret">
+              <ArrowRight />
+            </el-icon>
+          </button>
+
+          <div class="row-body">
+            <QqCharacterBehavior
+              v-if="row.binding && row.character"
+              :character-id="row.character.id"
+              :connection-id="row.connection.id"
+              :routing-key="row.binding.routingKey"
+              :reply-window-minutes="row.binding.replyWindowMinutes"
+              :reply-limit-per-window="row.binding.replyLimitPerWindow"
+              :reply-only-when-mentioned="row.binding.replyOnlyWhenMentioned"
+              :group-chat="row.binding.groupChat"
+              :group-bili-run-enabled="row.binding.groupBiliRunEnabled"
+              :emoji-enabled="row.character.emojiEnabled === true"
+              :image-understanding="row.character.imageUnderstanding === true"
+              :proactive="row.character.proactive"
+              @saved="onBehaviorSaved"
+            >
+              <template #actions>
+                <button
+                  type="button"
+                  class="btn quiet is-danger"
+                  @click="unbind(row.connection, row.binding)"
+                >
+                  解绑
+                </button>
+              </template>
+            </QqCharacterBehavior>
+
+            <div
+              v-else
+              class="row-blank"
+            >
+              <p>
+                {{ row.character
+                  ? "这条绑定指向的角色已经不在了（可能被删掉），解绑后重新绑一个。"
+                  : "号通了，但消息进来没有角色接。" }}
+              </p>
               <button
                 type="button"
-                class="guide-copy"
-                @click="copyInstallGuide"
+                class="btn primary"
+                @click="openBind(row.connection)"
               >
-                <el-icon><CopyDocument /></el-icon>复制安装教程
+                <el-icon><Plus /></el-icon>绑定角色
+              </button>
+              <button
+                v-if="row.binding"
+                type="button"
+                class="btn quiet is-danger"
+                @click="unbind(row.connection, row.binding)"
+              >
+                解绑
               </button>
             </div>
-            <ol class="steps">
-              <li class="step">
-                <span class="step-no">1</span>
-                <div class="step-body">
-                  <h3>下载并登录 QQ 小号</h3>
-                  <p>
-                    装 {{ PROXY.name }}（自带网页配置面板，不用另装面板），装好后用 QQ 客户端登录小号。
-                    它是挂在这个已登录的客户端上收发消息的，所以那个窗口全程别关。
-                  </p>
-                  <p class="step-line">
-                    <a
-                      :href="PROXY.repo"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                    ><el-icon><Download /></el-icon>下载 {{ PROXY.name }}</a>
-                    <span class="sep">·</span>选最新的 win-x64 包，自带 Node 运行时，不用另外装环境。
-                  </p>
-                  <p class="step-note">
-                    建议使用小号，避免主号承担非官方协议的风控风险。
-                  </p>
-                </div>
-              </li>
-
-              <li class="step">
-                <span class="step-no">2</span>
-                <div class="step-body">
-                  <h3>开启收发接口</h3>
-                  <!-- 网关本体没起来的话，下面的面板链接点了也是白打，所以先解决它 -->
-                  <div class="run-row">
-                    <span
-                      class="run-state"
-                      :class="{
-                        'is-on': snowluma?.running,
-                        'is-warn': Boolean(snowluma?.installed) && !snowluma?.running,
-                      }"
-                    >
-                      <span class="dot" />SnowLuma {{ snowlumaStateText }}
-                      <span
-                        v-if="snowlumaSourceLabel"
-                        class="run-tag"
-                      >{{ snowlumaSourceLabel }}</span>
-                    </span>
-                    <button
-                      v-if="snowluma?.installed && !snowluma.running"
-                      type="button"
-                      class="abtn is-lead"
-                      :disabled="snowlumaStarting"
-                      @click="startSnowluma"
-                    >
-                      <el-icon><VideoPlay /></el-icon>
-                      {{ snowlumaStarting ? "正在打开…" : "启动 SnowLuma" }}
-                    </button>
-                    <button
-                      v-if="snowluma?.installed"
-                      type="button"
-                      class="tlink"
-                      @click="toggleHomeEdit"
-                    >
-                      <el-icon><FolderOpened /></el-icon>换目录
-                    </button>
-                    <button
-                      v-if="snowluma && !snowluma.installed"
-                      type="button"
-                      class="tlink"
-                      @click="rescanSnowluma"
-                    >
-                      <el-icon><Refresh /></el-icon>重新找一遍
-                    </button>
-                  </div>
-                  <p
-                    v-if="snowluma && !snowluma.installed"
-                    class="run-warn"
-                  >
-                    没找到 <code>{{ snowluma.home }}\start.bat</code>。自动找的时候扫过下载、桌面、文档、
-                    Program Files 和各盘根目录下两层，都没中。把「一眼能看到 start.bat 的那一层」填到下面，
-                    只填一次；刚装完还没被扫到的，点上面「重新找一遍」。
-                  </p>
-                  <div
-                    v-if="snowluma && (!snowluma.installed || homeEditing)"
-                    class="home-edit"
-                  >
-                    <input
-                      v-model="homeDraft"
-                      class="home-input"
-                      spellcheck="false"
-                      placeholder="D:\Tools\SnowLuma"
-                      aria-label="SnowLuma 安装目录"
-                    >
-                    <button
-                      type="button"
-                      class="abtn is-lead"
-                      :disabled="homeSaving"
-                      @click="saveHome"
-                    >
-                      {{ homeSaving ? "保存中…" : "保存目录" }}
-                    </button>
-                  </div>
-                  <p class="endpoint-intro">
-                    打开协议端面板：<a
-                      :href="PROXY.panel"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                    ><code>{{ PROXY.panel }}</code></a>
-                  </p>
-                  <ol class="endpoint-steps">
-                    <li>
-                      <span class="endpoint-index">1</span>
-                      <span class="endpoint-copy"><b>开启 WebSocket 服务端</b><span>端口 <code>3001</code>，用于接收 QQ 消息</span></span>
-                    </li>
-                    <li>
-                      <span class="endpoint-index">2</span>
-                      <span class="endpoint-copy"><b>开启 HTTP API</b><span>端口 <code>3002</code>，用于发送 QQ 消息</span></span>
-                    </li>
-                    <li>
-                      <span class="endpoint-index">3</span>
-                      <span class="endpoint-copy"><b>设置并记下 Token</b><span>WS 与 HTTP 分别设置，两个值可能不同</span></span>
-                    </li>
-                  </ol>
-                  <p class="endpoint-note">
-                    HTTP 不要用 3000，这个端口通常被本站占用。
-                  </p>
-                  <details class="step-more">
-                    <summary>
-                      <span class="caret"><el-icon><Right /></el-icon></span>
-                      {{ PROXY.name }} 面板配置细节
-                    </summary>
-                    <ol class="panel-steps">
-                      <li
-                        v-for="(step, index) in PROXY.steps"
-                        :key="step.title"
-                        class="panel-step"
-                      >
-                        <span class="panel-step-no">{{ index + 1 }}</span>
-                        <div class="panel-step-copy">
-                          <strong>{{ step.title }}</strong>
-                          <p>{{ step.detail }}</p>
-                        </div>
-                      </li>
-                    </ol>
-                    <p class="warn">
-                      {{ PROXY.warn }}
-                    </p>
-                  </details>
-                </div>
-              </li>
-
-              <li class="step">
-                <span class="step-no">3</span>
-                <div class="step-body">
-                  <h3>添加连接并绑定角色</h3>
-                  <p>
-                    填 QQ 号、WS 地址 <code>ws://127.0.0.1:3001</code>、HTTP 地址
-                    <code>http://127.0.0.1:3002</code> 和协议端 Token。保存后绑定一个角色。
-                  </p>
-                  <button
-                    type="button"
-                    class="abtn is-lead"
-                    @click="openCreate"
-                  >
-                    <el-icon><Plus /></el-icon>添加 QQ 小号
-                  </button>
-                </div>
-              </li>
-
-              <li class="step">
-                <span class="step-no">4</span>
-                <div class="step-body">
-                  <h3>启动并测试</h3>
-                  <p>
-                    适配器是个独立进程，得一直开着才能收发。点下面的按钮会打开一个命令行窗口，
-                    替你在项目根目录跑 <code>yarn onebot:run</code>；窗口里出现
-                    <code>onebot-connected</code> 就通了，再用另一个 QQ 号发消息测试。
-                  </p>
-                  <div class="run-row">
-                    <button
-                      type="button"
-                      class="abtn is-lead"
-                      :disabled="adapterStarting || adapterStatus?.running"
-                      @click="startAdapter"
-                    >
-                      <el-icon><VideoPlay /></el-icon>
-                      {{ adapterStatus?.running ? "已在运行" : adapterStarting ? "正在打开…" : "启动适配器" }}
-                    </button>
-                    <button
-                      type="button"
-                      class="tlink"
-                      @click="copyCommand('yarn onebot:run')"
-                    >
-                      <el-icon><CopyDocument /></el-icon>复制命令
-                    </button>
-                    <span
-                      class="run-state"
-                      :class="{ 'is-on': adapterStatus?.running }"
-                    >
-                      <span class="dot" />{{ adapterStateText }}
-                    </span>
-                    <span
-                      v-if="gateway"
-                      class="run-state"
-                      :class="gateway.reachable ? 'is-on' : 'is-warn'"
-                    >
-                      <span class="dot" />{{ gateway.reachable
-                        ? `网关 ${gateway.port} 已监听`
-                        : `网关 ${gateway.port} 没人接` }}
-                    </span>
-                  </div>
-                  <p
-                    v-if="gateway && !gateway.reachable"
-                    class="run-warn"
-                  >
-                    适配器要连的 <code>{{ gateway.port }}</code> 端口没有进程应答 ——
-                    也就是 <strong>SnowLuma 没启动</strong>（或它里面的 WS 节点没开）。
-                    回第 2 步点「启动 SnowLuma」，等面板能打开、日志里出现 <code>login detected</code>，
-                    这边会自己连上。期间适配器日志会一直刷 <code>code=1006</code>，那是它在按
-                    1/2/4/8/16/30 秒退避重试，不是坏了。
-                  </p>
-                  <p class="step-note">
-                    关掉那个命令行窗口就等于停。已经手动开着适配器时不要再点（会开出第二个，两个抢同一条连接）。
-                    窗口一闪就没的话，多半是 <code>yarn</code> 不在 PATH —— 按「复制命令」自己开终端跑，把报错贴出来。
-                  </p>
-                </div>
-              </li>
-            </ol>
-
-            <!-- ③ 排查：症状在前、原因在后，比一长串「如果…」好扫 -->
-            <section class="fix-block">
-              <div class="fix-block-h">
-                <h3>连不上，按这个顺序查</h3>
-                <span>八成是前三样</span>
-              </div>
-              <dl class="fix-list">
-                <div class="fix-row">
-                  <dt>协议端日志里没有 <code>UIN=小号</code></dt>
-                  <dd>小号还没在官方 QQ 客户端里登上，或者那个窗口被关了。</dd>
-                </div>
-                <div class="fix-row">
-                  <dt>适配器日志一直刷 <code>code=1006</code></dt>
-                  <dd>3001 上没人监听：SnowLuma 根本没启动，或它里面的 WS 节点没开。先跑 <code>start.bat</code> 再看面板。</dd>
-                </div>
-                <div class="fix-row">
-                  <dt>适配器报连不上 3001</dt>
-                  <dd>协议端里 WS 节点没开，或端口不是 3001 —— 回第 2 步核对。</dd>
-                </div>
-                <div class="fix-row">
-                  <dt>能连上，但一条都不回</dt>
-                  <dd>没绑角色，或者角色还没配模型 API Key。</dd>
-                </div>
-                <div class="fix-row">
-                  <dt>发不出去 / 握手 401</dt>
-                  <dd>两个 Token 填反了（WS 和 HTTP 是两把不同的钥匙），或者 HTTP 端口和面板里不一致。</dd>
-                </div>
-                <div class="fix-row">
-                  <dt>群里太吵</dt>
-                  <dd>到上面「角色在 QQ 上的行为」里，把「群聊里怎么回」改成「仅被 @ 时回复」。</dd>
-                </div>
-                <div class="fix-row">
-                  <dt>想让她发表情 / 主动找话 / 刷 B站</dt>
-                  <dd>都在上面「角色在 QQ 上的行为」里，不用去角色设置或连接设置。</dd>
-                </div>
-              </dl>
-            </section>
           </div>
-        </details>
+        </article>
+      </div>
+    </template>
+
+    <div
+      v-else-if="loading"
+      class="rows"
+      aria-hidden="true"
+    >
+      <div
+        v-for="i in 2"
+        :key="'sk-' + i"
+        class="row is-skeleton"
+      >
+        <span class="sk is-ava" />
+        <span class="sk" />
+        <span class="sk is-short" />
       </div>
     </div>
+
+    <div
+      v-else-if="hasLoadError"
+      class="errbar"
+      role="alert"
+    >
+      <b>连接列表暂时无法读取</b>
+      <p>检查管理员登录状态或服务连接后重试。已经运行的适配器不受影响。</p>
+      <button
+        type="button"
+        class="btn"
+        :disabled="loading"
+        @click="refresh()"
+      >
+        <el-icon><Refresh /></el-icon>重试
+      </button>
+    </div>
+
+    <!-- 空态只当一条横幅：四步在下面的教程里，这里再列一遍就是两套一样的步骤。
+         第一次接进来需要的细节（下载、面板、启动按钮）都在教程里，所以那边默认展开。 -->
+    <div
+      v-else
+      class="empty"
+    >
+      <span
+        class="empty-mark"
+        aria-hidden="true"
+      >鱼</span>
+      <div class="empty-copy">
+        <h2>还没有 QQ 小号</h2>
+        <p>挂一个号，她才能进群说话。按下面的四步来，大约十分钟。</p>
+      </div>
+      <button
+        type="button"
+        class="btn primary"
+        @click="openCreate"
+      >
+        <el-icon><Plus /></el-icon>添加 QQ 小号
+      </button>
+    </div>
+
+    <!-- 接入四步：只在第一次配的时候要看，有号了就默认收起 -->
+    <details
+      id="qq-steps"
+      class="setup"
+      :open="!hasConnections"
+    >
+      <summary>
+        <h2>第一次接进来</h2>
+        <span class="sm">装协议端 → 开端口 → 填连接 → 绑角色</span>
+        <span class="grow" />
+        <span class="fold-hint">展开</span>
+        <el-icon class="fold-caret">
+          <ArrowRight />
+        </el-icon>
+      </summary>
+
+      <div class="setup-body">
+        <div class="guide-tools">
+          <button
+            type="button"
+            class="guide-copy"
+            @click="copyInstallGuide"
+          >
+            <el-icon><CopyDocument /></el-icon>复制安装教程
+          </button>
+        </div>
+
+        <ol class="steps">
+          <li class="step">
+            <span class="step-no">1</span>
+            <div class="step-body">
+              <h3>下载并登录 QQ 小号</h3>
+              <p>
+                装 {{ PROXY.name }}（自带网页配置面板，不用另装面板），装好后用 QQ 客户端登录小号。
+                它是挂在这个已登录的客户端上收发消息的，所以那个窗口全程别关。
+              </p>
+              <p class="step-line">
+                <a
+                  :href="PROXY.repo"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                ><el-icon><Download /></el-icon>下载 {{ PROXY.name }}</a>
+                <span class="sep">·</span>选最新的 win-x64 包，自带 Node 运行时，不用另外装环境。
+              </p>
+              <p class="step-note">
+                建议使用小号，避免主号承担非官方协议的风控风险。
+              </p>
+            </div>
+          </li>
+
+          <li class="step">
+            <span class="step-no">2</span>
+            <div class="step-body">
+              <h3>开启收发接口</h3>
+              <!-- 协议端本体没起来的话，下面的面板链接点了也是白打，所以先解决它 -->
+              <div class="run-row">
+                <span
+                  class="run-state"
+                  :class="{
+                    'is-on': snowluma?.running,
+                    'is-warn': Boolean(snowluma?.installed) && !snowluma?.running,
+                  }"
+                >
+                  <span class="dot" />{{ PROXY.name }} {{ snowlumaStateText }}
+                  <span
+                    v-if="snowlumaSourceLabel"
+                    class="run-tag"
+                  >{{ snowlumaSourceLabel }}</span>
+                </span>
+                <button
+                  v-if="snowluma?.installed && !snowluma.running"
+                  type="button"
+                  class="abtn is-lead"
+                  :disabled="snowlumaStarting"
+                  @click="startSnowluma"
+                >
+                  <el-icon><VideoPlay /></el-icon>
+                  {{ snowlumaStarting ? "正在打开…" : "启动 SnowLuma" }}
+                </button>
+                <button
+                  v-if="snowluma?.installed"
+                  type="button"
+                  class="tlink"
+                  @click="toggleHomeEdit"
+                >
+                  <el-icon><FolderOpened /></el-icon>换目录
+                </button>
+                <button
+                  v-if="snowluma && !snowluma.installed"
+                  type="button"
+                  class="tlink"
+                  @click="rescanSnowluma"
+                >
+                  <el-icon><Refresh /></el-icon>重新找一遍
+                </button>
+              </div>
+              <p
+                v-if="snowluma && !snowluma.installed"
+                class="run-warn"
+              >
+                没找到 <code>{{ snowluma.home }}\start.bat</code>。自动找的时候扫过下载、桌面、文档、
+                Program Files 和各盘根目录下两层，都没中。把「一眼能看到 start.bat 的那一层」填到下面，
+                只填一次；刚装完还没被扫到的，点上面「重新找一遍」。
+              </p>
+              <div
+                v-if="snowluma && (!snowluma.installed || homeEditing)"
+                class="home-edit"
+              >
+                <input
+                  v-model="homeDraft"
+                  class="home-input"
+                  spellcheck="false"
+                  placeholder="D:\Tools\SnowLuma"
+                  aria-label="协议端安装目录"
+                >
+                <button
+                  type="button"
+                  class="abtn is-lead"
+                  :disabled="homeSaving"
+                  @click="saveHome"
+                >
+                  {{ homeSaving ? "保存中…" : "保存目录" }}
+                </button>
+              </div>
+              <p class="endpoint-intro">
+                打开协议端面板：<a
+                  :href="PROXY.panel"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                ><code>{{ PROXY.panel }}</code></a>
+              </p>
+              <ol class="endpoint-steps">
+                <li>
+                  <span class="endpoint-index">1</span>
+                  <span class="endpoint-copy"><b>开启 WebSocket 服务端</b><span>端口 <code>3001</code>，用于接收 QQ 消息</span></span>
+                </li>
+                <li>
+                  <span class="endpoint-index">2</span>
+                  <span class="endpoint-copy"><b>开启 HTTP API</b><span>端口 <code>3002</code>，用于发送 QQ 消息</span></span>
+                </li>
+                <li>
+                  <span class="endpoint-index">3</span>
+                  <span class="endpoint-copy"><b>设置并记下 Token</b><span>WS 与 HTTP 分别设置，两个值可能不同</span></span>
+                </li>
+              </ol>
+              <p class="endpoint-note">
+                HTTP 不要用 3000，这个端口通常被本站占用。
+              </p>
+              <details class="step-more">
+                <summary>
+                  <span class="step-caret"><el-icon><ArrowRight /></el-icon></span>
+                  {{ PROXY.name }} 面板配置细节
+                </summary>
+                <ol class="panel-steps">
+                  <li
+                    v-for="(step, index) in PROXY.steps"
+                    :key="step.title"
+                    class="panel-step"
+                  >
+                    <span class="panel-step-no">{{ index + 1 }}</span>
+                    <div class="panel-step-copy">
+                      <strong>{{ step.title }}</strong>
+                      <p>{{ step.detail }}</p>
+                    </div>
+                  </li>
+                </ol>
+                <p class="warn">
+                  {{ PROXY.warn }}
+                </p>
+              </details>
+            </div>
+          </li>
+
+          <li class="step">
+            <span class="step-no">3</span>
+            <div class="step-body">
+              <h3>添加连接并绑定角色</h3>
+              <p>
+                填 QQ 号、WS 地址 <code>ws://127.0.0.1:3001</code>、HTTP 地址
+                <code>http://127.0.0.1:3002</code> 和协议端 Token。保存后绑定一个角色。
+              </p>
+              <button
+                type="button"
+                class="abtn is-lead"
+                @click="openCreate"
+              >
+                <el-icon><Plus /></el-icon>添加 QQ 小号
+              </button>
+            </div>
+          </li>
+
+          <li class="step">
+            <span class="step-no">4</span>
+            <div class="step-body">
+              <h3>启动并测试</h3>
+              <p>
+                适配器是个独立进程，得一直开着才能收发。点下面的按钮会打开一个命令行窗口，
+                替你在项目根目录跑 <code>yarn onebot:run</code>；窗口里出现
+                <code>onebot-connected</code> 就通了，再用另一个 QQ 号发消息测试。
+              </p>
+              <div class="run-row">
+                <button
+                  type="button"
+                  class="abtn is-lead"
+                  :disabled="adapterStarting || adapterStatus?.running"
+                  @click="startAdapter"
+                >
+                  <el-icon><VideoPlay /></el-icon>
+                  {{ adapterStatus?.running ? "已在运行" : adapterStarting ? "正在打开…" : "启动适配器" }}
+                </button>
+                <button
+                  type="button"
+                  class="tlink"
+                  @click="copyCommand('yarn onebot:run')"
+                >
+                  <el-icon><CopyDocument /></el-icon>复制命令
+                </button>
+                <span
+                  class="run-state"
+                  :class="{ 'is-on': adapterStatus?.running }"
+                >
+                  <span class="dot" />{{ adapterStateText }}
+                </span>
+                <span
+                  v-if="gateway"
+                  class="run-state"
+                  :class="gateway.reachable ? 'is-on' : 'is-warn'"
+                >
+                  <span class="dot" />{{ gateway.reachable
+                    ? `网关 ${gateway.port} 已监听`
+                    : `网关 ${gateway.port} 没人接` }}
+                </span>
+              </div>
+              <p
+                v-if="gateway && !gateway.reachable"
+                class="run-warn"
+              >
+                适配器要连的 <code>{{ gateway.port }}</code> 端口没有进程应答 ——
+                也就是协议端没启动（或它里面的 WS 节点没开）。回第 2 步点「启动 SnowLuma」，
+                等面板能打开、日志里出现 <code>login detected</code>，这边会自己连上。
+                期间适配器日志会一直刷 <code>code=1006</code>，那是它在按
+                1/2/4/8/16/30 秒退避重试，不是坏了。
+              </p>
+              <p class="step-note">
+                关掉那个命令行窗口就等于停。已经手动开着适配器时不要再点（会开出第二个，两个抢同一条连接）。
+                窗口一闪就没的话，多半是 <code>yarn</code> 不在 PATH —— 按「复制命令」自己开终端跑，把报错贴出来。
+              </p>
+            </div>
+          </li>
+        </ol>
+
+        <!-- ③ 排查：症状在前、原因在后，比一长串「如果…」好扫 -->
+        <section class="fix-block">
+          <div class="fix-block-h">
+            <h3>连不上，按这个顺序查</h3>
+            <span>八成是前三样</span>
+          </div>
+          <dl class="fix-list">
+            <div class="fix-row">
+              <dt>协议端日志里没有 <code>UIN=小号</code></dt>
+              <dd>小号还没在官方 QQ 客户端里登上，或者那个窗口被关了。</dd>
+            </div>
+            <div class="fix-row">
+              <dt>适配器日志一直刷 <code>code=1006</code></dt>
+              <dd>3001 上没人监听：协议端根本没启动，或它里面的 WS 节点没开。先跑 <code>start.bat</code> 再看面板。</dd>
+            </div>
+            <div class="fix-row">
+              <dt>适配器报连不上 3001</dt>
+              <dd>协议端里 WS 节点没开，或端口不是 3001 —— 回第 2 步核对。</dd>
+            </div>
+            <div class="fix-row">
+              <dt>能连上，但一条都不回</dt>
+              <dd>没绑角色，或者角色还没配模型 API Key。</dd>
+            </div>
+            <div class="fix-row">
+              <dt>发不出去 / 握手 401</dt>
+              <dd>两个 Token 填反了（WS 和 HTTP 是两把不同的钥匙），或者 HTTP 端口和面板里不一致。</dd>
+            </div>
+            <div class="fix-row">
+              <dt>群里太吵</dt>
+              <dd>展开上面那一行，把「这个群怎么回」调成「仅被 @ 时回复」。</dd>
+            </div>
+            <div class="fix-row">
+              <dt>想让她发表情 / 主动找话 / 刷 B站</dt>
+              <dd>也都在行里：「这个角色」是角色级开关，「主人的 B站 口令」在这个群那一组。</dd>
+            </div>
+          </dl>
+        </section>
+      </div>
+    </details>
 
     <!-- ── 连接设置 / 添加 ───────────────────────────────── -->
     <el-dialog
@@ -1360,9 +1387,19 @@ function copyInstallGuide() {
 
       <template #footer>
         <div class="cq-foot">
-          <span class="cq-foot-note">
-            {{ editingId ? "点击保存并重新连接，无需手动重启终端" : "首次使用仍需启动一次 yarn onebot:run" }}
-          </span>
+          <!-- 删除放在设置里：这是连接级动作，不该挂在某一条绑定上 -->
+          <button
+            v-if="editingTarget"
+            type="button"
+            class="tlink is-danger"
+            @click="removeConnection(editingTarget)"
+          >
+            <el-icon><Delete /></el-icon>删除这个号
+          </button>
+          <span
+            v-else
+            class="cq-foot-note"
+          >首次使用仍需启动一次适配器</span>
           <span class="cq-foot-actions">
             <el-button @click="editVisible = false">
               取消
@@ -1414,7 +1451,7 @@ function copyInstallGuide() {
         </el-form-item>
         <p class="cq-hint">
           填了群号就只在这个群里回复。想同时听多个群，给同一个角色多绑几条，每条填一个群号。
-          群聊回复策略、发言限流、刷 B站 这些在下面「角色在 QQ 上的行为」里按角色改。
+          群聊参与度、限流、B站 口令在清单里展开那一行改。
         </p>
       </el-form>
 
@@ -1441,62 +1478,257 @@ function copyInstallGuide() {
 
 <style scoped>
 /* ══════════════════════════════════════════════════════════════
-   沿用总览 / 角色管理 / 阶段总结的 A 套：画布上铺白砖，零描边零阴影，
-   层次只靠明度差 + 间距；砖内再分块时才用 --surface-2/3。
+   按「绑定」组织：链路带（通没通）→ 绑定清单（一行一个角色×群）→ 折叠的接入教程。
+   层次只靠明度差和间距：底色 --bg、卡片 --surface、组内分块才用 --surface-2/3。
    全部规则挂在 .qq-a 下，既锁住作用域，也压过 main.css 的 .card/.btn (0,1,0)。
    ══════════════════════════════════════════════════════════════ */
+.qq-a {
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
 
-/* 顺序控制：有连接时「已接入的号」提到教程前面 */
-.qq-body { display: flex; flex-direction: column; gap: var(--sp-4); }
-.qq-body.has-list .conns { order: -1; }
-/* 链路轨排在最前：它回答的是「为什么不通」，比号列表更该先看到 */
-.qq-body.has-list .chain-slot { order: -2; }
-/* 从链路轨跳过来时别贴着视口顶边 */
 #qq-steps { scroll-margin-top: 16px; }
-.guide { display: flex; flex-direction: column; gap: var(--sp-4); }
+.grow { flex: 1; }
 
-.brick { border-radius: 10px; background: var(--surface); padding: 18px 20px 16px; }
+/* ── 按钮：主操作实心，其余降成文字 ─────────────────── */
+.btn.quiet {
+  height: 32px;
+  border-color: transparent;
+  background: transparent;
+  padding: 0 10px;
+  color: var(--text-2);
+  font-weight: 600;
+}
+.btn.quiet:hover {
+  border-color: transparent;
+  background: var(--surface-3);
+  color: var(--brand-strong);
+  text-decoration: none;
+}
+.btn.quiet.is-danger:hover { background: var(--red-soft); color: var(--red); }
 
-/* ── 接入四步：整块可折叠 ───────────────────────────── */
-.guide-fold { padding: 0; }
-.guide-fold > summary {
+/* ── 重连提示：只在等适配器时出现，平时不占版面 ─────── */
+.reloadbar {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 15px 20px;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-3);
+  border-radius: var(--radius);
+  background: var(--amber-soft);
+  padding: var(--sp-3) var(--sp-4);
+}
+.reloadbar b { flex: none; color: #8f5c05; font-size: 14px; font-weight: 700; }
+.reloadbar p { min-width: 0; flex: 1; margin: 0; color: var(--text-2); font-size: 14px; line-height: 1.6; }
+.reloadbar .btn { height: 32px; flex: none; border-color: transparent; background: var(--surface); }
+
+/* ── 清单头 ─────────────────────────────────────────── */
+.list-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  margin: var(--sp-5) 0 var(--sp-3);
+}
+.list-head h2 { margin: 0; color: var(--text); font-size: 16px; font-weight: 700; }
+.list-head .count { color: var(--dim); font-size: 12px; }
+.list-head .btn { align-self: center; margin-left: auto; }
+
+/* ── 行：一行一条绑定 ───────────────────────────────── */
+.rows { display: flex; flex-direction: column; gap: var(--sp-2); }
+
+.row { border-radius: var(--radius); background: var(--surface); }
+
+.row-main {
+  display: grid;
+  /* 名字/范围/参与度都归到第 2 列，右侧只留额度与展开箭头：
+     多行时两边都是「谁、多少」，不必各行各对一列。 */
+  grid-template-columns: 32px minmax(0, 1fr) auto 20px;
+  align-items: center;
+  gap: var(--sp-3);
+  width: 100%;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  padding: var(--sp-3) var(--sp-4);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background .14s var(--ease);
+}
+.row-main:hover { background: var(--surface-2); }
+.row-main:focus-visible { outline: 2px solid var(--brand); outline-offset: -2px; }
+
+.ava {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border-radius: var(--radius-sm);
+  background: var(--brand-soft);
+  color: var(--brand-strong);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.who { min-width: 0; }
+.who b {
+  display: block;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.who-sub {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-top: 2px;
+}
+.who-sub .where {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--dim);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mode {
+  display: inline-flex;
+  height: 20px;
+  flex: none;
+  align-items: center;
+  border-radius: 999px;
+  background: var(--surface-3);
+  padding: 0 8px;
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.mode.is-ambient { background: var(--brand-soft); color: var(--brand-strong); }
+.mode.is-todo { background: var(--amber-soft); color: #8f5c05; }
+
+.quota {
+  justify-self: end;
+  color: var(--dim);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.quota b { color: var(--text); font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; }
+
+/* 展开符号：就是 Element 的 ArrowRight（一个 >），不加容器。
+   收起时 >，展开时转 90° 变成 v；hover 只换颜色，不多画一圈边框。 */
+.caret {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  color: var(--dim);
+  font-size: 12px;
+  transition: transform .18s var(--ease), color .14s var(--ease);
+}
+.row.is-open .caret { transform: rotate(90deg); color: var(--text-2); }
+.row-main:hover .caret { color: var(--brand-strong); }
+.row.is-open .row-main { border-bottom-right-radius: 0; border-bottom-left-radius: 0; }
+
+.row-body { display: none; border-top: 1px solid var(--line); padding: var(--sp-4); }
+.row.is-open .row-body { display: block; }
+
+.row-blank { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; }
+.row-blank p { flex: 1 1 320px; margin: 0; color: var(--text-2); font-size: 14px; line-height: 1.7; }
+
+/* 骨架：只占位，不描形状 */
+.row.is-skeleton {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) 120px;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+}
+.sk { height: 12px; border-radius: 6px; background: var(--surface-3); }
+.sk.is-ava { width: 32px; height: 32px; border-radius: var(--radius-sm); }
+.sk.is-short { width: 80%; }
+
+/* ── 读不到列表 ───────────────────────────────────── */
+.errbar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  border-radius: var(--radius);
+  background: var(--red-soft);
+  padding: var(--sp-4);
+}
+.errbar b { flex: none; color: var(--red); font-size: 14px; font-weight: 700; }
+.errbar p { min-width: 0; flex: 1; margin: 0; color: var(--text-2); font-size: 14px; line-height: 1.6; }
+.errbar .btn { height: 32px; flex: none; border-color: transparent; background: var(--surface); }
+
+/* ── 空态：一条横幅，不做大卡 ───────────────────────
+   四步在下面的教程里，这里再列一遍就是两套一样的步骤 */
+.empty {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: var(--sp-4) var(--sp-5);
+}
+.empty-mark {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  flex: none;
+  place-items: center;
+  border-radius: var(--radius-sm);
+  background: var(--brand-soft);
+  color: var(--brand);
+  font-size: 18px;
+}
+.empty-copy { min-width: 0; flex: 1; }
+.empty-copy h2 { margin: 0; color: var(--text); font-size: 16px; font-weight: 700; }
+.empty-copy p { margin: 2px 0 0; color: var(--text-2); font-size: 14px; }
+.empty .btn { flex: none; }
+
+/* ── 接入四步：折起来，有号了就默认收起 ─────────────── */
+.setup { margin-top: var(--sp-4); border-radius: var(--radius); background: var(--surface); }
+.setup > summary {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
   list-style: none;
   cursor: pointer;
 }
-.guide-fold > summary::-webkit-details-marker { display: none; }
-.guide-fold > summary h2 { margin: 0; color: var(--text-2); font-size: 14px; font-weight: 700; }
-.guide-fold > summary .grow { flex: 1; }
-.guide-fold .fold-hint { color: var(--faint); font-size: 12px; opacity: .8; }
-.guide-fold .fold-caret { color: var(--faint); font-size: 12px; transition: transform .16s var(--ease); }
-.guide-fold[open] .fold-caret { transform: rotate(90deg); }
-.guide-fold[open] .fold-hint { display: none; }
-.guide-fold > summary:hover h2 { color: var(--brand-strong); }
+.setup > summary::-webkit-details-marker { display: none; }
+.setup > summary h2 { margin: 0; color: var(--text-2); font-size: 14px; font-weight: 700; }
+.setup > summary .sm { color: var(--dim); font-size: 12px; }
+.setup > summary .grow { flex: 1; }
+.setup > summary:hover h2 { color: var(--brand-strong); }
+.setup .fold-hint { color: var(--dim); font-size: 12px; }
+.setup .fold-caret {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  color: var(--dim);
+  font-size: 12px;
+  transition: transform .18s var(--ease), color .14s var(--ease);
+}
+.setup > summary:hover .fold-caret { color: var(--brand-strong); }
+.setup[open] .fold-caret { transform: rotate(90deg); color: var(--text-2); }
+.setup[open] .fold-hint { display: none; }
+.setup-body { border-top: 1px solid var(--line); padding: 0 var(--sp-4) var(--sp-4); }
+.guide-tools { display: flex; justify-content: flex-end; padding: var(--sp-3) 0 0; }
 
-.guide-body { border-top: 1px solid var(--surface-3); padding: 0 20px 16px; }
-.guide-tools { display: flex; justify-content: flex-end; padding: 12px 0 0; }
-
-/* 排查清单折进来以后只是个小节，不再单独一张砖 */
-.fix-block { margin-top: 18px; border-top: 1px solid var(--surface-3); padding-top: 14px; }
-.fix-block-h { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; }
-.fix-block-h h3 { margin: 0; color: var(--text-2); font-size: 13px; font-weight: 700; }
-.fix-block-h span { color: var(--dim); font-size: 12px; }
-
-/* 卡片标题：短标签，不跟正文抢 */
-.card-h { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
-.card-title-group { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
-.card-h h2 { margin: 0; color: var(--text-2); font-size: 14px; font-weight: 700; }
-.card-sub { color: var(--dim); font-size: 12px; }
 .guide-copy {
   display: inline-flex;
-  min-height: 34px;
+  min-height: 32px;
   align-items: center;
   gap: 6px;
-  border: 1px solid var(--surface-3);
-  border-radius: 7px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
   background: var(--surface);
   padding: 0 10px;
   color: var(--text-2);
@@ -1505,66 +1737,17 @@ function copyInstallGuide() {
   cursor: pointer;
   transition: background .14s var(--ease), border-color .14s var(--ease), color .14s var(--ease);
 }
-.guide-copy:hover { border-color: var(--brand); background: var(--brand-soft); color: var(--brand-strong); }
+.guide-copy:hover { border-color: var(--brand-line); background: var(--brand-soft); color: var(--brand-strong); }
 .guide-copy .el-icon { font-size: 14px; }
 .guide-copy:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
 
-/* 区块标题（连接列表） */
-.sec-label { display: flex; align-items: baseline; gap: 8px; margin-bottom: var(--sp-3); }
-.sec-label h2 { margin: 0; color: var(--text-2); font-size: 14px; font-weight: 700; }
-.sec-label .count { color: var(--dim); font-size: 12px; font-variant-numeric: tabular-nums; }
-.sec-label .note { margin-left: auto; color: var(--dim); font-size: 12px; }
-
-/* 第 4 步：启动按钮 + 复制命令 + 运行状态同一行 */
-.run-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 10px 0 0; }
-.run-state { display: inline-flex; align-items: center; gap: 6px; color: var(--dim); font-size: 12px; }
-.run-state .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--line-strong); }
-.run-state.is-on { color: #0b7a54; }
-.run-state.is-on .dot { background: var(--green); }
-.run-state.is-warn { color: #8f5c05; }
-.run-state.is-warn .dot { background: #d79a2b; }
-/* 「自动找到」标：路径不是用户填的就说一声，省得他以为自己填过 */
-.run-tag { margin-left: 2px; border-radius: 999px; background: var(--surface-2); padding: 1px 7px; color: var(--dim); font-size: 12px; }
-/* 网关没接上：这不是错误弹窗该干的事，写成一块常驻的说明 */
-.run-warn {
-  margin: 10px 0 0;
-  border-radius: 8px;
-  background: #fdf6e7;
-  padding: 10px 12px;
-  color: #7a4f06;
-  font-size: 12px;
-  line-height: 1.8;
-}
-.run-warn code { background: rgba(255, 255, 255, .75); border-radius: 4px; padding: 1px 4px; }
-
-/* 目录输入只在「找不到 start.bat」或点了「换目录」时出现，所以不值得占一整行版面 */
-.home-edit { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; margin-top: var(--sp-2); }
-.home-input {
-  flex: 1 1 280px;
-  min-width: 0;
-  height: 34px;
-  border: 0;
-  border-radius: 8px;
-  background: var(--surface-2);
-  padding: 0 10px;
-  color: var(--text);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
-}
-.home-input::placeholder { color: var(--dim); }
-.home-input:focus { outline: 2px solid var(--brand); outline-offset: -2px; background: var(--surface-3); }
-
-/* 行为卡：一张卡一个角色，宽度封顶 760 —— 开关型设置拉满全宽会被中间的空白扯散 */
-/* 角色卡一列排：里面是刻度 + 四格仪表，半宽会把仪表挤散 */
-.behave-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--sp-4); }
-
-/* ── ② 四步 ───────────────────────────────────────── */
+/* ── 四步 ───────────────────────────────────────────── */
 .steps { display: flex; flex-direction: column; margin: 6px 0 0; padding: 0; list-style: none; }
 .step {
   display: grid;
   grid-template-columns: 24px minmax(0, 1fr);
   gap: 12px;
-  border-top: 1px solid var(--surface-3);
+  border-top: 1px solid var(--line);
   padding: 16px 0;
 }
 .step:first-child { border-top: 0; padding-top: 10px; }
@@ -1586,22 +1769,65 @@ function copyInstallGuide() {
 /* 正文字号 14、行宽 68ch：这几段是要照着做的，别拉成一行 100 多字 */
 .step-body p { max-width: 68ch; margin: 0 0 8px; color: var(--text-2); font-size: 14px; line-height: 1.75; }
 .step-body p:last-child { margin-bottom: 0; }
+.step-body strong { color: var(--text); font-weight: 600; }
 .endpoint-intro { margin-bottom: 10px !important; }
-.endpoint-steps {
-  display: grid;
-  gap: 8px;
-  max-width: 620px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
+.step-note { color: var(--dim) !important; font-size: 12px !important; line-height: 1.7 !important; }
+/* 行内链接：不整体 flex，否则那句长文案会变成一个独立 flex item，
+   窄屏时链接和正文各占一行、缩进对不上。图标单独抬 2px 跟基线走。 */
+.step-line a,
+.step-body a { display: inline-flex; align-items: center; gap: 4px; color: var(--brand-strong); font-weight: 600; }
+.step-line a:hover,
+.step-body a:hover { text-decoration: underline; text-underline-offset: 3px; }
+.step-line .el-icon { margin-right: 2px; font-size: 13px; vertical-align: -2px; }
+.sep { margin: 0 5px; color: var(--faint); }
+
+/* 第 4 步：启动按钮 + 复制命令 + 运行状态同一行 */
+.run-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 10px 0 0; }
+.run-state { display: inline-flex; align-items: center; gap: 6px; color: var(--dim); font-size: 12px; }
+.run-state .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--line-strong); }
+.run-state.is-on { color: #0b7a54; }
+.run-state.is-on .dot { background: var(--green); }
+.run-state.is-warn { color: #8f5c05; }
+.run-state.is-warn .dot { background: #d79a2b; }
+/* 「自动找到」标：路径不是用户填的就说一声，省得他以为自己填过 */
+.run-tag { margin-left: 2px; border-radius: 999px; background: var(--surface-2); padding: 1px 7px; color: var(--dim); font-size: 12px; }
+/* 网关没接上：这不是错误弹窗该干的事，写成一块常驻的说明 */
+.run-warn {
+  margin: 10px 0 0;
+  border-radius: var(--radius-sm);
+  background: var(--amber-soft);
+  padding: 10px 12px;
+  color: #8f5c05;
+  font-size: 12px;
+  line-height: 1.8;
 }
+.run-warn code { border-radius: 4px; background: rgb(255 255 255 / 75%); padding: 1px 4px; }
+
+/* 目录输入只在「找不到 start.bat」或点了「换目录」时出现 */
+.home-edit { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; margin-top: var(--sp-2); }
+.home-input {
+  min-width: 0;
+  height: 34px;
+  flex: 1 1 280px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  padding: 0 10px;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.home-input::placeholder { color: var(--dim); }
+.home-input:focus { outline: 2px solid var(--brand); outline-offset: -2px; background: var(--surface-3); }
+
+.endpoint-steps { display: grid; gap: 8px; max-width: 620px; margin: 0; padding: 0; list-style: none; }
 .endpoint-steps li {
   display: grid;
   grid-template-columns: 26px minmax(0, 1fr);
   align-items: center;
   gap: 10px;
   min-height: 52px;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   background: var(--surface-2);
   padding: 8px 12px;
 }
@@ -1620,16 +1846,6 @@ function copyInstallGuide() {
 .endpoint-copy b { color: var(--text); font-size: 14px; font-weight: 600; }
 .endpoint-copy > span { color: var(--dim); font-size: 12px; line-height: 1.5; }
 .endpoint-note { margin-top: 8px !important; color: #8f5c05 !important; font-size: 12px !important; }
-.step-body strong { color: var(--text); font-weight: 600; }
-.step-note { color: var(--dim) !important; font-size: 12px !important; line-height: 1.7 !important; }
-/* 行内链接：不整体 flex，否则那句长文案会变成一个独立 flex item，
-   窄屏时链接和正文各占一行、缩进对不上。图标单独抬 2px 跟基线走。 */
-.step-line a,
-.step-body a { display: inline-flex; align-items: center; gap: 4px; color: #bf3a63; font-weight: 600; }
-.step-line a:hover,
-.step-body a:hover { text-decoration: underline; text-underline-offset: 3px; }
-.step-line .el-icon { margin-right: 2px; font-size: 13px; vertical-align: -2px; }
-.sep { margin: 0 5px; color: var(--faint); }
 
 /* 折叠：默认只露一句话，想动手再展开 */
 .step-more { margin-top: 10px; }
@@ -1637,34 +1853,27 @@ function copyInstallGuide() {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   background: var(--surface-2);
   padding: 6px 11px 6px 8px;
   color: var(--text-2);
   font-size: 12px;
   font-weight: 600;
-  cursor: pointer;
   list-style: none;
+  cursor: pointer;
 }
 .step-more summary::-webkit-details-marker { display: none; }
 .step-more summary:hover { background: var(--surface-3); }
-.step-more .caret { display: inline-flex; color: var(--faint); font-size: 12px; transition: transform .14s var(--ease); }
-.step-more[open] .caret { transform: rotate(90deg); }
-.panel-steps {
-  display: flex;
-  flex-direction: column;
-  gap: 0;
-  margin: 12px 0 0;
-  padding: 0;
-  list-style: none;
+.step-caret {
+  display: inline-flex;
+  color: var(--dim);
+  font-size: 12px;
+  transition: transform .18s var(--ease), color .14s var(--ease);
 }
-.panel-step {
-  position: relative;
-  display: grid;
-  grid-template-columns: 28px minmax(0, 1fr);
-  gap: 10px;
-  padding: 0 0 14px;
-}
+.step-more summary:hover .step-caret { color: var(--brand-strong); }
+.step-more[open] .step-caret { transform: rotate(90deg); color: var(--text-2); }
+.panel-steps { display: flex; flex-direction: column; margin: 12px 0 0; padding: 0; list-style: none; }
+.panel-step { position: relative; display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 10px; padding: 0 0 14px; }
 .panel-step:not(:last-child)::before {
   position: absolute;
   top: 25px;
@@ -1690,13 +1899,13 @@ function copyInstallGuide() {
 .panel-step-copy strong { color: var(--text); font-size: 14px; font-weight: 700; }
 .panel-step-copy p { max-width: 66ch; margin: 3px 0 0; color: var(--text-2); font-size: 14px; line-height: 1.65; }
 
-/* 警告块：左竖条 + 软底。文字用 #8f5c05（4.7:1），--amber 只有 4.26:1 */
+/* 警告块：软底 + 深一档的琥珀字（--amber 只有 4.26:1，不够 AA） */
 .warn {
   display: flex;
   gap: 7px;
   max-width: 68ch !important;
   margin-top: 10px;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   background: var(--amber-soft);
   padding: 8px 11px;
   color: #8f5c05 !important;
@@ -1704,24 +1913,11 @@ function copyInstallGuide() {
   line-height: 1.7 !important;
 }
 
-.cmd {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 2px;
-  border: 0;
-  border-radius: 8px;
-  background: var(--surface-2);
-  padding: 8px 11px;
-  color: var(--text-2);
-  cursor: pointer;
-  transition: background .14s var(--ease);
-}
-.cmd:hover { background: var(--brand-soft); color: var(--brand-strong); }
-.cmd .el-icon { color: var(--faint); font-size: 13px; }
-.cmd:hover .el-icon { color: var(--brand); }
-
-/* ── ③ 排查清单 ───────────────────────────────────── */
+/* ── 排查清单：症状在前、原因在后 ─────────────────── */
+.fix-block { margin-top: 18px; border-top: 1px solid var(--line); padding-top: 14px; }
+.fix-block-h { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; }
+.fix-block-h h3 { margin: 0; color: var(--text-2); font-size: 14px; font-weight: 700; }
+.fix-block-h span { color: var(--dim); font-size: 12px; }
 .fix-list { display: flex; flex-direction: column; margin: 8px 0 0; }
 /* 症状 / 原因两列：症状最长也就 12 个字，给 0.62 列就够 ——
    1:1 会在中间留一条 250px 的空沟，右边那列反而变窄 */
@@ -1730,7 +1926,7 @@ function copyInstallGuide() {
   grid-template-columns: minmax(0, 0.62fr) minmax(0, 1.38fr);
   gap: 8px 20px;
   align-items: baseline;
-  border-top: 1px solid var(--surface-3);
+  border-top: 1px solid var(--line);
   padding: 9px 0;
 }
 .fix-row:first-child { border-top: 0; }
@@ -1739,81 +1935,14 @@ function copyInstallGuide() {
 
 /* 行内代码：整页统一一处，别在各段里各写一遍 */
 .qq-a code,
-.brick code,
 .cmd code {
   border-radius: 4px;
   background: var(--surface-3);
   padding: 1px 5px;
   color: var(--text-2);
-  font-family: ui-monospace, Consolas, monospace;
+  font-family: var(--mono);
   font-size: 12px;
 }
-.cmd code { background: none; padding: 0; color: inherit; font-size: 14px; }
-
-/* ── 连接卡 ───────────────────────────────────────── */
-/* 一行式的账号卡不需要并排：一列铺满，宽度和上下两张卡对齐 */
-.conn-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--sp-3); align-items: start; }
-.conn-card {
-  border-radius: 10px;
-  background: var(--surface);
-  padding: 13px 15px 11px;
-}
-.conn-card.is-skeleton { display: flex; flex-direction: column; gap: 10px; }
-.reload-status { margin: 10px 0 0; }
-
-/* 一行：图标 / 名字 + 号 + 状态 / 右侧动作 —— 账号卡不该比它承载的信息更高 */
-.conn-row { display: flex; align-items: center; gap: 12px; }
-.conn-icon {
-  display: grid;
-  width: 36px;
-  height: 36px;
-  flex: none;
-  place-items: center;
-  border-radius: 8px;
-  background: var(--brand-soft);
-  color: var(--brand);
-  font-size: 17px;
-}
-.conn-id { min-width: 0; flex: 1; }
-.conn-name { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; color: var(--text); font-size: 15px; font-weight: 700; line-height: 1.35; }
-.conn-qq { color: var(--dim); font-size: 12px; font-weight: 500; font-family: ui-monospace, Consolas, monospace; }
-.conn-meta { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 3px; color: var(--dim); font-size: 12px; line-height: 1.5; }
-.conn-actions { display: flex; flex: none; align-items: center; gap: 4px; }
-
-/* 详情：一行摘要 + 展开区。绑定列表、重连提示、删除都收在这里 */
-.conn-more { margin-top: 10px; border-top: 1px solid var(--surface-3); }
-.conn-more > summary {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 0 0;
-  color: var(--dim);
-  font-size: 12px;
-  cursor: pointer;
-  list-style: none;
-}
-.conn-more > summary::-webkit-details-marker { display: none; }
-.conn-more > summary .grow { flex: 1; }
-.conn-more .more-sum { color: var(--text-2); font-weight: 600; }
-.conn-more .more-sum.is-warn { color: #8f5c05; }
-.conn-more .more-hint { opacity: .75; }
-.conn-more .more-caret { font-size: 12px; transition: transform .16s var(--ease); }
-.conn-more[open] .more-caret { transform: rotate(90deg); }
-.conn-more > summary:hover .more-hint,
-.conn-more > summary:hover .more-sum { color: var(--brand-strong); }
-.conn-more-body { padding-top: 4px; }
-
-/* 绑定与删除：平时折起来，展开才出现 */
-.bind-list { display: flex; flex-direction: column; margin: 8px 0 0; padding: 0; list-style: none; }
-.bind-row { display: flex; align-items: center; gap: 10px; padding: 7px 0; border-top: 1px solid var(--surface-3); }
-.bind-row:first-child { border-top: 0; }
-.bind-id { min-width: 0; flex: 1; }
-.bind-id b { display: block; color: var(--text-2); font-size: 14px; font-weight: 600; }
-.bind-id span { color: var(--dim); font-size: 12px; }
-.bind-empty { margin: 8px 0 0; color: var(--text-2); font-size: 13px; line-height: 1.6; }
-
-.conn-foot { display: flex; align-items: center; gap: 4px; margin-top: 10px; border-top: 1px solid var(--surface-3); padding-top: 8px; }
-.conn-foot .grow { flex: 1; }
 
 /* 文字按钮：卡片上的动作一律降调，主色只留给 hover */
 .abtn {
@@ -1822,7 +1951,7 @@ function copyInstallGuide() {
   align-items: center;
   gap: 5px;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   background: none;
   padding: 0 9px;
   color: var(--text-2);
@@ -1844,7 +1973,7 @@ function copyInstallGuide() {
   align-items: center;
   gap: 4px;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--radius-xs, 6px);
   background: none;
   padding: 0 7px;
   color: var(--dim);
@@ -1857,41 +1986,6 @@ function copyInstallGuide() {
 .tlink .el-icon { font-size: 13px; }
 .tlink.is-danger:hover { background: var(--red-soft); color: var(--red); }
 
-/* 空态：一行说完 + 右边给按钮。不做 240px 高的大白块 ——
-   这一屏真正要读的是下面的接入步骤，空态抢走一半高度反而把人挡住。 */
-.qq-empty {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  border-radius: 10px;
-  background: var(--surface);
-  padding: 16px 18px;
-}
-.empty-icon {
-  display: grid;
-  width: 40px;
-  height: 40px;
-  flex: none;
-  place-items: center;
-  border-radius: 50%;
-  background: var(--brand-soft);
-  color: var(--brand);
-  font-size: 20px;
-}
-.empty-copy { min-width: 0; flex: 1; }
-.empty-copy h3 { margin: 0; color: var(--text); font-size: 14px; font-weight: 700; }
-.empty-copy p { margin: 3px 0 0; color: var(--dim); font-size: 12px; line-height: 1.65; }
-.qq-empty .btn.primary,
-.qq-empty > .btn { flex: none; }
-.qq-empty.is-error { background: var(--red-soft); }
-.empty-icon.is-error { background: #fff; color: var(--red); }
-
-/* 页头按钮：A 套的次要按钮是纯文字，hover 才出下划线 */
-.qq-a .btn { height: 36px; border: 0; background: none; box-shadow: none; padding: 0 10px; color: var(--text-2); border-radius: 8px; }
-.qq-a .btn:hover { color: var(--text); text-decoration: underline; text-underline-offset: 3px; }
-.qq-a .btn.primary { background: var(--brand-btn); color: #fff; padding: 0 14px; }
-.qq-a .btn.primary:hover { background: var(--brand-btn-h); color: #fff; text-decoration: none; }
-
 /* ── 弹窗：三组（身份 / 地址与 Token / 群聊），每组一个小标题 ──────
    弹窗是 teleport 出去的，外壳样式在 main.css；这里只管插槽里自己的元素，
    Element 的 .el-form-item 要靠 :deep —— 插槽内容带本组件的 scope id，能命中。 */
@@ -1901,9 +1995,9 @@ function copyInstallGuide() {
 .cq-id { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0 16px; }
 .cq-pair { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 0 16px; }
 
-/* 分组：一条 1px 的 --surface-3 起头，比加卡片边框轻。
+/* 分组：一条 1px 的 --line 起头，比加卡片边框轻。
    组内 10、组间 18 —— 组距必须大于组内距，否则看起来是六个平行字段 */
-.cq-sec { display: flex; flex-direction: column; gap: 10px; border-top: 1px solid var(--surface-3); padding-top: 16px; }
+.cq-sec { display: flex; flex-direction: column; gap: 10px; border-top: 1px solid var(--line); padding-top: 16px; }
 .cq-sec.is-first { border-top: 0; padding-top: 0; }
 .cq-sec-h { display: flex; align-items: baseline; gap: 10px; }
 /* 小标题要压过字段标签（12/500）：14/700 + 同色，只差字号和字重 */
@@ -1917,7 +2011,7 @@ function copyInstallGuide() {
 .cq-warn {
   display: flex;
   gap: 7px;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   background: var(--amber-soft);
   padding: 8px 10px;
   color: #8f5c05;
@@ -1930,30 +2024,31 @@ function copyInstallGuide() {
 
 .cq-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .cq-foot-note { color: var(--dim); font-size: 12px; text-align: left; }
-.cq-foot-actions { display: flex; }
+.cq-foot-actions { display: flex; margin-left: auto; }
 
-/* ── 自适应 ───────────────────────────────────────── */
-@media (max-width: 1080px) {
-  .conn-grid { grid-template-columns: minmax(0, 1fr); }
+/* ── 窄屏 ───────────────────────────────────────────── */
+@media (max-width: 860px) {
+  /* 徽标已在名字下面，行头不再需要为它单开一行；右侧只留额度与箭头 */
+  .row-main { grid-template-columns: 32px minmax(0, 1fr) auto 20px; row-gap: var(--sp-2); padding: var(--sp-3); }
+  .caret { grid-column: 4; grid-row: 1; }
+  .quota { grid-column: 3; grid-row: 1; }
+
+  .empty { align-items: flex-start; flex-wrap: wrap; padding: var(--sp-4); }
+  .empty-copy { flex-basis: calc(100% - 56px); }
+  .empty .btn { margin-left: 56px; }
+
+  .reloadbar { flex-wrap: wrap; }
+  .reloadbar p { flex-basis: 100%; }
+  .errbar { flex-wrap: wrap; }
+  .errbar p { flex-basis: 100%; }
+
+  .setup > summary { flex-wrap: wrap; }
+  .setup > summary .sm { flex-basis: 100%; order: 3; }
+  .step { gap: 10px; }
   .fix-row { grid-template-columns: minmax(0, 1fr); gap: 3px; }
-}
-@media (max-width: 720px) {
-  .brick { padding: 16px 15px 14px; }
-  .conn-card { padding: 12px 13px 10px; }
-  /* 窄屏把动作放到第二行，别把名字挤成两行 */
-  .conn-row { flex-wrap: wrap; row-gap: 10px; }
-  .conn-actions { width: 100%; justify-content: flex-end; }
-  .sec-label .note { display: none; }
-  .conn-foot { flex-wrap: wrap; }
-  .behave-grid { grid-template-columns: minmax(0, 1fr); }
-  .step { grid-template-columns: 24px minmax(0, 1fr); gap: 10px; }
   .endpoint-steps li { grid-template-columns: 24px minmax(0, 1fr); padding: 8px 10px; }
-  /* 空态换行：文案先占满一行，按钮落到下一行、和文案左边缘对齐 */
-  .qq-empty { flex-wrap: wrap; align-items: flex-start; row-gap: 10px; }
-  .empty-copy { flex-basis: calc(100% - 54px); }
-  .qq-empty .btn.primary,
-  .qq-empty > .btn { margin-left: 54px; }
 }
+
 @media (max-width: 560px) {
   .cq-id,
   .cq-pair { grid-template-columns: minmax(0, 1fr); gap: 12px; }
