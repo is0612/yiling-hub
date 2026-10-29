@@ -349,10 +349,12 @@ async function saveMemory() {
   }
 }
 
-async function openMemoryEditor(entry: TimelineEntry) {
-  const memoryId = entry.id.startsWith("memory:") ? entry.id.slice("memory:".length) : "";
+/**
+ * 打开某条记忆的详情（内容 + 来源）。
+ * 时间线行和检索结果都走这里：时间线行的 id 是 `memory:<uuid>`，检索结果直接就是 uuid。
+ */
+async function openMemoryDetail(memoryId: string) {
   if (!memoryId) return;
-
   editingMemoryId.value = memoryId;
   editingMemorySource.value = null;
   editingMemorySnapshot.value = null;
@@ -373,6 +375,32 @@ async function openMemoryEditor(entry: TimelineEntry) {
   } finally {
     memoryEditLoading.value = false;
   }
+}
+
+function openMemoryEditor(entry: TimelineEntry) {
+  const memoryId = entry.id.startsWith("memory:") ? entry.id.slice("memory:".length) : "";
+  void openMemoryDetail(memoryId);
+}
+
+/** 来源区的说话人标签：消息按角色，平台事件单独标 */
+function sourceSpeakerLabel(role: string, eventType: string) {
+  if (eventType !== "message") return "平台事件";
+  return role === "USER" ? "用户" : role === "ASSISTANT" ? "角色" : role === "TOOL" ? "工具" : "系统";
+}
+/** 来源区要精确到分钟：溯源时「哪天几点说的」是核心信息 */
+function formatFullTime(value: string | null) {
+  if (!value) return "时间未知";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? "时间未知"
+    : new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium", timeStyle: "short" }).format(date);
+}
+function formatPeriod(start: string, end: string) {
+  const fmt = (v: string) => {
+    const d = new Date(v);
+    return Number.isNaN(d.getTime()) ? "?" : new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit" }).format(d);
+  };
+  return `${fmt(start)} → ${fmt(end)}`;
 }
 
 async function saveEditedMemory() {
@@ -848,6 +876,13 @@ watch(id, () => void loadCharacter());
                         :class="memoryStatusTone(row.status)"
                       >{{ memoryStatusText(row.status) }}</span>
                       <span>{{ memoryScopeLabel(row.scopeType) }}</span>
+                      <button
+                        type="button"
+                        class="row-more"
+                        @click="openMemoryDetail(row.id)"
+                      >
+                        来源
+                      </button>
                     </div>
                   </div>
                 </article>
@@ -1122,6 +1157,41 @@ watch(id, () => void loadCharacter());
         <div class="info-callout">
           <span>修改只更新当前长期记忆。已经生成的阶段总结会保留生成时的历史副本。</span>
         </div>
+
+        <!-- 溯源：这条记忆是从哪条消息 / 哪份总结来的。以前只取了数据没渲染，等于白取 -->
+        <section class="mem-src">
+          <h4 class="mem-src-h">
+            她是怎么记住的
+          </h4>
+          <template v-if="editingMemorySource">
+            <p class="mem-src-meta">
+              {{ sourceSpeakerLabel(editingMemorySource.role, editingMemorySource.eventType) }}
+              · {{ formatFullTime(editingMemorySource.occurredAt) }}
+            </p>
+            <!-- 会话名单独一行：自动建的会话标题里本身就带时间戳，和上面挤一行会出现两个日期 -->
+            <p class="mem-src-conv">
+              {{ editingMemorySource.conversation.title || "未命名会话" }}
+            </p>
+            <p class="mem-src-body">
+              {{ editingMemorySource.content }}
+            </p>
+          </template>
+          <template v-else-if="editingMemorySnapshot">
+            <p class="mem-src-meta">
+              第 {{ editingMemorySnapshot.version }} 版阶段总结 ·
+              {{ formatPeriod(editingMemorySnapshot.periodStart, editingMemorySnapshot.periodEnd) }}
+            </p>
+            <p class="mem-src-body">
+              {{ editingMemorySnapshot.summary }}
+            </p>
+          </template>
+          <p
+            v-else
+            class="mem-src-empty"
+          >
+            这条记忆没有来源记录 —— 可能是手动录入，或产生于溯源字段上线之前。
+          </p>
+        </section>
       </el-form>
       <template #footer>
         <el-button @click="memoryEditDialogOpen = false">
@@ -1297,6 +1367,13 @@ watch(id, () => void loadCharacter());
 .tl-note{margin:8px 0 0;border-radius:8px;background:var(--surface-2);padding:8px 10px;color:var(--dim);font-size:12px;line-height:1.7}
 /* 检索模式的头：一句话说明检索范围，别让人以为在搜总结 */
 .search-head{margin:2px 0 10px;border-radius:8px;background:var(--surface-2);padding:7px 10px;color:var(--dim);font-size:12px;line-height:1.7}
+/* 记忆溯源：弹窗底部的「她是怎么记住的」 */
+.mem-src{margin-top:14px;border-top:1px solid var(--surface-3);padding-top:12px}
+.mem-src-h{margin:0 0 6px;color:var(--text-2);font-size:12px;font-weight:700}
+.mem-src-meta{margin:0;color:var(--dim);font-size:12px;line-height:1.7}
+.mem-src-conv{overflow:hidden;margin:1px 0 0;color:var(--dim);font-size:12px;line-height:1.6;text-overflow:ellipsis;white-space:nowrap}
+.mem-src-body{margin:6px 0 0;max-height:180px;overflow:auto;border-radius:8px;background:var(--surface-2);padding:9px 11px;color:var(--text-2);font-size:14px;line-height:1.8;white-space:pre-wrap;overflow-wrap:anywhere}
+.mem-src-empty{margin:0;color:var(--dim);font-size:12px;line-height:1.7}
 
 /* 行内动作：只剩「编辑」+「更多」两个入口 */
 .memory-actions{display:flex;align-items:center;gap:10px;margin-top:4px}
