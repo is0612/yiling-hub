@@ -19,6 +19,7 @@
     "start": "node .output/server/index.mjs",
     "preview": "nuxt preview",
     "lint": "eslint app server scripts nuxt.config.ts prisma.config.ts",
+    "check:sfc": "node scripts/check-sfc.mjs",
     "typecheck": "nuxt typecheck && tsc -p tsconfig.server.json --noEmit",
     "db:seed:dev": "tsx scripts/seed-dev-user.ts",
     "scheduler:run": "tsx scripts/run-memory-scheduler.ts",
@@ -54,7 +55,7 @@
     "test:bili-llm": "tsx scripts/test-bili-llm.ts",
     "test:bili-cards": "tsx scripts/test-bili-cards.ts",
     "test:identity": "tsx scripts/test-identity.ts",
-    "verify:local": "yarn run db:validate && yarn run db:generate && yarn nuxt prepare && yarn run typecheck && yarn run test:scheduler && yarn run test:scheduler-db && yarn run test:memory-ai && yarn run test:memory-ai-request && yarn run test:memory-retrieval && yarn run test:memory-budget && yarn run test:model-usage && yarn run test:chat-model-config && yarn run test:chat-reply && yarn run test:chat-private-memory && yarn run test:chat-private-memory-db && yarn run test:chat-request-idempotency-db && yarn run test:auth && yarn run test:auth-db && yarn run test:identity && yarn run test:onebot && yarn run test:onebot-faces && yarn run test:onebot-supervise && yarn run test:proactive && yarn run test:proactive-db && yarn run test:bili-cards && yarn run test:bili-llm && yarn run test:bili-duty && yarn run test:bili-runner && yarn run test:bili-db && yarn run lint && yarn run build"
+    "verify:local": "yarn run db:validate && yarn run db:generate && yarn nuxt prepare && yarn run check:sfc && yarn run typecheck && yarn run test:scheduler && yarn run test:scheduler-db && yarn run test:memory-ai && yarn run test:memory-ai-request && yarn run test:memory-retrieval && yarn run test:memory-budget && yarn run test:model-usage && yarn run test:chat-model-config && yarn run test:chat-reply && yarn run test:chat-private-memory && yarn run test:chat-private-memory-db && yarn run test:chat-request-idempotency-db && yarn run test:auth && yarn run test:auth-db && yarn run test:identity && yarn run test:onebot && yarn run test:onebot-faces && yarn run test:onebot-supervise && yarn run test:proactive && yarn run test:proactive-db && yarn run test:bili-cards && yarn run test:bili-llm && yarn run test:bili-duty && yarn run test:bili-runner && yarn run test:bili-db && yarn run lint && yarn run build"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",

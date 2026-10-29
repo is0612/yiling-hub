@@ -329,7 +329,8 @@ try {
 
   const blockedCleanupState = await prisma.memoryJob.findUniqueOrThrow({ where: { id: blockedCleanupJob.id } });
   assert.equal(blockedCleanupState.status, "RETRY_WAIT", "Cleanup must defer while an earlier snapshot job has failed.");
-  assert.match(blockedCleanupState.lastError ?? "", /更早的快照任务待处理/, "The deferred cleanup task should explain the snapshot dependency.");
+  // 术语已统一为「归档」（2026-10-28 起「快照」只保留在历史设计稿里），断言跟着实现走
+  assert.match(blockedCleanupState.lastError ?? "", /更早的归档任务待处理/, "The deferred cleanup task should explain the snapshot dependency.");
   assert.equal(blockedCleanupState.attemptCount, 0, "Waiting for a snapshot dependency must not consume a cleanup attempt.");
   assert.equal(
     await prisma.message.count({ where: { id: blockedExpiredMessage.id } }),
