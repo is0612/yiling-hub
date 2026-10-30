@@ -24,6 +24,7 @@ import {
  *      「给表情包起名 + 写使用场景」输出 JSON，而不是看图旁路那段画面描述。
  *   5. **起不出名字就不收**：名字是模型挑图的唯一依据，`收藏的表情` 这种兜底名等于废图，
  *      存进去只是白占名额。没配视觉模型时同理，整条自动收图等于关着。
+ *      模型判定「这不是表情包」（聊天截图 / 长截图 / 照片）也一样直接丢 —— 那是噪声，不是表情。
  *   6. 整条链路失败都静默：收图是锦上添花，不能让一轮群聊因此变成错误。
  */
 
@@ -72,25 +73,63 @@ function isUsableStickerName(name: string): boolean {
   return !GENERIC_NAMES.has(trimmed);
 }
 
-/** 给一张图起名 + 写使用场景。失败返回 null，调用方当没收下。 */
-async function labelSticker(
+/**
+ * 打标结果。用「带原因」的联合类型而不是 `null` —— 收图时两者都是「不收」，
+ * 但列表里的「重新识别」要把原因翻译成人话告诉用户（是不是截图、还是模型这次抽风）。
+ */
+export type StickerLabelResult =
+  | { ok: true; name: string; usage: string }
+  | { ok: false; reason: "no-vision" | "model-failed" | "not-a-sticker" | "unusable-name" };
+
+/**
+ * 解析模型返回的这段 JSON。抽成纯函数是为了能单测 —— 真调模型太贵也太慢，
+ * 而这里恰恰是最容易出错的地方（skip 判定、泛称名字、非 JSON）。
+ */
+export function readStickerLabel(content: string): StickerLabelResult {
+  let parsed: { name?: unknown; usage?: unknown; skip?: unknown };
+  try {
+    parsed = JSON.parse(content) as { name?: unknown; usage?: unknown; skip?: unknown };
+  } catch {
+    return { ok: false, reason: "model-failed" };
+  }
+  // 模型说「这不是表情包」：聊天截图、长截图、随手拍的照片都落在这里。
+  if (parsed.skip === true) return { ok: false, reason: "not-a-sticker" };
+  const name = typeof parsed.name === "string" ? parsed.name.trim().slice(0, 60) : "";
+  const usage = typeof parsed.usage === "string" ? parsed.usage.trim().slice(0, 200) : "";
+  if (!isUsableStickerName(name)) return { ok: false, reason: "unusable-name" };
+  return { ok: true, name, usage };
+}
+
+/**
+ * 让视觉模型看一张图，给出「名字 + 使用场景」，或者判定「这不是表情包」。
+ *
+ * 为什么要有 skip：群里转的图里有相当一部分是**别人的聊天截图、长截图、随手拍的照片**。
+ * 这些图进了库等于噪声 —— 模型只能硬给它起个名字，之后又永远挑不中，
+ * 用户还得手动删。与其收进来再删，不如在成本最低的这一步就丢掉。
+ *
+ * 但**默认仍然是收**：提示词写的是「只有明显不能当表情用时才 skip」，
+ * 拿不准就正常起名 —— 误杀一张好图比多收一张差图更让人难受。
+ *
+ * 失败也返回结果而不是抛错：表情包不是主流程，出错不该把上传 / 收图 / 页面整条打断。
+ */
+export async function labelStickerImage(
   dataUrl: string,
   summary: string,
   context: StickerCollectContext,
-): Promise<{ name: string; usage: string } | null> {
+): Promise<StickerLabelResult> {
   const settings = resolveImageUnderstandingSettings({
     modelConfig: context.modelConfig,
     chatModel: context.chatModel,
     chatApiBaseUrl: context.chatApiBaseUrl,
     chatApiKey: context.chatApiKey,
   });
-  if (!settings) return null;
+  if (!settings) return { ok: false, reason: "no-vision" };
 
   let endpoint: URL;
   try {
     endpoint = buildChatCompletionsEndpoint(settings.apiBaseUrl);
   } catch {
-    return null;
+    return { ok: false, reason: "no-vision" };
   }
 
   const hint = summary.trim() ? `（图自带的梗说明：${summary.trim().slice(0, 80)}）` : "";
@@ -103,16 +142,20 @@ async function labelSticker(
       {
         role: "system",
         content: [
-          "你给一张 QQ 表情包起名并写使用场景。只返回 JSON：{\"name\":\"...\",\"usage\":\"...\"}。",
-          "name 是一个简短的中文名（2-6 个字，写成情绪或动作词，如「委屈」「拍桌笑」「比心」），不要编号、不要带「表情包」三个字。",
+          "你给一张 QQ 表情包起名并写使用场景，或者判定它根本不是表情包。只返回 JSON，两种情况之一：",
+          "① 能当表情用（梗图 / 表情 / 动图）:{\"name\":\"委屈\",\"usage\":\"被冤枉、想撒娇时用\"}",
+          "② 明显不是表情包:{\"skip\":true}",
+          "name 是简短的中文名（2-6 个字，写成情绪或动作词，如「委屈」「拍桌笑」「比心」），不要编号、不要带「表情包」三个字。",
           "usage 是一句话（20 字内），写「什么时候用这张」，如「被冤枉、想撒娇时」。",
+          "只有这张图**明显不能当表情用**时才选 ②：聊天记录截图、长截图、网页或文字截图、带大段文字的信息图、随手拍的照片。",
+          "拿不准的时候一律选 ①，正常起名 —— 宁可名字普通，也不要把能用的表情丢掉。",
           "只看图里确实存在的东西，不要推测。名字和 usage 不要照抄这段提示词。",
         ].join("\n"),
       },
       {
         role: "user",
         content: [
-          { type: "text", text: `给这张表情包起名并写使用场景。${hint}` },
+          { type: "text", text: `给这张图起名并写使用场景；如果它明显不是表情包，返回 skip。${hint}` },
           { type: "image_url", image_url: { url: dataUrl } },
         ],
       },
@@ -128,10 +171,10 @@ async function labelSticker(
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(LABEL_TIMEOUT_MS),
     });
-    if (!response.ok) return null;
+    if (!response.ok) return { ok: false, reason: "model-failed" };
     payload = await response.json();
   } catch {
-    return null;
+    return { ok: false, reason: "model-failed" };
   }
 
   const usage = (payload as { usage?: unknown } | null)?.usage;
@@ -150,16 +193,7 @@ async function labelSticker(
   const content = typeof record?.choices?.[0]?.message?.content === "string"
     ? record.choices[0].message.content
     : "";
-  let parsed: { name?: unknown; usage?: unknown } = {};
-  try {
-    parsed = JSON.parse(content) as { name?: unknown; usage?: unknown };
-  } catch {
-    return null;
-  }
-  const name = typeof parsed.name === "string" ? parsed.name.trim().slice(0, 60) : "";
-  const usageText = typeof parsed.usage === "string" ? parsed.usage.trim().slice(0, 200) : "";
-  if (!isUsableStickerName(name)) return null;
-  return { name, usage: usageText };
+  return readStickerLabel(content);
 }
 
 /**
@@ -205,16 +239,24 @@ export async function collectSticker(
   const storedImage = normalized?.resized ? normalized.buffer : image.buffer;
 
   const dataUrl = `data:${image.mime};base64,${storedImage.toString("base64")}`;
-  const label = await labelSticker(dataUrl, candidate.summary ?? "", context);
+  const label = await labelStickerImage(dataUrl, candidate.summary ?? "", context);
   /**
-   * 起不出名字就不收。
+   * 起不出名字就不收；模型说「这不是表情包」更不收。
    *
    * 以前用「收藏的表情」兜底存下来，结果库里攒了几张既没名字线索、也没使用场景的图：
    * 提示词里模型只看到「收藏的表情 / usage 空」，根本判断不出什么时候该用，
    * 等于白占一个名额（实测 25 张里有 3 张是这种）。识别不了就别进库 ——
    * 用户要的是「她的表情包」，不是「一堆图」。
+   *
+   * `not-a-sticker` 是最常见的一种：群里的图有相当一部分是别人的聊天截图、
+   * 长截图、随手拍的照片，收进来只会是噪声。
    */
-  if (!label) return null;
+  if (!label.ok) {
+    if (label.reason === "not-a-sticker") {
+      console.log("[sticker] 跳过：模型判断这张不是表情包（截图 / 长图 / 照片）");
+    }
+    return null;
+  }
   const name = label.name;
   const usage = label.usage;
 

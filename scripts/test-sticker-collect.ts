@@ -16,6 +16,41 @@ assert.equal(isStickerAutoCollectEnabled({ stickerAutoCollect: false }), false);
 assert.equal(isStickerAutoCollectEnabled({ stickerAutoCollect: "true" }), false, "字符串不算，别让「顺手写个字符串」悄悄打开开关。");
 assert.equal(isStickerAutoCollectEnabled(null), false);
 
+// ── 打标结果的解析（纯函数，不碰网络）───────────────────────────────
+// 这一段是「收不收」的全部判断依据，最容易出错的也是这里：
+// skip 的判定、泛称名字、模型返回非 JSON。
+const { readStickerLabel } = await import("../server/utils/sticker-collect");
+assert.deepEqual(
+  readStickerLabel(JSON.stringify({ name: "委屈", usage: "被冤枉、想撒娇时" })),
+  { ok: true, name: "委屈", usage: "被冤枉、想撒娇时" },
+  "正常的名字 + 场景。",
+);
+assert.deepEqual(
+  readStickerLabel(JSON.stringify({ skip: true })),
+  { ok: false, reason: "not-a-sticker" },
+  "模型说「这不是表情包」（截图 / 长图 / 照片）要能被认出来。",
+);
+assert.deepEqual(
+  readStickerLabel(JSON.stringify({ skip: false, name: "拍桌笑" })),
+  { ok: true, name: "拍桌笑", usage: "" },
+  "skip 只有严格 true 才算跳过，false 不能误判。",
+);
+assert.deepEqual(
+  readStickerLabel(JSON.stringify({ name: "表情包", usage: "" })),
+  { ok: false, reason: "unusable-name" },
+  "泛称名字等于没起名。",
+);
+assert.deepEqual(
+  readStickerLabel("抱歉，我看不清这张图"),
+  { ok: false, reason: "model-failed" },
+  "非 JSON 当成模型失败。",
+);
+assert.deepEqual(
+  readStickerLabel(JSON.stringify({ name: "  委屈  ", usage: "  想撒娇时  " })),
+  { ok: true, name: "委屈", usage: "想撒娇时" },
+  "首尾空白要裁掉。",
+);
+
 // collectStickersFromTurn 在开关关着时必须一帧不跑（不下载、不调模型）。
 // 这里用一个带 url 的候选验证它直接早退 —— 开关关着，url 再合法也不该被碰。
 const { collectStickersFromTurn } = await import("../server/utils/sticker-collect");
@@ -110,11 +145,13 @@ const rowsBefore = await prisma.characterSticker.count({ where: { characterId: c
 // 每张图用不同字节：内容相同会比 contentHash 去重掉，测出来的「没收」就不是因为打标失败。
 const pngA = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 9, 9, 9]);
 const pngB = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 7, 7, 7]);
+const pngC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 5, 5, 5]);
 let labelReply = "";
 globalThis.fetch = async (input: RequestInfo | URL) => {
   const url = String(input);
-  if (url.includes("sticker-a.png") || url.includes("sticker-b.png")) {
-    const response = new Response(url.includes("sticker-a") ? pngA : pngB, {
+  if (url.includes("sticker-a.png") || url.includes("sticker-b.png") || url.includes("sticker-c.png")) {
+    const bytes = url.includes("sticker-a") ? pngA : url.includes("sticker-b") ? pngB : pngC;
+    const response = new Response(bytes, {
       status: 200,
       headers: { "content-type": "image/png" },
     });
@@ -145,6 +182,20 @@ assert.equal(
   await prisma.characterSticker.count({ where: { characterId: context.characterId } }),
   rowsBefore,
   "两张都没收：库里不该多出「收藏的表情」这种废图。",
+);
+
+// c) 模型判定「这不是表情包」：别人的聊天截图、长截图、随手拍的照片都属于这一类。
+// 这类图收进来只会占名额（提示词里模型根本判断不出什么时候该用它）。
+labelReply = JSON.stringify({ skip: true });
+assert.equal(
+  await collectSticker({ url: "https://example.com/sticker-c.png" }, context),
+  null,
+  "模型说「这不是表情包」时不该收。",
+);
+assert.equal(
+  await prisma.characterSticker.count({ where: { characterId: context.characterId } }),
+  rowsBefore,
+  "截图类的图不该落库。",
 );
 
 // 清理落盘的文件（避免污染仓库 .data）。

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Delete, EditPen, Picture } from "@element-plus/icons-vue";
+import { Delete, EditPen, MagicStick, Picture } from "@element-plus/icons-vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 
 /**
@@ -192,6 +192,38 @@ async function toggleEnabled(row: StickerItem, enabled: boolean) {
   } catch (error) {
     row.enabled = !enabled;
     ElMessage.error((error as { statusMessage?: string })?.statusMessage || "更新失败。");
+  }
+}
+
+// ── 重新识别：让模型再看一次这张图 ──────────────────────
+// 第一次打标常常不准（动图只看到一帧、抽象梗图、带字的图），用户宁可让她再看一次，
+// 也不想手打一遍。识别结果直接写库并就地更新这一行 —— 不满意还有「编辑」兜底。
+const relabelingId = ref("");
+
+async function relabel(row: StickerItem) {
+  if (relabelingId.value) return;
+  relabelingId.value = row.id;
+  try {
+    const result = await $fetch<{ skipped: boolean; message?: string; sticker?: StickerItem }>(
+      `/api/characters/${encodeURIComponent(id.value)}/stickers/${encodeURIComponent(row.id)}/relabel`,
+      { method: "POST" },
+    );
+    if (result.skipped) {
+      ElMessage.warning(result.message || "模型判断这张不像表情包，名字没有改。");
+      return;
+    }
+    if (!result.sticker) return;
+    row.name = result.sticker.name;
+    row.usage = result.sticker.usage;
+    ElMessage.success(
+      result.sticker.usage
+        ? `重新识别完成：${result.sticker.name} · ${result.sticker.usage}`
+        : `重新识别完成：${result.sticker.name}`,
+    );
+  } catch (error) {
+    ElMessage.error((error as { statusMessage?: string })?.statusMessage || "重新识别失败。");
+  } finally {
+    relabelingId.value = "";
   }
 }
 
@@ -418,6 +450,16 @@ onMounted(load);
                   :model-value="sticker.enabled"
                   @update:model-value="(value) => toggleEnabled(sticker, Boolean(value))"
                 />
+                <el-button
+                  link
+                  type="primary"
+                  :loading="relabelingId === sticker.id"
+                  :disabled="Boolean(relabelingId) && relabelingId !== sticker.id"
+                  title="让 AI 重新看一次这张图，重写名字和使用场景"
+                  @click="relabel(sticker)"
+                >
+                  <el-icon><MagicStick /></el-icon>重新识别
+                </el-button>
                 <el-button
                   link
                   type="primary"
@@ -652,6 +694,9 @@ onMounted(load);
   display: flex;
   align-items: center;
   gap: 10px;
+  /* 四个操作（开关 / 重新识别 / 编辑 / 删除）在窄窗口里会挤，允许换行并右对齐。 */
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .sticker-thumb {
