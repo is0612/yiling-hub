@@ -74,6 +74,9 @@ const props = defineProps<{
   groupChatModes?: Record<string, "mention" | "ambient" | "all">;
   groupBiliRunEnabled: boolean;
   emojiEnabled: boolean;
+  /** 表情额度：多少分钟内最多贴几次（贴图与内置表情共用，按会话分别算）。 */
+  emojiWindowMinutes?: number;
+  emojiPerWindow?: number;
   /** 群友发的图要不要交给视觉模型读；角色级开关，默认关。 */
   imageUnderstanding: boolean;
   /** 群里的图要不要自动收进她的表情库；角色级开关，默认关。 */
@@ -126,6 +129,15 @@ const STATUS_LABELS: Record<string, string> = {
 
 // ── 角色级草稿 ─────────────────────────────────────────
 const emoji = ref(props.emojiEnabled);
+/**
+ * 表情额度：每 N 分钟最多 N 张。
+ *
+ * 原来是「上一条贴过之后 X 分钟内不许再贴」，它跟聊天密度无关：群里刷得快，
+ * 四分钟能过二十条消息。改成窗口内计数后，热聊时贴得出来、冷清时也不会攒着不用。
+ */
+const emojiWindow = ref(props.emojiWindowMinutes ?? 10);
+const emojiPerWindow = ref(props.emojiPerWindow ?? 3);
+const savingEmojiRate = ref(false);
 const imageUnderstanding = ref(props.imageUnderstanding);
 const stickerAutoCollect = ref(props.stickerAutoCollect);
 // 语音三项放在一起保存入口统一：它们同属一个 details，改完一起提交比三个开关各存一次直观。
@@ -294,6 +306,11 @@ watch(
 watch(() => props.voiceApiKeyConfigured, (value) => {
   voiceKeyConfigured.value = value;
 });
+// 保存成功后父级会重拉列表，额度跟着库里的值（服务端会把默认值补齐）
+watch(() => [props.emojiWindowMinutes, props.emojiPerWindow], () => {
+  emojiWindow.value = props.emojiWindowMinutes ?? 10;
+  emojiPerWindow.value = props.emojiPerWindow ?? 3;
+});
 watch(() => props.proactive, (value) => {
   draft.value = { ...FALLBACK, ...(value ?? {}) };
 }, { deep: true });
@@ -403,6 +420,32 @@ async function onEmojiChange(next: string | number | boolean) {
     ElMessage.error(readError(error, "保存失败，请稍后重试。"));
   } finally {
     savingEmoji.value = false;
+  }
+}
+
+/**
+ * 改额度就存。
+ *
+ * 两个数字是一组（每 N 分钟最多 M 张），所以一起提交 —— 只改一个的话，
+ * 存的过程中会出现「10 分钟最多 20 张」这种半步状态。
+ */
+async function onEmojiRateChange() {
+  if (savingEmojiRate.value) return;
+  savingEmojiRate.value = true;
+  try {
+    await $fetch(`/api/characters/${encodeURIComponent(props.characterId)}`, {
+      method: "PATCH",
+      body: {
+        emojiWindowMinutes: emojiWindow.value,
+        emojiPerWindow: emojiPerWindow.value,
+      },
+    });
+    ElMessage.success(`已保存：每 ${emojiWindow.value} 分钟最多 ${emojiPerWindow.value} 张。`);
+    emit("saved");
+  } catch (error) {
+    ElMessage.error(readError(error, "保存失败，请稍后重试。"));
+  } finally {
+    savingEmojiRate.value = false;
   }
 }
 
@@ -786,13 +829,43 @@ async function tryOnce() {
       <div class="toggle">
         <span class="toggle-copy">
           <b>发表情</b>
-          <span>回复时偶尔单独跟一张表情，4 分钟内不会连发。只影响 QQ，网页对话与 B站 不受影响。</span>
+          <span>回复时偶尔单独跟一张表情。只影响 QQ，网页对话与 B站 不受影响。</span>
         </span>
         <el-switch
           v-model="emoji"
           :loading="savingEmoji"
           @change="onEmojiChange"
         />
+      </div>
+
+      <!-- 额度挂在开关下面：它只在开着的时候有意义，摆平了会像是另一个独立开关 -->
+      <div
+        v-if="emoji"
+        class="beh-field emoji-rate"
+      >
+        <span class="beh-label">表情额度</span>
+        <div class="beh-limit">
+          <span>每</span>
+          <el-input-number
+            v-model="emojiWindow"
+            :min="1"
+            :max="1440"
+            :step="5"
+            :disabled="savingEmojiRate"
+            @change="onEmojiRateChange"
+          />
+          <span>分钟最多</span>
+          <el-input-number
+            v-model="emojiPerWindow"
+            :min="1"
+            :max="20"
+            :step="1"
+            :disabled="savingEmojiRate"
+            @change="onEmojiRateChange"
+          />
+          <span>张</span>
+        </div>
+        <em>贴图和内置表情共用这一个额度，按每个群 / 每个私聊分别算：A 群贴满了不影响 B 群。想更活跃就调大张数或缩小分钟数。</em>
       </div>
 
       <div class="toggle">
@@ -1273,6 +1346,17 @@ async function tryOnce() {
 .toggle-copy b { display: block; color: var(--text); font-size: 14px; font-weight: 600; }
 .toggle-copy span { color: var(--dim); font-size: 12px; line-height: 1.65; }
 .toggle :deep(.el-switch) { flex: none; }
+
+/* 表情额度：缩进半格挂在「发表情」下面，说明它属于那一行而不是新的一行 */
+.emoji-rate {
+  border-left: 2px solid var(--line);
+  margin: 0 0 var(--sp-3) 2px;
+  padding: 0 0 0 12px;
+  gap: 6px;
+}
+.emoji-rate :deep(.el-input-number) { width: 110px; }
+/* 中间夹了额度块之后，「看群里的图」那条上边线要自己补回来（.toggle + .toggle 不成立了） */
+.emoji-rate + .toggle { border-top: 1px solid var(--line); }
 
 /* 主动找话：折叠头的形状跟开关行一致，右侧多一个状态药丸 */
 .more.is-toggle { margin-top: 0; }

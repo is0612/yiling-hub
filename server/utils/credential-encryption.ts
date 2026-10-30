@@ -90,3 +90,23 @@ export function isCharacterApiKeySaved(configValue: unknown): boolean {
   const config = asRecord(configValue);
   return typeof config.chatApiKeyEncrypted === "string" && config.chatApiKeyEncrypted.startsWith("v1.");
 }
+
+/**
+ * 语音服务的 Key（TTS 与 ASR 共用一个：硅基流动这类一家全包，分开配只会让人填两遍）。
+ *
+ * 与聊天 Key 分开存是关键：它几乎总是**不同的服务商**（DeepSeek 没有语音接口），
+ * 混用一份字段会导致「换语音服务商时把聊天 Key 也换了」。
+ * 返回空字符串 = 没配（调用方自己去回落环境变量）。
+ */
+export async function resolveCharacterVoiceApiKey(configValue: unknown): Promise<string> {
+  const config = asRecord(configValue);
+  const encrypted = config.voiceApiKeyEncrypted;
+  if (typeof encrypted !== "string" || !encrypted.startsWith("v1.")) return "";
+  const decrypted = await decryptApiKey(encrypted);
+  return decrypted.trim();
+}
+
+export function isVoiceApiKeySaved(configValue: unknown): boolean {
+  const config = asRecord(configValue);
+  return typeof config.voiceApiKeyEncrypted === "string" && config.voiceApiKeyEncrypted.startsWith("v1.");
+}

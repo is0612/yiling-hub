@@ -1,6 +1,6 @@
 import { generateConversationReply, type ConversationContextMessage, type ConversationGroupDecision } from "../chat-reply";
 import { isEmojiEnabled, resolveChatModelSettings } from "../chat-model-config";
-import { resolveCharacterApiKey } from "../credential-encryption";
+import { resolveCharacterApiKey, resolveCharacterVoiceApiKey } from "../credential-encryption";
 import {
   rankMemoriesWithBudget, rankSnapshotsWithBudget,
   resolveMemoryItemLimit, resolveMemoryTokenBudget, resolveSnapshotTokenBudget,
@@ -14,10 +14,22 @@ import {
   type ChannelImageRef,
 } from "../image-understanding";
 import { ensureExternalIdentityScope } from "../identity-scope";
+import { isEmojiBudgetSpent, resolveEmojiFrequency } from "../emoji-frequency";
 import { ensureOwnerPrivateScope } from "../memory-scope-access";
 import { getPrisma } from "../prisma";
 import { pickStickerCatalog, type StickerCatalogEntry } from "../stickers";
 import { collectStickersFromTurn } from "../sticker-collect";
+import {
+  applyVoiceTranscripts,
+  isVoiceRequested,
+  MAX_VOICES_PER_TURN,
+  resolveVoiceAsrSettings,
+  resolveVoiceTtsSettings,
+  shouldSendVoice,
+  transcribeVoices,
+  type ChannelVoiceRef,
+  type VoiceTtsSettings,
+} from "../voice";
 
 export type ChannelReplyOptions = {
   /** 表情 id。渠道自己保证 id 合法；不支持表情的渠道忽略即可。 */
@@ -29,18 +41,19 @@ export type ChannelReplyOptions = {
   sticker?: { id: string; filePath: string };
   /** 引用回复的消息 id（本平台原始 id）。群聊里让她锚定「接的是哪一句」。 */
   replyToMessageId?: string;
+  /**
+   * 这一条用语音发。渠道自己决定能不能真发（要合成、要转 silk），
+   * 发不出来就退回发文字 —— 语音是锦上添花，不能成为整轮沉默的原因。
+   */
+  voice?: boolean;
+  /**
+   * 语音合成参数。由流水线解析好后带下来（含角色自己的 API Key），
+   * 这样渠道不必为了合成再查一次库、再解密一次凭据。
+   */
+  voiceSettings?: VoiceTtsSettings;
 };
 
 export type ChannelReplySender = (text: string, options?: ChannelReplyOptions) => Promise<void>;
-
-/**
- * 上一条回复带过表情后，多久之内不再发——连着两条都贴图，像自动回复机器人。
- *
- * 原来是 10 分钟：群里一两句话就插一张图，冷却一压就是好几轮，结果是「有 24 张
- * 表情包却几乎不发」。现在压到 4 分钟，频率仍由冷却兜住（两条回复之间至少隔 90 秒，
- * 等于最多每两三条回复贴一张），但不至于把整个窗口吃掉。
- */
-const FACE_COOLDOWN_MS = 4 * 60 * 1000;
 
 /**
  * 渠道会话键 `g:<群号>` / `c:<账号>` 里取出群号。
@@ -71,6 +84,8 @@ export type ChannelTurnMessage = {
   occurredAt?: Date;
   /** 这条消息里带的图。只有接了「看图」旁路才会被读，没配视觉模型时完全忽略。 */
   images?: ChannelImageRef[];
+  /** 这条消息里带的语音。只有接了「听懂语音」旁路才会被读，没配 ASR 时完全忽略。 */
+  voices?: ChannelVoiceRef[];
   /** 当前说话人是不是主人；只用于提示词，不参与鉴权。 */
   speaker?: {
     displayName?: string;
@@ -102,6 +117,8 @@ export type ChannelMessageInput = {
   content: string;
   /** 这条消息带的图。渠道不传就等于「这个渠道没有图」，不影响其他行为。 */
   images?: ChannelImageRef[];
+  /** 这条消息带的语音。渠道不传就等于「这个渠道没有语音」。 */
+  voices?: ChannelVoiceRef[];
   /**
    * 这个渠道能发的表情清单。**传了就等于声明「本渠道支持表情」**——B站 私信没有表情段，
    * 不传；流水线不认平台名，只认这份清单在不在。
@@ -112,6 +129,11 @@ export type ChannelMessageInput = {
    * 有清单时模型从里面挑一张，内置表情不再进提示词。
    */
   stickerCatalog?: ReadonlyArray<StickerCatalogEntry>;
+  /**
+   * 这个渠道能不能发语音条。**传了就等于声明「本渠道支持语音」**——不传就永远发文字。
+   * 与 faceCatalog 同理：流水线不认平台名，只认这份能力声明在不在。
+   */
+  voiceCapable?: boolean;
   sendReply: ChannelReplySender;
 };
 
@@ -134,6 +156,8 @@ export type ChannelBatchInput = {
   stickerCatalog?: ReadonlyArray<StickerCatalogEntry>;
   /** 允许模型说「这轮不插嘴」。被 @ 时传 false —— 点名了还不回比乱回更糟。 */
   allowSilent?: boolean;
+  /** 见 `ChannelMessageInput.voiceCapable`。 */
+  voiceCapable?: boolean;
   /** 群聊上下文；私聊不传。 */
   group?: ChannelGroupTurnContext;
   sendReply: ChannelReplySender;
@@ -145,21 +169,39 @@ export type ChannelMessageResult =
   | { status: "duplicate" }
   | { status: "ignored"; reason: string };
 
-/** 从已存消息的 metadata 里取表情 id。更早的消息没有这个字段，返回空数组。 */
-function readStoredFaceIds(metadata: unknown): string[] {
-  const record = metadata && typeof metadata === "object" && !Array.isArray(metadata)
-    ? metadata as Record<string, unknown>
-    : {};
-  const ids = record.faceIds;
-  return Array.isArray(ids) ? ids.filter((item): item is string => typeof item === "string") : [];
-}
-
 /** 从已存消息的 metadata 里取表情包 id。没有（或不是字符串）返回 null。 */
 function readStoredStickerId(metadata: unknown): string | null {
   const record = metadata && typeof metadata === "object" && !Array.isArray(metadata)
     ? metadata as Record<string, unknown>
     : {};
   return typeof record.stickerId === "string" && record.stickerId ? record.stickerId : null;
+}
+
+/**
+ * 上一条回复是不是语音条。存的是个标记而不是音频本身（音频发完就没了），
+ * 只用来算冷却 —— 不要拿它判断「她刚才说了什么」，那是 content 的事。
+ */
+function readStoredVoiceFlag(metadata: unknown): boolean {
+  const record = metadata && typeof metadata === "object" && !Array.isArray(metadata)
+    ? metadata as Record<string, unknown>
+    : {};
+  return record.voice === true;
+}
+
+/**
+ * 把附件的转写结果写回这条消息。
+ *
+ * **必须同时改 `content` 和 `promptContent`**：落库看 `content`，进提示词看 `promptContent`
+ * （群聊里它是 @ 代号化后的正文）。只改一个的话，群聊这一路等于没接 ——
+ * 私聊测着是好的，群里却一直只看到 `[图片]` / `[语音]`。
+ */
+function patchMessageText(
+  message: ChannelTurnMessage,
+  transform: (text: string) => string,
+): ChannelTurnMessage {
+  const content = transform(message.content);
+  if (!message.promptContent) return { ...message, content };
+  return { ...message, content, promptContent: transform(message.promptContent) };
 }
 
 /**
@@ -217,7 +259,60 @@ async function attachImageDescriptions(
   return messages.map((message) => {
     const descriptions = descriptionsByMessage.get(message.externalMessageId);
     if (!descriptions?.length) return message;
-    return { ...message, content: applyImageDescriptions(message.content, descriptions) };
+    return patchMessageText(message, (text) => applyImageDescriptions(text, descriptions));
+  });
+}
+
+/**
+ * 把这一轮里的语音先转成文字，再交给聊天模型。
+ *
+ * 与看图同构，理由也一样：聊天模型读不懂音频，语音必须在进提示词之前变成文字。
+ * 角色没打开 `voiceTranscribe`（或没配 ASR 模型）时这里原样返回 —— 行为与接入前一致，
+ * 群里的语音仍然只是 `[语音]`。
+ *
+ * 放在额度检查之后：额度已经超了就别再为听语音多花一次调用。
+ * 失败一律吞掉：少一句转写不该让整轮回复变成错误事件。
+ */
+async function attachVoiceTranscripts(
+  messages: ChannelTurnMessage[],
+  context: {
+    modelConfig: unknown;
+    chatModel: string;
+    apiBaseUrl: string;
+    apiKey: string;
+    voiceApiKey: string;
+  },
+): Promise<ChannelTurnMessage[]> {
+  if (!messages.some((message) => (message.voices?.length ?? 0) > 0)) return messages;
+  const settings = resolveVoiceAsrSettings({
+    modelConfig: context.modelConfig,
+    chatModel: context.chatModel,
+    chatApiBaseUrl: context.apiBaseUrl,
+    chatApiKey: context.apiKey,
+    voiceApiKey: context.voiceApiKey,
+  });
+  if (!settings) return messages;
+
+  let remaining = MAX_VOICES_PER_TURN;
+  const transcriptsByMessage = new Map<string, Array<string | null>>();
+  for (const message of messages) {
+    if (remaining <= 0) break;
+    const refs = (message.voices ?? []).filter((voice) => Boolean(voice.url));
+    if (!refs.length) continue;
+    const batch = refs.slice(0, remaining);
+    remaining -= batch.length;
+    try {
+      transcriptsByMessage.set(message.externalMessageId, await transcribeVoices(batch, settings));
+    } catch {
+      // 转写失败只是少一句文字，`[语音]` 原样保留。
+    }
+  }
+  if (!transcriptsByMessage.size) return messages;
+
+  return messages.map((message) => {
+    const transcripts = transcriptsByMessage.get(message.externalMessageId);
+    if (!transcripts?.length) return message;
+    return patchMessageText(message, (text) => applyVoiceTranscripts(text, transcripts));
   });
 }
 
@@ -243,6 +338,7 @@ async function runChannelTurn(input: {
   allowSilent?: boolean;
   /** 群聊上下文；私聊不传。 */
   group?: ChannelGroupTurnContext;
+  voiceCapable?: boolean;
   sendReply: ChannelReplySender;
 }): Promise<ChannelMessageResult> {
   const prisma = getPrisma();
@@ -337,6 +433,13 @@ async function runChannelTurn(input: {
   }
   if (!apiKey || !chatSettings.model) return { status: "ignored", reason: "model_not_configured" };
 
+  /**
+   * 语音 Key 与聊天 Key 是**两把**：语音几乎总是另一家服务商
+   * （DeepSeek / 通义这类纯文本服务商的 /audio/speech 直接 404），
+   * 而它常常是页面上单独填的。解密失败按没配处理，不影响聊天。
+   */
+  const voiceApiKey = await resolveCharacterVoiceApiKey(character.modelConfig).catch(() => "");
+
   // 额度用完就静默不回：渠道里抛错会把一条普通聊天变成失败事件，还会触发重试。
   const quota = await readDailyQuota(input.characterId, character.modelConfig);
   if (quota.exceeded) return { status: "ignored", reason: "daily_quota_exceeded" };
@@ -349,6 +452,15 @@ async function runChannelTurn(input: {
     apiKey,
     characterId: input.characterId,
     bindingId: input.bindingId,
+  });
+
+  // 语音同理：先转写成文字再进提示词，没开「听懂语音」时原样保留 `[语音]`。
+  messages = await attachVoiceTranscripts(messages, {
+    modelConfig: character.modelConfig,
+    chatModel: chatSettings.model,
+    apiBaseUrl: chatSettings.apiBaseUrl,
+    apiKey,
+    voiceApiKey,
   });
 
   // 「偷表情包」：群里的图值得收就存进她的表情库。只收群聊、不看她自己发的图，
@@ -386,25 +498,45 @@ async function runChannelTurn(input: {
       })
     : [];
 
-  // 表情要看三件事：渠道收不收（清单）、角色开没开开关、上一条是不是刚贴过。
+  // 表情要看三件事：渠道收不收（清单）、角色开没开开关、这个会话的额度用没用完。
   // 只看前两个的话，一个爱发表情的角色会在每句后面都挂一张。
   const lastAssistant = recentStoredMessages.find((item) => item.role === "ASSISTANT");
   const lastStickerId = lastAssistant ? readStoredStickerId(lastAssistant.metadata) : null;
-  const facesCoolingDown = Boolean(
-    lastAssistant
-    && Date.now() - lastAssistant.occurredAt.getTime() < FACE_COOLDOWN_MS
-    && (readStoredFaceIds(lastAssistant.metadata).length > 0 || Boolean(lastStickerId)),
-  );
+  /**
+   * 上一条语音是什么时候发的。语音冷却看它：连着两条都在「说话」像在读稿。
+   * recentStoredMessages 是按时间倒序取的，所以第一条命中的就是最近一条。
+   */
+  const lastVoiceAt = recentStoredMessages.find(
+    (item) => item.role === "ASSISTANT" && readStoredVoiceFlag(item.metadata),
+  )?.occurredAt ?? null;
+  /**
+   * 额度：「每 N 分钟最多 N 张」，按**这个会话**算（A 群贴过三张不该让 B 群闭嘴）。
+   *
+   * 只取窗口内的助手消息，不看全部：`recentStoredMessages` 只有 20 条，热聊时
+   * 二十条可能还没覆盖十分钟，用它数会少算。
+   */
+  const emojiFrequency = resolveEmojiFrequency(character.modelConfig);
+  const emojiHistory = existingConversation
+    ? await prisma.message.findMany({
+        where: {
+          conversationId: existingConversation.id,
+          role: "ASSISTANT",
+          occurredAt: { gte: new Date(Date.now() - emojiFrequency.windowMinutes * 60_000) },
+        },
+        select: { occurredAt: true, metadata: true },
+      })
+    : [];
+  const emojiBudgetSpent = isEmojiBudgetSpent(emojiHistory, new Date(), emojiFrequency);
   // 表情包优先于内置表情：有素材库就只给素材库（并剔除上一张，避免她一直贴同一张）。
   const stickerCatalog = input.stickerCatalog?.length
     && isEmojiEnabled(character.modelConfig)
-    && !facesCoolingDown
+    && !emojiBudgetSpent
     ? pickStickerCatalog(input.stickerCatalog, lastStickerId)
     : undefined;
   const emojiFaces = !stickerCatalog?.length
     && input.faceCatalog?.length
     && isEmojiEnabled(character.modelConfig)
-    && !facesCoolingDown
+    && !emojiBudgetSpent
     ? input.faceCatalog
     : undefined;
 
@@ -556,10 +688,42 @@ async function runChannelTurn(input: {
   const replySticker = generated.action === "silent" || !generated.stickerId
     ? null
     : input.stickerCatalog?.find((entry) => entry.id === generated.stickerId) ?? null;
+  /**
+   * 这一条要不要用语音发。
+   *
+   * 四件事同时成立才行：渠道声明能发语音、角色开了语音开关、判定（长度/概率/冷却）通过、
+   * TTS 配置齐全。最后一条是必须的 —— 否则「判定要发语音但压根没配 TTS」会让这一轮
+   * 白白走一次失败降级，日志里全是噪音。
+   *
+   * 发不出去怎么办：由渠道退回发文字（见 serve.ts）。所以这里不需要预知成败。
+   * 合成参数随 options 一起交给渠道：它已经包含角色自己的 key，渠道不必再查一次库。
+   */
+  const voiceSettings = generated.action === "reply" && input.voiceCapable === true
+    ? resolveVoiceTtsSettings({
+        modelConfig: character.modelConfig,
+        chatModel: chatSettings.model,
+        chatApiBaseUrl: chatSettings.apiBaseUrl,
+        chatApiKey: apiKey,
+        voiceApiKey,
+      })
+    : null;
+  /**
+   * 这一轮有没有人明确要她发语音。有就跳过概率与冷却（仍然受开关和 60 字限制）。
+   *
+   * 合成要十几秒，所以「随机发语音」默认是关的：一条被随机选中的回复会静默迟到。
+   * 用户开口要的时候他愿意等，那才是这条链路真正该被触发的地方。
+   */
+  const voiceRequested = input.voiceCapable === true
+    && messages.some((message) => isVoiceRequested(message.promptContent ?? message.content));
+  const replyVoice = Boolean(voiceSettings) && shouldSendVoice({
+    modelConfig: character.modelConfig,
+    text: generated.reply,
+    lastVoiceAt,
+    force: voiceRequested,
+  });
   const conversationScopeId = isGroup
     ? globalScope.id
     : (isOwnerTurn && ownerPrivateScopeId ? ownerPrivateScopeId : (primaryIdentityScopeId ?? globalScope.id));
-
   const conversationId = await prisma.$transaction(async (tx) => {
     const conversation = existingConversation ?? await tx.conversation.create({
       data: {
@@ -597,6 +761,8 @@ async function runChannelTurn(input: {
             ...(message.member ? { member: message.member } : {}),
             // 主人发的消息：群聊提炼时也要认得出「这是主人」，不能跟群友混。
             ...(message.speaker?.isOwner ? { isOwner: true } : {}),
+            // 这条原本是语音条；落库的 content 是转写后的文字（没配 ASR 就还是 `[语音]`）。
+            ...(message.voices?.length ? { hasVoice: true } : {}),
           },
         },
         select: { id: true },
@@ -621,6 +787,8 @@ async function runChannelTurn(input: {
             // 表情段不进 content：正文要能原样重放给下一轮模型，混进 [face] 会被当成用户打的字。
             ...(replyFaces.length ? { faceIds: replyFaces } : {}),
             ...(replySticker ? { stickerId: replySticker.id } : {}),
+            // 只记「这一条是语音」，不存音频：音频发完就没了，存下来也没法重放给模型。
+            ...(replyVoice ? { voice: true } : {}),
           },
         },
         select: { id: true },
@@ -633,10 +801,11 @@ async function runChannelTurn(input: {
   });
 
   if (generated.action === "reply") {
-    const replyOptions = replyFaces.length || replySticker || generated.groupDecision?.replyToMessageId
+    const replyOptions = replyFaces.length || replySticker || replyVoice || generated.groupDecision?.replyToMessageId
       ? {
           ...(replyFaces.length ? { faces: replyFaces } : {}),
           ...(replySticker ? { sticker: { id: replySticker.id, filePath: replySticker.filePath } } : {}),
+          ...(replyVoice && voiceSettings ? { voice: true, voiceSettings } : {}),
           ...(generated.groupDecision?.replyToMessageId ? { replyToMessageId: generated.groupDecision.replyToMessageId } : {}),
         }
       : undefined;
@@ -690,10 +859,12 @@ export async function handleChannelMessage(input: ChannelMessageInput): Promise<
       ...(input.authorDisplayName ? { authorDisplayName: input.authorDisplayName } : {}),
       content: input.content,
       ...(input.images?.length ? { images: input.images } : {}),
+      ...(input.voices?.length ? { voices: input.voices } : {}),
       ...(input.speaker ? { speaker: input.speaker } : {}),
     }],
     ...(input.faceCatalog ? { faceCatalog: input.faceCatalog } : {}),
     ...(input.stickerCatalog?.length ? { stickerCatalog: input.stickerCatalog } : {}),
+    ...(input.voiceCapable ? { voiceCapable: true } : {}),
     sendReply: input.sendReply,
   });
   // 单条路径不该出现 silent；真出现了就当作没说，别让调用方去处理一个它不可能遇到的状态。
@@ -712,6 +883,7 @@ export async function handleChannelBatch(input: ChannelBatchInput): Promise<Chan
     ...(input.faceCatalog ? { faceCatalog: input.faceCatalog } : {}),
     ...(input.stickerCatalog?.length ? { stickerCatalog: input.stickerCatalog } : {}),
     ...(input.group ? { group: input.group } : {}),
+    ...(input.voiceCapable ? { voiceCapable: true } : {}),
     allowSilent: input.allowSilent !== false,
     sendReply: input.sendReply,
   });

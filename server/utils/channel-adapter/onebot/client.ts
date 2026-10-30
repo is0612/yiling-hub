@@ -16,10 +16,12 @@ import {
   readOnebotMessageId,
   readOnebotMessageText,
   readOnebotUserId,
+  readOnebotVoices,
   type OnebotGroupRole,
   type OnebotImageRef,
   type OnebotMessageType,
   type OnebotSegment,
+  type OnebotVoiceRef,
 } from "./types";
 
 /** 出站消息：纯文本，或段数组（表情、图片、@）。 */
@@ -45,6 +47,8 @@ export type OnebotResolvedEvent = {
   content: string;
   /** 这一条消息里带的图。正文里只有 `[图片]`，直链在这里等「看图」旁路来取。 */
   images: OnebotImageRef[];
+  /** 这一条消息里带的语音。正文里只有 `[语音]`，直链在这里等「听懂语音」旁路来取。 */
+  voices: OnebotVoiceRef[];
   selfId: string;
   /** 群成员身份；私聊或网关未提供时为 member。 */
   senderRole: OnebotGroupRole;
@@ -93,6 +97,7 @@ export function resolveOnebotEvent(data: unknown): OnebotResolvedEvent | null {
     displayName: readOnebotDisplayName(data),
     content,
     images: readOnebotImages(data),
+    voices: readOnebotVoices(data),
     selfId: String(record?.self_id ?? ""),
     senderRole: readOnebotGroupRole(data),
   };

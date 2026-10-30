@@ -1,9 +1,8 @@
 import { createError, readBody } from "h3";
 import type { Prisma } from "../../../src/generated/prisma/client";
 import { characterInclude, toCharacterDto } from "../../utils/character-dto";
-import { readChatModelSettingsPatch } from "../../utils/chat-model-config";
-import { encryptApiKey } from "../../utils/credential-encryption";
-import { requireActorUserId } from "../../utils/auth";
+import { readChatModelSettingsPatch, validateChatApiBaseUrl } from "../../utils/chat-model-config";
+import { encryptApiKey } from "../../utils/credential-encryption";import { requireActorUserId } from "../../utils/auth";
 import { readTrimmedString, requireUuid } from "../../utils/local-api";
 import { getPrisma } from "../../utils/prisma";
 import { readProactivePatch, resolveProactiveSettings } from "../../utils/proactive-settings";
@@ -38,6 +37,9 @@ export default defineEventHandler(async (event) => {
   }
 
   const modelConfigPatch: Record<string, unknown> = {};
+  /** 语音 Key 的明文只在这里短暂停留，落库前一定加密；不写日志、不回显。 */
+  let voiceApiKeyPlain = "";
+  let clearVoiceApiKey = false;
   if (body.alias !== undefined) modelConfigPatch.alias = readTrimmedString(body.alias, "角色标签", 100);
   if (body.description !== undefined) modelConfigPatch.description = readTrimmedString(body.description, "角色简介", 2000);
 
@@ -64,6 +66,22 @@ export default defineEventHandler(async (event) => {
     modelConfigPatch.emojiEnabled = body.emojiEnabled;
   }
 
+  // 表情额度：「每 N 分钟最多 N 张」。贴图与内置表情共用，按会话分别算。
+  // 不设 0 —— 「一张都不许发」应该去关开关，而不是把额度设成 0（那样页面上还开着，只是永远发不出来）。
+  const emojiLimits: Array<[string, string, number]> = [
+    ["emojiWindowMinutes", "表情额度的分钟数", 1440],
+    ["emojiPerWindow", "表情额度里的张数", 20],
+  ];
+  for (const [key, label, max] of emojiLimits) {
+    const raw = body[key];
+    if (raw === undefined) continue;
+    const value = typeof raw === "number" ? raw : Number(raw);
+    if (!Number.isFinite(value) || value < 1 || value > max) {
+      throw createError({ statusCode: 400, statusMessage: `${label}必须是 1 到 ${max} 之间的数字。` });
+    }
+    modelConfigPatch[key] = Math.round(value);
+  }
+
   // 看图开关：和表情开关一样是角色级，只影响 QQ 渠道的被动回复。
   if (body.imageUnderstanding !== undefined) {
     if (typeof body.imageUnderstanding !== "boolean") {
@@ -78,6 +96,81 @@ export default defineEventHandler(async (event) => {
       throw createError({ statusCode: 400, statusMessage: "偷表情包开关必须是布尔值。" });
     }
     modelConfigPatch.stickerAutoCollect = body.stickerAutoCollect;
+  }
+
+  // 语音是两个独立开关：她「能不能说」和「听不听得懂」是两件事，
+  // 合成按字符计费、转写按秒计费，合在一起关不掉其中一半。
+  if (body.voiceEnabled !== undefined) {
+    if (typeof body.voiceEnabled !== "boolean") {
+      throw createError({ statusCode: 400, statusMessage: "语音回复开关必须是布尔值。" });
+    }
+    modelConfigPatch.voiceEnabled = body.voiceEnabled;
+  }
+
+  if (body.voiceTranscribe !== undefined) {
+    if (typeof body.voiceTranscribe !== "boolean") {
+      throw createError({ statusCode: 400, statusMessage: "听懂语音开关必须是布尔值。" });
+    }
+    modelConfigPatch.voiceTranscribe = body.voiceTranscribe;
+  }
+
+  // 发语音的概率：0 = 从不在文字外发语音，100 = 只要是短回复就发。
+  if (body.voiceChance !== undefined) {
+    const value = typeof body.voiceChance === "number" ? body.voiceChance : Number(body.voiceChance);
+    if (!Number.isFinite(value) || value < 0 || value > 100) {
+      throw createError({ statusCode: 400, statusMessage: "语音概率必须是 0 到 100 之间的数字。" });
+    }
+    modelConfigPatch.voiceChance = Math.round(value);
+  }
+
+  // 语音服务商：地址与模型名都可以在页面上填，不必去改 .env。
+  // 空字符串是有效值（= 回落到环境变量 / 角色的聊天地址），所以这里不做「非空」校验。
+  for (const [key, label, max] of [
+    ["ttsModel", "语音合成模型", 120],
+    ["ttsVoice", "语音音色", 100],
+    ["asrModel", "语音识别模型", 120],
+  ] as const) {
+    if (body[key] === undefined) continue;
+    if (typeof body[key] !== "string") {
+      throw createError({ statusCode: 400, statusMessage: `${label}必须是文本。` });
+    }
+    const value = (body[key] as string).trim();
+    if (value.length > max) {
+      throw createError({ statusCode: 400, statusMessage: `${label}不能超过 ${max} 个字符。` });
+    }
+    modelConfigPatch[key] = value;
+  }
+
+  if (body.voiceApiBaseUrl !== undefined) {
+    if (typeof body.voiceApiBaseUrl !== "string") {
+      throw createError({ statusCode: 400, statusMessage: "语音服务地址必须是文本。" });
+    }
+    try {
+      modelConfigPatch.voiceApiBaseUrl = body.voiceApiBaseUrl.trim()
+        ? validateChatApiBaseUrl(body.voiceApiBaseUrl)
+        : "";
+    } catch (error) {
+      throw createError({
+        statusCode: 400,
+        statusMessage: error instanceof Error ? error.message : "语音服务地址无效。",
+      });
+    }
+  }
+
+  if (body.voiceApiKey !== undefined) {
+    if (typeof body.voiceApiKey !== "string") {
+      throw createError({ statusCode: 400, statusMessage: "语音服务的 API Key 必须是文本。" });
+    }
+    const key = body.voiceApiKey.trim();
+    if (key.length > 8192) throw createError({ statusCode: 400, statusMessage: "API Key 不能超过 8192 个字符。" });
+    if (key) voiceApiKeyPlain = key;
+  }
+
+  if (body.clearVoiceApiKey !== undefined) {
+    if (typeof body.clearVoiceApiKey !== "boolean") {
+      throw createError({ statusCode: 400, statusMessage: "清除语音 API Key 的参数无效。" });
+    }
+    clearVoiceApiKey = body.clearVoiceApiKey;
   }
 
   // 主动找话的设置也挂在 modelConfig 上，但走独立的校验：写入侧宁可报错也不夹取。
@@ -103,10 +196,14 @@ export default defineEventHandler(async (event) => {
   const { chatApiKey, clearApiKey, ...safeSettingsPatch } = settingsPatch;
   Object.assign(modelConfigPatch, safeSettingsPatch);
 
-  if (Object.keys(modelConfigPatch).length > 0 || chatApiKey || clearApiKey) {
+  if (Object.keys(modelConfigPatch).length > 0 || chatApiKey || clearApiKey || voiceApiKeyPlain || clearVoiceApiKey) {
     const nextConfig: Record<string, unknown> = { ...config, ...modelConfigPatch };
     if (clearApiKey) delete nextConfig.chatApiKeyEncrypted;
     if (chatApiKey) nextConfig.chatApiKeyEncrypted = await encryptApiKey(chatApiKey);
+    // 语音 Key 与聊天 Key 分开两把：语音常常是另一家服务商，
+    // 混用一个字段会导致「换语音服务商时把聊天也换掉」。
+    if (clearVoiceApiKey) delete nextConfig.voiceApiKeyEncrypted;
+    if (voiceApiKeyPlain) nextConfig.voiceApiKeyEncrypted = await encryptApiKey(voiceApiKeyPlain);
     data.modelConfig = nextConfig as Prisma.InputJsonObject;
   }
 

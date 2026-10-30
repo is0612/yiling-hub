@@ -103,6 +103,50 @@ const dup = await collectSticker(
 assert.equal(dup, null, "同一张图不重复偷。");
 assert.equal(callCount, before + 1, "去重只多一次下载，不调打标。");
 
+// ── 起不出名字的图不收 ────────────────────────────────────────────────
+// 名字是模型挑图的唯一依据。以前打标失败会用「收藏的表情」兜底存下来，
+// 结果库里全是既没场景、也没名字线索的废图，占着名额又永远挑不中。
+const rowsBefore = await prisma.characterSticker.count({ where: { characterId: context.characterId } });
+// 每张图用不同字节：内容相同会比 contentHash 去重掉，测出来的「没收」就不是因为打标失败。
+const pngA = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 9, 9, 9]);
+const pngB = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 7, 7, 7]);
+let labelReply = "";
+globalThis.fetch = async (input: RequestInfo | URL) => {
+  const url = String(input);
+  if (url.includes("sticker-a.png") || url.includes("sticker-b.png")) {
+    const response = new Response(url.includes("sticker-a") ? pngA : pngB, {
+      status: 200,
+      headers: { "content-type": "image/png" },
+    });
+    Object.defineProperty(response, "url", { value: url });
+    return response as Response;
+  }
+  return new Response(JSON.stringify({
+    choices: [{ message: { content: labelReply } }],
+  }), { status: 200, headers: { "content-type": "application/json" } }) as Response;
+};
+
+// a) 模型偷懒，名字直接回「表情包」这种没信息量的词。
+labelReply = JSON.stringify({ name: "表情包", usage: "" });
+assert.equal(
+  await collectSticker({ url: "https://example.com/sticker-a.png" }, context),
+  null,
+  "名字是「表情包」这种废话时不该收。",
+);
+
+// b) 模型回的不是 JSON（或干脆失败）：同样不收。
+labelReply = "抱歉，我看不清这张图";
+assert.equal(
+  await collectSticker({ url: "https://example.com/sticker-b.png" }, context),
+  null,
+  "打标失败不该落库。",
+);
+assert.equal(
+  await prisma.characterSticker.count({ where: { characterId: context.characterId } }),
+  rowsBefore,
+  "两张都没收：库里不该多出「收藏的表情」这种废图。",
+);
+
 // 清理落盘的文件（避免污染仓库 .data）。
 const { stickerFilePath } = await import("../server/utils/stickers");
 try {

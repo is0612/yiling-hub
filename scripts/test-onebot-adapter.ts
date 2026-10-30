@@ -246,7 +246,9 @@ try {
   const afterDuplicate = (await (await fetch("http://127.0.0.1:4031/__mock/messages")).json()) as { messages: unknown[] };
   assert.equal(afterDuplicate.messages.length, 1, "A duplicate event must not trigger a second reply.");
 
-  // 7. 表情：开关打开后正文一条、表情单独一条；紧接着的下一条不再重复发表情（冷却）。
+  // 7. 表情：开关打开后正文一条、表情单独一条；额度用完后只发正文（不再跟表情）。
+  // 额度显式配成「1 分钟 1 张」：默认 10 分钟 3 张的话，下面两条回复都还在额度里，
+  // 断言就验不到「用完就停」这件事了。
   const readSent = async () => ((await (await fetch("http://127.0.0.1:4031/__mock/messages")).json()) as {
     messages: Array<{ action: string; body: Record<string, unknown> }>;
   }).messages;
@@ -268,7 +270,10 @@ try {
   });
 
   const beforeFaces = (await readSent()).length;
-  await prisma.character.update({ where: { id: characterId }, data: { modelConfig: { emojiEnabled: true } } });
+  await prisma.character.update({
+    where: { id: characterId },
+    data: { modelConfig: { emojiEnabled: true, emojiWindowMinutes: 1, emojiPerWindow: 1 } },
+  });
 
   await emitText(2, "你猜");
   await waitFor(async () => (await readSent()).length >= beforeFaces + 2);
@@ -285,8 +290,8 @@ try {
   await waitFor(async () => (await readSent()).length >= beforeFaces + 3);
   await sleep(800);
   const cooled = await readSent();
-  assert.equal(cooled.length, beforeFaces + 3, "冷却期内只发正文，不再跟一张表情。");
-  assert.equal(typeof cooled[beforeFaces + 2]!.body.message, "string", "冷却期内发出去的必须是纯文本。");
+  assert.equal(cooled.length, beforeFaces + 3, "额度用完后只发正文，不再跟一张表情。");
+  assert.equal(typeof cooled[beforeFaces + 2]!.body.message, "string", "额度用完时发出去的必须是纯文本。");
 
   // 表情段不进 content（否则会被当成用户打的字），只记在 metadata 里。
   const assistantMeta = await prisma.message.findMany({
@@ -521,7 +526,7 @@ try {
 
   closeGateway();
 
-  console.log("OneBot 渠道端到端测试通过：WS token 鉴权与单次握手、事件接入、CQ 码解析、凭据解密、角色绑定路由、记忆检索、模型回复、表情段发送与冷却、消息持久化、外部身份 upsert、回发平台与幂等去重、群公告草稿与确认发布、普通成员越权拦截、按群滚动 10 分钟回复上限、群聊统一攒批（mention 档只在被叫到时进管道）、自然接话闸门、按群覆盖群聊模式、B站 指令主人专属。");
+  console.log("OneBot 渠道端到端测试通过：WS token 鉴权与单次握手、事件接入、CQ 码解析、凭据解密、角色绑定路由、记忆检索、模型回复、表情段发送与表情额度、消息持久化、外部身份 upsert、回发平台与幂等去重、群公告草稿与确认发布、普通成员越权拦截、按群滚动 10 分钟回复上限、群聊统一攒批（mention 档只在被叫到时进管道）、自然接话闸门、按群覆盖群聊模式、B站 指令主人专属。");
 } finally {
   for (const child of children) child.kill();
   await prisma.onebotGroupAnnouncement.deleteMany({ where: { connectionId } }).catch(() => undefined);

@@ -5130,6 +5130,11 @@ signal-exit@^4.0.1, signal-exit@^4.1.0:
   resolved "https://registry.yarnpkg.com/signal-exit/-/signal-exit-4.1.0.tgz#952188c1cbd546070e2dd20d0f41c0ae0530cb04"
   integrity sha512-bzyZ1e88w9O1iNJbKnOlvYTrWPDl46O1bG0D3XInv+9tkPrxrN8jUUTiFlDkkmKWgn1M6CfIA13SuGqOa9Korw==
 
+silk-wasm@^3.7.1:
+  version "3.7.1"
+  resolved "https://registry.npmmirror.com/silk-wasm/-/silk-wasm-3.7.1.tgz#f5abe4db5e818f182b776106b638fb1ead21fcf7"
+  integrity sha512-mXPwLRtZxrYV3TZx41jMAeKc80wvmyrcXIcs8HctFxK15Ahz2OJQENYhNgEPeCEOdI6Mbx1NxQsqxzwc3DKerw==
+
 sirv@^3.0.2:
   version "3.0.2"
   resolved "https://registry.yarnpkg.com/sirv/-/sirv-3.0.2.tgz#f775fccf10e22a40832684848d636346f41cd970"

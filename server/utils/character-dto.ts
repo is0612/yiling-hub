@@ -1,6 +1,9 @@
 import { resolveChatModelSettings } from "./chat-model-config";
+import { resolveEmojiFrequency } from "./emoji-frequency";
 import { MEMORY_TOKEN_BUDGET_DEFAULT, SNAPSHOT_TOKEN_BUDGET_DEFAULT } from "./memory-retrieval";
 import { resolveProactiveSettings, type ProactiveSettings } from "./proactive-settings";
+import { isVoiceApiKeySaved } from "./credential-encryption";
+import { resolveVoiceChance } from "./voice";
 
 function positiveNumber(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.round(value) : 0;
@@ -39,10 +42,27 @@ export type CharacterDto = {
   snapshotTokenBudget: number;
   /** QQ 渠道回复是否允许附一张表情；默认关。 */
   emojiEnabled: boolean;
+  /** 表情额度：多少分钟内最多贴几次（贴图与内置表情共用一个额度，按会话分别算）。 */
+  emojiWindowMinutes: number;
+  emojiPerWindow: number;
   /** QQ 群里发来的图是否交给视觉模型读；默认关。 */
   imageUnderstanding: boolean;
   /** 群里发来的图是否自动收进她的表情库（「偷表情包」）；默认关。 */
   stickerAutoCollect: boolean;
+  /** 她的回复能不能发成语音条；默认关。 */
+  voiceEnabled: boolean;
+  /** 她听不听得懂别人发的语音（自动转写）；默认关。 */
+  voiceTranscribe: boolean;
+  /** 发语音的概率（0-100），默认 25。 */
+  voiceChance: number;
+  /** 语音服务地址（页面上填的）；空 = 用环境变量或角色聊天地址。 */
+  voiceApiBaseUrl: string;
+  /** 语音 Key 是否已保存（只回显布尔，绝不回显 Key 本身）。 */
+  voiceApiKeyConfigured: boolean;
+  /** 语音合成模型 / 音色 / 识别模型；空 = 用环境变量。 */
+  ttsModel: string;
+  ttsVoice: string;
+  asrModel: string;
   /** 主动找话设置；未配置过时是默认值（enabled=false）。 */
   proactive: ProactiveSettings;
 };
@@ -142,6 +162,8 @@ export function toCharacterDto(input: unknown): CharacterDto {
     }
   }
 
+  const emojiFrequency = resolveEmojiFrequency(config);
+
   return {
     id: character.id,
     name: character.name,
@@ -169,8 +191,19 @@ export function toCharacterDto(input: unknown): CharacterDto {
     memoryTokenBudget: positiveNumber(config.memoryTokenBudget) || MEMORY_TOKEN_BUDGET_DEFAULT,
     snapshotTokenBudget: positiveNumber(config.snapshotTokenBudget) || SNAPSHOT_TOKEN_BUDGET_DEFAULT,
     emojiEnabled: config.emojiEnabled === true,
+    // 额度读的时候就把默认值补齐，页面不用再猜「没填是多少」。
+    emojiWindowMinutes: emojiFrequency.windowMinutes,
+    emojiPerWindow: emojiFrequency.perWindow,
     imageUnderstanding: config.imageUnderstanding === true,
     stickerAutoCollect: config.stickerAutoCollect === true,
+    voiceEnabled: config.voiceEnabled === true,
+    voiceTranscribe: config.voiceTranscribe === true,
+    voiceChance: resolveVoiceChance(config),
+    voiceApiBaseUrl: typeof config.voiceApiBaseUrl === "string" ? config.voiceApiBaseUrl : "",
+    voiceApiKeyConfigured: isVoiceApiKeySaved(config),
+    ttsModel: typeof config.ttsModel === "string" ? config.ttsModel : "",
+    ttsVoice: typeof config.ttsVoice === "string" ? config.ttsVoice : "",
+    asrModel: typeof config.asrModel === "string" ? config.asrModel : "",
     proactive: resolveProactiveSettings(config),
   };
 }

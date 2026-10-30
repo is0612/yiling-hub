@@ -5,6 +5,16 @@ export default defineNuxtConfig({
   devServer: { host: "127.0.0.1" },
   css: ["~/assets/css/main.css"],
   modules: ["@element-plus/nuxt"],
+  nitro: {
+    externals: {
+      /**
+       * silk-wasm 的 wasm 是运行时 `readFileSync` 读的，静态分析看不见 ——
+       * 不显式带上时，生产构建只复制了 index.cjs，语音一调用就 ENOENT（dev 下正常，很难察觉）。
+       * 改这里之前先 `yarn build` 并确认 .output/server/node_modules/silk-wasm/lib/silk.wasm 在。
+       */
+      traceInclude: ["node_modules/silk-wasm/lib/silk.wasm"],
+    },
+  },
   vite: {
     ssr: {
       // SSR 侧不外部化 element-plus。外部化时它走预构建产物，模块 id 是 /@id/ 形式，

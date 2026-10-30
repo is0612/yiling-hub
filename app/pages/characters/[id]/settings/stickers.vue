@@ -7,7 +7,7 @@ import { ElMessage, ElMessageBox } from "element-plus";
  *
  * 与 QQ 内置表情的区别要写在页面上 —— 「为什么我传了图，她还是发那个官方笑脸」
  * 是第一眼就会有的疑问，答案在这里：内置表情是 QQ 自带的那几十张脸，表情包才是她的图，
- * 有素材库时优先用素材库；两边都受同一个「表情」开关和 4 分钟冷却管着。
+ * 有素材库时优先用素材库；两边共用同一个「表情」开关和同一个额度（N 分钟最多 N 张）。
  */
 type StickerItem = {
   id: string;
@@ -31,6 +31,74 @@ const stickers = ref<StickerItem[]>([]);
 const saving = ref(false);
 /** 角色的「表情」开关。关着的时候传多少张她都不会贴——不写页面上就会有人白传一通。 */
 const emojiEnabled = ref(false);
+/** 表情额度（跟「表情」开关一起配的）：多少分钟内最多几张。 */
+const emojiWindowMinutes = ref(10);
+const emojiPerWindow = ref(3);
+
+// ── 排序 + 分页 ────────────────────────────────────────
+// 攒到几十张以后一屏放不下，翻到后面就找不到「哪张一直没用过」。
+// stickers 始终是全量，页面只渲染 pagedStickers 这一窗。
+type SortKey = "recent" | "oldest" | "mostUsed" | "lastUsed" | "fresh";
+
+const SORT_OPTIONS: Array<{ value: SortKey; label: string }> = [
+  { value: "recent", label: "最近添加" },
+  { value: "oldest", label: "最早添加" },
+  { value: "mostUsed", label: "用过最多的" },
+  { value: "lastUsed", label: "最近用过的" },
+  { value: "fresh", label: "一直没用过的" },
+];
+
+const sortKey = ref<SortKey>("recent");
+const page = ref(1);
+const pageSize = ref(12);
+
+/** null 的 lastUsedAt 当 0 处理，这样「最近用过的」自然把没用过的沉到最后。 */
+const timeOf = (value: string | null) => (value ? new Date(value).getTime() : 0);
+
+const sortedStickers = computed(() => {
+  const rows = [...stickers.value];
+  switch (sortKey.value) {
+    case "oldest":
+      return rows.sort((a, b) => timeOf(a.createdAt) - timeOf(b.createdAt));
+    case "mostUsed":
+      return rows.sort((a, b) => b.useCount - a.useCount || timeOf(b.createdAt) - timeOf(a.createdAt));
+    case "lastUsed":
+      return rows.sort((a, b) => timeOf(b.lastUsedAt) - timeOf(a.lastUsedAt) || timeOf(b.createdAt) - timeOf(a.createdAt));
+    case "fresh":
+      // 一次都没用过的一律排前面 —— 这一档就是用来找「白占名额」的那几张。
+      return rows.sort(
+        (a, b) => Number(a.useCount > 0) - Number(b.useCount > 0) || timeOf(b.createdAt) - timeOf(a.createdAt),
+      );
+    default:
+      return rows.sort((a, b) => timeOf(b.createdAt) - timeOf(a.createdAt));
+  }
+});
+
+const pagedStickers = computed(() => {
+  const start = (page.value - 1) * pageSize.value;
+  return sortedStickers.value.slice(start, start + pageSize.value);
+});
+
+const disabledCount = computed(() => stickers.value.filter((item) => !item.enabled).length);
+
+/** 页码居中显示用：第 13–24 张，共 25 张。 */
+const rangeLabel = computed(() => {
+  if (!sortedStickers.value.length) return "";
+  const start = (page.value - 1) * pageSize.value + 1;
+  const end = Math.min(page.value * pageSize.value, sortedStickers.value.length);
+  return `第 ${start}–${end} 张，共 ${sortedStickers.value.length} 张`;
+});
+
+// 删到最后一页只剩一两张时页码会越界，落回最后一页。
+watch([() => sortedStickers.value.length, pageSize], () => {
+  const maxPage = Math.max(1, Math.ceil(sortedStickers.value.length / pageSize.value));
+  if (page.value > maxPage) page.value = maxPage;
+});
+
+const pageDescription = computed(
+  () =>
+    `她自己的表情图：QQ 内置表情是客户端自带的那几十张脸，谁发都一样；这里传的图会作为图片单独发一条。有表情包时优先用表情包，两者共用同一个「表情」开关，额度是每 ${emojiWindowMinutes.value} 分钟最多 ${emojiPerWindow.value} 张。`,
+);
 
 /** 待上传的图（浏览器里的原始文件，还没进表单）。 */
 const pendingFile = ref<File | null>(null);
@@ -69,11 +137,15 @@ async function load() {
   loading.value = true;
   try {
     const [character, rows] = await Promise.all([
-      $fetch<{ name: string; emojiEnabled?: boolean }>(`/api/characters/${encodeURIComponent(id.value)}`),
+      $fetch<{ name: string; emojiEnabled?: boolean; emojiWindowMinutes?: number; emojiPerWindow?: number }>(
+        `/api/characters/${encodeURIComponent(id.value)}`,
+      ),
       $fetch<StickerItem[]>(`/api/characters/${encodeURIComponent(id.value)}/stickers`),
     ]);
     characterName.value = character.name;
     emojiEnabled.value = character.emojiEnabled === true;
+    if (typeof character.emojiWindowMinutes === "number") emojiWindowMinutes.value = character.emojiWindowMinutes;
+    if (typeof character.emojiPerWindow === "number") emojiPerWindow.value = character.emojiPerWindow;
     stickers.value = rows;
   } catch (error) {
     ElMessage.error((error as { statusMessage?: string })?.statusMessage || "读取表情包失败。");
@@ -96,6 +168,9 @@ async function submit() {
       body: form,
     });
     stickers.value = [...stickers.value, created];
+    // 新加的这张在任何排序下都不一定落在第一页，直接翻到它那一页，省得人以为没传上。
+    const index = sortedStickers.value.findIndex((item) => item.id === created.id);
+    if (index >= 0) page.value = Math.floor(index / pageSize.value) + 1;
     pendingFile.value = null;
     draftName.value = "";
     draftUsage.value = "";
@@ -189,7 +264,7 @@ onMounted(load);
     <PageHeader
       :eyebrow="'角色管理 / ' + (characterName || '角色') + ' / 表情包'"
       title="表情包"
-      description="她自己的表情图：QQ 内置表情是客户端自带的那几十张脸，谁发都一样；这里传的图会作为图片单独发一条。有表情包时优先用表情包，两者共用同一个「表情」开关和冷却。"
+      :description="pageDescription"
       :back-to="'/characters?c=' + id"
       back-label="返回角色列表"
     />
@@ -274,6 +349,10 @@ onMounted(load);
             <div>
               <div class="form-title">
                 已有 {{ stickers.length }} 张
+                <span
+                  v-if="disabledCount"
+                  class="title-aside"
+                >停用 {{ disabledCount }} 张</span>
               </div><p class="section-description">
                 停用的图不会被她用到，但保留在列表里。用过几次、最近一次什么时候用，都记在这里。
               </p>
@@ -282,10 +361,29 @@ onMounted(load);
 
           <div
             v-if="stickers.length"
+            class="sticker-toolbar"
+          >
+            <span class="form-label">排序</span>
+            <el-select
+              v-model="sortKey"
+              style="width: 150px"
+            >
+              <el-option
+                v-for="option in SORT_OPTIONS"
+                :key="option.value"
+                :label="option.label"
+                :value="option.value"
+              />
+            </el-select>
+            <span class="sticker-range">{{ rangeLabel }}</span>
+          </div>
+
+          <div
+            v-if="stickers.length"
             class="sticker-list"
           >
             <div
-              v-for="sticker in stickers"
+              v-for="sticker in pagedStickers"
               :key="sticker.id"
               class="sticker-card"
               :class="{ 'is-off': !sticker.enabled }"
@@ -304,8 +402,11 @@ onMounted(load);
                     class="sticker-source"
                   >从群里收的</span>
                 </div>
-                <p class="sticker-usage">
-                  {{ sticker.usage || "还没写什么时候用" }}
+                <p
+                  class="sticker-usage"
+                  :class="{ 'is-empty': !sticker.usage }"
+                >
+                  {{ sticker.usage || "还没写什么时候用，她只能凭名字猜" }}
                 </p>
               </div>
               <div class="sticker-ops">
@@ -331,8 +432,24 @@ onMounted(load);
             </div>
           </div>
 
+          <div
+            v-if="sortedStickers.length > pageSize"
+            class="sticker-pager"
+          >
+            <el-pagination
+              v-model:current-page="page"
+              v-model:page-size="pageSize"
+              :total="sortedStickers.length"
+              :page-sizes="[12, 24, 48]"
+              :pager-count="5"
+              layout="sizes, prev, pager, next"
+              size="small"
+              background
+            />
+          </div>
+
           <p
-            v-else
+            v-else-if="!stickers.length"
             class="section-description"
           >
             还没有表情包。传一张，她回复时就能贴自己的图了。
@@ -441,6 +558,32 @@ onMounted(load);
   gap: 10px;
 }
 
+.sticker-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.sticker-range {
+  margin-left: auto;
+  font-size: 12px;
+  color: #8a90a6;
+}
+
+.sticker-pager {
+  display: flex;
+  justify-content: center;
+  margin-top: 14px;
+}
+
+.title-aside {
+  margin-left: 8px;
+  font-size: 12px;
+  font-weight: 400;
+  color: #8a90a6;
+}
+
 .sticker-card {
   display: flex;
   align-items: center;
@@ -487,6 +630,11 @@ onMounted(load);
   margin: 2px 0 0;
   font-size: 12px;
   color: #6b7186;
+}
+
+/* 没写场景的单独标出来：她挑图时看的就是名字 + 场景，缺一项就容易挑错。 */
+.sticker-usage.is-empty {
+  color: #a8701a;
 }
 
 .sticker-ops {

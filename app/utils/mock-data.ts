@@ -36,10 +36,27 @@ export type Character = {
   snapshotTokenBudget?: number;
   /** QQ 渠道回复是否附一张表情。 */
   emojiEnabled?: boolean;
+  /** 表情额度：多少分钟内最多贴几张（滑动窗口，按每个群 / 私聊分别算）。 */
+  emojiWindowMinutes?: number;
+  emojiPerWindow?: number;
   /** QQ 群里发来的图是否交给视觉模型读。 */
   imageUnderstanding?: boolean;
   /** 群里发来的图是否自动收进她的表情库。 */
   stickerAutoCollect?: boolean;
+  /** 她的回复能否发成语音条。 */
+  voiceEnabled?: boolean;
+  /** 她听不听得懂别人发的语音。 */
+  voiceTranscribe?: boolean;
+  /** 发语音的概率（0-100）。 */
+  voiceChance?: number;
+  /** 语音服务地址；空 = 用环境变量或角色聊天地址。 */
+  voiceApiBaseUrl?: string;
+  /** 语音 Key 是否已保存（只回布尔）。 */
+  voiceApiKeyConfigured?: boolean;
+  /** 语音合成模型 / 音色 / 识别模型。 */
+  ttsModel?: string;
+  ttsVoice?: string;
+  asrModel?: string;
   /** 主动找话设置；服务端返回时一定带默认值填充。 */
   proactive?: {
     enabled: boolean;

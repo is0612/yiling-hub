@@ -245,6 +245,49 @@ export function readOnebotImages(data: unknown): OnebotImageRef[] {
   return images;
 }
 
+/**
+ * 一条语音在 OneBot 事件里的样子。`url` 与图片一样带 rkey 且有时效，
+ * `file` 只是网关那边的文件名，不是本机路径。
+ */
+export type OnebotVoiceRef = {
+  /** 直链；网关没给就是空字符串。 */
+  url: string;
+  /** 网关给的文件名。 */
+  file: string;
+  /** 网关给的时长（秒）；没给就是 -1。只用来判断「太长了不必转写」。 */
+  durationSec: number;
+};
+
+/**
+ * 从 `message` 段数组里把 record 段挑出来。
+ *
+ * 与 `readOnebotImages` 同一个理由：正文最后仍要压成 `[语音]`（模型读不懂音频），
+ * 真正需要直链的是「听懂语音」那条旁路。段名用 `record`（OneBot v11 标准），
+ * 少数实现发 `voice`，一并认下 —— 认错段名等于这条语音永远转不出来。
+ */
+export function readOnebotVoices(data: unknown): OnebotVoiceRef[] {
+  const message = (data as { message?: unknown } | null)?.message;
+  if (!Array.isArray(message)) return [];
+  const voices: OnebotVoiceRef[] = [];
+  for (const segment of message) {
+    if (!segment || typeof segment !== "object") continue;
+    const seg = segment as OnebotSegment;
+    if (seg.type !== "record" && seg.type !== "voice") continue;
+    const segData = seg.data ?? {};
+    // 时长字段各家不一：NapCat 给 `duration`（秒），个别实现给毫秒。
+    const rawDuration = Number(segData.duration ?? segData.duration_sec ?? -1);
+    const durationSec = Number.isFinite(rawDuration) && rawDuration >= 0
+      ? (rawDuration > 1000 ? rawDuration / 1000 : rawDuration)
+      : -1;
+    voices.push({
+      url: typeof segData.url === "string" ? segData.url.trim() : "",
+      file: typeof segData.file === "string" ? segData.file : "",
+      durationSec,
+    });
+  }
+  return voices;
+}
+
 /** The stable conversation key: "c:<user_id>" for private, "g:<group_id>" for group. */
 export function onebotConversationKey(messageType: OnebotMessageType, data: unknown): string {
   if (messageType === "group") {

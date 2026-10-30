@@ -28,6 +28,10 @@ import {
 import { createGroupContext, type GroupMessageFacts } from "./group-context";
 import { ONEBOT_PLATFORM, readOnebotMentionTargets, readOnebotReplyToId } from "./types";
 import {
+  resolveVoiceTtsSettings,
+  synthesizeSpeechSilk,
+} from "../../voice";
+import {
   claimPendingAnnouncement,
   createPendingAnnouncement,
   draftAnnouncementText,
@@ -445,6 +449,18 @@ export async function loadStickerSegments(filePath: string): Promise<OnebotSegme
   }
 }
 
+/**
+ * 语音段：silk 走 `record` 段的 base64 形式。
+ *
+ * 与表情包同一个理由用 `base64://` 而不是本地路径：网关不一定和适配器同机。
+ * **必须是 silk**：QQ 客户端只认 Tencent silk，喂 mp3/wav 要么发不出去，要么变成
+ * 一条打不开的语音。转码在 `voice.ts` 里做，这里只管发。
+ */
+export function toOnebotVoiceSegments(silkBase64: string): OnebotSegment[] {
+  if (!silkBase64) return [];
+  return [{ type: "record", data: { file: `base64://${silkBase64}` } }];
+}
+
 function createReplySender(
   config: OnebotConnectionConfig,
   target: Pick<OnebotResolvedEvent, "messageType" | "groupId" | "userId">,
@@ -459,6 +475,26 @@ function createReplySender(
       }
       return Promise.resolve();
     };
+
+    // 语音条替代正文：发了语音就不再补一条文字，否则同一句话会被说两遍。
+    // 合成失败则原样发文字 —— 语音失败绝不能变成「这轮她没说话」。
+    if (options?.voice && options.voiceSettings) {
+      const silk = await synthesizeSpeechSilk(reply, options.voiceSettings);
+      if (silk?.length) {
+        const segments = toOnebotVoiceSegments(silk.toString("base64"));
+        const quoted = options.replyToMessageId && /^\d+$/.test(options.replyToMessageId)
+          ? [{ type: "reply", data: { id: options.replyToMessageId } } as OnebotSegment, ...segments]
+          : segments;
+        try {
+          await send(quoted);
+          return;
+        } catch (error) {
+          // 语音发不出去（网关不认 record 段等）就走下面的文字兜底，别让她静默。
+          console.error("[onebot] 语音发送失败：", error instanceof Error ? error.message : String(error));
+        }
+      }
+    }
+
     await send(buildOnebotReplyMessage(reply, options?.replyToMessageId));
     // 表情包优先：贴了图就不再发内置表情 —— 一句话后面挂两种表情，像自动回复机器人。
     const segments = options?.sticker
@@ -575,11 +611,14 @@ export function createOnebotMessageHandler(record: OnebotConnectionRecord) {
         // 主人发的消息带上 isOwner：群聊里也认得出主人，落库与提炼时标「主人」。
         ...(item.isOwner ? { speaker: { isOwner: true } } : {}),
         ...(item.event.images.length ? { images: item.event.images } : {}),
+        ...(item.event.voices.length ? { voices: item.event.voices } : {}),
         occurredAt: new Date(item.at),
       })),
       faceCatalog: ONEBOT_FACES,
       // 她自己的表情包：清单非空时优先于内置表情（空清单 = 这个角色还没传过图）。
       stickerCatalog: await loadStickerCatalog(binding.characterId),
+      // 声明「本渠道能发语音条」：能不能真发由角色开关和判定决定。
+      voiceCapable: true,
       // 只有真实 @ 与 all 档不允许「想了想还是不说」。
       allowSilent: !gate.mustReply,
       group: {
@@ -706,9 +745,12 @@ export function createOnebotMessageHandler(record: OnebotConnectionRecord) {
       authorDisplayName: event.displayName || undefined,
       content: event.content,
       ...(event.images.length ? { images: event.images } : {}),
+      ...(event.voices.length ? { voices: event.voices } : {}),
       // QQ 是唯一能发表情的渠道；清单非空即声明能力，是否真发还要过角色开关和冷却。
       faceCatalog: ONEBOT_FACES,
       stickerCatalog: await loadStickerCatalog(binding.characterId),
+      // 私聊同样能发语音条：语音在私聊里比在群里更合适（一对一，不用怕刷屏）。
+      voiceCapable: true,
       sendReply,
     });
   };

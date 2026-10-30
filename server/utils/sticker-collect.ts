@@ -21,7 +21,9 @@ import {
  *   3. **按内容 hash 去重**：群里一张图被转来转去，只收第一次；她自己库里的图也不再重复偷。
  *   4. 打标复用视觉模型配置（不配 `VISION_MODEL` / 没开看图就完全不动），但提示词换成
  *      「给表情包起名 + 写使用场景」输出 JSON，而不是看图旁路那段画面描述。
- *   5. 整条链路失败都静默：收图是锦上添花，不能让一轮群聊因此变成错误。
+ *   5. **起不出名字就不收**：名字是模型挑图的唯一依据，`收藏的表情` 这种兜底名等于废图，
+ *      存进去只是白占名额。没配视觉模型时同理，整条自动收图等于关着。
+ *   6. 整条链路失败都静默：收图是锦上添花，不能让一轮群聊因此变成错误。
  */
 
 export type StickerCollectCandidate = {
@@ -55,6 +57,18 @@ export function isStickerAutoCollectEnabled(modelConfig: unknown): boolean {
 /** 图的 SHA-256。用内容而不是 url：同一张图换了直链还是同一张。 */
 function hashOf(buffer: Buffer): string {
   return createHash("sha256").update(buffer).digest("hex");
+}
+
+/**
+ * 这些名字等于「没起名」。模型偶尔会偷懒直接回「表情」「表情包」，
+ * 存下来就是占着额度、又永远挑不中的图 —— 名字里没有任何可判断的信息。
+ */
+const GENERIC_NAMES = new Set(["表情", "表情包", "图片", "收藏的表情", "未知", "无", "表情图片", "一张图"]);
+
+function isUsableStickerName(name: string): boolean {
+  const trimmed = name.trim();
+  if (!trimmed) return false;
+  return !GENERIC_NAMES.has(trimmed);
 }
 
 /** 给一张图起名 + 写使用场景。失败返回 null，调用方当没收下。 */
@@ -143,7 +157,7 @@ async function labelSticker(
   }
   const name = typeof parsed.name === "string" ? parsed.name.trim().slice(0, 60) : "";
   const usageText = typeof parsed.usage === "string" ? parsed.usage.trim().slice(0, 200) : "";
-  if (!name) return null;
+  if (!isUsableStickerName(name)) return null;
   return { name, usage: usageText };
 }
 
@@ -181,9 +195,17 @@ export async function collectSticker(
 
   const dataUrl = `data:${image.mime};base64,${image.buffer.toString("base64")}`;
   const label = await labelSticker(dataUrl, candidate.summary ?? "", context);
-  // 打标失败仍收下原图：名字用「收藏的表情」兜底，之后人工再改。图比标签更值钱。
-  const name = label?.name || "收藏的表情";
-  const usage = label?.usage || "";
+  /**
+   * 起不出名字就不收。
+   *
+   * 以前用「收藏的表情」兜底存下来，结果库里攒了几张既没名字线索、也没使用场景的图：
+   * 提示词里模型只看到「收藏的表情 / usage 空」，根本判断不出什么时候该用，
+   * 等于白占一个名额（实测 25 张里有 3 张是这种）。识别不了就别进库 ——
+   * 用户要的是「她的表情包」，不是「一堆图」。
+   */
+  if (!label) return null;
+  const name = label.name;
+  const usage = label.usage;
 
   const fileName = await saveStickerFile(context.characterId, extension, image.buffer);
   let row;

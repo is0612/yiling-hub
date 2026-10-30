@@ -173,7 +173,7 @@ export function assertFetchableImageUrl(raw: string): URL {
  * 第二道闸：域名可以先过字面量检查，解析出来的地址却可能是内网。
  * DNS 查回来的每一条都得是公网地址，否则整张图都不下载。
  */
-async function assertPublicHost(hostname: string): Promise<void> {
+export async function assertPublicHost(hostname: string): Promise<void> {
   const host = unbracket(hostname).toLowerCase();
   const version = isIP(host);
   if (version === 4) {
