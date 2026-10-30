@@ -420,6 +420,9 @@ function runCharacterCommand(command: string) {
             <el-button @click="navigateTo(`/characters/${selected.id}/settings/stickers`)">
               <el-icon><Picture /></el-icon>表情包
             </el-button>
+            <el-button @click="navigateTo(`/characters/${selected.id}/settings/catchphrases`)">
+              <el-icon><ChatLineSquare /></el-icon>梗语录
+            </el-button>
             <el-dropdown
               trigger="click"
               placement="bottom-end"

@@ -1,6 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createError, getRouterParam, readBody, setResponseStatus } from "h3";
 import { generateConversationReply, type ConversationContextMessage } from "../../../utils/chat-reply";
+import {
+  loadCatchphraseCatalog, markCatchphrasesUsed, pickCatchphraseCatalog, toCatchphrasePromptEntries,
+} from "../../../utils/catchphrases";
 import { resolveChatModelSettings } from "../../../utils/chat-model-config";
 import { resolveCharacterApiKey } from "../../../utils/credential-encryption";
 import {
@@ -146,7 +149,8 @@ export default defineEventHandler(async (event) => {
 
   const existingConversation = requestedConversationId
     ? await prisma.conversation.findFirst({
-        where: { id: requestedConversationId, characterId, memoryScopeId, status: "ACTIVE" },
+        // channelBindingId: null —— 桌面端对话不能往 QQ 等外部渠道的会话里写消息。
+        where: { id: requestedConversationId, characterId, memoryScopeId, channelBindingId: null, status: "ACTIVE" },
         select: { id: true, title: true },
       })
     : null;
@@ -217,6 +221,16 @@ export default defineEventHandler(async (event) => {
     scope: scopeOriginById.get(snapshot.memoryScopeId) ?? "character",
   }));
 
+  /**
+   * 梗语录：挑这一轮给她看的那几条。
+   *
+   * 读失败就当她没设过梗（`loadCatchphraseCatalog` 内部已经兜住异常）——
+   * 一张附属表读不动，不该让整条回复失败。
+   */
+  const catchphrasePrompt = toCatchphrasePromptEntries(
+    pickCatchphraseCatalog(await loadCatchphraseCatalog(characterId)),
+  );
+
   let generated;
   try {
     generated = await generateConversationReply({
@@ -234,6 +248,7 @@ export default defineEventHandler(async (event) => {
       recentMessages,
       memories,
       snapshots,
+      ...(catchphrasePrompt.length ? { catchphrases: catchphrasePrompt } : {}),
     });
   } catch (error) {
     const detail = error instanceof Error ? error.message : "模型调用失败。";
@@ -284,6 +299,7 @@ export default defineEventHandler(async (event) => {
           promptTemplateVersion: generated.promptTemplateVersion,
           usedMemoryIds: generated.usedMemoryIds,
           usedSnapshotIds: generated.usedSnapshotIds,
+          usedCatchphraseIds: generated.usedCatchphraseIds,
           usedSources,
           usage: generated.usage ?? {},
         },
@@ -333,6 +349,9 @@ export default defineEventHandler(async (event) => {
       data: { lastRecalledAt: new Date(), recallCount: { increment: 1 } },
     }).catch(() => undefined);
   }
+  // 梗的使用记账：`lastUsedAt` 是冷却的唯一依据，漏记就等于没有冷却。
+  // 写失败静默 —— 回复已经落在库里了，这时候抛错只会让用户以为没发出去。
+  await markCatchphrasesUsed(characterId, generated.usedCatchphraseIds);
 
   await recordModelUsage({
     kind: "chat",
