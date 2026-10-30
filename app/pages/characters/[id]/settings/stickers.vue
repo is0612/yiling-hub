@@ -310,6 +310,10 @@ onMounted(load);
               {{ pendingFile ? `已选：${pendingFile.name}（${sizeLabel(pendingFile.size)}）` : "PNG / JPG / GIF / WebP，最大 2MB" }}
             </span>
           </div>
+          <p class="sticker-hint">
+            宽于 240px 的图会自动等比缩小（高度跟着变），比 240 窄的原样保留 ——
+            QQ 按图片原始像素显示，不缩的话一张 1500px 的图在聊天窗里会占满一屏。
+          </p>
 
           <div class="sticker-form-fields">
             <label class="sticker-field">
@@ -525,6 +529,13 @@ onMounted(load);
   align-items: center;
   gap: 12px;
   flex-wrap: wrap;
+}
+
+.sticker-hint {
+  margin: 10px 0 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #8a90a6;
 }
 
 .sticker-form-fields {
