@@ -32,14 +32,20 @@
   --brand-soft: #fdf0f4;
   --brand-line: #f6d3df;
 
-  /* ── 语义色 ── */
-  --green: #0f8f63;
+  /* ── 语义色 ──
+     绿 / 琥珀是 2026-10 总览页 refactoring 走查定的对比度达标值
+     （旧值 --green #0f8f63 只有 3.68:1、--amber #a06a06 只有 4.26:1，不达 AA）。
+     这些修正原先只硬编码在 index.vue 里，没回写变量，导致其余 20 个页面
+     仍在吃旧色 —— 这里统一收口，不要再在单页里硬编码 #0b7a54 / #8f5c05。 */
+  --green: #0b7a54;
   --green-soft: #e8f6f0;
-  --amber: #a06a06;
+  --amber: #8f5c05;
   --amber-soft: #fdf6e7;
   --amber-line: #ecd9b4;
   --red: #c92b41;
   --red-soft: #fdecee;
+  /* 红文字：--red 是「块/药丸」用的深红底白字；落在白底上的红**文字**用这个更深的，对比度才够 */
+  --red-text: #8e2739;
   --blue: #4c5fd5;
   --blue-soft: #eef0fd;
 
@@ -698,6 +704,14 @@ button, input, textarea, select { font: inherit; }
 .form-title { margin-bottom: 14px; color: var(--text-2); font-size: 14px; font-weight: 700; }
 .form-help { margin-top: 5px; color: var(--faint); font-size: 12px; line-height: 1.8; }
 
+/* ── 设置页两栏 ───────────────────────────────────────
+   左主内容 / 右侧栏。右栏 320 是给「说明 / 预览」这类辅助板的（记忆设置页的用法）；
+   右栏是列表时（表情包页）由页面在自己的 scoped 里改这两列的比例。
+   这两个类原先只写在 memory.vue 的 scoped 里，表情包页引用它们时并不生效 ——
+   scoped 样式不过文件，所以提到这里当契约。 */
+.settings-grid { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 16px; align-items: start; }
+.settings-section-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+
 .snapshot-item {
   width: 100%;
   border: 1px solid var(--line);
@@ -896,6 +910,8 @@ button, input, textarea, select { font: inherit; }
   .kpi-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .kpi-row.is-three { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .panel-grid, .panel-grid.equal { grid-template-columns: minmax(0, 1fr); }
+  /* 窄屏把设置页的右侧栏折到下面：主区本来就窄，再切一条 320 出去两边都读不了 */
+  .settings-grid { grid-template-columns: minmax(0, 1fr); }
   .page-h { flex-direction: column; align-items: stretch; }
   .page-h .ph-r { margin-left: 0; }
 }
