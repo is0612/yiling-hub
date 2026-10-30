@@ -2,6 +2,7 @@ import { createError, getRouterParam, readMultipartFormData } from "h3";
 import { requireActorUserId } from "../../../../utils/auth";
 import { readTrimmedString, requireUuid } from "../../../../utils/local-api";
 import { getPrisma } from "../../../../utils/prisma";
+import { pushStickerToQq } from "../../../../utils/qq-sticker-sync";
 import {
   MAX_STICKER_BYTES,
   invalidateStickerCache,
@@ -67,5 +68,20 @@ export default defineEventHandler(async (event) => {
     },
   });
   invalidateStickerCache(id);
-  return toStickerDto(row);
+
+  /**
+   * 顺手收藏到 QQ。
+   *
+   * 用户要的是「两边是同一批表情」，那本地加一张就该在 QQ 里也出现一张 —— 还要再点一次同步
+   * 才知道能推上去就太绕了。推失败不影响本地已经加好（下次同步会补推），
+   * 所以结果放 `qq` 里给页面提示，不抛错。
+   */
+  const qq = await pushStickerToQq(id, row.id).catch((error: unknown) => ({
+    ok: false,
+    error: error instanceof Error ? error.message : String(error),
+  }));
+  if (!qq.ok) return { ...toStickerDto(row), qq };
+
+  const fresh = await prisma.characterSticker.findUnique({ where: { id: row.id } });
+  return { ...toStickerDto(fresh ?? row), qq };
 });

@@ -24,6 +24,11 @@ export type StickerCatalogEntry = {
   filePath: string;
   /** 已发送次数。用来让没用过的那几张先露面，不进提示词。 */
   useCount?: number;
+  /**
+   * 对应的 QQ 收藏 id。有值就优先走「收藏表情」通道发（原生表情段），
+   * 而不是当成一张普通图片上传 —— 观感和长按菜单都不一样。取不到才退回图片段。
+   */
+  qqEmojiId?: string | null;
 };
 
 /** 允许的图片类型。QQ 的表情包基本是 png / jpg / gif，webp 也收下。 */
@@ -36,6 +41,39 @@ const MIME_EXTENSIONS: Record<string, string> = {
 
 /** 单张上限 2MB：表情包没有更大的必要，base64 之后还要再涨三分之一。 */
 export const MAX_STICKER_BYTES = 2 * 1024 * 1024;
+
+/**
+ * 回收站保留天数。
+ *
+ * 不设定期任务，而是「打开回收站时顺手清掉过期的」—— 回收站是个低频页面，
+ * 挂个定时器只为删几张图不划算，而没人打开的时候那些文件也不碍事。
+ */
+export const STICKER_TRASH_RETENTION_DAYS = 30;
+
+/** 早于这个时间点的回收站条目已经过期。 */
+export function trashExpiredBefore(now: Date = new Date()): Date {
+  return new Date(now.getTime() - STICKER_TRASH_RETENTION_DAYS * 24 * 60 * 60 * 1000);
+}
+
+/**
+ * 彻底删掉过期的回收站条目：行和文件一起清。
+ *
+ * 先删行再删文件 —— 反过来一旦中途崩了就是「文件没了、行还在」，
+ * 回收站里会出现一张点开是坏图的条目。返回清掉几条，给接口回个数字。
+ */
+export async function purgeTrashedStickers(characterId: string, before: Date): Promise<number> {
+  const { getPrisma } = await import("./prisma");
+  const prisma = getPrisma();
+  const rows = await prisma.characterSticker.findMany({
+    where: { characterId, deletedAt: { not: null, lt: before } },
+    select: { id: true, fileName: true },
+  });
+  if (!rows.length) return 0;
+  await prisma.characterSticker.deleteMany({ where: { id: { in: rows.map((row) => row.id) } } });
+  for (const row of rows) await deleteStickerFile(characterId, row.fileName);
+  invalidateStickerCache(characterId);
+  return rows.length;
+}
 
 export const STICKER_MIME_TYPES = Object.keys(MIME_EXTENSIONS);
 
@@ -135,6 +173,7 @@ type StickerRow = {
   fileName: string;
   enabled: boolean;
   useCount?: number;
+  qqEmojiId?: string | null;
 };
 
 /**
@@ -158,6 +197,9 @@ const STICKER_CATALOG_SELECT = {
   fileName: true,
   enabled: true,
   useCount: true,
+  // 发送侧要靠它决定走「收藏表情」还是退成图片段，也必须出现在 select 里 ——
+  // 漏了这一列，所有表情都会静默退回图片通道。
+  qqEmojiId: true,
 } as const;
 
 export function invalidateStickerCache(characterId?: string): void {
@@ -170,7 +212,14 @@ export function buildStickerCatalog(rows: readonly StickerRow[]): StickerCatalog
   for (const row of rows) {
     const filePath = stickerFilePath(row.characterId, row.fileName);
     if (!filePath) continue;
-    entries.push({ id: row.id, name: row.name, usage: row.usage, filePath, useCount: row.useCount ?? 0 });
+    entries.push({
+      id: row.id,
+      name: row.name,
+      usage: row.usage,
+      filePath,
+      useCount: row.useCount ?? 0,
+      qqEmojiId: row.qqEmojiId ?? null,
+    });
   }
   return entries;
 }
@@ -183,7 +232,7 @@ export function buildStickerCatalog(rows: readonly StickerRow[]): StickerCatalog
  */
 export async function loadStickerCatalog(
   characterId: string,
-  prisma?: { characterSticker: { findMany: (args: { where: { characterId: string; enabled?: boolean }; orderBy?: unknown; select?: unknown }) => Promise<readonly StickerRow[]> } },
+  prisma?: { characterSticker: { findMany: (args: { where: { characterId: string; enabled?: boolean; deletedAt?: null }; orderBy?: unknown; select?: unknown }) => Promise<readonly StickerRow[]> } },
 ): Promise<StickerCatalogEntry[]> {
   const cached = cache.get(characterId);
   if (cached && Date.now() - cached.at < CACHE_TTL_MS) return cached.entries;
@@ -191,7 +240,9 @@ export async function loadStickerCatalog(
   try {
     rows = await (prisma
       ? prisma.characterSticker.findMany({
-          where: { characterId, enabled: true },
+          // ⚠️ `deletedAt: null` 不能漏：删掉的表情只是进了回收站，行还在库里，
+          // 少了这个条件她会把刚删掉的图继续贴出去。
+          where: { characterId, enabled: true, deletedAt: null },
           orderBy: { createdAt: "asc" },
           select: STICKER_CATALOG_SELECT,
         })
@@ -208,7 +259,7 @@ export async function loadStickerCatalog(
 async function defaultStickerQuery(characterId: string): Promise<readonly StickerRow[]> {
   const { getPrisma } = await import("./prisma");
   return getPrisma().characterSticker.findMany({
-    where: { characterId, enabled: true },
+    where: { characterId, enabled: true, deletedAt: null },
     orderBy: { createdAt: "asc" },
     select: STICKER_CATALOG_SELECT,
   }) as Promise<readonly StickerRow[]>;
@@ -224,8 +275,12 @@ export type StickerDto = {
   useCount: number;
   lastUsedAt: string | null;
   createdAt: string;
-  /** 来源：manual 手动上传 / collected 群里自动收的。 */
+  /** 来源：manual 手动上传 / collected 群里自动收的 / qq 从 QQ 收藏夹同步来的。 */
   source: string;
+  /** 对应的 QQ 收藏 id。有值 = 这张在 QQ 收藏夹里也有一份，改名字/删除会作用到两边。 */
+  qqEmojiId: string | null;
+  /** 进回收站的时间。非空 = 已删（列表接口不会返回，只有回收站接口会）。 */
+  deletedAt: string | null;
 };
 
 /** 给页面的表情包条目。图片本体走 `/image` 接口单独取，不塞进 JSON。 */
@@ -240,6 +295,8 @@ export function toStickerDto(row: {
   lastUsedAt: Date | null;
   createdAt: Date;
   source?: string | null;
+  qqEmojiId?: string | null;
+  deletedAt?: Date | null;
 }): StickerDto {
   return {
     id: row.id,
@@ -252,6 +309,8 @@ export function toStickerDto(row: {
     lastUsedAt: row.lastUsedAt ? row.lastUsedAt.toISOString() : null,
     createdAt: row.createdAt.toISOString(),
     source: row.source || "manual",
+    qqEmojiId: row.qqEmojiId ?? null,
+    deletedAt: row.deletedAt ? row.deletedAt.toISOString() : null,
   };
 }
 

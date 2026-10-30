@@ -726,13 +726,26 @@ model CharacterSticker {
   lastUsedAt  DateTime? @db.Timestamptz(6)
   /// 图片内容的 SHA-256，用来给「自动收图」去重：群里同一张图被转发 N 次只收一次。
   contentHash String?   @db.VarChar(64)
-  /// 来源：manual（手动上传）/ collected（群里自动收的）。区分两者，页面才好标「从群里偷来的」。
+  /// 来源：manual（手动上传）/ collected（群里自动收的）/ qq（从 QQ 收藏夹同步下来的）。
   source      String    @default("manual") @db.VarChar(20)
+  /// QQ 收藏表情的 emoji_id（形如 `<QQ号>_0_0_0_<md5>_0_0`）。
+  /// 有值 = 这一行和 QQ 收藏夹里那张是同一张：改名要回写备注、删除要连 QQ 一起删。
+  /// 空 = 只在本地（还没推上去，或者推失败了）。
+  qqEmojiId   String?   @db.VarChar(120)
+  /// QQ 图标的 md5（从 emoji_id 里拆出来的那段）。用它认「emoji_id 变了但还是同一张图」——
+  /// 在 QQ 里删了又加同一张图，emoji_id 会换，md5 不变。
+  qqMd5       String?   @db.VarChar(64)
+  /// 回收站：非空即已删。软删而不是直接删，是因为 QQ 那边一删本地就没了，标签全白打。
+  deletedAt     DateTime? @db.Timestamptz(6)
+  /// 谁删的：local（在本地删的，要同步去删 QQ）/ qq（QQ 那边没了，本地跟着进回收站）。
+  deletedReason String?   @db.VarChar(20)
   createdAt   DateTime  @default(now()) @db.Timestamptz(6)
   updatedAt   DateTime  @updatedAt @db.Timestamptz(6)
   character   Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
 
+  @@unique([characterId, qqEmojiId])
   @@index([characterId, enabled])
+  @@index([characterId, deletedAt])
   @@map("character_stickers")
 }
 

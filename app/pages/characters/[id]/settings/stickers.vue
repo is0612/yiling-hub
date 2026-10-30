@@ -20,7 +20,38 @@ type StickerItem = {
   lastUsedAt: string | null;
   createdAt: string;
   source: string;
+  /** 对应的 QQ 收藏 id。有值 = 这张在 QQ 收藏夹里也有一份。 */
+  qqEmojiId: string | null;
+  deletedAt: string | null;
 };
+
+/** QQ 那边的附带结果：推上去 / 改备注 / 删掉，都可能「本地成功、QQ 没连上」。 */
+type QqSideEffect = { ok: boolean; emojiId?: string; error?: string; skipped?: boolean };
+
+type SyncReport = {
+  ok: boolean;
+  connectionId: string;
+  qqTotal: number;
+  localTotal: number;
+  imported: number;
+  adopted: number;
+  importedFailed: number;
+  rebound: number;
+  restored: number;
+  trashed: number;
+  retriedDelete: number;
+  retryDeleteFailed: number;
+  pushed: number;
+  pushFailed: number;
+  pushMissingFile: number;
+  namesSynced: number;
+  nameSyncFailed: number;
+  importOverflow: number;
+  pushOverflow: number;
+  warnings: string[];
+};
+
+type TrashItem = StickerItem & { deletedAt: string };
 
 const route = useRoute();
 const id = computed(() => String(route.params.id || ""));
@@ -81,6 +112,15 @@ const pagedStickers = computed(() => {
 
 const disabledCount = computed(() => stickers.value.filter((item) => !item.enabled).length);
 
+/**
+ * 没写「什么时候用」的张数。
+ *
+ * 从 QQ 收藏导进来的多半是空的（QQ 那边只有一张图，没有场景），而挑图时模型主要比对的就是这句。
+ * 所以这个数要显眼：不补的话，它们会一直排在候选里但永远挑不中。
+ */
+const untaggedCount = computed(() => stickers.value.filter((item) => !item.usage.trim()).length);
+const qqLinkedCount = computed(() => stickers.value.filter((item) => item.qqEmojiId).length);
+
 /** 页码居中显示用：第 13–24 张，共 25 张。 */
 const rangeLabel = computed(() => {
   if (!sortedStickers.value.length) return "";
@@ -112,6 +152,15 @@ const imageUrl = (stickerId: string) =>
 
 const sizeLabel = (bytes: number) =>
   bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
+
+/** 回收站里显示「什么时候删的」。精确到分钟就够，秒数没人看。 */
+const timeLabel = (value: string | null) => {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const pad = (num: number) => String(num).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+};
 
 const canSubmit = computed(() => Boolean(pendingFile.value) && draftName.value.trim().length > 0);
 
@@ -217,7 +266,7 @@ async function submit() {
     form.append("filename", pendingFile.value.name);
     form.append("name", draftName.value.trim().slice(0, 60));
     form.append("usage", draftUsage.value.trim().slice(0, 200));
-    const created = await $fetch<StickerItem>(`/api/characters/${encodeURIComponent(id.value)}/stickers`, {
+    const created = await $fetch<StickerItem & { qq?: QqSideEffect }>(`/api/characters/${encodeURIComponent(id.value)}/stickers`, {
       method: "POST",
       body: form,
     });
@@ -229,7 +278,12 @@ async function submit() {
     draftName.value = "";
     draftUsage.value = "";
     draftUsageSource.value = "";
-    ElMessage.success("已添加。她下一轮就有这张图了。");
+    if (created.qq && !created.qq.ok && !created.qq.skipped) {
+      // 本地已经加好了，只是没进 QQ 收藏。不用重传，下次同步会补推。
+      ElMessage.warning(`已加到本地，但没能收藏到 QQ：${created.qq.error || "未知原因"}。下次「从 QQ 同步」会补上。`);
+    } else {
+      ElMessage.success(created.qq?.ok ? "已添加，也收藏到 QQ 了。她下一轮就有这张图。" : "已添加。她下一轮就有这张图了。");
+    }
   } catch (error) {
     ElMessage.error((error as { statusMessage?: string })?.statusMessage || "上传失败。");
   } finally {
@@ -339,7 +393,7 @@ async function saveEdit() {
   }
   savingEdit.value = true;
   try {
-    const updated = await $fetch<StickerItem>(
+    const updated = await $fetch<StickerItem & { qqDesc?: QqSideEffect | null }>(
       `/api/characters/${encodeURIComponent(id.value)}/stickers/${encodeURIComponent(target.id)}`,
       { method: "PATCH", body: { name, usage: editUsage.value.trim() } },
     );
@@ -347,7 +401,11 @@ async function saveEdit() {
     target.name = updated.name;
     target.usage = updated.usage;
     editing.value = null;
-    ElMessage.success("已保存。她下一轮就按新的名字和场景来挑。");
+    if (updated.qqDesc && !updated.qqDesc.ok && !updated.qqDesc.skipped) {
+      ElMessage.warning(`本地已改名，但 QQ 里的备注没改上：${updated.qqDesc.error || "未知原因"}。下次同步会再写一次。`);
+    } else {
+      ElMessage.success(updated.qqDesc?.ok ? "已保存，QQ 里的备注也一起改了。" : "已保存。她下一轮就按新的名字和场景来挑。");
+    }
   } catch (error) {
     ElMessage.error((error as { statusMessage?: string })?.statusMessage || "保存失败。");
   } finally {
@@ -356,24 +414,187 @@ async function saveEdit() {
 }
 
 async function remove(row: StickerItem) {
+  const qqHint = row.qqEmojiId ? "QQ 收藏里的那张会一起删掉，" : "";
   try {
-    await ElMessageBox.confirm(`删除「${row.name}」？删掉就找不回来了。`, "删除表情包", {
+    await ElMessageBox.confirm(
+      `删除「${row.name}」？${qqHint}本地会进回收站 30 天，期间还能恢复。`,
+      "删除表情包",
+      { type: "warning", confirmButtonText: "删除", cancelButtonText: "取消" },
+    );
+  } catch {
+    return;
+  }
+  try {
+    const result = await $fetch<{ ok: boolean; qq?: QqSideEffect }>(
+      `/api/characters/${encodeURIComponent(id.value)}/stickers/${encodeURIComponent(row.id)}`,
+      { method: "DELETE" },
+    );
+    stickers.value = stickers.value.filter((item) => item.id !== row.id);
+    if (result.qq && !result.qq.ok && !result.qq.skipped) {
+      // 本地已经删掉了，QQ 那边没删掉 —— 下次同步会给「本地删了、QQ 还在」的补删一次。
+      ElMessage.warning(`本地已删除，但 QQ 那边没删掉：${result.qq.error || "未知原因"}。下次「从 QQ 同步」会再试。`);
+      return;
+    }
+    ElMessage.success(row.qqEmojiId ? "已删除，QQ 收藏里那张也一起删了。" : "已删除，可以在回收站里恢复。");
+  } catch (error) {
+    ElMessage.error((error as { statusMessage?: string })?.statusMessage || "删除失败。");
+  }
+}
+
+// ── 与 QQ 收藏夹同步 ───────────────────────────────────
+// 一次点清楚：缺的导下来、多的推上去、QQ 删了的进回收站、名字不一致的写回备注。
+// 结果用弹窗逐项列出来 —— 只回一句「同步完成」的话，「QQ 里明明有 5 张怎么只进来 3 张」
+// 就无从解释，而原因通常是下载失败或条数上限。
+const syncing = ref(false);
+const syncReport = ref<SyncReport | null>(null);
+
+async function syncWithQq() {
+  if (syncing.value) return;
+  syncing.value = true;
+  try {
+    const report = await $fetch<SyncReport>(
+      `/api/characters/${encodeURIComponent(id.value)}/stickers/qq-sync`,
+      { method: "POST" },
+    );
+    syncReport.value = report;
+    await load();
+    if (!report.ok) ElMessage.warning("这次没有同步：QQ 收藏夹看起来不正常，为避免误删本地表情，什么都没动。");
+    else if (report.warnings.length) ElMessage.warning("同步完成，但有几处需要看一眼。");
+    else ElMessage.success("两边已经一致了。");
+  } catch (error) {
+    ElMessage.error((error as { statusMessage?: string })?.statusMessage || "同步失败。");
+  } finally {
+    syncing.value = false;
+  }
+}
+
+/** 弹窗里的逐项文字。0 的不列，免得一堆「新增 0 张」挡着真正发生的事。 */
+const syncLines = computed(() => {
+  const report = syncReport.value;
+  if (!report) return [];
+  const lines: Array<{ label: string; value: string; tone: "up" | "down" | "flat" }> = [];
+  const add = (count: number, label: string, tone: "up" | "down" | "flat" = "flat", suffix = "张") => {
+    if (count > 0) lines.push({ label, value: `${count} ${suffix}`, tone });
+  };
+  add(report.imported, "从 QQ 导进来");
+  add(report.adopted, "认出本地已有同图，绑上了 QQ 收藏");
+  add(report.pushed, "从本地推到 QQ");
+  add(report.rebound, "QQ 里换了 id，重新对上");
+  add(report.restored, "QQ 里又出现了，从回收站恢复");
+  add(report.trashed, "QQ 里没了，进了回收站", "down");
+  add(report.retriedDelete, "补删了 QQ 上该删的");
+  add(report.namesSynced, "把名字写进了 QQ 备注");
+  add(report.importedFailed, "没能导进来（下次再试）", "down");
+  add(report.pushFailed, "没能推到 QQ", "down");
+  add(report.pushMissingFile, "本地没有原文件，推不了", "down");
+  add(report.importOverflow, "还没导完，再点一次继续", "flat");
+  add(report.pushOverflow, "还没推完，再点一次继续", "flat");
+  return lines;
+});
+
+// ── 回收站 ─────────────────────────────────────────────
+// 删掉的表情只是软删：QQ 那边一删本地就没了的话，标签全白打，重收回来还得再打一遍。
+const trashOpen = ref(false);
+const trashLoading = ref(false);
+const trashItems = ref<TrashItem[]>([]);
+const trashRetention = ref(30);
+
+async function openTrash() {
+  trashOpen.value = true;
+  trashLoading.value = true;
+  try {
+    const result = await $fetch<{ items: TrashItem[]; purged: number; retentionDays: number }>(
+      `/api/characters/${encodeURIComponent(id.value)}/stickers/trash`,
+    );
+    trashItems.value = result.items;
+    trashRetention.value = result.retentionDays;
+    if (result.purged) ElMessage.info(`顺手清掉了 ${result.purged} 张超过 ${result.retentionDays} 天没人管的。`);
+  } catch (error) {
+    ElMessage.error((error as { statusMessage?: string })?.statusMessage || "读取回收站失败。");
+  } finally {
+    trashLoading.value = false;
+  }
+}
+
+async function restoreFromTrash(item: TrashItem) {
+  try {
+    const restored = await $fetch<StickerItem>(
+      `/api/characters/${encodeURIComponent(id.value)}/stickers/trash/${encodeURIComponent(item.id)}/restore`,
+      { method: "POST" },
+    );
+    trashItems.value = trashItems.value.filter((row) => row.id !== item.id);
+    stickers.value = [...stickers.value, restored];
+    ElMessage.success("已恢复。她下一轮就能用它了。");
+  } catch (error) {
+    ElMessage.error((error as { statusMessage?: string })?.statusMessage || "恢复失败。");
+  }
+}
+
+async function purgeOne(item: TrashItem) {
+  try {
+    await ElMessageBox.confirm(`彻底删除「${item.name}」？图和名字都会没，找不回来。`, "彻底删除", {
       type: "warning",
-      confirmButtonText: "删除",
+      confirmButtonText: "彻底删除",
       cancelButtonText: "取消",
     });
   } catch {
     return;
   }
   try {
-    await $fetch(`/api/characters/${encodeURIComponent(id.value)}/stickers/${encodeURIComponent(row.id)}`, {
-      method: "DELETE",
-    });
-    stickers.value = stickers.value.filter((item) => item.id !== row.id);
-    ElMessage.success("已删除。");
+    await $fetch(
+      `/api/characters/${encodeURIComponent(id.value)}/stickers/trash/${encodeURIComponent(item.id)}/purge`,
+      { method: "DELETE" },
+    );
+    trashItems.value = trashItems.value.filter((row) => row.id !== item.id);
+    ElMessage.success("已彻底删除。");
   } catch (error) {
     ElMessage.error((error as { statusMessage?: string })?.statusMessage || "删除失败。");
   }
+}
+
+/**
+ * 给没写场景的那些逐张「重新识别」。
+ *
+ * 从 QQ 导进来的表情带着图但没带场景，而模型挑图时看的就是那句 —— 空着等于白占名额。
+ * 逐张调模型是花钱的，所以只在用户主动点的时候跑，并且按顺序一张一张来：
+ * 并发打标会一起撞上每日额度，还会把日志刷成一片。
+ */
+const labelingAll = ref(false);
+const labelProgress = ref({ done: 0, total: 0 });
+
+async function labelUntagged() {
+  const targets = stickers.value.filter((item) => !item.usage.trim());
+  if (!targets.length || labelingAll.value) return;
+  try {
+    await ElMessageBox.confirm(
+      `给 ${targets.length} 张没写场景的表情逐张识别？每张都会调一次模型，可能要一会儿。`,
+      "补使用场景",
+      { confirmButtonText: "开始", cancelButtonText: "取消" },
+    );
+  } catch {
+    return;
+  }
+  labelingAll.value = true;
+  labelProgress.value = { done: 0, total: targets.length };
+  let ok = 0;
+  for (const row of targets) {
+    try {
+      const result = await $fetch<{ skipped: boolean; message?: string; sticker?: StickerItem }>(
+        `/api/characters/${encodeURIComponent(id.value)}/stickers/${encodeURIComponent(row.id)}/relabel`,
+        { method: "POST" },
+      );
+      if (result.sticker) {
+        row.name = result.sticker.name;
+        row.usage = result.sticker.usage;
+        ok += 1;
+      }
+    } catch {
+      // 单张失败不影响后面的：可能是额度用完，也可能是这张解不开。最后统一报个数。
+    }
+    labelProgress.value.done += 1;
+  }
+  labelingAll.value = false;
+  ElMessage.success(`补好了 ${ok} / ${targets.length} 张，没补上的可以手动写或再点一次。`);
 }
 
 onMounted(load);
@@ -499,6 +720,41 @@ onMounted(load);
                 停用的图不会被她用到，但保留在列表里。用过几次、最近一次什么时候用，都记在这里。
               </p>
             </div>
+            <div class="sticker-head-ops">
+              <el-button
+                :loading="syncing"
+                title="把 QQ 收藏夹和本地表情对一次账：缺的导下来、多的推上去、QQ 删了的进回收站"
+                @click="syncWithQq"
+              >
+                从 QQ 同步
+              </el-button>
+              <el-button @click="openTrash">
+                回收站
+              </el-button>
+            </div>
+          </div>
+
+          <p
+            v-if="qqLinkedCount"
+            class="sticker-hint"
+          >
+            其中 {{ qqLinkedCount }} 张和 QQ 收藏夹是同一份：在这里改名会写进 QQ 备注，在这里删除 QQ 那张也会一起删。
+          </p>
+
+          <div
+            v-if="untaggedCount"
+            class="sticker-warn sticker-warn-inline"
+          >
+            <span>{{ untaggedCount }} 张还没写「什么时候用」—— 挑图时她主要看这句，空着基本轮不上。</span>
+            <el-button
+              link
+              type="primary"
+              size="small"
+              :loading="labelingAll"
+              @click="labelUntagged"
+            >
+              {{ labelingAll ? `识别中 ${labelProgress.done}/${labelProgress.total}` : "逐张识别补上" }}
+            </el-button>
           </div>
 
           <div
@@ -543,6 +799,10 @@ onMounted(load);
                     v-if="sticker.source === 'collected'"
                     class="sticker-source"
                   >从群里收的</span>
+                  <span
+                    v-if="sticker.qqEmojiId"
+                    class="sticker-source sticker-source-qq"
+                  >QQ 收藏</span>
                 </div>
                 <p
                   class="sticker-usage"
@@ -676,6 +936,131 @@ onMounted(load);
         </el-button>
       </template>
     </el-dialog>
+
+    <el-dialog
+      :model-value="Boolean(syncReport)"
+      title="与 QQ 收藏夹同步"
+      width="480px"
+      @update:model-value="(value: boolean) => { if (!value) syncReport = null; }"
+    >
+      <div
+        v-if="syncReport"
+        class="sync-body"
+      >
+        <p class="sync-summary">
+          QQ 收藏夹 {{ syncReport.qqTotal }} 条 · 本地 {{ syncReport.localTotal }} 张（含回收站）
+        </p>
+
+        <div
+          v-if="!syncReport.ok"
+          class="sticker-warn sticker-warn-inline"
+        >
+          这次什么都没动 —— 结果太可疑了，宁可不同步也不能误删。
+        </div>
+
+        <ul
+          v-else-if="syncLines.length"
+          class="sync-lines"
+        >
+          <li
+            v-for="line in syncLines"
+            :key="line.label"
+            :class="'is-' + line.tone"
+          >
+            <span>{{ line.label }}</span>
+            <strong>{{ line.value }}</strong>
+          </li>
+        </ul>
+        <p
+          v-else
+          class="sync-summary"
+        >
+          两边已经一致，没有要改的。
+        </p>
+
+        <ul
+          v-if="syncReport.warnings.length"
+          class="sync-warnings"
+        >
+          <li
+            v-for="(warning, index) in syncReport.warnings"
+            :key="index"
+          >
+            {{ warning }}
+          </li>
+        </ul>
+      </div>
+      <template #footer>
+        <el-button
+          type="primary"
+          @click="syncReport = null"
+        >
+          知道了
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <el-drawer
+      v-model="trashOpen"
+      title="回收站"
+      size="420px"
+    >
+      <div
+        v-loading="trashLoading"
+        class="trash-body"
+      >
+        <p class="sync-summary">
+          删掉的表情会先放在这里 {{ trashRetention }} 天，期间随时能恢复；超过就自动清掉。
+        </p>
+
+        <div
+          v-for="item in trashItems"
+          :key="item.id"
+          class="trash-item"
+        >
+          <img
+            class="trash-thumb"
+            :src="imageUrl(item.id)"
+            :alt="item.name"
+          >
+          <div class="trash-info">
+            <div class="trash-name">
+              {{ item.name }}
+            </div>
+            <div class="trash-time">
+              删除于 {{ timeLabel(item.deletedAt) }}<template v-if="item.qqEmojiId">
+                · 曾在 QQ 收藏里
+              </template>
+            </div>
+          </div>
+          <div class="trash-ops">
+            <el-button
+              link
+              type="primary"
+              size="small"
+              @click="restoreFromTrash(item)"
+            >
+              恢复
+            </el-button>
+            <el-button
+              link
+              type="danger"
+              size="small"
+              @click="purgeOne(item)"
+            >
+              彻底删除
+            </el-button>
+          </div>
+        </div>
+
+        <p
+          v-if="!trashLoading && !trashItems.length"
+          class="section-description"
+        >
+          回收站是空的。
+        </p>
+      </div>
+    </el-drawer>
   </div>
 </template>
 
@@ -870,5 +1255,137 @@ onMounted(load);
 
 .form-actions {
   margin-top: 16px;
+}
+
+/* ── QQ 同步 / 回收站 ─────────────────────────────── */
+
+/* 这个类名在别的设置页里是各自定义的，表情页原本没写，加操作按钮后需要它来左右排开。 */
+.settings-section-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 15px;
+}
+
+.sticker-head-ops {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* 提示条放进列表里时不要外上边距，否则会把它和排序栏顶开一行。 */
+.sticker-warn-inline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0 0 12px;
+  flex-wrap: wrap;
+}
+
+.sticker-source-qq {
+  color: #1a7f56;
+  background: #e6f6ee;
+}
+
+.sync-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.sync-summary {
+  margin: 0;
+  font-size: 13px;
+  color: #6b7186;
+}
+
+.sync-lines {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sync-lines li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #f7f8fa;
+  font-size: 13px;
+  color: #3d4358;
+}
+
+.sync-lines li.is-up strong {
+  color: #1a7f56;
+}
+
+.sync-lines li.is-down strong {
+  color: #b4571f;
+}
+
+.sync-warnings {
+  margin: 0;
+  padding: 10px 12px 10px 26px;
+  border-radius: 10px;
+  border: 1px solid #f3d7a4;
+  background: #fff8ec;
+  color: #8a5a12;
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.trash-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 120px;
+}
+
+.trash-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px;
+  border-radius: 10px;
+  border: 1px solid #eceef3;
+}
+
+.trash-thumb {
+  width: 48px;
+  height: 48px;
+  object-fit: contain;
+  border-radius: 8px;
+  background: #f7f8fa;
+}
+
+.trash-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.trash-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: #2b3040;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trash-time {
+  margin-top: 2px;
+  font-size: 12px;
+  color: #8a90a6;
+}
+
+.trash-ops {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
 }
 </style>

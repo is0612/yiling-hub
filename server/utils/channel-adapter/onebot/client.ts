@@ -281,11 +281,35 @@ export async function sendOnebotGroupMessage(
   await sendOnebotApi(config, "send_group_msg", { group_id: Number(groupId), message });
 }
 
+/**
+ * 发 QQ 收藏夹里的一张表情（SnowLuma 扩展 action，OneBot 标准里没有）。
+ *
+ * 与「图片段」的区别不是能不能看见，而是 QQ 怎么对待它：
+ * `image` 段是一条聊天图片（长按是「保存图片」），这个走的是原生表情通道
+ * （实测 `get_msg` 回来是 `sub_type: 1` + `summary: "[动画表情]"` + `qq_expression` 路径）。
+ * 所以能走这条就走这条，本地那 200px 的副本只在 QQ 收藏里没有时才用。
+ *
+ * `emojiId` 必须是**完整的** `<QQ号>_0_0_0_<md5>_0_0`：
+ * 同名的 `mface` 段要的是裸 md5 且字段名是驼峰 `emojiId`，两者别混。
+ */
+export async function sendOnebotCustomFace(
+  config: OnebotConnectionConfig,
+  target: { messageType: "group" | "private"; groupId: string; userId: string },
+  emojiId: string,
+): Promise<{ messageId: number | null }> {
+  const scope = target.messageType === "group" && target.groupId
+    ? { group_id: Number(target.groupId) }
+    : { user_id: Number(target.userId) };
+  const data = await sendOnebotApi(config, "send_custom_face", { ...scope, emoji_id: emojiId });
+  const messageId = (data as { message_id?: unknown } | null)?.message_id;
+  return { messageId: typeof messageId === "number" ? messageId : null };
+}
+
 async function sendOnebotApi(
   config: OnebotConnectionConfig,
   action: string,
   params: Record<string, unknown>,
-): Promise<void> {
+): Promise<unknown> {
   const response = await fetch(config.httpUrl + "/" + action, {
     method: "POST",
     headers: {
@@ -303,7 +327,7 @@ async function sendOnebotApi(
   try {
     payload = await response.json();
   } catch {
-    return;
+    return undefined;
   }
   const record = payload as { retcode?: unknown; wording?: unknown; message?: unknown } | null;
   const retcode = record?.retcode;
@@ -315,4 +339,6 @@ async function sendOnebotApi(
         : "未知原因";
     throw new Error(`ONEBOT_SEND_${retcode}: 发送 OneBot 消息失败（${detail}）。`);
   }
+  // 返回 data（message_id 之类），目前只有收藏表情要拿它回读校验；其余调用方忽略即可。
+  return (payload as { data?: unknown } | null)?.data;
 }

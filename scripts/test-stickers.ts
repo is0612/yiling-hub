@@ -78,6 +78,25 @@ assert.ok(!picked.some((entry) => entry.id === "sticker-0"), "上一张用过的
 const single = [{ id: "only-one", characterId: testCharacterId, name: "唯一", usage: "", fileName: goodName, enabled: true }];
 assert.equal(pickStickerCatalog(single, "only-one").length, 1, "只剩一张时不再剔除——总比没有强。");
 
+// ── 4a. 收藏 id 要能一路带到发送侧 ──────────────────────────────────────
+// 发送侧靠它判断「走 QQ 收藏表情还是退成图片段」。这一步丢在哪，都会变成
+// 「全都在发图片」而没有任何报错 —— 挑图那步（pickStickerCatalog）尤其容易丢，所以单独断言。
+const linkedCatalog = buildStickerCatalog([
+  { ...rows[0]!, id: "linked", qqEmojiId: "2243049685_0_0_0_6709f291f6a39938646b222291a60384_0_0" },
+  { ...rows[1]!, id: "unlinked", qqEmojiId: null },
+]);
+assert.equal(
+  linkedCatalog.find((entry) => entry.id === "linked")?.qqEmojiId,
+  "2243049685_0_0_0_6709f291f6a39938646b222291a60384_0_0",
+  "有收藏 id 的要带出来。",
+);
+assert.equal(linkedCatalog.find((entry) => entry.id === "unlinked")?.qqEmojiId, null, "没有的显式给 null，别是 undefined。");
+assert.equal(
+  pickStickerCatalog(linkedCatalog, null, 12, () => 0).find((entry) => entry.id === "linked")?.qqEmojiId,
+  "2243049685_0_0_0_6709f291f6a39938646b222291a60384_0_0",
+  "挑完之后 id 还在 —— 丢了就等于强制走图片段。",
+);
+
 // ── 4b. 轮转：没用过的先露面 ───────────────────────────────────────────────
 // 库里有 24 张、提示词只放 12 个位置，按插入顺序切前 12 张的旧做法会让第 13 张以后
 // 永远发不出来（实测 24 张里只有 12 张进过提示词，发出去的只有 2 次）。

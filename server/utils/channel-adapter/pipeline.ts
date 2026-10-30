@@ -40,10 +40,13 @@ export type ChannelReplyOptions = {
   /** 表情 id。渠道自己保证 id 合法；不支持表情的渠道忽略即可。 */
   faces?: string[];
   /**
-   * 她自己的表情包（贴图）。渠道把它当图片单独发一条；与 faces 二选一，
+   * 她自己的表情包（贴图）。渠道把它单独发一条；与 faces 二选一，
    * 传了 sticker 就不再发内置表情。
+   *
+   * `qqEmojiId` 有值时渠道应该优先走「QQ 收藏表情」通道（原生表情段），
+   * 拿不到或发失败再退回图片段 —— 具体取舍在渠道里，流水线只负责把 id 带下去。
    */
-  sticker?: { id: string; filePath: string };
+  sticker?: { id: string; filePath: string; qqEmojiId?: string | null };
   /** 引用回复的消息 id（本平台原始 id）。群聊里让她锚定「接的是哪一句」。 */
   replyToMessageId?: string;
   /**
@@ -866,7 +869,15 @@ async function runChannelTurn(input: {
     const replyOptions = replyFaces.length || replySticker || replyVoice || generated.groupDecision?.replyToMessageId
       ? {
           ...(replyFaces.length ? { faces: replyFaces } : {}),
-          ...(replySticker ? { sticker: { id: replySticker.id, filePath: replySticker.filePath } } : {}),
+          ...(replySticker
+            ? {
+                sticker: {
+                  id: replySticker.id,
+                  filePath: replySticker.filePath,
+                  qqEmojiId: replySticker.qqEmojiId ?? null,
+                },
+              }
+            : {}),
           ...(replyVoice && voiceSettings ? { voice: true, voiceSettings } : {}),
           ...(generated.groupDecision?.replyToMessageId ? { replyToMessageId: generated.groupDecision.replyToMessageId } : {}),
         }

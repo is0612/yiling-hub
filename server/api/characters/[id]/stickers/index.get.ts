@@ -13,7 +13,8 @@ export default defineEventHandler(async (event) => {
   if (!character) throw createError({ statusCode: 404, statusMessage: "角色不存在。" });
 
   const rows = await prisma.characterSticker.findMany({
-    where: { characterId: id },
+    // 回收站里的不返回：删掉的表情不该还占着列表，翻回收站走 `/stickers/trash`。
+    where: { characterId: id, deletedAt: null },
     orderBy: { createdAt: "asc" },
   });
   return rows.map(toStickerDto);

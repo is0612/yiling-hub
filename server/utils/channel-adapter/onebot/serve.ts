@@ -12,8 +12,8 @@ import { getPrisma } from "../../prisma";
 import { loadStickerCatalog, MAX_STICKER_BYTES } from "../../stickers";
 import type { OnebotConnectionConfig, OnebotOutgoingMessage, OnebotResolvedEvent } from "./client";
 import type { OnebotSegment } from "./types";
-import { sendOnebotGroupMessage, sendOnebotPrivateMessage } from "./client";
-import type { OnebotBindingRecord, OnebotConnectionRecord } from "./configure";
+import { sendOnebotCustomFace, sendOnebotGroupMessage, sendOnebotPrivateMessage } from "./client";
+import { parseBindingRoutingKeys, type OnebotBindingRecord, type OnebotConnectionRecord } from "./configure";
 import { ONEBOT_FACES, toOnebotFaceSegments } from "./faces";
 import { handleChannelBatch, handleChannelMessage, type ChannelReplySender } from "../pipeline";
 import { loadBiliConnections } from "../bili/configure";
@@ -57,19 +57,8 @@ export type OnebotHandleOutcome =
   | { status: "duplicate" }
   | { status: "ignored"; reason: string };
 
-/**
- * 把绑定里存的 routingKey 拆成群号列表。routingKey 现在支持逗号分隔的多个群号
- * （如 "12345,67890"），老的单群号数据天然是只有一个元素的列表。
- */
-export function parseBindingRoutingKeys(routingKey: string | null): string[] {
-  if (!routingKey) return [];
-  return [...new Set(
-    routingKey
-      .split(",")
-      .map((key) => key.trim())
-      .filter((key) => key.length > 0),
-  )];
-}
+// 解析函数挪去了 configure.ts（绑定配置的地盘），这里重新导出保持既有引用可用。
+export { parseBindingRoutingKeys };
 
 /**
  * 选择处理此事件的绑定角色：群聊优先匹配 routingKey（支持一个绑定挂多个群号），
@@ -559,13 +548,44 @@ function createReplySender(
     }
 
     await send(buildOnebotReplyMessage(reply, options?.replyToMessageId));
-    // 表情包优先：贴了图就不再发内置表情 —— 一句话后面挂两种表情，像自动回复机器人。
-    const segments = options?.sticker
-      ? await loadStickerSegments(options.sticker.filePath)
-      : toOnebotFaceSegments(options?.faces ?? []);
-    if (!segments.length) return;
-    await send(segments).catch((error) => {
-      console.error("[onebot] 表情发送失败：", error instanceof Error ? error.message : String(error));
+    /**
+     * 表情单独一条消息跟上。三条路，从「最像她本人」到「一定能发出去」：
+     *
+     * 1. **QQ 收藏表情**（`send_custom_face`）：她那 62 张收藏里就有这张，走原生表情通道，
+     *    QQ 里显示成表情而不是一张图。要用完整 `emoji_id`，所以只有同步过的才有。
+     * 2. **图片段**：从本地 `.data/stickers` 读出来转 base64。收藏里没有（还没同步、
+     *    或刚在 QQ 里删了）时用它兜底 —— 表情发不出去比发成图片糟得多。
+     * 3. **QQ 内置表情**（face 段）：只在没有表情包时才会走到，有素材库时上游根本不传。
+     *
+     * 贴了图就不再发内置表情：一句话后面挂两种表情，像自动回复机器人。
+     */
+    const sticker = options?.sticker;
+    if (sticker) {
+      if (sticker.qqEmojiId) {
+        try {
+          await sendOnebotCustomFace(config, target, sticker.qqEmojiId);
+          console.log("[onebot] 收藏表情已发送 " + JSON.stringify({ emojiId: sticker.qqEmojiId, stickerId: sticker.id }));
+          return;
+        } catch (error) {
+          // 收藏里那张可能已经被删了（QQ 侧改动还没同步回来），退回图片段，这一条不丢。
+          console.error(
+            "[onebot] 收藏表情发送失败，退回图片段：",
+            error instanceof Error ? error.message : String(error),
+          );
+        }
+      }
+      const segments = await loadStickerSegments(sticker.filePath);
+      if (!segments.length) return;
+      await send(segments).catch((error) => {
+        console.error("[onebot] 表情发送失败：", error instanceof Error ? error.message : String(error));
+      });
+      return;
+    }
+
+    const faceSegments = toOnebotFaceSegments(options?.faces ?? []);
+    if (!faceSegments.length) return;
+    await send(faceSegments).catch((error) => {
+      console.error("[onebot] 内置表情发送失败：", error instanceof Error ? error.message : String(error));
     });
   };
 }
