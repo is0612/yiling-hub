@@ -239,6 +239,39 @@ function openEdit(row: StickerItem) {
   editing.value = row;
   editName.value = row.name;
   editUsage.value = row.usage;
+  generatedFrom.value = "";
+}
+
+// ── 弹窗里的「AI 生成」：只补「什么时候用」这一栏 ──────────────
+// 用户常常知道这张图是什么（名字起得出来），但写不出「什么时候用」那句话；
+// 而挑图的模型真正比对的是那一句，空着等于这张图永远轮不上。
+// 只把建议填进输入框、不进库 —— 用户可能还要改，落库仍走「保存」。
+const generatingUsage = ref(false);
+const generatedFrom = ref<"" | "vision" | "name">("");
+
+async function generateUsage() {
+  const target = editing.value;
+  if (!target || generatingUsage.value) return;
+  // 传的是**输入框里当前的名字**：用户往往先改了名字才想起来点这个按钮。
+  const name = editName.value.trim();
+  if (!name) {
+    ElMessage.error("先在「名字」里写个词，AI 才知道该按什么写场景。");
+    return;
+  }
+  generatingUsage.value = true;
+  try {
+    const result = await $fetch<{ usage: string; source: "vision" | "name" }>(
+      `/api/characters/${encodeURIComponent(id.value)}/stickers/${encodeURIComponent(target.id)}/usage-suggestion`,
+      { method: "POST", body: { name } },
+    );
+    editUsage.value = result.usage;
+    generatedFrom.value = result.source;
+    ElMessage.success(result.source === "vision" ? "按「名字 + 画面」生成了一句，可以再改。" : "按名字生成了一句，可以再改。");
+  } catch (error) {
+    ElMessage.error((error as { statusMessage?: string })?.statusMessage || "生成失败。");
+  } finally {
+    generatingUsage.value = false;
+  }
 }
 
 async function saveEdit() {
@@ -527,14 +560,32 @@ onMounted(load);
             placeholder="委屈 / 得意 / 拍桌笑"
           />
         </label>
-        <label class="sticker-field">
-          <span class="form-label">什么时候用</span>
+        <div class="sticker-field">
+          <div class="form-label-row">
+            <span class="form-label">什么时候用</span>
+            <el-button
+              link
+              type="primary"
+              size="small"
+              :loading="generatingUsage"
+              title="按名字生成一句使用场景；开了「看图」会顺带参考画面"
+              @click="generateUsage"
+            >
+              <el-icon><MagicStick /></el-icon>AI 生成
+            </el-button>
+          </div>
           <el-input
             v-model="editUsage"
             maxlength="200"
             placeholder="被冤枉、想撒娇的时候用"
           />
-        </label>
+        </div>
+        <p
+          v-if="generatedFrom"
+          class="edit-hint"
+        >
+          {{ generatedFrom === "vision" ? "这句是按「名字 + 画面」生成的。" : "这句只按名字生成，她没看到图。" }}不满意可以直接改。
+        </p>
         <p class="edit-hint">
           她挑图时看的就是这两项。名字写情绪词、场景写具体一点，比「表情1」「好笑的图」好挑得多。
         </p>
@@ -603,6 +654,21 @@ onMounted(load);
   font-size: 13px;
   font-weight: 600;
   color: var(--ink-2, #4a4f63);
+}
+
+/* 标签右侧挂一个「AI 生成」：贴着它服务的那一栏，比放到弹窗底部更不容易找错。 */
+.form-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 24px;
+}
+
+.form-label-row .el-button {
+  font-size: 12px;
+  padding: 0;
+  height: auto;
 }
 
 .sticker-list {

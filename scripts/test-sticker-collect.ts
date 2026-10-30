@@ -51,6 +51,53 @@ assert.deepEqual(
   "首尾空白要裁掉。",
 );
 
+// ── 弹窗里「AI 生成」那句使用场景的解析（同样是纯函数）───────────────
+// 模型不总是听话：有时换键名、有时干脆回一句裸文本，不能整条丢掉 ——
+// 用户点这一下要的是「一句话」，不是「一次合规的 JSON」。
+const { readStickerUsageSuggestion, suggestStickerUsage } = await import("../server/utils/sticker-usage");
+assert.equal(
+  readStickerUsageSuggestion(JSON.stringify({ usage: "被冤枉、想撒娇时" })),
+  "被冤枉、想撒娇时",
+  "标准形状。",
+);
+assert.equal(
+  readStickerUsageSuggestion(JSON.stringify({ 什么时候用: "被冤枉时" })),
+  "被冤枉时",
+  "模型自创键名也认，取第一个字符串值。",
+);
+assert.equal(
+  readStickerUsageSuggestion("被冤枉、想撒娇时用"),
+  "被冤枉、想撒娇时用",
+  "裸文本（没包 JSON）直接当结果。",
+);
+assert.equal(
+  readStickerUsageSuggestion('"被冤枉时"'),
+  "被冤枉时",
+  "包裹的引号要去掉，别把引号填进输入框。",
+);
+assert.equal(readStickerUsageSuggestion(JSON.stringify({ usage: "" })), "", "空字符串算没生成。");
+assert.equal(readStickerUsageSuggestion('{"usage": "被冤'), "", "半截 JSON 不能当场景填进去。");
+assert.equal(
+  readStickerUsageSuggestion(""),
+  "",
+  "空返回算没生成。",
+);
+assert.equal(
+  readStickerUsageSuggestion(JSON.stringify({ usage: "冤".repeat(300) })).length,
+  200,
+  "超长按输入框上限截断（服务端 maxlength 也是 200）。",
+);
+assert.deepEqual(
+  await suggestStickerUsage({ name: "  ", context: { characterId: "x", modelConfig: {}, chatModel: "", chatApiBaseUrl: "", chatApiKey: "" } }),
+  { ok: false, reason: "no-name" },
+  "名字为空时不该去调模型 —— 没依据。",
+);
+assert.deepEqual(
+  await suggestStickerUsage({ name: "委屈", context: { characterId: "x", modelConfig: {}, chatModel: "", chatApiBaseUrl: "", chatApiKey: "" } }),
+  { ok: false, reason: "no-model" },
+  "没配模型时回 no-model，交给接口层翻译成人话。",
+);
+
 // collectStickersFromTurn 在开关关着时必须一帧不跑（不下载、不调模型）。
 // 这里用一个带 url 的候选验证它直接早退 —— 开关关着，url 再合法也不该被碰。
 const { collectStickersFromTurn } = await import("../server/utils/sticker-collect");
