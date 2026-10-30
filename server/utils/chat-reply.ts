@@ -231,10 +231,15 @@ function systemPrompt(flags: {
   if (withStickers) {
     // 表情包是她自己的图（用户存的），比内置表情更贴人设，但要挑得准：
     // usage 写的是「什么时候用」，模型只凭名字（「猫」「哭」）很难分清几张相近的图。
+    //
+    // 措辞上刻意**不再写「大多数回复都别发」**：那句话会被模型当成默认答案，
+    // 24 张图存在库里却几乎发不出去（实测 400 条助手消息只有 2 条带表情包）。
+    // 频率交给冷却去压，提示词只负责说清「这本来就是你说话的一部分」。
     lines.push(
       "availableStickers lists your own sticker images (id, name, usage). You may attach one by adding sticker (a single id from availableStickers).",
-      "Pick by usage, not by name: choose one only when its usage matches what you actually feel or mean right now. If none fits, leave it empty.",
-      "Leave sticker empty for most replies. Never attach one to bad news, apologies, or a serious answer, and never reuse the sticker from your previous reply.",
+      "These are part of how you text, not decoration: when a line carries a clear feeling and one of them says it better than words do, attach it. Sending one every few replies is normal — that is what makes you read as a person rather than an assistant.",
+      "Pick by usage: it says when that picture fits. If usage is empty, judge by the name. If nothing genuinely fits, leave it empty instead of forcing one.",
+      "Hold back when the moment is serious — bad news, an apology, a real question that needs a real answer, someone who is upset — and never reuse the sticker from your previous reply.",
     );
   }
   return lines.join("\n");

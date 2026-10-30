@@ -33,8 +33,14 @@ export type ChannelReplyOptions = {
 
 export type ChannelReplySender = (text: string, options?: ChannelReplyOptions) => Promise<void>;
 
-/** 上一条回复带过表情后，多久之内不再发——连着两条都贴图，像自动回复机器人。 */
-const FACE_COOLDOWN_MS = 10 * 60 * 1000;
+/**
+ * 上一条回复带过表情后，多久之内不再发——连着两条都贴图，像自动回复机器人。
+ *
+ * 原来是 10 分钟：群里一两句话就插一张图，冷却一压就是好几轮，结果是「有 24 张
+ * 表情包却几乎不发」。现在压到 4 分钟，频率仍由冷却兜住（两条回复之间至少隔 90 秒，
+ * 等于最多每两三条回复贴一张），但不至于把整个窗口吃掉。
+ */
+const FACE_COOLDOWN_MS = 4 * 60 * 1000;
 
 /**
  * 渠道会话键 `g:<群号>` / `c:<账号>` 里取出群号。

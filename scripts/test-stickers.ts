@@ -78,6 +78,44 @@ assert.ok(!picked.some((entry) => entry.id === "sticker-0"), "上一张用过的
 const single = [{ id: "only-one", characterId: testCharacterId, name: "唯一", usage: "", fileName: goodName, enabled: true }];
 assert.equal(pickStickerCatalog(single, "only-one").length, 1, "只剩一张时不再剔除——总比没有强。");
 
+// ── 4b. 轮转：没用过的先露面 ───────────────────────────────────────────────
+// 库里有 24 张、提示词只放 12 个位置，按插入顺序切前 12 张的旧做法会让第 13 张以后
+// 永远发不出来（实测 24 张里只有 12 张进过提示词，发出去的只有 2 次）。
+const rotatedRows = Array.from({ length: 20 }, (_, index) => ({
+  id: `rot-${index}`,
+  characterId: testCharacterId,
+  name: `轮转 ${index}`,
+  usage: "测试",
+  fileName: goodName,
+  enabled: true,
+  useCount: index < 8 ? 2 : 0,
+}));
+const rotated = pickStickerCatalog(buildStickerCatalog(rotatedRows), null, 12, () => 0.5);
+assert.equal(rotated.length, 12);
+assert.ok(rotated.every((entry) => entry.useCount === 0), "12 个名额先给没用过的：新收的表情不该永远排在队尾。");
+
+const overflow = pickStickerCatalog(buildStickerCatalog(rotatedRows), null, 14, () => 0.5);
+assert.equal(overflow.length, 14);
+assert.equal(overflow.filter((entry) => (entry.useCount ?? 0) === 0).length, 12, "没用过的只有 12 张，剩下的名额才轮到用过的。");
+assert.equal(overflow.filter((entry) => (entry.useCount ?? 0) > 0).length, 2);
+
+// 同一个随机序列必须给同一个顺序（否则测试没法断言，线上也没法复现「她为什么挑了这张」）。
+const seqA = pickStickerCatalog(catalog, null, 15, () => 0.42).map((entry) => entry.id);
+const seqB = pickStickerCatalog(catalog, null, 15, () => 0.42).map((entry) => entry.id);
+assert.deepEqual(seqA, seqB, "随机源固定时顺序必须固定。");
+
+// 换随机源就要换顺序：每次给同一批「看起来最不常用」的，模型只会一直挑那几张。
+assert.notDeepEqual(
+  pickStickerCatalog(catalog, null, 15, () => 0.1).map((entry) => entry.id),
+  pickStickerCatalog(catalog, null, 15, () => 0.9).map((entry) => entry.id),
+  "换随机源要换顺序。",
+);
+
+// 打乱不能就地改缓存里的那份清单：它被 60 秒缓存复用，改坏了下一轮就一直是乱的。
+const before = catalog.map((entry) => entry.id);
+pickStickerCatalog(catalog, null, 15, () => 0.7);
+assert.deepEqual(catalog.map((entry) => entry.id), before, "挑表情不能改动传入的清单。");
+
 // ── 5. 出站段 ──────────────────────────────────────────────────────────────
 assert.deepEqual(
   toOnebotStickerSegments("QQ=="),

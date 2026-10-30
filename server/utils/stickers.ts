@@ -22,6 +22,8 @@ export type StickerCatalogEntry = {
   usage: string;
   /** 磁盘绝对路径。只有发送侧需要，不进提示词。 */
   filePath: string;
+  /** 已发送次数。用来让没用过的那几张先露面，不进提示词。 */
+  useCount?: number;
 };
 
 /** 允许的图片类型。QQ 的表情包基本是 png / jpg / gif，webp 也收下。 */
@@ -105,6 +107,7 @@ type StickerRow = {
   usage: string;
   fileName: string;
   enabled: boolean;
+  useCount?: number;
 };
 
 /**
@@ -113,6 +116,22 @@ type StickerRow = {
  */
 const CACHE_TTL_MS = 60_000;
 const cache = new Map<string, { at: number; entries: StickerCatalogEntry[] }>();
+
+/**
+ * 清单查询取哪些列。
+ *
+ * `useCount` 只用于「没用过的先露面」的排序，不进提示词 —— 但它必须在 select 里，
+ * 否则挑表情时永远拿不到计数，24 张图里总有 12 张一辈子轮不上。
+ */
+const STICKER_CATALOG_SELECT = {
+  id: true,
+  characterId: true,
+  name: true,
+  usage: true,
+  fileName: true,
+  enabled: true,
+  useCount: true,
+} as const;
 
 export function invalidateStickerCache(characterId?: string): void {
   if (characterId) cache.delete(characterId);
@@ -124,7 +143,7 @@ export function buildStickerCatalog(rows: readonly StickerRow[]): StickerCatalog
   for (const row of rows) {
     const filePath = stickerFilePath(row.characterId, row.fileName);
     if (!filePath) continue;
-    entries.push({ id: row.id, name: row.name, usage: row.usage, filePath });
+    entries.push({ id: row.id, name: row.name, usage: row.usage, filePath, useCount: row.useCount ?? 0 });
   }
   return entries;
 }
@@ -147,7 +166,7 @@ export async function loadStickerCatalog(
       ? prisma.characterSticker.findMany({
           where: { characterId, enabled: true },
           orderBy: { createdAt: "asc" },
-          select: { id: true, characterId: true, name: true, usage: true, fileName: true, enabled: true },
+          select: STICKER_CATALOG_SELECT,
         })
       : await defaultStickerQuery(characterId));
   } catch {
@@ -164,7 +183,7 @@ async function defaultStickerQuery(characterId: string): Promise<readonly Sticke
   return getPrisma().characterSticker.findMany({
     where: { characterId, enabled: true },
     orderBy: { createdAt: "asc" },
-    select: { id: true, characterId: true, name: true, usage: true, fileName: true, enabled: true },
+    select: STICKER_CATALOG_SELECT,
   }) as Promise<readonly StickerRow[]>;
 }
 
@@ -212,15 +231,35 @@ export function toStickerDto(row: {
 /**
  * 挑表情包前先做减法：
  *   1. 上一张刚用过的剔掉 —— 不然十张里有一张「万能笑脸」，她会一直贴那张；
- *   2. 数量封顶 —— 清单进提示词是要花 token 的，30 张图全塞进去，模型反而挑不准。
- * 清单只剩一张时不再剔除：总比没有强。
+ *   2. 数量封顶 —— 清单进提示词是要花 token 的，30 张图全塞进去，模型反而挑不准；
+ *   3. **没用过的排前面，其余打乱** —— 按库里的插入顺序切前 12 张（旧行为），
+ *      等于第 13 张以后永远进不了提示词，新收的表情也就永远发不出来。
+ *
+ * 为什么要打乱而不是按 `useCount` 严格升序：严格升序每次给的还是同一批，
+ * 只是换了一批「看起来最不常用」的；打乱才让模型每次都有不同的选择空间。
+ * `random` 可注入，测试里用固定序列就能断言顺序。
  */
 export function pickStickerCatalog(
   entries: readonly StickerCatalogEntry[],
   lastStickerId?: string | null,
   limit = 12,
+  random: () => number = Math.random,
 ): StickerCatalogEntry[] {
   const usable = entries.filter((entry) => entry.id !== lastStickerId);
   const pool = usable.length ? usable : entries;
-  return pool.slice(0, limit);
+  const fresh = pool.filter((entry) => (entry.useCount ?? 0) === 0);
+  const used = pool.filter((entry) => (entry.useCount ?? 0) > 0);
+  return [...shuffle(fresh, random), ...shuffle(used, random)].slice(0, limit);
+}
+
+/** Fisher-Yates。不改原数组：清单对象是缓存里的同一份，就地打乱会让缓存本身变成乱序。 */
+function shuffle<T>(items: readonly T[], random: () => number): T[] {
+  const result = [...items];
+  for (let index = result.length - 1; index > 0; index -= 1) {
+    const target = Math.floor(random() * (index + 1));
+    const current = result[index]!;
+    result[index] = result[target]!;
+    result[target] = current;
+  }
+  return result;
 }
