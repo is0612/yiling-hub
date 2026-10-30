@@ -8,7 +8,7 @@
 import { estimateUsageCostCny, resolveModelPrice, resolveUsdCnyRate } from "./model-pricing";
 import { getPrisma } from "./prisma";
 
-export type ModelUsageKind = "chat" | "channel" | "snapshot" | "bili-screening" | "bili-judge" | "proactive" | "vision" | "sticker-label" | "other";
+export type ModelUsageKind = "chat" | "channel" | "snapshot" | "bili-screening" | "bili-judge" | "proactive" | "vision" | "sticker-label" | "catchphrase-mine" | "other";
 
 export type ModelUsageTokens = {
   promptTokens: number;

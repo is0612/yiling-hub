@@ -6,6 +6,8 @@
  */
 
 import fs from "node:fs/promises";
+import { randomBytes } from "node:crypto";
+import { resolve } from "node:path";
 import { getPrisma } from "../../prisma";
 import { loadStickerCatalog, MAX_STICKER_BYTES } from "../../stickers";
 import type { OnebotConnectionConfig, OnebotOutgoingMessage, OnebotResolvedEvent } from "./client";
@@ -26,6 +28,7 @@ import {
   mentionsCharacterName,
 } from "./group-chat";
 import { createGroupContext, type GroupMessageFacts } from "./group-context";
+import { createGroupActivityRecorder } from "../../group-activity";
 import { ONEBOT_PLATFORM, readOnebotMentionTargets, readOnebotReplyToId } from "./types";
 import {
   resolveVoiceTtsSettings,
@@ -461,6 +464,47 @@ export function toOnebotVoiceSegments(silkBase64: string): OnebotSegment[] {
   return [{ type: "record", data: { file: `base64://${silkBase64}` } }];
 }
 
+/**
+ * 语音落盘目录。OneBot 实现与本站**同机**时，`file://` 直传比 base64 稳得多：
+ * base64 要在网关里再解一遍、再落地、再上传，中间任何一步出问题都会得到
+ * 「发送成功但有人播不出来」——那正是这个目录存在的理由。
+ */
+const VOICE_OUT_DIR = resolve(process.cwd(), ".data", "voice-out");
+/** 语音文件留着没用，一小时前的顺手清掉，避免 .data 里堆成山 */
+const VOICE_OUT_KEEP_MS = 60 * 60 * 1000;
+
+async function writeVoiceFile(silk: Buffer): Promise<string> {
+  await fs.mkdir(VOICE_OUT_DIR, { recursive: true });
+  const name = `voice-${Date.now()}-${randomBytes(4).toString("hex")}.silk`;
+  const filePath = resolve(VOICE_OUT_DIR, name);
+  await fs.writeFile(filePath, silk);
+  // 清理过期文件；失败无所谓，别影响发送
+  void cleanupVoiceFiles().catch(() => undefined);
+  return filePath;
+}
+
+async function cleanupVoiceFiles(): Promise<void> {
+  const cutoff = Date.now() - VOICE_OUT_KEEP_MS;
+  const entries = await fs.readdir(VOICE_OUT_DIR).catch(() => [] as string[]);
+  await Promise.all(entries
+    .filter((name) => name.startsWith("voice-") && name.endsWith(".silk"))
+    .map(async (name) => {
+      const full = resolve(VOICE_OUT_DIR, name);
+      const stat = await fs.stat(full).catch(() => null);
+      if (stat && stat.mtimeMs < cutoff) await fs.unlink(full).catch(() => undefined);
+    }));
+}
+
+/** Windows 的 `D:\a\b.silk` 要变成 `file:///D:/a/b.silk` 才被识别成绝对路径 */
+function toFileUri(filePath: string): string {
+  return "file:///" + filePath.replace(/\\/g, "/").replace(/^\/+/, "");
+}
+
+function buildVoiceSegment(file: string): OnebotSegment[] {
+  return [{ type: "record", data: { file } }];
+}
+
+
 function createReplySender(
   config: OnebotConnectionConfig,
   target: Pick<OnebotResolvedEvent, "messageType" | "groupId" | "userId">,
@@ -481,16 +525,35 @@ function createReplySender(
     if (options?.voice && options.voiceSettings) {
       const silk = await synthesizeSpeechSilk(reply, options.voiceSettings);
       if (silk?.length) {
-        const segments = toOnebotVoiceSegments(silk.toString("base64"));
-        const quoted = options.replyToMessageId && /^\d+$/.test(options.replyToMessageId)
-          ? [{ type: "reply", data: { id: options.replyToMessageId } } as OnebotSegment, ...segments]
-          : segments;
+        const withQuote = (segments: OnebotSegment[]): OnebotSegment[] =>
+          options.replyToMessageId && /^\d+$/.test(options.replyToMessageId)
+            ? [{ type: "reply", data: { id: options.replyToMessageId } } as OnebotSegment, ...segments]
+            : segments;
+
+        /**
+         * 先 `file://` 再 `base64://`。
+         *
+         * base64 要在网关里解开、落地、再上传，中间任何一步出错都会得到
+         * 「消息发出去了，但有人播不出来」（QQ 语音是上传+转码+CDN 分发，不像文字直接可见）。
+         * 同机部署时 `file://` 让网关直接读文件，少一道编解码，是更接近官方客户端的上传路径。
+         * 网关不认 `file://`（比如跑在容器里）时自动退回 base64，行为与以前一致。
+         */
+        const attempts: Array<{ via: string; file: string }> = [];
         try {
-          await send(quoted);
-          return;
+          attempts.push({ via: "file", file: toFileUri(await writeVoiceFile(silk)) });
         } catch (error) {
-          // 语音发不出去（网关不认 record 段等）就走下面的文字兜底，别让她静默。
-          console.error("[onebot] 语音发送失败：", error instanceof Error ? error.message : String(error));
+          console.error("[onebot] 写语音文件失败，改走 base64：", error instanceof Error ? error.message : String(error));
+        }
+        attempts.push({ via: "base64", file: "base64://" + silk.toString("base64") });
+
+        for (const attempt of attempts) {
+          try {
+            await send(withQuote(buildVoiceSegment(attempt.file)));
+            console.log("[onebot] 语音已发送 " + JSON.stringify({ via: attempt.via, bytes: silk.length }));
+            return;
+          } catch (error) {
+            console.error(`[onebot] 语音发送失败（${attempt.via}）：`, error instanceof Error ? error.message : String(error));
+          }
         }
       }
     }
@@ -514,6 +577,12 @@ function logGroupRound(groupId: string, detail: Record<string, unknown>): void {
 export function createOnebotMessageHandler(record: OnebotConnectionRecord) {
   /** 连接内的短期群聊上下文：背景、成员代号、话题参与。按绑定+群隔离。 */
   const groupContext = createGroupContext({ selfQq: record.accountQq });
+  /**
+   * 群活跃度落库（节流）。和 `groupContext` 的分工：那边是给这一轮模型看的短期背景，
+   * 这边是给**另一个进程**的主动找话题判断「这个群多久没动静」用的。
+   * 被闸门丢掉的消息也要记 —— 群里正热闹却被判成冷场，是这套功能最糟的失败方式。
+   */
+  const groupActivity = createGroupActivityRecorder();
 
   const factsOf = (event: OnebotResolvedEvent, at: number): GroupMessageFacts => ({
     messageId: event.messageId,
@@ -631,6 +700,12 @@ export function createOnebotMessageHandler(record: OnebotConnectionRecord) {
 
     if (result.status === "replied") {
       groupContext.recordReply(contextKey, facts, { source: direct ? "mention" : "ambient" });
+      groupActivity.spoke({
+        bindingId: binding.id,
+        characterId: binding.characterId,
+        conversationId: groupEvent.conversationKey,
+        groupId: groupEvent.groupId,
+      });
     } else if (result.status === "silent" && result.groupDecision) {
       // 沉默但认得出「还是在聊那个话题」：有界地续一下，不新建。
       groupContext.refreshFromDecision(contextKey, result.groupDecision);
@@ -680,6 +755,20 @@ export function createOnebotMessageHandler(record: OnebotConnectionRecord) {
     // 先进短期上下文：哪怕这条后面被闸门丢掉，它也是下一轮的背景。
     if (isGroupMessage && event.content) {
       groupContext.remember(contextKey, factsOf(event, Date.now()));
+      /**
+       * 同时记进群活跃度。放在这里（而不是 `flushGroupRound`）是因为 mention 档下
+       * 没被叫到的消息根本进不了攒批 —— 那些消息恰恰是「群里在聊、只是没叫她」的证据，
+       * 漏掉它们，一个热闹的群会被判成冷场。
+       */
+      groupActivity.record({
+        bindingId: binding.id,
+        characterId: binding.characterId,
+        conversationId: event.conversationKey,
+        groupId: event.groupId,
+        at: Date.now(),
+        speaker: event.displayName,
+        text: event.content,
+      });
     }
 
     // 「仅 @ 时回复」是对整个群聊的开关，指令类消息也受它约束（保持老行为）。

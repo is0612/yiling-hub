@@ -22,8 +22,43 @@ type ProactiveSettings = {
   minConfidence: number;
 };
 
+/**
+ * 群聊「冷场了自己找话题」。
+ *
+ * 与私聊的 ProactiveSettings 是两套：私聊的节奏是「这个人」，群里的节奏是「这个群」，
+ * 共用一个阈值必然有一边是错的（一个群安静两小时，另一个群一分钟几十条）。
+ */
+type GroupInitiativeSettings = {
+  enabled: boolean;
+  idleMinutes: number;
+  dailyMax: number;
+  minGapMinutes: number;
+  quietStart: string;
+  quietEnd: string;
+};
+
+type GroupInitiativeSnapshot = {
+  settings: GroupInitiativeSettings;
+  status: {
+    canSendNow: boolean;
+    reason: string;
+    reasonLabel: string;
+    groups: Array<{
+      groupId: string;
+      idleMinutes: number;
+      sentToday: number;
+      lastInitiativeAt: string | null;
+      canSendNow: boolean;
+      reason: string;
+      reasonLabel: string;
+    }>;
+  };
+};
+
 type ProactiveSnapshot = {
   settings: ProactiveSettings;
+  /** 群聊「冷场了自己找话题」的现状：和私聊那条各自独立。 */
+  group: GroupInitiativeSnapshot;
   status: {
     sentToday: number;
     pendingCount: number;
@@ -81,22 +116,18 @@ const props = defineProps<{
   imageUnderstanding: boolean;
   /** 群里的图要不要自动收进她的表情库；角色级开关，默认关。 */
   stickerAutoCollect: boolean;
+  /** 群聊之后要不要自动扫一遍群里的梗；角色级开关，默认关。 */
+  catchphraseAutoMine: boolean;
   /** 她的回复能不能发成语音条；角色级开关，默认关。 */
   voiceEnabled: boolean;
   /** 她听不听得懂别人发的语音；角色级开关，默认关。 */
   voiceTranscribe: boolean;
   /** 发语音的概率（0-100）。 */
   voiceChance: number;
-  /** 语音服务地址；空 = 用环境变量或角色聊天地址。 */
-  voiceApiBaseUrl: string;
-  /** 语音 Key 是否已保存（服务端只回布尔，不回显）。 */
-  voiceApiKeyConfigured: boolean;
-  /** 语音合成模型 / 音色 / 识别模型；空 = 用环境变量。 */
-  ttsModel: string;
-  ttsVoice: string;
-  asrModel: string;
   /** 服务端总会带默认值；这里仍留兜底，避免老数据没有这段时表单是空的 */
   proactive?: ProactiveSettings;
+  /** 群聊找话题；同样是服务端补默认值，这里只做兜底。 */
+  groupInitiative?: GroupInitiativeSettings;
 }>();
 
 const emit = defineEmits<{ saved: [] }>();
@@ -109,6 +140,15 @@ const FALLBACK: ProactiveSettings = {
   quietEnd: "08:00",
   userActiveMinutes: 30,
   minConfidence: 0.4,
+};
+
+const GROUP_FALLBACK: GroupInitiativeSettings = {
+  enabled: false,
+  idleMinutes: 60,
+  dailyMax: 3,
+  minGapMinutes: 180,
+  quietStart: "23:30",
+  quietEnd: "07:30",
 };
 
 const KIND_LABELS: Record<string, string> = {
@@ -140,30 +180,25 @@ const emojiPerWindow = ref(props.emojiPerWindow ?? 3);
 const savingEmojiRate = ref(false);
 const imageUnderstanding = ref(props.imageUnderstanding);
 const stickerAutoCollect = ref(props.stickerAutoCollect);
-// 语音三项放在一起保存入口统一：它们同属一个 details，改完一起提交比三个开关各存一次直观。
+const catchphraseAutoMine = ref(props.catchphraseAutoMine);
+const savingCatchphraseAutoMine = ref(false);
+// 语音开关与概率留在这里（这是「行为」，不是「模型配置」）；服务商、Key、音色在「模型设置 → 语音模型」。
 const voice = reactive({
   enabled: props.voiceEnabled,
   transcribe: props.voiceTranscribe,
   chance: props.voiceChance,
-  apiBaseUrl: props.voiceApiBaseUrl,
-  // 已保存的 Key 不会回显（服务端只给布尔），留空 = 不修改。
-  apiKey: "",
-  ttsModel: props.ttsModel,
-  ttsVoice: props.ttsVoice,
-  asrModel: props.asrModel,
 });
-const voiceKeyConfigured = ref(props.voiceApiKeyConfigured);
-const clearVoiceKey = ref(false);
-const voiceKeyPlaceholder = computed(() =>
-  voiceKeyConfigured.value ? "已保存，留空表示不修改" : "sk-...（硅基流动后台复制）");
 const draft = ref<ProactiveSettings>({ ...FALLBACK, ...(props.proactive ?? {}) });
+const groupDraft = ref<GroupInitiativeSettings>({ ...GROUP_FALLBACK, ...(props.groupInitiative ?? {}) });
 const snapshot = ref<ProactiveSnapshot | null>(null);
 const savingEmoji = ref(false);
 const savingImageUnderstanding = ref(false);
 const savingStickerAutoCollect = ref(false);
 const savingVoice = ref(false);
 const savingProactive = ref(false);
+const savingGroupInitiative = ref(false);
 const trying = ref(false);
+const tryingGroup = ref(false);
 
 // ── 绑定级草稿 ─────────────────────────────────────────
 /** 群号表在页面里是数组，库里是逗号分隔的一串；两处互转只走这一对函数。 */
@@ -286,6 +321,9 @@ watch(() => props.imageUnderstanding, (value) => {
 watch(() => props.stickerAutoCollect, (value) => {
   stickerAutoCollect.value = value;
 });
+watch(() => props.catchphraseAutoMine, (value) => {
+  catchphraseAutoMine.value = value;
+});
 watch(
   () => [props.voiceEnabled, props.voiceTranscribe, props.voiceChance],
   () => {
@@ -294,18 +332,6 @@ watch(
     voice.chance = props.voiceChance;
   },
 );
-watch(
-  () => [props.voiceApiBaseUrl, props.ttsModel, props.ttsVoice, props.asrModel],
-  () => {
-    voice.apiBaseUrl = props.voiceApiBaseUrl;
-    voice.ttsModel = props.ttsModel;
-    voice.ttsVoice = props.ttsVoice;
-    voice.asrModel = props.asrModel;
-  },
-);
-watch(() => props.voiceApiKeyConfigured, (value) => {
-  voiceKeyConfigured.value = value;
-});
 // 保存成功后父级会重拉列表，额度跟着库里的值（服务端会把默认值补齐）
 watch(() => [props.emojiWindowMinutes, props.emojiPerWindow], () => {
   emojiWindow.value = props.emojiWindowMinutes ?? 10;
@@ -313,6 +339,9 @@ watch(() => [props.emojiWindowMinutes, props.emojiPerWindow], () => {
 });
 watch(() => props.proactive, (value) => {
   draft.value = { ...FALLBACK, ...(value ?? {}) };
+}, { deep: true });
+watch(() => props.groupInitiative, (value) => {
+  groupDraft.value = { ...GROUP_FALLBACK, ...(value ?? {}) };
 }, { deep: true });
 watch(
   () => [
@@ -491,37 +520,43 @@ async function onStickerAutoCollectChange(next: string | number | boolean) {
   }
 }
 
+async function onCatchphraseAutoMineChange(next: string | number | boolean) {
+  if (savingCatchphraseAutoMine.value) return;
+  const value = next === true;
+  savingCatchphraseAutoMine.value = true;
+  try {
+    await $fetch(`/api/characters/${encodeURIComponent(props.characterId)}`, {
+      method: "PATCH",
+      body: { catchphraseAutoMine: value },
+    });
+    ElMessage.success(value
+      ? "已开启：群聊之后会顺手扫一遍，捡到的梗先待在「待确认」里，你点头她才会说。"
+      : "已关闭：不再自动扫群里的梗。");
+    emit("saved");
+  } catch (error) {
+    catchphraseAutoMine.value = !value;
+    ElMessage.error(readError(error, "保存失败，请稍后重试。"));
+  } finally {
+    savingCatchphraseAutoMine.value = false;
+  }
+}
+
 /**
- * 语音三项一起提交。它们同属一个「语音」分组，挨个开关各存一次反而像界面卡了；
- * 关掉再打开还能验证服务端到底存了什么。
+ * 语音开关与概率一起提交。服务商、Key、音色已经搬到「模型设置 → 语音模型」，
+ * 这里只留「行为」这一半：她发不发语音、听不听得懂、随机发的概率。
  */
 async function saveVoice() {
   if (savingVoice.value) return;
   savingVoice.value = true;
   try {
-    const key = voice.apiKey.trim();
     await $fetch(`/api/characters/${encodeURIComponent(props.characterId)}`, {
       method: "PATCH",
       body: {
         voiceEnabled: voice.enabled,
         voiceTranscribe: voice.transcribe,
         voiceChance: voice.chance,
-        voiceApiBaseUrl: voice.apiBaseUrl.trim(),
-        ttsModel: voice.ttsModel.trim(),
-        ttsVoice: voice.ttsVoice.trim(),
-        asrModel: voice.asrModel.trim(),
-        // 留空 = 不修改已保存的 Key；要清掉得勾那个勾选框。
-        ...(key ? { voiceApiKey: key } : {}),
-        ...(clearVoiceKey.value ? { clearVoiceApiKey: true } : {}),
       },
     });
-    if (key) voiceKeyConfigured.value = true;
-    if (clearVoiceKey.value) {
-      voiceKeyConfigured.value = false;
-      clearVoiceKey.value = false;
-    }
-    // 明文不留在页面上：下次想看也看不到，只能重新填。
-    voice.apiKey = "";
     ElMessage.success(voice.enabled || voice.transcribe
       ? "语音设置已保存。"
       : "已关闭语音：她又只发文字、也不再转写别人的语音。");
@@ -531,10 +566,6 @@ async function saveVoice() {
     voice.enabled = props.voiceEnabled;
     voice.transcribe = props.voiceTranscribe;
     voice.chance = props.voiceChance;
-    voice.apiBaseUrl = props.voiceApiBaseUrl;
-    voice.ttsModel = props.ttsModel;
-    voice.ttsVoice = props.ttsVoice;
-    voice.asrModel = props.asrModel;
     ElMessage.error(readError(error, "保存失败，请稍后重试。"));
   } finally {
     savingVoice.value = false;
@@ -584,6 +615,62 @@ async function tryOnce() {
     ElMessage.error(readError(error, "试跑失败，请稍后重试。"));
   } finally {
     trying.value = false;
+  }
+}
+
+/** 安静了多久：超过 60 分钟说成小时，页面上一排「137 分钟」读起来费劲。 */
+function formatIdle(minutes: number): string {
+  if (minutes < 60) return `${minutes} 分钟`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest ? `${hours} 小时 ${rest} 分` : `${hours} 小时`;
+}
+
+async function saveGroupInitiative(silent = false): Promise<boolean> {
+  if (savingGroupInitiative.value) return false;
+  savingGroupInitiative.value = true;
+  try {
+    await $fetch(`/api/characters/${encodeURIComponent(props.characterId)}`, {
+      method: "PATCH",
+      body: { groupInitiative: { ...groupDraft.value } },
+    });
+    if (!silent) ElMessage.success("群内找话题设置已保存。");
+    emit("saved");
+    await loadSnapshot();
+    return true;
+  } catch (error) {
+    ElMessage.error(readError(error, "保存失败：安静时段起止不能相同。"));
+    return false;
+  } finally {
+    savingGroupInitiative.value = false;
+  }
+}
+
+/** 「立即试一次」会真往群里发一条，所以先落库再跑，跑完把结果原样说清楚。 */
+async function tryGroupOnce() {
+  if (tryingGroup.value || savingGroupInitiative.value) return;
+  tryingGroup.value = true;
+  try {
+    const saved = await saveGroupInitiative(true);
+    if (!saved) return;
+    const result = await $fetch<{
+      status: string;
+      reason: string;
+      reasonLabel: string;
+      groupId: string | null;
+      content: string | null;
+      detail: string | null;
+    }>(`/api/characters/${encodeURIComponent(props.characterId)}/proactive/group-try`, { method: "POST" });
+
+    const where = result.groupId ? `（群 ${result.groupId}）` : "";
+    if (result.status === "sent") ElMessage.success(`已经在群里说了${where}：「${result.content ?? ""}」`);
+    else if (result.status === "skipped") ElMessage.warning(`这次没说：${result.reasonLabel}`);
+    else ElMessage.error(`这次失败：${result.reasonLabel}${result.detail ? `（${result.detail}）` : ""}`);
+    await loadSnapshot();
+  } catch (error) {
+    ElMessage.error(readError(error, "试跑失败，请稍后重试。"));
+  } finally {
+    tryingGroup.value = false;
   }
 }
 </script>
@@ -892,6 +979,18 @@ async function tryOnce() {
         />
       </div>
 
+      <div class="toggle">
+        <span class="toggle-copy">
+          <b>捡群里的梗</b>
+          <span>群聊之后顺手扫一遍最近两周的消息，把被反复用到的说法挑出来（至少出现 3 次、2 个人说过）。捡到的<b>不会直接用</b>，先躺在梗语录页等你点头。</span>
+        </span>
+        <el-switch
+          v-model="catchphraseAutoMine"
+          :loading="savingCatchphraseAutoMine"
+          @change="onCatchphraseAutoMineChange"
+        />
+      </div>
+
       <!-- 语音：说话与听懂是两个开关，但同属一件事；带概率参数，所以是可展开行 -->
       <details class="more is-toggle">
         <summary>
@@ -909,81 +1008,10 @@ async function tryOnce() {
 
         <div class="more-body">
           <p class="beh-lead">
-            语音要<b>单独一家服务商</b>：DeepSeek 这类纯文本服务商的
-            <code>/audio/speech</code> 直接 404 —— 聊天能回话不代表它能说话。
-            推荐硅基流动：一个 Key 同时做合成与识别、国内直连，去
-            <code>cloud.siliconflow.cn/account/ak</code> 复制 <code>sk-</code> 开头的 Key 填在下面。
+            语音要单独一家服务商：DeepSeek 这类纯文本服务商的
+            <code>/audio/speech</code> 直接 404。服务商、Key、音色、识别模型都在
+            <b>「模型设置 → 语音模型」</b>里配，这里只管「她发不发、听不听得懂」。
           </p>
-
-          <div class="beh-sub">
-            <div class="beh-field">
-              <div class="beh-inline">
-                <span class="beh-label">语音服务的 Key</span>
-                <span
-                  class="pill"
-                  :class="voiceKeyConfigured ? 'pill-green' : 'pill-gray'"
-                >{{ voiceKeyConfigured ? "已保存" : "未填写" }}</span>
-              </div>
-              <el-input
-                v-model="voice.apiKey"
-                type="password"
-                show-password
-                autocomplete="new-password"
-                maxlength="8192"
-                aria-label="语音服务的 API Key"
-                :placeholder="voiceKeyPlaceholder"
-              />
-              <el-checkbox
-                v-if="voiceKeyConfigured"
-                v-model="clearVoiceKey"
-              >
-                移除已保存的语音 Key
-              </el-checkbox>
-              <em>加密后只存在本机；保存后不再回显，留空表示不修改。</em>
-            </div>
-
-            <div class="beh-field">
-              <span class="beh-label">服务地址</span>
-              <el-input
-                v-model="voice.apiBaseUrl"
-                maxlength="500"
-                aria-label="语音服务地址"
-                placeholder="https://api.siliconflow.cn/v1"
-              />
-            </div>
-
-            <div class="beh-field">
-              <span class="beh-label">合成模型</span>
-              <el-input
-                v-model="voice.ttsModel"
-                maxlength="120"
-                aria-label="语音合成模型"
-                placeholder="FunAudioLLM/CosyVoice2-0.5B"
-              />
-            </div>
-
-            <div class="beh-field">
-              <span class="beh-label">音色</span>
-              <el-input
-                v-model="voice.ttsVoice"
-                maxlength="100"
-                aria-label="语音音色"
-                placeholder="FunAudioLLM/CosyVoice2-0.5B:claire"
-              />
-              <em>要带模型前缀。女声：claire 温柔 / anna 沉稳 / bella 热情 / diana 活泼；男声：alex / benjamin / charles / david。</em>
-            </div>
-
-            <div class="beh-field">
-              <span class="beh-label">识别模型</span>
-              <el-input
-                v-model="voice.asrModel"
-                maxlength="120"
-                aria-label="语音识别模型"
-                placeholder="FunAudioLLM/SenseVoiceSmall"
-              />
-              <em>这几项留空时用 <code>.env</code> 里的 <code>VOICE_*</code>；两处都空就只发文字。</em>
-            </div>
-          </div>
 
           <div class="beh-field">
             <div class="beh-inline">
@@ -1192,6 +1220,148 @@ async function tryOnce() {
           </div>
         </div>
       </details>
+
+      <!-- 群聊「冷场了自己找话题」：和上面私聊那条并列，参数各一套 -->
+      <details class="more is-toggle">
+        <summary>
+          <span class="more-sum">群里自己找话题</span>
+          <span class="grp-tag">冷下来了她起个头</span>
+          <span class="grow" />
+          <span
+            class="pill"
+            :class="groupDraft.enabled ? 'pill-green' : 'pill-gray'"
+          >{{ groupDraft.enabled ? "已开启" : "默认关闭" }}</span>
+          <el-icon class="more-caret">
+            <ArrowRight />
+          </el-icon>
+        </summary>
+
+        <div class="more-body">
+          <p class="beh-lead">
+            群安静够久之后，她会自己说一句起个头。不是定时播报：先看这个群有没有冷下来、
+            今天已经说过几次，最后还要她真写得出话说 —— 想不出就不发。
+          </p>
+
+          <div class="beh-field">
+            <div class="beh-inline">
+              <span class="beh-label">开启群内找话题</span>
+              <el-switch v-model="groupDraft.enabled" />
+            </div>
+            <em>作用范围是这条绑定挂的所有群，但<strong>设成「仅被 @ 时回复」的群不参与</strong> —— 那是你对那个群的明确要求，她不该自己冒头。她在群里说的那句话会记进该群的聊天记录，之后接着聊也知道自己说过什么。</em>
+          </div>
+
+          <template v-if="groupDraft.enabled">
+            <div class="beh-grid">
+              <div class="beh-field">
+                <span class="beh-label">安静多久算冷场（分钟）</span>
+                <el-input-number
+                  v-model="groupDraft.idleMinutes"
+                  :min="15"
+                  :max="1440"
+                  :step="15"
+                />
+                <em>取「最后一条群消息」和「她最后一次说话」里更近的那个算。默认 60。</em>
+              </div>
+              <div class="beh-field">
+                <span class="beh-label">每个群每天最多几条</span>
+                <el-input-number
+                  v-model="groupDraft.dailyMax"
+                  :min="0"
+                  :max="24"
+                />
+                <em>0 = 关掉这个口子。按群、按东八区自然日分别算。</em>
+              </div>
+            </div>
+
+            <div class="beh-field">
+              <span class="beh-label">同一个群两次至少隔多久（分钟）</span>
+              <el-input-number
+                v-model="groupDraft.minGapMinutes"
+                :min="30"
+                :max="1440"
+                :step="30"
+              />
+              <em>她判定「这轮没什么想说的」也算一次尝试，所以不会每个 tick 都在心里嘀咕一遍。</em>
+            </div>
+
+            <div class="beh-field">
+              <span class="beh-label">安静时段</span>
+              <div class="beh-quiet">
+                <el-time-select
+                  v-model="groupDraft.quietStart"
+                  start="00:00"
+                  step="00:30"
+                  end="23:30"
+                  placeholder="23:30"
+                />
+                <span class="beh-quiet-sep">到</span>
+                <el-time-select
+                  v-model="groupDraft.quietEnd"
+                  start="00:00"
+                  step="00:30"
+                  end="23:30"
+                  placeholder="07:30"
+                />
+              </div>
+              <em>凌晨的群不需要被叫醒。允许跨午夜（23:30 到 07:30 就是整夜闭嘴）；起止填成一样会被拒绝保存。</em>
+            </div>
+          </template>
+
+          <div class="beh-state">
+            <template v-if="snapshot?.group">
+              <span
+                class="pill"
+                :class="snapshot.group.status.canSendNow ? 'pill-green' : 'pill-gray'"
+              >{{ snapshot.group.status.reasonLabel }}</span>
+              <span class="beh-meta">
+                {{ snapshot.group.status.groups.length }} 个群 ·
+                每群每天 {{ snapshot.group.settings.dailyMax }} 条
+              </span>
+            </template>
+            <span
+              v-else
+              class="beh-meta"
+            >还读不到当前状态，保存后刷新一次。</span>
+            <span class="grow" />
+            <button
+              type="button"
+              class="beh-btn"
+              :disabled="tryingGroup || savingGroupInitiative"
+              @click="tryGroupOnce"
+            >
+              <el-icon><Promotion /></el-icon>{{ tryingGroup ? "试跑中…" : "立即试一次" }}
+            </button>
+            <button
+              type="button"
+              class="beh-btn is-lead"
+              :disabled="savingGroupInitiative"
+              @click="saveGroupInitiative()"
+            >
+              {{ savingGroupInitiative ? "保存中…" : "保存" }}
+            </button>
+          </div>
+
+          <p class="beh-hint">
+            「立即试一次」会挑安静最久的那个群，跳过时间类限制，真往群里发一条；
+            开关、每群条数与当日额度照判。
+          </p>
+
+          <div
+            v-if="snapshot?.group?.status.groups.length"
+            class="beh-recent"
+          >
+            <div
+              v-for="item in snapshot.group.status.groups.slice(0, 5)"
+              :key="item.groupId"
+              class="beh-recent-row"
+            >
+              <span class="beh-kind">{{ item.groupId }}</span>
+              <span class="beh-recent-text">{{ item.reasonLabel }} · 今天 {{ item.sentToday }} 条</span>
+              <span class="beh-recent-status">安静 {{ formatIdle(item.idleMinutes) }}</span>
+            </div>
+          </div>
+        </div>
+      </details>
     </section>
 
     <!-- 保存条：解绑由外面的行给（它属于行，不属于这张表单） -->
@@ -1367,17 +1537,6 @@ async function tryOnce() {
 .beh-label { color: var(--text-2); font-size: 12px; font-weight: 600; }
 .beh-field em { color: var(--dim); font-size: 12px; font-style: normal; line-height: 1.6; }
 .beh-field :deep(.el-input-number) { width: 140px; }
-/* 语音服务商那一组输入：与下面的开关区分开，否则五个输入框和三个开关糊成一片 */
-.beh-sub {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-3);
-  padding: var(--sp-3);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--surface-2);
-}
-.beh-sub code,
 .beh-lead code { font-size: 12px; padding: 0 4px; border-radius: 4px; background: var(--surface-3); }
 
 .beh-limit { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; color: var(--text-2); font-size: 12px; }

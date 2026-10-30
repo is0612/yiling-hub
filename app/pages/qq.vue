@@ -948,6 +948,21 @@ const bindSaving = ref(false);
 const bindTarget = ref<QqConnection | null>(null);
 const bindForm = reactive({ characterId: "", routingKeys: [] as string[] });
 
+/**
+ * 已经绑在这个号上的角色。
+ *
+ * 后端是 upsert：同一个角色再绑一次只会把原记录原样写回去，列表看不出任何变化，
+ * 却在按钮上回一句「绑定成功」—— 这句成功完全是误导。所以这里直接把已绑定的角色
+ * 在选项里标出来并禁掉，群号要改就去清单里展开那一行改，不走这个弹窗。
+ */
+const boundCharacterIds = computed(
+  () => new Set((bindTarget.value?.bindings ?? []).map((item) => item.characterId)),
+);
+/** 角色全都在这个号上了：弹窗里一个能选的都没有，得说清楚该去哪改。 */
+const allCharactersBound = computed(
+  () => characters.value.length > 0 && characters.value.every((item) => boundCharacterIds.value.has(item.id)),
+);
+
 function openBind(connection: QqConnection) {
   bindTarget.value = connection;
   bindForm.characterId = "";
@@ -955,16 +970,15 @@ function openBind(connection: QqConnection) {
   bindVisible.value = true;
 }
 
-/** 选中已绑定过的角色时带回原来的群号，避免重新保存把群号清掉。 */
-function onBindCharacterChange(characterId: string) {
-  const existing = bindTarget.value?.bindings.find((item) => item.characterId === characterId);
-  bindForm.routingKeys = existing?.routingKey ? existing.routingKey.split(",").map((key) => key.trim()).filter(Boolean) : [];
-}
-
 async function submitBind() {
   if (bindSaving.value || !bindTarget.value) return;
   if (!bindForm.characterId) {
     ElMessage.warning("请选择要绑定的角色。");
+    return;
+  }
+  // 列表可能有延迟：选项禁用了，这里再挡一次，别真发一个什么都没改的请求。
+  if (boundCharacterIds.value.has(bindForm.characterId)) {
+    ElMessage.warning("该角色已绑定这个号了，不用重复绑定。");
     return;
   }
   bindSaving.value = true;
@@ -1236,15 +1250,12 @@ function copyInstallGuide() {
               :emoji-per-window="row.character.emojiPerWindow"
               :image-understanding="row.character.imageUnderstanding === true"
               :sticker-auto-collect="row.character.stickerAutoCollect === true"
+              :catchphrase-auto-mine="row.character.catchphraseAutoMine === true"
               :voice-enabled="row.character.voiceEnabled === true"
               :voice-transcribe="row.character.voiceTranscribe === true"
               :voice-chance="row.character.voiceChance ?? 0"
-              :voice-api-base-url="row.character.voiceApiBaseUrl ?? ''"
-              :voice-api-key-configured="row.character.voiceApiKeyConfigured === true"
-              :tts-model="row.character.ttsModel ?? ''"
-              :tts-voice="row.character.ttsVoice ?? ''"
-              :asr-model="row.character.asrModel ?? ''"
               :proactive="row.character.proactive"
+              :group-initiative="row.character.groupInitiative"
               @saved="onBehaviorSaved"
             >
               <template #actions>
@@ -1844,13 +1855,13 @@ function copyInstallGuide() {
             v-model="bindForm.characterId"
             placeholder="选择要绑定的角色"
             style="width:100%"
-            @change="onBindCharacterChange"
           >
             <el-option
               v-for="character in characters"
               :key="character.id"
-              :label="character.name"
+              :label="boundCharacterIds.has(character.id) ? `${character.name}（已绑定）` : character.name"
               :value="character.id"
+              :disabled="boundCharacterIds.has(character.id)"
             />
           </el-select>
         </el-form-item>
@@ -1865,6 +1876,12 @@ function copyInstallGuide() {
         <p class="cq-hint">
           填了群号就只在这些群里回复；可以填多个群号，回车或输入逗号确认一个。
           留空则私聊和所有群都会回复。群聊参与度、限流、B站 口令在清单里展开那一行改。
+        </p>
+        <p
+          v-if="allCharactersBound"
+          class="cq-hint"
+        >
+          角色都已经绑在这个号上了。要换群号或调群聊设置，回到清单里展开那一行改就行。
         </p>
       </el-form>
 

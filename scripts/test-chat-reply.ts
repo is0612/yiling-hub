@@ -102,6 +102,36 @@ try {
   assert.equal(result.usage?.cacheHitTokens, 9, "缓存命中要跟着 usage 一起返回，否则记账只能按未命中价估。");
   assert.equal(result.usage?.cacheMissTokens, 3);
 
+  // ── 语音条：必须在生成前就告诉模型「这一条会被念出来」──
+  // 不说的话她会回「我只有打字和嘴硬」—— 内容说得通，但她根本不知道自己正在说话，
+  // 于是会写出表情符号、括号动作、@ 某人这些念出来是噪音的东西。
+  assert(
+    !systemMessage.content.includes("spoken voice message"),
+    "默认（打字）不该带语音段，否则每条回复都变得像在念稿。",
+  );
+
+  capturedBody = "";
+  await generateConversationReply({
+    characterName: "鲸鱼娘",
+    characterPrompt: "你是「鲸鱼娘」。",
+    model: "test-chat-model",
+    apiKey: secretApiKey,
+    apiBaseUrl: privateProviderUrl,
+    currentMessage: "发个语音",
+    recentMessages: [],
+    memories: [],
+    snapshots: [],
+    voiceReply: true,
+  });
+  const voiceSystem = (JSON.parse(capturedBody) as { messages: Array<{ role: string; content: string }> })
+    .messages.find((item) => item.role === "system")!.content;
+  assert(voiceSystem.includes("spoken voice message"), "发语音时要告诉她这一条会被念出来。");
+  assert(voiceSystem.includes("no emoji"), "要明说表情/颜文字/括号动作不能出现在语音里。");
+  assert(
+    voiceSystem.includes("Never mention that this is a voice message"),
+    "必须禁止「我给你发了条语音」这类元信息 —— 语音条里会先念一句废话。",
+  );
+
   // ── 对话示例：只拼进 characterPrompt 尾部，带边界，且不新增顶层字段 ──
   // 为什么不能新增字段/不能做成 few-shot 轮次：这个接口要求返回 JSON 信封，
   // 真给它几轮「用户 / 她」的对话，模型会学着直接吐纯文本，解析就炸。

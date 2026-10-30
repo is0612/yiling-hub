@@ -18,14 +18,19 @@ import { isEmojiBudgetSpent, resolveEmojiFrequency } from "../emoji-frequency";
 import { ensureOwnerPrivateScope } from "../memory-scope-access";
 import { getPrisma } from "../prisma";
 import { pickStickerCatalog, type StickerCatalogEntry } from "../stickers";
+import {
+  loadCatchphraseCatalog, markCatchphrasesUsed, pickCatchphraseCatalog, toCatchphrasePromptEntries,
+} from "../catchphrases";
+import { maybeAutoMineCatchphrases } from "../catchphrase-mine";
 import { collectStickersFromTurn } from "../sticker-collect";
 import {
   applyVoiceTranscripts,
+  canSpeakReply,
   isVoiceRequested,
   MAX_VOICES_PER_TURN,
+  planVoiceReply,
   resolveVoiceAsrSettings,
   resolveVoiceTtsSettings,
-  shouldSendVoice,
   transcribeVoices,
   type ChannelVoiceRef,
   type VoiceTtsSettings,
@@ -509,6 +514,34 @@ async function runChannelTurn(input: {
   const lastVoiceAt = recentStoredMessages.find(
     (item) => item.role === "ASSISTANT" && readStoredVoiceFlag(item.metadata),
   )?.occurredAt ?? null;
+
+  /**
+   * 语音必须在**生成之前**决定 —— 关键是模型得知道自己在说话。
+   *
+   * 生成后再判定的话，提示词里压根没提语音，她会回「我只有打字和嘴硬」
+   * 「我这打字声你当语音听吧」：内容解释得通，但暴露了她根本不知道这条要被念出来。
+   * 所以这里先定「这一轮说不说」，把结果放进提示词，再让它写；
+   * 生成后只用 `canSpeakReply` 复核长度，超长就降级发文字。
+   *
+   * 判定只看开关、冷却、概率（用户明确要语音时跳过冷却与概率，但不跳过开关）。
+   */
+  const voiceRequested = input.voiceCapable === true
+    && messages.some((message) => isVoiceRequested(message.promptContent ?? message.content));
+  const voiceSettings = input.voiceCapable === true
+    ? resolveVoiceTtsSettings({
+        modelConfig: character.modelConfig,
+        chatModel: chatSettings.model,
+        chatApiBaseUrl: chatSettings.apiBaseUrl,
+        chatApiKey: apiKey,
+        voiceApiKey,
+      })
+    : null;
+  const voicePlanned = Boolean(voiceSettings) && planVoiceReply({
+    modelConfig: character.modelConfig,
+    lastVoiceAt,
+    force: voiceRequested,
+  });
+
   /**
    * 额度：「每 N 分钟最多 N 张」，按**这个会话**算（A 群贴过三张不该让 B 群闭嘴）。
    *
@@ -528,17 +561,30 @@ async function runChannelTurn(input: {
     : [];
   const emojiBudgetSpent = isEmojiBudgetSpent(emojiHistory, new Date(), emojiFrequency);
   // 表情包优先于内置表情：有素材库就只给素材库（并剔除上一张，避免她一直贴同一张）。
+  // 这一条要走语音时一律不给：语音条后面再挂一张图，等于把两种表达叠在一起说同一件事。
   const stickerCatalog = input.stickerCatalog?.length
     && isEmojiEnabled(character.modelConfig)
     && !emojiBudgetSpent
+    && !voicePlanned
     ? pickStickerCatalog(input.stickerCatalog, lastStickerId)
     : undefined;
   const emojiFaces = !stickerCatalog?.length
     && input.faceCatalog?.length
     && isEmojiEnabled(character.modelConfig)
     && !emojiBudgetSpent
+    && !voicePlanned
     ? input.faceCatalog
     : undefined;
+
+  /**
+   * 梗语录：和表情包不同，**不从调用方传**，流水线自己查。
+   *
+   * 表情包要按渠道能力决定（B站私信发不了图），梗是纯文字、哪个渠道都能说；
+   * 交给每个 adapter 各自去查，只会有一边忘了接。角色级的文字习惯应该在角色级生效。
+   */
+  const catchphrasePrompt = toCatchphrasePromptEntries(
+    pickCatchphraseCatalog(await loadCatchphraseCatalog(character.id)),
+  );
 
   const recentMessages: ConversationContextMessage[] = recentStoredMessages
     .reverse()
@@ -672,6 +718,9 @@ async function runChannelTurn(input: {
       snapshots,
       ...(emojiFaces ? { emojiFaces } : {}),
       ...(stickerCatalog?.length ? { emojiStickers: stickerCatalog } : {}),
+      // 告诉她「这一条会被念出来」：语气、长度、不要表情符号都靠这一段。
+      ...(voicePlanned ? { voiceReply: true } : {}),
+      ...(catchphrasePrompt.length ? { catchphrases: catchphrasePrompt } : {}),
     });
   } catch (error) {
     return { status: "ignored", reason: (error instanceof Error ? error.message : "model_error").slice(0, 200) };
@@ -689,38 +738,15 @@ async function runChannelTurn(input: {
     ? null
     : input.stickerCatalog?.find((entry) => entry.id === generated.stickerId) ?? null;
   /**
-   * 这一条要不要用语音发。
+   * 这一条真的用语音发吗。
    *
-   * 四件事同时成立才行：渠道声明能发语音、角色开了语音开关、判定（长度/概率/冷却）通过、
-   * TTS 配置齐全。最后一条是必须的 —— 否则「判定要发语音但压根没配 TTS」会让这一轮
-   * 白白走一次失败降级，日志里全是噪音。
-   *
-   * 发不出去怎么办：由渠道退回发文字（见 serve.ts）。所以这里不需要预知成败。
-   * 合成参数随 options 一起交给渠道：它已经包含角色自己的 key，渠道不必再查一次库。
+   * `voicePlanned` 是在生成之前定下的（模型据此按说话的方式写），这里只复核一次长度：
+   * 说太长就该用文字，而不是截一段读 —— 截断的话术在语音条里听起来像被掐断。
+   * 发不出去怎么办由渠道兜底（合成失败退回发文字，见 serve.ts）。
    */
-  const voiceSettings = generated.action === "reply" && input.voiceCapable === true
-    ? resolveVoiceTtsSettings({
-        modelConfig: character.modelConfig,
-        chatModel: chatSettings.model,
-        chatApiBaseUrl: chatSettings.apiBaseUrl,
-        chatApiKey: apiKey,
-        voiceApiKey,
-      })
-    : null;
-  /**
-   * 这一轮有没有人明确要她发语音。有就跳过概率与冷却（仍然受开关和 60 字限制）。
-   *
-   * 合成要十几秒，所以「随机发语音」默认是关的：一条被随机选中的回复会静默迟到。
-   * 用户开口要的时候他愿意等，那才是这条链路真正该被触发的地方。
-   */
-  const voiceRequested = input.voiceCapable === true
-    && messages.some((message) => isVoiceRequested(message.promptContent ?? message.content));
-  const replyVoice = Boolean(voiceSettings) && shouldSendVoice({
-    modelConfig: character.modelConfig,
-    text: generated.reply,
-    lastVoiceAt,
-    force: voiceRequested,
-  });
+  const replyVoice = generated.action === "reply"
+    && voicePlanned
+    && canSpeakReply(generated.reply);
   const conversationScopeId = isGroup
     ? globalScope.id
     : (isOwnerTurn && ownerPrivateScopeId ? ownerPrivateScopeId : (primaryIdentityScopeId ?? globalScope.id));
@@ -784,6 +810,7 @@ async function runChannelTurn(input: {
             promptTemplateVersion: generated.promptTemplateVersion,
             usedMemoryIds: generated.usedMemoryIds,
             usedSnapshotIds: generated.usedSnapshotIds,
+            ...(generated.usedCatchphraseIds.length ? { usedCatchphraseIds: generated.usedCatchphraseIds } : {}),
             // 表情段不进 content：正文要能原样重放给下一轮模型，混进 [face] 会被当成用户打的字。
             ...(replyFaces.length ? { faceIds: replyFaces } : {}),
             ...(replySticker ? { stickerId: replySticker.id } : {}),
@@ -817,6 +844,11 @@ async function runChannelTurn(input: {
         data: { useCount: { increment: 1 }, lastUsedAt: new Date() },
       }).catch(() => undefined);
     }
+    // 梗的记账同理：漏记就等于没有冷却，那句「不烧心吗」会连着刷。
+    await markCatchphrasesUsed(character.id, generated.usedCatchphraseIds);
+    // 顺手扫一遍群里的梗（开关默认关、6 小时最多一次、不 await）。
+    // 放在回复发完之后：扫梗绝不能挡住她说这一句话。
+    maybeAutoMineCatchphrases(character.modelConfig, character.id);
   }
   if (generated.usedMemoryIds.length) {
     await prisma.memoryItem.updateMany({

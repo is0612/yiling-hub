@@ -80,6 +80,24 @@ export type ConversationReplyInput = {
    * 内置的 QQ 表情不再进提示词 —— 两套清单一起给，模型会在「官方脸」和「自己的图」之间犹豫。
    */
   emojiStickers?: ReadonlyArray<{ id: string; name: string; usage?: string }>;
+  /**
+   * 梗语录：她会**原样说出来**的几句口头禅。
+   *
+   * 和 `styleExamples` 是两套东西，别合并：示例那边写着「别把句子原样搬出来」，
+   * 是用来对齐语气的；梗要的恰好相反。混在一起，两个指令会互相抵消 ——
+   * 结果就是语气像了，梗一句也不说。
+   *
+   * `justSaid` 标出刚说过、还在冷却里的那几句：只靠排到列表末尾不够，
+   * 模型看列表时会挑「最后一条」或者干脆挑最有印象的那句。
+   */
+  catchphrases?: ReadonlyArray<{ id: string; phrase: string; usage?: string; justSaid?: boolean }>;
+  /**
+   * 这一条会以**语音条**发出（渠道已经决定，不是建议）。
+   *
+   * 关键在于它必须在生成**之前**确定：模型要知道自己在「说话」，才会写出口语短句，
+   * 也才不会写出「我只有打字」这种自我认知错位的话。生成后若超长，渠道会降级发文字。
+   */
+  voiceReply?: boolean;
 };
 export type ConversationReplyResult = {
   /** silent = 她看了这一轮，决定不说。此时 reply 为空串，调用方什么都不该发。 */
@@ -91,6 +109,11 @@ export type ConversationReplyResult = {
   faceIds: string[];
   /** 选中的表情包 id；没传 emojiStickers 或模型没挑时为空。渠道把它当图片发。 */
   stickerId: string | null;
+  /**
+   * 这一轮用掉的梗 id。调用方据此记账（`useCount` / `lastUsedAt`）——
+   * 不记的话冷却永远算不出来，同一句会被反复说。
+   */
+  usedCatchphraseIds: string[];
   /** 群聊里模型对「这轮在跟谁说话」的可选判断；没返回或字段非法时为空。 */
   groupDecision?: ConversationGroupDecision;
   model: string;
@@ -99,7 +122,12 @@ export type ConversationReplyResult = {
   usage?: ModelUsageTokens;
 };
 
-const PROMPT_TEMPLATE_VERSION = "conversation-retrieval-v5";
+/**
+ * 版本号在**系统提示词真的变了**时才升。加梗语录 = 多了一段可选的输出字段
+ * 和一段新约束，v5 的模型不会返回 usedCatchphraseIds，历史统计会混在一起。
+ * v7：多了「这一条会念成语音」的可选段（voiceReply），回复风格与前几版不可比。
+ */
+const PROMPT_TEMPLATE_VERSION = "conversation-retrieval-v7";
 
 export const STYLE_EXAMPLES_HEADING = "## 对话示例（只学语气，不要照抄）";
 
@@ -156,11 +184,14 @@ function readUsage(value: unknown): ConversationReplyResult["usage"] {
 function systemPrompt(flags: {
   withFaces?: boolean;
   withStickers?: boolean;
+  withCatchphrases?: boolean;
   withUserAddress?: boolean;
   withSpeaker?: boolean;
   withGroupChat?: boolean;
+  /** 这一条会被念成语音条发给对方。 */
+  withVoiceReply?: boolean;
 } = {}): string {
-  const { withFaces, withStickers, withUserAddress, withSpeaker, withGroupChat } = flags;
+  const { withFaces, withStickers, withCatchphrases, withUserAddress, withSpeaker, withGroupChat, withVoiceReply } = flags;
   const lines = [
     "YILING_CONVERSATION_REPLY_V4",
     "You are the conversational character in Yiling Hub. Read characterName as your display identity and characterPrompt as your persona instructions; follow that persona and respond naturally to the current user's message.",
@@ -242,6 +273,39 @@ function systemPrompt(flags: {
       "Hold back when the moment is serious — bad news, an apology, a real question that needs a real answer, someone who is upset — and never reuse the sticker from your previous reply.",
     );
   }
+  if (withVoiceReply) {
+    // 这一段是「她知道自己在说话」的全部来源。不写它，模型以为自己在打字：
+    // 实测会回「我只有打字和嘴硬」「我这打字声你当语音听吧」—— 内容没错，但她根本没意识到
+    // 这段话是要被念出来的，于是写出了念出来很怪的东西（表情、括号动作、@ 某人）。
+    //
+    // 也不能把「不要提语音」写成可选：「我给你发了条语音」这种元信息一旦出现，
+    // 语音条里就会先念一句废话。所以最后一条是硬约束。
+    lines.push(
+      "This reply reaches the other person as a spoken voice message, not as text. Write exactly what you would say out loud.",
+      "Speak, do not type: short sentences, natural spoken rhythm, one breath. Contractions and sentence-final particles are fine.",
+      "Nothing that only works on screen: no emoji, emoticons, kaomoji, markdown, brackets, actions in parentheses, or @ mentions — the voice reads all of those out as noise or drops them.",
+      "Keep it short enough to say in one or two breaths (under 60 Chinese characters).",
+      "Never mention that this is a voice message, that you are recording, or that you cannot send voices. Do not say things like \"here is my voice\" — just say the words.",
+    );
+  }
+  if (withCatchphrases) {
+    // 梗的提示词有一个和表情包相反的陷阱：写「偶尔说一句」会被模型当成默认答案，
+    // 结果一句都不说；写「经常说」又会变成每轮都塞，角色像卡带。
+    //
+    // 所以这里不谈频率，只谈**匹配**：时机对了就原样说，不对就不说。
+    // 频率交给代码里的冷却去压（两小时内不复用），提示词只负责教她「这是你的口头禅」。
+    //
+    // 「原样说」必须写死成 verbatim：只说「可以用这些梗」，模型会把它当成灵感来源，
+    // 改写成自己的话，用户加的那句「不烧心吗」永远等不到。
+    lines.push(
+      "catchphrases are your own verbal habits — running jokes and pet phrases that people recognise you by. Each entry has a phrase and a usage describing the moment it belongs to.",
+      "When the conversation actually reaches that moment, say the phrase verbatim as part of your reply. Not paraphrased, not quoted, not listed, not explained. It should sound like a habit you already had, not a line you were handed.",
+      "Match the usage, not the wording: if the usage does not describe what is happening right now, do not say it. Nothing is wrong with a reply that uses none of them — forcing one into an unrelated turn is what makes it feel canned.",
+      "Use at most one per reply. If several fit, take the one closest to the current topic. Never chain two of them to get through the list.",
+      "Entries marked justSaid are ones you used very recently. Skip them unless nothing else fits at all — repeating the same line twice in a short span is the one thing that gives the trick away.",
+      "Add usedCatchphraseIds to your JSON object: the ids of the catchphrases you actually said, usually 0 or 1 entries, empty when you used none.",
+    );
+  }
   return lines.join("\n");
 }
 
@@ -309,6 +373,9 @@ export async function generateConversationReply(input: ConversationReplyInput): 
   // 「自己的图」之间来回犹豫，而用户想看到的显然是后者。
   const emojiStickers = input.emojiStickers ?? [];
   const withStickers = emojiStickers.length > 0;
+  // 梗和表情包不互斥：一个是文字习惯，一个是图，两类一起用才是完整的「她说话的样子」。
+  const catchphrases = input.catchphrases ?? [];
+  const withCatchphrases = catchphrases.length > 0;
 
   // Serialize only the content needed to generate a reply. Never serialize API keys,
   // provider URLs, memory scope IDs, owner IDs, or other connection settings into a prompt
@@ -368,6 +435,18 @@ export async function generateConversationReply(input: ConversationReplyInput): 
           })),
         }
       : {}),
+    ...(withCatchphrases
+      ? {
+          catchphrases: catchphrases.map((item) => ({
+            id: item.id,
+            // 台词要原样说，所以**不能**在这里截断：截一半的梗说出来就是残句。
+            // 上限在写入时就按 200 字符卡住（见 schema / 接口），这里不再动。
+            phrase: item.phrase,
+            ...(item.usage?.trim() ? { usage: item.usage.trim().slice(0, 300) } : {}),
+            ...(item.justSaid ? { justSaid: true } : {}),
+          })),
+        }
+      : {}),
     recentMessages: input.recentMessages.map((entry) => ({
       role: entry.role,
       content: entry.content,
@@ -414,9 +493,11 @@ export async function generateConversationReply(input: ConversationReplyInput): 
               content: systemPrompt({
                 withFaces: !withStickers && emojiFaces.length > 0,
                 withStickers,
+                withCatchphrases,
                 withUserAddress: Boolean(userAddress),
                 withSpeaker: Boolean(speaker),
                 withGroupChat,
+                withVoiceReply: input.voiceReply === true,
               }),
             },
             { role: "user", content: JSON.stringify(promptInput) },
@@ -459,6 +540,7 @@ export async function generateConversationReply(input: ConversationReplyInput): 
     const validSnapshotIds = new Set(input.snapshots.map((snapshot) => snapshot.id));
     const validFaceIds = new Set(emojiFaces.map((face) => face.id));
     const validStickerIds = new Set(emojiStickers.map((sticker) => sticker.id));
+    const validCatchphraseIds = new Set(catchphrases.map((item) => item.id));
     const validAnchorIds = new Set((input.groupAnchors ?? []).map((anchor) => anchor.id));
     const validEvidenceIds = new Set((input.transcript ?? []).map((entry) => entry.id).filter((id): id is string => Boolean(id)));
     const groupDecision = withGroupChat
@@ -468,6 +550,9 @@ export async function generateConversationReply(input: ConversationReplyInput): 
     const base = {
       usedMemoryIds: readIdList(parsed.usedMemoryIds, validMemoryIds),
       usedSnapshotIds: readIdList(parsed.usedSnapshotIds, validSnapshotIds),
+      // 只认这一轮清单内的 id：模型偶尔会把上一轮的梗 id 记回来，或者干脆编一个。
+      // 认了就会把冷却盖到一个没说过的人头上，下一轮那句反而还能用。
+      usedCatchphraseIds: withCatchphrases ? readIdList(parsed.usedCatchphraseIds, validCatchphraseIds, 3) : [],
       ...(groupDecision ? { groupDecision } : {}),
       model: responseModel.slice(0, 200),
       provider: endpoint.hostname,
@@ -477,7 +562,9 @@ export async function generateConversationReply(input: ConversationReplyInput): 
     // silent 只在群聊里被承认，且只在调用方允许沉默时：网页/私聊传了 allowSilent 也不该「已读不回」，
     // 被 @ 的轮次更不允许模型用 silent 逃掉。
     if (withGroupChat && input.allowSilent === true && parsed.action === "silent") {
-      return { action: "silent", reply: "", faceIds: [], stickerId: null, ...base };
+      // 沉默轮不记账：这一轮她什么都没说，模型却可能在 JSON 里留一个梗 id（从上一轮串味过来的）。
+      // 记了就等于「没开口也算用过」，冷却白白吃掉一次。
+      return { action: "silent", reply: "", faceIds: [], stickerId: null, ...base, usedCatchphraseIds: [] };
     }
     if (!reply) throw new Error("LLM_INVALID_RESPONSE: 模型没有返回有效的 reply 文本。");
     return {
