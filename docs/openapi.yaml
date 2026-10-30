@@ -19,6 +19,7 @@ tags:
   - name: MemorySettings
   - name: Tasks
   - name: Channels
+  - name: Stickers
 security:
   - sessionCookie: []
 paths:
@@ -856,7 +857,11 @@ paths:
       tags: [Characters]
       operationId: getCharacterChatHistory
       summary: 获取角色 AI 会话列表和历史消息
-      description: 本地开发功能。只返回当前角色全局记忆范围的会话，不读取其他角色或私人记忆范围的会话；会话本身仍归属角色全局范围，但每次回复可以检索当前用户自己的私人记忆。
+      description: >-
+        本地开发功能。只返回当前角色全局记忆范围里**桌面端自己的会话**（`channelBindingId` 为空），
+        QQ 等渠道的会话不会出现在这里；会话本身仍归属角色全局范围，但每次回复可以检索当前用户自己的私人记忆。
+        `conversationId` 指向的会话查不到时（已删除、已归档或属于渠道）不报错，回落到列表第一条并在
+        `selectedConversationId` 里返回实际选中的会话 —— 前端据此把 URL 上的过期 id 换掉。
       parameters:
         - name: conversationId
           in: query
@@ -1095,6 +1100,40 @@ paths:
           description: 浏览器请求的 Origin / Sec-Fetch-Site 与当前主机不一致，或未登录
         '404':
           $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Characters]
+      operationId: deleteCharacterChatConversation
+      summary: 永久删除角色会话
+      description: >-
+        本地开发功能。硬删除会话及其全部消息，无法恢复，并写入审计日志（`CONVERSATION_DELETED`）。
+        **记忆不受影响**：记忆条目与快照挂在记忆范围下、不隶属会话，`MemoryItem.sourceMessageId` 与
+        `MemorySnapshotSource.messageId` 都是 `onDelete: SetNull`，删消息只会清空「来源是哪条消息」的指针。
+        只处理桌面端对话（`channelBindingId` 为空），QQ 等渠道会话由渠道侧管理，从这里删会 404。
+        响应里的 `retainedMemories` / `retainedSnapshotSources` 是删除后仍保留在记忆侧的条数，用于向用户说明。
+        `retainedMemories` 只数「直接引用本会话消息」的条目，**不包含**经由快照再派生出来的记忆
+        （那类条目 `sourceMessageId` 本来就是空的），所以它是下限而非全量。
+      responses:
+        '200':
+          description: 会话已删除，返回删除量与此前沉淀的记忆条数
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, id, title, deletedMessages, memoriesPreserved, retainedMemories, retainedSnapshotSources]
+                properties:
+                  ok: { type: boolean }
+                  id: { type: string, format: uuid }
+                  title: { type: string, nullable: true }
+                  deletedMessages: { type: integer }
+                  memoriesPreserved: { type: boolean, description: 恒为 true：记忆侧未被删除，仅来源指针置空 }
+                  retainedMemories: { type: integer, description: 仍保留在记忆页的相关记忆条目数（不含回收站） }
+                  retainedSnapshotSources: { type: integer, description: 仍保留的相关快照来源记录数 }
+        '403':
+          description: 浏览器请求的 Origin / Sec-Fetch-Site 与当前主机不一致，或未登录
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 该角色尚未建立全局记忆范围
   /characters/{characterId}/timeline:
     parameters:
       - $ref: '#/components/parameters/CharacterId'
@@ -1942,7 +1981,8 @@ paths:
       summary: 主动找话的现状
       description: |
         返回设置、此刻能不能发（与后台 tick 使用同一把闸门）、待发池条数与最近几条想法。
-        设置本身通过 `PATCH /characters/{characterId}` 的 `proactive` 字段写入。
+        `group` 是 QQ 群「冷场了自己找话题」的现状，与私聊那条链各自独立。
+        设置本身通过 `PATCH /characters/{characterId}` 的 `proactive` / `groupInitiative` 字段写入。
       responses:
         '200':
           description: 设置与状态
@@ -1950,9 +1990,36 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [settings, status, recent]
+                required: [settings, status, recent, group]
                 properties:
                   settings: { $ref: '#/components/schemas/ProactiveSettings' }
+                  group:
+                    type: object
+                    required: [settings, status]
+                    properties:
+                      settings: { $ref: '#/components/schemas/GroupInitiativeSettings' }
+                      status:
+                        type: object
+                        required: [canSendNow, reason, reasonLabel, groups]
+                        properties:
+                          canSendNow: { type: boolean }
+                          reason: { type: string }
+                          reasonLabel: { type: string }
+                          quotaExceeded: { type: boolean }
+                          groups:
+                            type: array
+                            description: 她待过（有过消息）的群，按最冷排序，最多 10 个。
+                            items:
+                              type: object
+                              required: [groupId, idleMinutes, sentToday, canSendNow, reason, reasonLabel]
+                              properties:
+                                groupId: { type: string }
+                                idleMinutes: { type: integer, minimum: 0 }
+                                sentToday: { type: integer, minimum: 0 }
+                                lastInitiativeAt: { type: string, format: date-time, nullable: true }
+                                canSendNow: { type: boolean }
+                                reason: { type: string }
+                                reasonLabel: { type: string }
                   status:
                     type: object
                     required: [sentToday, pendingCount, canSendNow, reason, reasonLabel]
@@ -2008,6 +2075,35 @@ paths:
                   status: { type: string, enum: [sent, skipped, failed] }
                   reason: { type: string }
                   reasonLabel: { type: string }
+                  content: { type: string, nullable: true }
+                  detail: { type: string, nullable: true, description: 失败时的原始错误 }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /characters/{characterId}/proactive/group-try:
+    parameters:
+      - $ref: '#/components/parameters/CharacterId'
+    post:
+      tags: [Proactive]
+      operationId: tryCharacterGroupInitiative
+      summary: 群内找话题「立即试一次」
+      description: |
+        挑最冷的那个群，跳过时间类闸门（安静时段 / 冷场 / 最小间隔 / 每日条数），
+        开关、`dailyMax = 0` 与当日模型额度仍然照判。**会真的往 QQ 群里发一条**。
+      responses:
+        '200':
+          description: 本次结果；status=sent 时 content 为发出的正文
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, reason, reasonLabel]
+                properties:
+                  status: { type: string, enum: [sent, skipped, failed] }
+                  reason: { type: string }
+                  reasonLabel: { type: string }
+                  groupId: { type: string, nullable: true }
                   content: { type: string, nullable: true }
                   detail: { type: string, nullable: true, description: 失败时的原始错误 }
         '401':
@@ -2446,6 +2542,298 @@ paths:
                 $ref: '#/components/schemas/ApiResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /characters/{characterId}/stickers:
+    parameters:
+      - $ref: '#/components/parameters/CharacterId'
+    get:
+      tags: [Stickers]
+      summary: 获取角色的表情包清单
+      description: |
+        按创建时间升序，返回**裸数组**。这一组接口都不套 `{data, error}` 信封（早期接口那样写，实际实现是裸 JSON）—— 以这里的定义为准。
+        图片本体不在这里，走 `/stickers/{stickerId}/image` 单独取：图存在 `.data/` 下、不可被 Web 直接访问，且它属于角色的私人素材。
+      responses:
+        '200':
+          description: 表情包清单
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Sticker' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [Stickers]
+      summary: 上传一张表情包
+      description: |
+        `multipart/form-data`，不用 JSON + base64：图片是二进制，塞进 JSON 要多花三分之一体积。
+        上传时会**等比缩到最大宽度 200px**（只缩不放：本来就不宽于 200 的图原样返回、不重编码），
+        因为 QQ 桌面端按图片原始像素显示，1500px 的图发出去在聊天窗里会占满一屏。
+        动图（GIF/WebP）按帧缩，缩完帧数与帧延时不变；解不开的图存原件，不因为「缩不动」让上传失败。
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file, name]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: PNG / JPG / GIF / WebP，最大 2MB
+                filename:
+                  type: string
+                  description: 原始文件名，**只用于推断扩展名**；磁盘文件名一律由服务端生成 `uuid.ext`，客户端传的名字不进路径
+                name:
+                  type: string
+                  maxLength: 60
+                  description: 她挑图时看到的名字。写情绪或动作词（委屈 / 拍桌笑 / 比心），不要写「表情1」
+                usage:
+                  type: string
+                  maxLength: 200
+                  description: 什么时候用。可以留空，但挑图模型主要看这一句，空着这张基本轮不上
+      responses:
+        '200':
+          description: 创建成功，返回存下来的那条记录（名字、大小、缩小后的 mimeType）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Sticker' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '413':
+          description: 图片超过 2MB（缩小之后仍然超也算）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RequestError' }
+        '415':
+          description: 只支持 PNG / JPG / GIF / WebP，认不出扩展名
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RequestError' }
+  /characters/{characterId}/stickers/usage-suggestion:
+    parameters:
+      - $ref: '#/components/parameters/CharacterId'
+    post:
+      tags: [Stickers]
+      summary: 按名字生成一句「什么时候用」（上传框用，图还没入库）
+      description: |
+        用户常常知道这张图是干什么的（名字起得出来），却写不出场景那句话；而挑图模型真正比对的就是那一句。
+        这个入口对应**添加表情包**那一刻 —— 贴纸还没有 id，所以图由浏览器带上来（先缩到 200px 宽再转 data URL）。
+        有图且角色开了「看图」就走视觉（名字 + 画面），没开或没带图就只按名字生成。
+        **只回建议、不写库**：用户在弹窗里还要改，保存仍走上面的上传接口。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  maxLength: 60
+                  description: 表单里**当前**填的名字（不一定是已保存的那个）
+                image:
+                  type: string
+                  description: |
+                    可选，`data:image/...` 形式的缩略图，最长 40 万字符（约 300KB 二进制）。
+                    不是 data URL 或太长都会被当成「没带图」，退回只按名字生成 —— 这个接口不是上传通道。
+      responses:
+        '200':
+          description: 生成了一句
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StickerUsageSuggestion' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          description: 名字为空，或模型这次给不出能用的场景
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RequestError' }
+        '502':
+          description: 上游模型没有返回结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RequestError' }
+        '503':
+          description: 角色还没有可用的模型（聊天模型都没配）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RequestError' }
+  /characters/{characterId}/stickers/{stickerId}:
+    parameters:
+      - $ref: '#/components/parameters/CharacterId'
+      - $ref: '#/components/parameters/StickerId'
+    patch:
+      tags: [Stickers]
+      summary: 改名字 / 使用场景 / 启用状态
+      description: 三个字段都是可选的，但至少要给一个（否则 400）。**图不能换** —— 换图等于换一张表情，应该删了重传。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StickerPatch' }
+      responses:
+        '200':
+          description: 更新后的记录
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Sticker' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Stickers]
+      summary: 删除一张表情包
+      description: |
+        库记录与磁盘文件一起删，顺序是先删记录 —— 留孤儿文件比留孤儿记录好排查。
+        同时清掉 `.data/sticker-originals` 里的原件备份（那个备份只为「以后换个宽度重缩」，贴纸没了就没有以后）。不可恢复。
+      responses:
+        '200':
+          description: 已删除
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok: { type: boolean, enum: [true] }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /characters/{characterId}/stickers/{stickerId}/image:
+    parameters:
+      - $ref: '#/components/parameters/CharacterId'
+      - $ref: '#/components/parameters/StickerId'
+    get:
+      tags: [Stickers]
+      summary: 取表情包图片本体
+      description: 给管理页显示缩略图用。必须走接口而不是静态目录 —— 图在 `.data/` 下，放开静态访问等于把用户私人素材公开。
+      responses:
+        '200':
+          description: 图片字节
+          headers:
+            Cache-Control:
+              schema: { type: string }
+              description: 固定为 `private, max-age=300`
+          content:
+            image/png:
+              schema: { type: string, format: binary }
+            image/jpeg:
+              schema: { type: string, format: binary }
+            image/gif:
+              schema: { type: string, format: binary }
+            image/webp:
+              schema: { type: string, format: binary }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: 记录不存在，或图片文件不在本机（换电脑只搬了库、没搬 `.data`）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RequestError' }
+  /characters/{characterId}/stickers/{stickerId}/relabel:
+    parameters:
+      - $ref: '#/components/parameters/CharacterId'
+      - $ref: '#/components/parameters/StickerId'
+    post:
+      tags: [Stickers]
+      summary: 让视觉模型再看一次这张图，重写名字与场景
+      description: |
+        自动打标经常不准 —— 群里的图没有上下文，只凭画面猜；动图只看到一帧、抽象梗图、带字的图尤其容易错。
+        这里用的是**当前存的那份图**（已缩到 200px），那才是她真正会发出去的东西。
+        成功即写库并返回新记录（不返回「建议值让前端再提交一次」：点这一下就是「按新的来」）。
+        模型判定「这不是表情包」（聊天截图 / 长截图 / 照片）时**不改数据**，只回 `skipped: true` 和一句人话，把删不删的决定交回给用户。
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: {}
+      responses:
+        '200':
+          description: '已重写，或模型判定不是表情包（skipped 为 true）'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StickerRelabelResult' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          description: 模型只给出没有信息量的名字（如「表情包」），这张需要用户自己写
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RequestError' }
+        '502':
+          description: 上游模型没有返回结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RequestError' }
+        '503':
+          description: 角色没有可用的视觉模型（没开「看图」或没配视觉模型）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RequestError' }
+  /characters/{characterId}/stickers/{stickerId}/usage-suggestion:
+    parameters:
+      - $ref: '#/components/parameters/CharacterId'
+      - $ref: '#/components/parameters/StickerId'
+    post:
+      tags: [Stickers]
+      summary: 给编辑弹窗的「什么时候用」生成一句
+      description: |
+        与上传框那个入口的区别只有「图从哪来」：贴纸已入库，服务端自己读文件。同样只回建议、不写库，保存走 PATCH。
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  maxLength: 60
+                  description: 可省略。省略时用库里存的名字；给了就用表单里的（人往往先改名再点按钮）
+      responses:
+        '200':
+          description: 生成了一句
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StickerUsageSuggestion' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          description: 名字为空，或模型这次给不出能用的场景
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RequestError' }
+        '502':
+          description: 上游模型没有返回结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RequestError' }
+        '503':
+          description: 角色还没有可用的模型
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RequestError' }
 components:
   securitySchemes:
     sessionCookie:
@@ -2467,6 +2855,11 @@ components:
       name: pageSize
       in: query
       schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+    StickerId:
+      name: stickerId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
   responses:
     Unauthorized:
       description: 未登录或会话无效
@@ -2768,6 +3161,8 @@ components:
         chatModel: { type: string, maxLength: 120 }
         chatTemperature: { type: number, minimum: 0, maximum: 2 }
         chatMaxTokens: { type: integer, minimum: 256, maximum: 8192 }
+        proactive: { $ref: '#/components/schemas/ProactiveSettings' }
+        groupInitiative: { $ref: '#/components/schemas/GroupInitiativeSettings' }
     Character:
       allOf:
         - $ref: '#/components/schemas/CharacterInput'
@@ -2898,6 +3293,46 @@ components:
           maximum: 1
           default: 0.4
           description: 挑目的时的置信度门槛。
+    GroupInitiativeSettings:
+      type: object
+      description: |
+        QQ 群「冷场了自己找话题」的设置。与 ProactiveSettings 是**两套**：
+        私聊的节奏是「这个人」，群里的节奏是「这个群」，共用一个阈值必然有一边是错的。
+        写入时只提交要改的字段；读取时一定是归一化后的完整对象。
+      required: [enabled, idleMinutes, dailyMax, minGapMinutes, quietStart, quietEnd]
+      properties:
+        enabled:
+          type: boolean
+          default: false
+          description: 默认关。打开后她会在安静够久的群里自己起个头。
+        idleMinutes:
+          type: integer
+          minimum: 15
+          maximum: 1440
+          default: 60
+          description: 群里安静多少分钟算「冷场」。取「最后一条群消息」与「她最后一次说话」里更近的那个。
+        dailyMax:
+          type: integer
+          minimum: 0
+          maximum: 24
+          default: 3
+          description: 每个群每天最多主动开几次话题（东八区自然日）；0 等于关掉这个口子。
+        minGapMinutes:
+          type: integer
+          minimum: 30
+          maximum: 1440
+          default: 180
+          description: 同一个群两次尝试之间的最小间隔。模型判定「不说」也算一次尝试。
+        quietStart:
+          type: string
+          pattern: '^\d{1,2}:\d{2}$'
+          default: '23:30'
+          description: 安静时段起点（含）。允许跨午夜。
+        quietEnd:
+          type: string
+          pattern: '^\d{1,2}:\d{2}$'
+          default: '07:30'
+          description: 安静时段终点（不含）。与起点相同会被 400 拒绝。
     MemoryJob:
       type: object
       required: [id, type, status, attemptCount, createdAt]
@@ -2912,3 +3347,89 @@ components:
         attemptCount: { type: integer, minimum: 0 }
         lastError: { type: string, nullable: true }
         createdAt: { type: string, format: date-time }
+    Sticker:
+      type: object
+      description: |
+        一张表情包。名字与使用场景是挑图模型唯一的判断依据 ——
+        进提示词前会先做减法（剔除上一张、封顶 12 条、没用过的优先且其余打乱）。
+      required: [id, name, usage, enabled, mimeType, sizeBytes, useCount, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        name:
+          type: string
+          maxLength: 60
+          description: 情绪或动作词，如「委屈」「拍桌笑」
+        usage:
+          type: string
+          maxLength: 200
+          description: 什么时候用。空字符串表示没写，这张基本挑不中
+        enabled:
+          type: boolean
+          description: 停用的图留在列表里，但不会进提示词
+        mimeType:
+          type: string
+          enum: [image/png, image/jpeg, image/gif, image/webp]
+          description: 缩小后重新编码过的格式，可能与上传时不同
+        sizeBytes:
+          type: integer
+          description: 磁盘上的实际字节数（缩图后已同步，不是原图大小）
+        useCount:
+          type: integer
+          minimum: 0
+          description: 被发出去过几次。0 表示还没用过，会排进提示词的最前面
+        lastUsedAt:
+          type: string
+          format: date-time
+          nullable: true
+        createdAt: { type: string, format: date-time }
+        source:
+          type: string
+          enum: [manual, collected]
+          description: manual=页面传的；collected=从群里「偷」的
+    StickerPatch:
+      type: object
+      description: 三个字段都可选，但至少要给一个（否则 400）。图不能换，换图请删了重传。
+      properties:
+        name: { type: string, maxLength: 60 }
+        usage: { type: string, maxLength: 200 }
+        enabled: { type: boolean }
+    StickerUsageSuggestion:
+      type: object
+      required: [usage, source]
+      properties:
+        usage:
+          type: string
+          maxLength: 200
+          description: 一句「什么时候用」，已经裁好首尾空白
+        source:
+          type: string
+          enum: [vision, name]
+          description: vision=看了图（名字 + 画面）；name=只凭名字，模型没看到图
+    StickerRelabelResult:
+      type: object
+      required: [skipped]
+      properties:
+        skipped:
+          type: boolean
+          description: true 表示模型判定「这不是表情包」，此时**数据没有被改动**
+        reason:
+          type: string
+          enum: [not-a-sticker]
+          description: skipped 为 true 时给出原因
+        message:
+          type: string
+          description: skipped 为 true 时的一句人话，可直接展示给用户
+        sticker:
+          $ref: '#/components/schemas/Sticker'
+    RequestError:
+      type: object
+      description: |
+        h3/Nitro 的错误响应体 —— 注意**不是** `{data, error}` 信封，
+        只有 statusCode / statusMessage 是稳定的，message 与 url 视情况出现。
+      required: [statusCode, statusMessage]
+      properties:
+        statusCode: { type: integer }
+        statusMessage: { type: string }
+        message: { type: string }
+        url: { type: string }
+        error: { type: boolean }
