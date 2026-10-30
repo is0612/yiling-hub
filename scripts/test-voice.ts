@@ -10,12 +10,15 @@ import assert from "node:assert/strict";
 
 import {
   applyVoiceTranscripts,
+  buildMinimaxEndpoint,
   buildWav,
+  canSpeakReply,
   isVoiceReplyEnabled,
   isVoiceRequested,
   isVoiceTranscribeEnabled,
   MAX_VOICES_PER_TURN,
   normalizeSpeakableText,
+  planVoiceReply,
   repairWavSizes,
   resolveVoiceAsrSettings,
   resolveVoiceChance,
@@ -23,6 +26,7 @@ import {
   sanitizeTranscript,
   shouldSendVoice,
   silkToWav,
+  synthesizeSpeechSilk,
   VOICE_COOLDOWN_MS,
   VOICE_TEXT_MAX_CHARS,
   wavToSilk,
@@ -228,9 +232,97 @@ assert.equal(
 // 一轮最多转几条。
 assert.equal(MAX_VOICES_PER_TURN, 2);
 
-// ── 8. 配置解析 ────────────────────────────────────────
+// ── 7.2 生成前「计划」与生成后「复核」是两步 ───────────
+// 分成两步的唯一理由：模型要在生成之前就知道这一条会被念出来。
+assert.equal(planVoiceReply({ modelConfig: { voiceEnabled: true, voiceChance: 0 } }), false, "概率 0 不计划。");
+assert.equal(planVoiceReply({ modelConfig: { voiceEnabled: true, voiceChance: 0 }, force: true }), true, "用户要就计划发。");
+assert.equal(planVoiceReply({ modelConfig: { voiceChance: 100 }, force: true }), false, "开关没开，force 也不能绕过。");
+assert.equal(
+  planVoiceReply({ modelConfig: { voiceEnabled: true, voiceChance: 100 }, lastVoiceAt: new Date() }),
+  false,
+  "冷却期内不计划（否则提示词会让她按语音写，最后却发文字）。",
+);
+
+assert.equal(canSpeakReply("在的，怎么啦"), true);
+assert.equal(canSpeakReply("啊".repeat(VOICE_TEXT_MAX_CHARS + 1)), false, "超长不读。");
+assert.equal(canSpeakReply("……"), false, "没有可读内容不读。");
+// 计划通过但写完太长：生成后这一步把它拦下来，降级发文字。
+assert.equal(
+  shouldSendVoice({
+    modelConfig: { voiceEnabled: true, voiceChance: 0 },
+    text: "啊".repeat(VOICE_TEXT_MAX_CHARS + 1),
+    force: true,
+  }),
+  false,
+);
+
+// ── 8. MiniMax：hex 音频 + GroupId 查询参数 ────────────
+// 这家跟 OpenAI 兼容协议完全不是一回事：端点叫 /t2a_v2、GroupId 在查询串里、
+// 返回的 data.audio 是 **hex 字符串**（当二进制写会得到一坨乱码）。
+{
+  assert.equal(
+    buildMinimaxEndpoint("https://api.minimaxi.com/v1", "123").toString(),
+    "https://api.minimaxi.com/v1/t2a_v2?GroupId=123",
+  );
+  assert.equal(
+    buildMinimaxEndpoint("https://api.minimaxi.com/v1", "").toString(),
+    "https://api.minimaxi.com/v1/t2a_v2",
+    "没配 GroupId 就不带参数，而不是拼一个空值。",
+  );
+
+  const originalFetch = globalThis.fetch;
+  let calledUrl = "";
+  let calledBody: Record<string, unknown> = {};
+  const minimaxSettings = {
+    provider: "minimax" as const,
+    model: "speech-2.5-turbo-preview",
+    voice: "female-shaonv",
+    apiBaseUrl: "https://api.minimaxi.com/v1",
+    apiKey: "sk-minimax-test",
+    groupId: "group-1",
+    speed: 1,
+  };
+  try {
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      calledUrl = String(input);
+      calledBody = JSON.parse(typeof init?.body === "string" ? init.body : "{}") as Record<string, unknown>;
+      return new Response(JSON.stringify({
+        data: { audio: wav.toString("hex") },
+        base_resp: { status_code: 0, status_msg: "success" },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    };
+
+    const silk = await synthesizeSpeechSilk("你好呀", minimaxSettings);
+    assert.ok(silk && silk.length > 0, "hex 音频要能解出来并转成 silk。");
+    assert.ok(calledUrl.includes("/t2a_v2"), "走的是 t2a_v2 而不是 OpenAI 的 /audio/speech。");
+    assert.ok(calledUrl.includes("GroupId=group-1"), "GroupId 拼在查询串里。");
+    const voiceSetting = calledBody.voice_setting as Record<string, unknown>;
+    const audioSetting = calledBody.audio_setting as Record<string, unknown>;
+    assert.equal(voiceSetting.voice_id, "female-shaonv");
+    assert.equal(audioSetting.format, "wav", "只要 wav：mp3 这边没有解码器。");
+    assert.equal(calledBody.stream, false, "wav 只在非流式下支持。");
+
+    // 200 + 业务错误码（余额不足、音色不存在、GroupId 不匹配都这样）必须当失败。
+    globalThis.fetch = async (): Promise<Response> => new Response(JSON.stringify({
+      base_resp: { status_code: 1004, status_msg: "invalid api key" },
+    }), { status: 200, headers: { "content-type": "application/json" } });
+    assert.equal(await synthesizeSpeechSilk("你好呀", minimaxSettings), null);
+
+    // audio 不是合法 hex 时也不能硬转，否则发给 QQ 的是一条坏语音。
+    globalThis.fetch = async (): Promise<Response> => new Response(JSON.stringify({
+      data: { audio: "not-a-hex-string" },
+      base_resp: { status_code: 0 },
+    }), { status: 200, headers: { "content-type": "application/json" } });
+    assert.equal(await synthesizeSpeechSilk("你好呀", minimaxSettings), null);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+}
+
+// ── 9. 配置解析 ────────────────────────────────────────
 const VOICE_ENV_KEYS = [
   "VOICE_TTS_MODEL", "VOICE_TTS_BASE_URL", "VOICE_TTS_API_KEY", "VOICE_TTS_VOICE", "VOICE_TTS_SPEED",
+  "VOICE_TTS_PROVIDER", "VOICE_TTS_GROUP_ID",
   "VOICE_ASR_MODEL", "VOICE_ASR_BASE_URL", "VOICE_ASR_API_KEY", "VOICE_ASR_LANGUAGE",
 ] as const;
 const savedEnv = new Map<string, string | undefined>(VOICE_ENV_KEYS.map((key) => [key, process.env[key]]));
@@ -242,6 +334,51 @@ try {
   clearVoiceEnv();
   assert.equal(resolveVoiceTtsSettings({}), null, "没配模型就不发语音（默认状态）。");
   assert.equal(resolveVoiceAsrSettings({}), null);
+
+  // 地址里带 minimax 就自动走 MiniMax 协议 —— 换服务商不该被逼着多填一个枚举。
+  process.env.VOICE_TTS_MODEL = "speech-2.5-turbo-preview";
+  process.env.VOICE_TTS_BASE_URL = "https://api.minimaxi.com/v1";
+  process.env.VOICE_TTS_API_KEY = "sk-minimax";
+  const autoMinimax = resolveVoiceTtsSettings({});
+  assert.equal(autoMinimax!.provider, "minimax");
+  assert.equal(autoMinimax!.voice, "female-shaonv", "MiniMax 的默认音色不该是 OpenAI 的 alloy。");
+  // 显式指定优先于推断（比如用中转站域名，地址里看不出是哪家）。
+  assert.equal(
+    resolveVoiceTtsSettings({ modelConfig: { ttsProvider: "minimax" } })!.provider,
+    "minimax",
+  );
+
+  // 页面上「自动判断」+ 地址填 minimax：provider 自动识别成 minimax，
+  // 而且填的 GroupId 必须真的带上 —— 这条路径最容易漏（UI 上曾经连输入框都不显示）。
+  const pageMinimax = resolveVoiceTtsSettings({
+    modelConfig: {
+      voiceApiBaseUrl: "https://api.minimaxi.com/v1",
+      ttsModel: "speech-2.5-turbo-preview",
+      ttsVoice: "female-yujie",
+      ttsGroupId: "1234567890123456789",
+    },
+    voiceApiKey: "sk-page",
+  });
+  assert.equal(pageMinimax!.provider, "minimax", "地址里带 minimax 就该走 MiniMax 协议。");
+  assert.equal(pageMinimax!.groupId, "1234567890123456789", "页面填的 GroupId 要带下来。");
+  assert.equal(pageMinimax!.voice, "female-yujie");
+  clearVoiceEnv();
+
+  // 合成换成 MiniMax 之后，识别不能跟着搬过去 —— MiniMax 没有 /audio/transcriptions。
+  // 所以 ASR 地址以 VOICE_ASR_BASE_URL 为准，页面上那个「服务地址」只服务合成。
+  process.env.VOICE_ASR_MODEL = "FunAudioLLM/SenseVoiceSmall";
+  process.env.VOICE_ASR_BASE_URL = "https://api.siliconflow.cn/v1";
+  process.env.VOICE_ASR_API_KEY = "sk-asr";
+  const splitProviders = resolveVoiceAsrSettings({
+    modelConfig: { voiceApiBaseUrl: "https://api.minimaxi.com/v1" },
+  });
+  assert.equal(splitProviders!.apiBaseUrl, "https://api.siliconflow.cn/v1", "识别仍留在原服务商。");
+  delete process.env.VOICE_ASR_BASE_URL;
+  const fallbackAsr = resolveVoiceAsrSettings({
+    modelConfig: { voiceApiBaseUrl: "https://api.minimaxi.com/v1" },
+  });
+  assert.equal(fallbackAsr!.apiBaseUrl, "https://api.minimaxi.com/v1", "没单独配时才复用页面地址。");
+  clearVoiceEnv();
 
   // 页面上填的那一套优先于环境变量：换服务商不该逼人去改 .env。
   const fromPage = resolveVoiceTtsSettings({

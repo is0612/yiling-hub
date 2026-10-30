@@ -24,6 +24,7 @@ import { resolveChatModelSettings } from "../server/utils/chat-model-config";
 import { resolveCharacterApiKey, resolveCharacterVoiceApiKey } from "../server/utils/credential-encryption";
 import { getPrisma } from "../server/utils/prisma";
 import {
+  buildMinimaxEndpoint,
   buildSpeechEndpoint,
   resolveVoiceTtsSettings,
   silkToWav,
@@ -88,12 +89,16 @@ async function main() {
   }
 
   console.log("TTS 配置：" + JSON.stringify({
+    provider: settings.provider,
     model: settings.model,
     voice: settings.voice,
     speed: settings.speed,
     sampleRate: settings.sampleRate ?? "(服务商默认)",
-    endpoint: buildSpeechEndpoint(settings.apiBaseUrl).toString(),
+    endpoint: settings.provider === "minimax"
+      ? buildMinimaxEndpoint(settings.apiBaseUrl, settings.groupId).toString()
+      : buildSpeechEndpoint(settings.apiBaseUrl).toString(),
     keyPresent: Boolean(settings.apiKey),
+    ...(settings.provider === "minimax" ? { groupIdPresent: Boolean(settings.groupId) } : {}),
   }));
   console.log("要合成：" + spoken);
 

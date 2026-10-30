@@ -79,11 +79,20 @@ export function resolveVoiceChance(configValue: unknown): number {
   return Math.min(100, Math.max(0, Math.round(raw)));
 }
 
+export type VoiceTtsProvider = "openai" | "minimax";
+
+/**
+ * 这两家的差别不只是端点：MiniMax 的 `data.audio` 是 **hex 字符串**（不是二进制），
+ * 还要一个 `GroupId` 查询参数。所以不能"一个 OpenAI 兼容实现打天下"。
+ */
 export type VoiceTtsSettings = {
+  provider: VoiceTtsProvider;
   model: string;
   voice: string;
   apiBaseUrl: string;
   apiKey: string;
+  /** 仅 MiniMax 需要；留空就不拼查询参数（新账号改纯 Bearer 时也不至于卡住）。 */
+  groupId: string;
   /** 语速。0.5–2.0，默认 1。 */
   speed: number;
   /**
@@ -93,6 +102,9 @@ export type VoiceTtsSettings = {
    */
   sampleRate?: number;
 };
+
+/** MiniMax 国内站默认端点。国际站是 api.minimax.io，靠地址推断。 */
+const MINIMAX_DEFAULT_BASE = "https://api.minimaxi.com/v1";
 
 export type VoiceAsrSettings = {
   model: string;
@@ -171,9 +183,18 @@ export function resolveVoiceTtsSettings(input: VoiceSettingsInput): VoiceTtsSett
     || "").slice(0, MODEL_MAX_CHARS);
   if (!model) return null;
 
+  // 服务商：显式配了就用（`ttsProvider` / `VOICE_TTS_PROVIDER`），没配就看地址里的 minimax。
+  // 自动推断是刻意的 —— 用户只想换一家服务，不该被逼着多填一个枚举。
+  const explicitProvider = readString(config.ttsProvider) || readString(process.env.VOICE_TTS_PROVIDER);
+  const explicitBase = readString(config.voiceApiBaseUrl) || readString(process.env.VOICE_TTS_BASE_URL);
+  const chatBase = input.chatApiBaseUrl ?? "";
+  const provider: VoiceTtsProvider = explicitProvider === "minimax" || explicitProvider === "openai"
+    ? explicitProvider
+    : (/minimax/i.test(explicitBase || chatBase) ? "minimax" : "openai");
+
   const apiBaseUrl = resolveVoiceBaseUrl(
-    readString(config.voiceApiBaseUrl) || (process.env.VOICE_TTS_BASE_URL ?? ""),
-    input.chatApiBaseUrl ?? "",
+    explicitBase || (provider === "minimax" ? MINIMAX_DEFAULT_BASE : ""),
+    chatBase,
   );
   if (!apiBaseUrl) return null;
 
@@ -186,7 +207,7 @@ export function resolveVoiceTtsSettings(input: VoiceSettingsInput): VoiceTtsSett
 
   const voice = (readString(config.ttsVoice)
     || readString(process.env.VOICE_TTS_VOICE)
-    || "alloy").slice(0, VOICE_NAME_MAX_CHARS);
+    || (provider === "minimax" ? "female-shaonv" : "alloy")).slice(0, VOICE_NAME_MAX_CHARS);
   const speedRaw = Number(process.env.VOICE_TTS_SPEED ?? "1");
   const speed = Number.isFinite(speedRaw) ? Math.min(2, Math.max(0.5, speedRaw)) : 1;
   // 只接受 silk 认识的几档采样率，其余当没配（写错了不如不传）。
@@ -194,8 +215,19 @@ export function resolveVoiceTtsSettings(input: VoiceSettingsInput): VoiceTtsSett
   const sampleRate = [8000, 16000, 24000, 32000, 44100, 48000].includes(sampleRateRaw)
     ? sampleRateRaw
     : undefined;
+  const groupId = (readString(config.ttsGroupId) || readString(process.env.VOICE_TTS_GROUP_ID))
+    .slice(0, VOICE_NAME_MAX_CHARS);
 
-  return { model, voice, apiBaseUrl, apiKey, speed, ...(sampleRate ? { sampleRate } : {}) };
+  return {
+    provider,
+    model,
+    voice,
+    apiBaseUrl,
+    apiKey,
+    groupId,
+    speed,
+    ...(sampleRate ? { sampleRate } : {}),
+  };
 }
 
 /** 解析 ASR 配置。返回 null = 不转写语音。优先级规则同 TTS。 */
@@ -206,8 +238,14 @@ export function resolveVoiceAsrSettings(input: VoiceSettingsInput): VoiceAsrSett
     || "").slice(0, MODEL_MAX_CHARS);
   if (!model) return null;
 
+  // ASR 地址：**环境变量优先于页面上的「服务地址」**。
+  //
+  // 页面上那个字段是给合成用的。用户把合成换成 MiniMax 之后，识别不该跟着搬过去 ——
+  // MiniMax 没有 /audio/transcriptions，两边一起改的结果是「语音能发、但突然听不懂话了」，
+  // 而页面上看不出任何异常（开关都还开着）。所以识别地址以 `.env` 的 VOICE_ASR_* 为准，
+  // 没配它才复用页面地址（只有一家服务商、且支持音频两个端点时这是对的）。
   const apiBaseUrl = resolveVoiceBaseUrl(
-    readString(config.voiceApiBaseUrl) || (process.env.VOICE_ASR_BASE_URL ?? ""),
+    readString(process.env.VOICE_ASR_BASE_URL) || readString(config.voiceApiBaseUrl),
     input.chatApiBaseUrl ?? "",
   );
   if (!apiBaseUrl) return null;
@@ -230,6 +268,18 @@ export function buildSpeechEndpoint(baseUrl: string): URL {
   const normalized = validateChatApiBaseUrl(baseUrl);
   if (!normalized) throw new Error("请先填写语音 API Base URL。");
   return new URL(normalized + "/audio/speech");
+}
+
+/**
+ * MiniMax 的语音端点是 `/t2a_v2`，并且 **GroupId 在查询串里**而不是 body 里。
+ * 留空就不带这个参数：新版账号可能只需要 Bearer，硬要求 GroupId 反而会把能用的配置卡死。
+ */
+export function buildMinimaxEndpoint(baseUrl: string, groupId: string): URL {
+  const normalized = validateChatApiBaseUrl(baseUrl);
+  if (!normalized) throw new Error("请先填写语音 API Base URL。");
+  const url = new URL(normalized + "/t2a_v2");
+  if (groupId) url.searchParams.set("GroupId", groupId);
+  return url;
 }
 
 export function buildTranscriptionEndpoint(baseUrl: string): URL {
@@ -317,18 +367,17 @@ function isWavLenient(buffer: Buffer): boolean {
 }
 
 /**
- * 文字 → silk。任何一步失败都返回 null，调用方退回发文字。
+ * 文字 → wav 字节。两家服务商的请求形状完全不同，所以分成两支。
  *
- * 只要 `wav`：mp3 需要额外的解码器才能进 silk 编码，多一个依赖只为了兜底不值得。
- * 服务商不支持 `response_format: "wav"` 时这条链路就是不工作，配置文档里写清楚了。
+ * 都只要 wav：mp3 需要额外的解码器才能进 silk 编码，多一个依赖只为了兜底不值得。
+ * 服务商不支持 wav 时这条链路就是不工作，日志里会写清楚。
  */
-export async function synthesizeSpeechSilk(
-  text: string,
-  settings: VoiceTtsSettings,
-): Promise<Buffer | null> {
-  const spoken = normalizeSpeakableText(text);
-  if (!spoken) return null;
+async function requestWav(text: string, settings: VoiceTtsSettings): Promise<Buffer | null> {
+  if (settings.provider === "minimax") return requestMinimaxWav(text, settings);
+  return requestOpenaiWav(text, settings);
+}
 
+async function requestOpenaiWav(text: string, settings: VoiceTtsSettings): Promise<Buffer | null> {
   let endpoint: URL;
   try {
     endpoint = buildSpeechEndpoint(settings.apiBaseUrl);
@@ -336,7 +385,6 @@ export async function synthesizeSpeechSilk(
     return null;
   }
 
-  let audio: Buffer;
   try {
     const response = await fetch(endpoint, {
       method: "POST",
@@ -345,7 +393,7 @@ export async function synthesizeSpeechSilk(
       body: JSON.stringify({
         model: settings.model,
         voice: settings.voice,
-        input: spoken,
+        input: text,
         response_format: "wav",
         speed: settings.speed,
         ...(settings.sampleRate ? { sample_rate: settings.sampleRate } : {}),
@@ -356,21 +404,112 @@ export async function synthesizeSpeechSilk(
       console.error("[voice] tts 失败：HTTP " + response.status + " " + (await safeText(response)).slice(0, 200));
       return null;
     }
-    audio = Buffer.from(await response.arrayBuffer());
+    return Buffer.from(await response.arrayBuffer());
+  } catch (error) {
+    console.error("[voice] tts 请求异常：", error instanceof Error ? error.message : String(error));
+    return null;
+  }
+}
+
+/** MiniMax 失败时 HTTP 可能仍是 200，真正的结果在 `base_resp.status_code` 里。 */
+function readMinimaxError(payload: unknown): string {
+  const record = asRecord(payload);
+  const base = asRecord(record.base_resp);
+  const code = base.status_code;
+  if (code === 0 || code === undefined) return "";
+  const message = typeof base.status_msg === "string" ? base.status_msg : "";
+  return `code=${String(code)} ${message}`.trim();
+}
+
+async function requestMinimaxWav(text: string, settings: VoiceTtsSettings): Promise<Buffer | null> {
+  let endpoint: URL;
+  try {
+    endpoint = buildMinimaxEndpoint(settings.apiBaseUrl, settings.groupId);
+  } catch {
+    return null;
+  }
+
+  let payload: unknown;
+  try {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      redirect: "error",
+      headers: { authorization: "Bearer " + settings.apiKey, "content-type": "application/json" },
+      body: JSON.stringify({
+        model: settings.model,
+        text,
+        stream: false, // wav 只在非流式下支持
+        voice_setting: {
+          voice_id: settings.voice,
+          speed: settings.speed,
+          vol: 1,
+          pitch: 0,
+        },
+        audio_setting: {
+          format: "wav",
+          // 文档示例用 32000；silk 编码这边认得，最终会转成 24k。
+          sample_rate: settings.sampleRate ?? 32000,
+          channel: 1,
+        },
+        language_boost: "auto",
+      }),
+      signal: AbortSignal.timeout(TTS_TIMEOUT_MS),
+    });
+    if (!response.ok) {
+      console.error("[voice] tts 失败：HTTP " + response.status + " " + (await safeText(response)).slice(0, 200));
+      return null;
+    }
+    payload = await response.json();
   } catch (error) {
     console.error("[voice] tts 请求异常：", error instanceof Error ? error.message : String(error));
     return null;
   }
 
-  if (!audio.length) return null;
+  const failure = readMinimaxError(payload);
+  if (failure) {
+    // 200 + 业务错误码是常态（余额不足、音色不存在、GroupId 不匹配都走这里）。
+    console.error("[voice] tts 失败：" + failure);
+    return null;
+  }
+
+  const audioHex = readString(asRecord(asRecord(payload).data).audio);
+  if (!audioHex) {
+    console.error("[voice] tts 返回里没有 data.audio");
+    return null;
+  }
+  // **MiniMax 给的是 hex 字符串**，不是二进制。直接当 buffer 写会得到一坨乱码。
+  if (audioHex.length % 2 !== 0 || /[^0-9a-fA-F]/.test(audioHex)) {
+    console.error("[voice] tts 返回的 audio 不是合法 hex（长度 " + audioHex.length + "）");
+    return null;
+  }
+  return Buffer.from(audioHex, "hex");
+}
+
+/**
+ * 文字 → silk。任何一步失败都返回 null，调用方退回发文字。
+ */
+export async function synthesizeSpeechSilk(
+  text: string,
+  settings: VoiceTtsSettings,
+): Promise<Buffer | null> {
+  const spoken = normalizeSpeakableText(text);
+  if (!spoken) return null;
+
+  const audio = await requestWav(spoken, settings);
+  if (!audio?.length) return null;
+
   try {
     const silk = await wavToSilk(audio);
-    console.log("[voice] tts ok " + JSON.stringify({ chars: spoken.length, silkBytes: silk.length }));
+    console.log("[voice] tts ok " + JSON.stringify({
+      provider: settings.provider,
+      chars: spoken.length,
+      silkBytes: silk.length,
+    }));
     return silk;
   } catch {
     // 修过长度字段仍然不行 = 真的不是 wav（多半是 mp3/opus）。打头部 magic 出来，省得靠猜。
     const head = audio.subarray(0, 4).toString("latin1").replace(/[^\x20-\x7e]/g, "?");
-    console.error(`[voice] tts 返回的不是 wav（头部 "${head}"，${audio.length} 字节），无法转 silk；请把 response_format 配成 wav`);
+    console.error(`[voice] tts 返回的不是 wav（头部 "${head}"，${audio.length} 字节），无法转 silk；请把输出格式配成 wav`);
     return null;
   }
 }
@@ -577,30 +716,32 @@ export function isVoiceRequested(text: string): boolean {
     || /说(一)?句话/.test(compact);
 }
 
+/** 这段话能不能读出来：有可读内容，且长度在限度内（超长不截断，直接不读）。 */
+export function canSpeakReply(text: string): boolean {
+  const cleaned = cleanSpeakable(text);
+  if (!hasReadableText(cleaned)) return false;
+  return cleaned.length <= VOICE_TEXT_MAX_CHARS;
+}
+
 /**
- * 这一轮要不要发语音。
+ * 这一轮打不打算发语音 —— **在生成回复之前调用**。
  *
- * 纯函数，不碰网络也不查库 —— 判定和「发不发得出去」是两件事：
- * 判定为 true 之后合成仍可能失败，那时退回发文字（见 serve.ts）。
+ * 分成两步是因为顺序很关键：必须先决定「这轮要说语音」，再生成内容，
+ * 模型才知道要按说话的方式写（短句、口语、不带表情和括号动作）。
+ * 反过来「先生成再判定」的话，模型以为自己只是在打字 ——
+ * 实测她会写出「我这打字声你当语音听吧」这种话，因为提示词里压根没提语音。
  *
- * `force`（用户在消息里明确要语音）跳过**概率与冷却**，但不跳过开关与长度：
- * 她自己不想发、或者一句话要读 20 秒，仍然不该发。
+ * 这里不看回复内容（还不知道），只看开关、冷却与概率；长度在生成后用 `canSpeakReply` 复核。
  */
-export function shouldSendVoice(input: {
+export function planVoiceReply(input: {
   modelConfig: unknown;
-  text: string;
   lastVoiceAt?: Date | null;
   now?: Date;
   random?: () => number;
+  /** 用户在消息里明确要语音：跳过概率与冷却（但不跳过开关）。 */
   force?: boolean;
 }): boolean {
   if (!isVoiceReplyEnabled(input.modelConfig)) return false;
-  // 这里看的是**未截断**的清洗结果：超长回复本来就不该读成语音，
-  // 而不是「截一段读」—— 截断后的话术在语音条里听起来像被掐断。
-  const cleaned = cleanSpeakable(input.text);
-  if (!hasReadableText(cleaned)) return false;
-  if (cleaned.length > VOICE_TEXT_MAX_CHARS) return false;
-
   if (input.force === true) return true;
 
   const now = input.now ?? new Date();
@@ -611,4 +752,21 @@ export function shouldSendVoice(input: {
   if (chance <= 0) return false;
   const random = input.random ?? Math.random;
   return random() * 100 < chance;
+}
+
+/**
+ * 生成之后复核：这一段真的能发成语音吗。
+ *
+ * `shouldSendVoice` 是「计划 + 复核」的合并版，保留给只想知道结果、不需要提前告诉模型的场景。
+ */
+export function shouldSendVoice(input: {
+  modelConfig: unknown;
+  text: string;
+  lastVoiceAt?: Date | null;
+  now?: Date;
+  random?: () => number;
+  force?: boolean;
+}): boolean {
+  if (!planVoiceReply(input)) return false;
+  return canSpeakReply(input.text);
 }
