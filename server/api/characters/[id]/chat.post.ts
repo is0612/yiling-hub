@@ -162,7 +162,9 @@ export default defineEventHandler(async (event) => {
     ? await prisma.message.findMany({
         where: { conversationId: existingConversation.id },
         orderBy: [{ occurredAt: "desc" }, { id: "desc" }],
-        take: 20,
+        // 40 条约 20 轮问答。20 条时她经常接不上十分钟前提过的事，
+        // 用户会以为「记性差」，其实只是没被喂进去。网页对话没有群聊那些素材，多 20 条压力不大。
+        take: 40,
         select: { role: true, content: true, occurredAt: true },
       })
     : [];

@@ -67,6 +67,18 @@ export type ChannelReplySender = (text: string, options?: ChannelReplyOptions) =
  * 为准。群聊记录会进角色全局记忆，事后要能看出「这句话是在哪个群说的」，而标题原来
  * 取的是第一条消息的前 80 字，翻记录时根本认不出是哪个群。
  */
+/**
+ * 一轮回复回看多少条已落库的消息。
+ *
+ * 原来是 20 条。20 条是「消息」不是「轮」：热群里一轮就三五条，实际只覆盖三四轮，
+ * 她接不上十分钟前的话，也记不住那句是谁说的。40 条约 8-10 轮，是这个场景的甜点 ——
+ * 再往上收益递减，而每条历史都要占 prompt token（现在还带 speaker/isOwner）。
+ *
+ * 注意别指望它做「十分钟内发了几张表情」这种统计：40 条在热群依旧覆盖不到十分钟，
+ * 那类判断必须按 occurredAt 回表数（见 `emoji-frequency.ts`）。
+ */
+const RECENT_MESSAGE_LIMIT = 40;
+
 function readGroupIdFromConversationKey(key: string): string | null {
   const matched = /^g:(\d+)$/.exec(key);
   return matched?.[1] ?? null;
@@ -191,6 +203,24 @@ function readStoredVoiceFlag(metadata: unknown): boolean {
     ? metadata as Record<string, unknown>
     : {};
   return record.voice === true;
+}
+
+/**
+ * 落库时记下的发言人。
+ *
+ * 群聊历史全是 `role: "USER"`，谁说的只有 metadata 知道。不把它读出来，
+ * 20 条历史在提示词里就是 20 句没有主人的话 —— 模型只好按「谁口吻像谁」猜，
+ * 于是把 A 说的安到 B 头上（`recentMessages` 原来只映射 role/content/occurredAt）。
+ */
+function readStoredSpeaker(metadata: unknown): { speaker?: string; isOwner: boolean } {
+  const record = metadata && typeof metadata === "object" && !Array.isArray(metadata)
+    ? metadata as Record<string, unknown>
+    : {};
+  const name = typeof record.authorDisplayName === "string" ? record.authorDisplayName.trim().slice(0, 80) : "";
+  return {
+    ...(name ? { speaker: name } : {}),
+    isOwner: record.isOwner === true,
+  };
 }
 
 /**
@@ -498,7 +528,7 @@ async function runChannelTurn(input: {
     ? await prisma.message.findMany({
         where: { conversationId: existingConversation.id },
         orderBy: [{ occurredAt: "desc" }, { id: "desc" }],
-        take: 20,
+        take: RECENT_MESSAGE_LIMIT,
         select: { role: true, content: true, occurredAt: true, metadata: true, externalMessageId: true },
       })
     : [];
@@ -593,6 +623,8 @@ async function runChannelTurn(input: {
       role: item.role as "USER" | "ASSISTANT",
       content: item.content.slice(0, 1800),
       occurredAt: item.occurredAt.toISOString(),
+      // 只有她自己的话不需要发言人；USER 的话一律带上，否则群里几条历史分不清是谁说的。
+      ...(item.role === "USER" ? readStoredSpeaker(item.metadata) : {}),
     }));
 
   const modelText = (message: ChannelTurnMessage) => message.promptContent ?? message.content;
@@ -690,6 +722,9 @@ async function runChannelTurn(input: {
               ...(message.member ? { member: message.member } : {}),
               speaker: message.authorDisplayName ?? "",
               content: message.promptContent ?? message.content,
+              // 谁是主人必须逐行带：顶层 speaker 在群聊路径下不会传（一轮里好几个人说话），
+              // 漏掉这一行，模型只能从「谁说话口吻像主人」里猜，结果就是对谁都喊主人。
+              isOwner: message.speaker?.isOwner === true,
               ...(message.occurredAt ? { occurredAt: message.occurredAt.toISOString() } : {}),
             })),
           }

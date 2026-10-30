@@ -25,7 +25,7 @@ try {
     speaker: { displayName: "群友", isOwner: false, ownerDisplayName: "烟火清凉" },
   });
 
-  assert.equal(result.promptTemplateVersion, "conversation-retrieval-v6");
+  assert.equal(result.promptTemplateVersion, "conversation-retrieval-v8");
   const body = JSON.parse(capturedBody) as { messages: Array<{ role: string; content: string }> };
   const system = body.messages.find((item) => item.role === "system")?.content ?? "";
   const user = body.messages.find((item) => item.role === "user")?.content ?? "";
@@ -51,7 +51,44 @@ try {
   const user2 = body2.messages.find((item) => item.role === "user")?.content ?? "";
   assert(user2.includes("\"isOwner\":true"), "主人说话时必须标明是主人。");
 
-  console.log("对话主人上下文测试通过：主人/群友区分、主人名字注入、平台账号 ID 不进入提示词。");
+  // 群聊：一轮里好几个人说话，主人身份必须挂在**每一行**上。
+  // 顶层 speaker 在群聊路径下不传，只给顶层就等于没有身份信息（对谁都喊主人的根因）。
+  await generateConversationReply({
+    characterName: "小鲸鱼",
+    characterPrompt: "你是一条嘴硬心软的鲸鱼。",
+    model: "test-chat-model",
+    apiKey: "sk-speaker-test",
+    apiBaseUrl: "https://speaker-provider.example/v1",
+    currentMessage: "（本轮消息见 transcript）",
+    groupChat: true,
+    allowSilent: true,
+    transcript: [
+      { id: "m1", member: "member_1", speaker: "何处归千人", content: "@self 大肥鱼她说我呜呜", isOwner: false },
+      { id: "m2", member: "member_2", speaker: "烟火清凉", content: "夸的是你", isOwner: true },
+    ],
+    // 历史消息也要带发言人：群聊里 role USER 不代表同一个人。
+    recentMessages: [
+      { role: "USER", content: "今天好热", occurredAt: new Date().toISOString(), speaker: "何处归千人", isOwner: false },
+      { role: "ASSISTANT", content: "热就少穿点", occurredAt: new Date().toISOString() },
+    ],
+    memories: [],
+    snapshots: [],
+  });
+  const body3 = JSON.parse(capturedBody) as { messages: Array<{ role: string; content: string }> };
+  const system3 = body3.messages.find((item) => item.role === "system")?.content ?? "";
+  const user3 = body3.messages.find((item) => item.role === "user")?.content ?? "";
+  assert(system3.includes("carries isOwner"), "群聊系统提示必须解释每行的 isOwner。");
+  assert(system3.includes("not your owner"), "群聊系统提示必须说明群友不是主人。");
+  assert(user3.includes("\"isOwner\":false"), "群友的行必须标明 isOwner:false。");
+  assert(user3.includes("\"isOwner\":true"), "主人的行必须标明 isOwner:true。");
+  assert(system3.includes("recentMessages are earlier lines"), "群聊系统提示必须解释历史消息里的发言人。");
+
+  // 历史消息：USER 行不能只剩 role + content，否则 20 条历史分不清谁是谁。
+  const recentSection = body3.messages.length ? user3.slice(user3.indexOf("\"recentMessages\"")) : "";
+  assert(recentSection.includes("\"speaker\":\"何处归千人\""), "历史 USER 行必须带发言人。");
+  assert(!recentSection.includes("\"speaker\":\"小鲸鱼\""), "她自己说的话不该被当成 USER 带发言人。");
+
+  console.log("对话主人上下文测试通过：主人/群友区分、主人名字注入、群聊逐行 isOwner、平台账号 ID 不进入提示词。");
 } finally {
   globalThis.fetch = originalFetch;
 }

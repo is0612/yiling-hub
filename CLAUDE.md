@@ -54,6 +54,8 @@ QQ 私聊与「主人」：主人的 QQ 私聊（`speaker.isOwner`）挂在角�
 
 群聊记录也算她的记忆：群会话挂在角色全局范围下，标题写 `QQ群 <群号>`、`metadata` 带 `kind`/`groupId`；记忆页时间线只取 `memory,snapshot`，所以群聊原文走独立接口 `GET /characters/{id}/group-chats`（群列表 + 选中群消息，按群号区分）。周期快照的来源消息必须**按会话配额**取（`memory-source-selection.ts`：每会话先保最新一条，250 条总预算内按时间填，单会话上限 80），**不要再改回「整个范围按时间取最早 125 + 最晚 125」** —— 一天几十条的群会把私聊整段挤出窗口，总结只剩群里与她无关的闲话。来源带 `origin`（`QQ群 <群号>` / `私聊` / `本地对话`）进提示词，群聊只提炼与她相关的内容，群友隐私不写长期记忆。回归测试 `yarn test:memory-source-selection`。
 
+群聊里「谁是主人」必须**逐行**带（`transcript[].isOwner`），不能指望顶层的 `speaker`：那一份的描述是「当前跟我说话的人」，而群聊一轮里好几个人在说话，`useTranscript` 一旦为真（群聊永远为真），顶层 `speaker` 就不传了，`withSpeaker` 那段提示词也跟着不加载。结果就是模型手上没有任何身份信息，只能按「谁说话口吻像主人」猜 —— 表现为对着群友也喊「主人」（2026-10-30 实际踩到，别人家的鱼反而认人）。所以 `serve.ts` 给主人的消息挂 `speaker.isOwner` → `pipeline` 映射进 transcript 每行（非主人显式写 `false`，缺字段会被模型读成「不知道」）→ `chat-reply` 的群聊段解释「只有 `isOwner: true` 的是你主人，其他都是群友/别的 bot，别的 bot 也会喊别人主人」。「主人这轮没说话」时模型仍不知道主人叫什么（`ownerDisplayName` 只在私聊路径解析），这是已知缺口，别为此把顶层 `speaker` 塞回群聊。提示词版本因此升到 `v8`，回归测试 `yarn test:chat-speaker-context`（含群聊逐行断言）。
+
 前端渠道入口按平台拆成两个页面，**不要再合并回一个通用「渠道管理」页**（`app/pages/channels.vue` 已删除）：QQ 小号在「系统管理 → QQ 渠道」（`app/pages/qq.vue`，只列 `qq-onebot`，含四步接入引导），B站 在「系统管理 → B站 值班台」（`app/pages/bili/index.vue`，账号创建、绑定角色、值班设置都在里面）。两个页面共用 `/api/admin/channels` 系列接口；QQ 凭据不回显，保存时地址/Token 留空表示沿用旧值（`channels/index.post.ts` 里的合并逻辑，别改成直接覆盖）。
 
 QQ 群里的「去刷一轮 B站」只认连接设置里的**主人 QQ**（`metadata.ownerQq`），并且要同时打开 `metadata.groupBiliRunEnabled`；主人称呼（`metadata.ownerName`）会作为 `speaker.ownerDisplayName` 写进对话提示词（只传称呼、不传账号 ID），让她认得出主人；群友发同一句话直接忽略，不能进入普通聊天。执行复用 `runDutyRound`（额度/模型/bili CLI/评论收藏动态与值班台一致），先回执再后台跑，同一角色不并发。没有 B站 绑定时只回复提示，不得假装跑过。
