@@ -47,6 +47,8 @@ type ChannelBinding = {
   replyOnlyWhenMentioned: boolean;
   /** 群聊怎么回：模式 + 攒批/闸门参数，后端已解析好默认值。 */
   groupChat: GroupChatSettings;
+  /** 按群覆盖的模式：`{ "<群号>": 档位 }`；没在这张表里的群沿 groupChat.mode。 */
+  groupChatModes?: Record<string, GroupChatSettings["mode"]>;
   /** 主人能否在群里触发刷一轮 B站（后端已回退到连接默认值）。 */
   groupBiliRunEnabled: boolean;
 };
@@ -163,6 +165,26 @@ const MODE_LABEL: Record<string, string> = {
   ambient: "自然接话",
   all: "每条都回",
 };
+
+/**
+ * 行头的参与度徽标。
+ *
+ * 按群设过就不能再显示默认档了 —— 一条绑定挂三个群、各设一档时，
+ * 显示「自然接话」会让人以为三个群都是这样。具体怎么设的放进 title。
+ */
+function modeLabelOf(binding: ChannelBinding): string {
+  return Object.keys(binding.groupChatModes ?? {}).length
+    ? "按群设置"
+    : MODE_LABEL[binding.groupChat.mode] ?? "会回复";
+}
+
+function modeBadgeTitle(binding: ChannelBinding): string {
+  const entries = Object.entries(binding.groupChatModes ?? {});
+  if (!entries.length) return "";
+  return entries
+    .map(([group, mode]) => `${group}：${MODE_LABEL[mode] ?? mode}`)
+    .join("；");
+}
 
 const boundCount = computed(() => connections.value.reduce((sum, item) => sum + item.bindings.length, 0));
 const characterCount = computed(
@@ -1178,7 +1200,8 @@ function copyInstallGuide() {
                   v-if="row.binding"
                   class="mode"
                   :class="{ 'is-ambient': row.binding.groupChat.mode === 'ambient' }"
-                >{{ MODE_LABEL[row.binding.groupChat.mode] ?? "会回复" }}</span>
+                  :title="modeBadgeTitle(row.binding)"
+                >{{ modeLabelOf(row.binding) }}</span>
                 <span
                   v-else
                   class="mode is-todo"
@@ -1206,6 +1229,7 @@ function copyInstallGuide() {
               :reply-limit-per-window="row.binding.replyLimitPerWindow"
               :reply-only-when-mentioned="row.binding.replyOnlyWhenMentioned"
               :group-chat="row.binding.groupChat"
+              :group-chat-modes="row.binding.groupChatModes"
               :group-bili-run-enabled="row.binding.groupBiliRunEnabled"
               :emoji-enabled="row.character.emojiEnabled === true"
               :image-understanding="row.character.imageUnderstanding === true"

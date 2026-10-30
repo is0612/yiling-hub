@@ -9,7 +9,12 @@
 import { decryptApiKey } from "../../credential-encryption";
 import { getPrisma } from "../../prisma";
 import type { OnebotConnectionConfig } from "./client";
-import { resolveGroupChatSettings, type GroupChatSettings } from "./group-chat";
+import {
+  readGroupChatModeOverrides,
+  resolveGroupChatSettings,
+  type GroupChatModeOverrides,
+  type GroupChatSettings,
+} from "./group-chat";
 import { ONEBOT_PLATFORM } from "./types";
 
 export type OnebotBindingRecord = {
@@ -23,6 +28,8 @@ export type OnebotBindingRecord = {
   replyLimitPerWindow: number;
   /** 群聊怎么回：仅 @ / 自然接话 / 全都回。含攒批与闸门参数。 */
   groupChat: GroupChatSettings;
+  /** 按群覆盖的群聊模式（群号 → 模式）。这一群没写就沿 groupChat.mode。 */
+  groupChatModes: GroupChatModeOverrides;
   /** 群聊是否仅当被 @ 时才回复（已回退到连接默认值，私聊总是回复）。 */
   replyOnlyWhenMentioned: boolean;
   /** 主人能否在群里触发她刷一轮 B站（已回退到连接默认值）。 */
@@ -204,6 +211,7 @@ export async function loadOnebotConnections(
             ? Math.min(Math.round(rawLimit), 100)
             : 0,
           groupChat: resolveGroupChatSettings(config, connectionMentionOnly),
+          groupChatModes: readGroupChatModeOverrides(config.groupChatModes),
           replyOnlyWhenMentioned,
           groupBiliRunEnabled: typeof config.groupBiliRunEnabled === "boolean"
             ? config.groupBiliRunEnabled

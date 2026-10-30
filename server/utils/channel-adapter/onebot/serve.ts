@@ -21,6 +21,7 @@ import {
   createGroupChatBuffer,
   evaluateGroupChatGate,
   groupChatDayStart,
+  groupChatForGroup,
   groupChatWindowMs,
   mentionsCharacterName,
 } from "./group-chat";
@@ -497,7 +498,8 @@ export function createOnebotMessageHandler(record: OnebotConnectionRecord) {
   const flushGroupRound = async (items: PendingGroupMessage[]): Promise<void> => {
     const binding = items[0]!.binding;
     const groupEvent = items[0]!.event;
-    const settings = binding.groupChat;
+    // 按群解析：同一个绑定挂了好几个群时，每个群可以有自己的那一档。
+    const settings = groupChatForGroup(binding.groupChat, binding.groupChatModes, groupEvent.groupId);
     const contextKey = `${binding.id}:${groupEvent.conversationKey}`;
     const direct = items.some((item) => item.direct);
     const named = items.some((item) => item.named);
@@ -628,7 +630,9 @@ export function createOnebotMessageHandler(record: OnebotConnectionRecord) {
     }
 
     const isGroupMessage = event.messageType === "group" && Boolean(event.groupId);
-    const groupChatMode = binding.groupChat.mode;
+    // 这一条所在的群如果有单独设置，就用它自己那一档；没有才沿绑定的默认档。
+    const groupChat = groupChatForGroup(binding.groupChat, binding.groupChatModes, event.groupId);
+    const groupChatMode = groupChat.mode;
     // 两个信号必须分开：真实 @ 是程序事实，名字只是弱线索（群里可能有好几条同款鱼）。
     const direct = isGroupMessage && isSelfMentioned(event, record.accountQq);
     const named = isGroupMessage && mentionsCharacterName(event.content, cueNames(binding));
@@ -670,7 +674,7 @@ export function createOnebotMessageHandler(record: OnebotConnectionRecord) {
       groupChatBuffer.push(
         contextKey,
         { event, binding, at: Date.now(), direct, named, isOwner: Boolean(record.ownerQq) && event.userId === record.ownerQq },
-        groupChatWindowMs(binding.groupChat, direct || named),
+        groupChatWindowMs(groupChat, direct || named),
       );
       return { status: "buffered" };
     }

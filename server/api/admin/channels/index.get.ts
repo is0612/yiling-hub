@@ -1,5 +1,5 @@
 import { requireAdminActor } from "../../../utils/auth";
-import { resolveGroupChatSettings } from "../../../utils/channel-adapter/onebot/group-chat";
+import { readGroupChatModeOverrides, resolveGroupChatSettings } from "../../../utils/channel-adapter/onebot/group-chat";
 import { decryptApiKey } from "../../../utils/credential-encryption";
 import { getPrisma } from "../../../utils/prisma";
 
@@ -95,6 +95,9 @@ export default defineEventHandler(async (event) => {
             ? Math.min(Math.round(rawLimit), 100)
             : 0,
           groupChat,
+          // 按群覆盖的模式。前端拿它跟群号列表对照，决定每个群显示哪一档；
+          // 没在这张表里的群就沿 groupChat.mode。
+          groupChatModes: readGroupChatModeOverrides(config.groupChatModes),
           // 旧字段保留给还没升级的调用方；值跟着 groupChat.mode 走，省得两处说法不一致。
           replyOnlyWhenMentioned: groupChat.mode === "mention",
           groupBiliRunEnabled: typeof config.groupBiliRunEnabled === "boolean"

@@ -11,8 +11,11 @@ import {
   createGroupChatBuffer,
   evaluateGroupChatGate,
   groupChatDayStart,
+  groupChatForGroup,
   groupChatWindowMs,
+  isGroupId,
   mentionsCharacterName,
+  readGroupChatModeOverrides,
   resolveGroupChatSettings,
   type GroupChatGateInput,
 } from "../server/utils/channel-adapter/onebot/group-chat";
@@ -190,4 +193,52 @@ assert.equal(
   "按东八区算当天零点。",
 );
 
-console.log("群聊自然接话测试通过：配置解析与夹取、别名识别、闸门顺序（模式/安静时段/上限/间隔/direct/名字弱线索/话题候选/抽签）、mustReply 边界、攒批窗口与合并上限、东八区日界。");
+// ── 6. 按群覆盖模式 ────────────────────────────────────
+// 一条绑定挂多个群时，各群的「存在感」不一样：大群只看被 @，小群随便聊。
+const bindSettings = resolveGroupChatSettings({ groupChatMode: "ambient", minGapSeconds: 300, dailyMax: 30 }, true);
+const overrides = readGroupChatModeOverrides({ "1127648581": "mention", "991729826": "all" });
+assert.deepEqual(overrides, { "1127648581": "mention", "991729826": "all" });
+
+// 只改 mode：节奏参数仍跟绑定走，否则同一份配置会出现两种「间隔」说法。
+const forSmallGroup = groupChatForGroup(bindSettings, overrides, "991729826");
+assert.equal(forSmallGroup.mode, "all");
+assert.equal(forSmallGroup.minGapSeconds, 300);
+assert.equal(forSmallGroup.dailyMax, 30);
+assert.equal(bindSettings.mode, "ambient", "覆盖不能就地改原设置：别的群还在用它。");
+
+// 没单独设过的群、私聊（没有群号）都沿默认档。
+assert.equal(groupChatForGroup(bindSettings, overrides, "888888888").mode, "ambient");
+assert.equal(groupChatForGroup(bindSettings, overrides, null).mode, "ambient");
+assert.equal(groupChatForGroup(bindSettings, {}, "1127648581").mode, "ambient");
+assert.equal(groupChatForGroup(bindSettings, undefined, "1127648581").mode, "ambient");
+
+// 闸门拿到的是覆盖后那一档：设成 mention 的群，没 @ 就不看。
+assert.deepEqual(
+  gate({ settings: groupChatForGroup(bindSettings, overrides, "1127648581") }),
+  { allowed: false, reason: "not_cued", mustReply: false },
+);
+assert.equal(
+  gate({ settings: groupChatForGroup(bindSettings, overrides, "991729826") }).reason,
+  "all_messages",
+  "同一个绑定里，设成「全都回」的群仍走老行为。",
+);
+
+// 脏表不让整份失效：坏群号、坏档位跳过，好的照留。
+assert.deepEqual(
+  readGroupChatModeOverrides({ "1127648581": "mention", "abc": "all", "991729826": "loud", " 123456 ": "all" }),
+  { "1127648581": "mention", "123456": "all" },
+  "非群号与非法档位被跳过，群号两端空白要清掉。",
+);
+assert.deepEqual(readGroupChatModeOverrides(null), {});
+assert.deepEqual(readGroupChatModeOverrides(["x"]), {}, "数组不是「群号 → 模式」表，按空处理。");
+assert.equal(isGroupId("1127648581"), true);
+assert.equal(isGroupId("123"), false, "太短的不当群号。");
+assert.equal(isGroupId("1127648581123"), false, "超过 12 位的不是群号。");
+
+// 上限：一张表最多 50 个群，多的截掉（写入接口也卡这个数）。
+const manyGroups = Object.fromEntries(
+  Array.from({ length: 60 }, (_, index) => [String(100000000 + index), "all" as const]),
+);
+assert.equal(Object.keys(readGroupChatModeOverrides(manyGroups)).length, 50);
+
+console.log("群聊自然接话测试通过：配置解析与夹取、别名识别、闸门顺序（模式/安静时段/上限/间隔/direct/名字弱线索/话题候选/抽签）、mustReply 边界、攒批窗口与合并上限、东八区日界、按群覆盖模式。");

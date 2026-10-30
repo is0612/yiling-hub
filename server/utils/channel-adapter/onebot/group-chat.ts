@@ -52,6 +52,48 @@ export const GROUP_CHAT_DEFAULTS: GroupChatSettings = {
 
 const MODES: readonly GroupChatMode[] = ["mention", "ambient", "all"];
 
+/**
+ * 按群覆盖的模式：`{ "<群号>": "mention" | "ambient" | "all" }`。
+ *
+ * 为什么需要它：一条绑定可以挂多个群（routingKey 逗号分隔），而「一个群热闹、另一个群只要被 @ 才回」
+ * 是很常见的组合。模式存在绑定级时只能取一个，等于让用户重新拆绑定。
+ * 只覆盖 mode，其余闸门参数仍跟绑定走 —— 要按群调节奏的场景目前没有，多一份配置就多一处不一致。
+ */
+export type GroupChatModeOverrides = Record<string, GroupChatMode>;
+
+/** 群号的宽松校验：QQ 群号是纯数字。放开范围是为了兼容测试群号。 */
+export function isGroupId(value: string): boolean {
+  return /^\d{5,12}$/.test(value);
+}
+
+/**
+ * 读按群覆盖的模式表。非法项直接跳过而不是报错 —— 一张群号表里混进一个手改的脏值，
+ * 不该让整条绑定的群聊设置全部失效。
+ */
+export function readGroupChatModeOverrides(value: unknown, maxEntries = 50): GroupChatModeOverrides {
+  const raw = asRecord(value);
+  const overrides: GroupChatModeOverrides = {};
+  for (const [key, mode] of Object.entries(raw)) {
+    const groupId = key.trim();
+    if (!isGroupId(groupId)) continue;
+    if (typeof mode !== "string" || !(MODES as readonly string[]).includes(mode)) continue;
+    overrides[groupId] = mode as GroupChatMode;
+    if (Object.keys(overrides).length >= maxEntries) break;
+  }
+  return overrides;
+}
+
+/** 把绑定级设置按群覆盖成这个群实际用的设置；这一群没单独设过就沿绑定那档。 */
+export function groupChatForGroup(
+  settings: GroupChatSettings,
+  overrides: GroupChatModeOverrides | undefined,
+  groupId: string | null | undefined,
+): GroupChatSettings {
+  if (!groupId || !overrides) return settings;
+  const mode = overrides[groupId];
+  return mode ? { ...settings, mode } : settings;
+}
+
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }

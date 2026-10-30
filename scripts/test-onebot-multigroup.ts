@@ -35,6 +35,7 @@ function binding(id: string, routingKey: string | null): OnebotBindingRecord {
       ambientChance: 0,
       aliases: [],
     },
+    groupChatModes: {},
     replyOnlyWhenMentioned: false,
     groupBiliRunEnabled: false,
   };

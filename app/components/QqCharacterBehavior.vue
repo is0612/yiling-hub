@@ -66,6 +66,12 @@ const props = defineProps<{
     ambientChance: number;
     aliases: string[];
   };
+  /**
+   * 按群覆盖的模式：`{ "<群号>": "mention" | "ambient" | "all" }`。
+   * 一条绑定可以挂好几个群，而「一个群只看被 @、另一个群随便聊」很常见；
+   * 没在这张表里的群沿 `groupChat.mode`。
+   */
+  groupChatModes?: Record<string, "mention" | "ambient" | "all">;
   groupBiliRunEnabled: boolean;
   emojiEnabled: boolean;
   /** 群友发的图要不要交给视觉模型读；角色级开关，默认关。 */
@@ -117,8 +123,13 @@ const savingProactive = ref(false);
 const trying = ref(false);
 
 // ── 绑定级草稿 ─────────────────────────────────────────
+/** 群号表在页面里是数组，库里是逗号分隔的一串；两处互转只走这一对函数。 */
+function readRoutingKeys(routingKey: string | null): string[] {
+  return routingKey ? routingKey.split(",").map((key) => key.trim()).filter(Boolean) : [];
+}
+
 const bind = reactive({
-  routingKeys: props.routingKey ? props.routingKey.split(",").map((key) => key.trim()).filter(Boolean) : [],
+  routingKeys: readRoutingKeys(props.routingKey),
   replyWindowMinutes: props.replyWindowMinutes,
   replyLimitPerWindow: props.replyLimitPerWindow,
   groupChatMode: props.groupChat.mode,
@@ -132,6 +143,67 @@ const bind = reactive({
   groupBiliRunEnabled: props.groupBiliRunEnabled,
 });
 const savingBind = ref(false);
+
+/** el-input-tag 清空时可能给 undefined，模板里到处 `length` 会炸；统一从这里取。 */
+const groupKeyList = computed<string[]>(() => (Array.isArray(bind.routingKeys) ? bind.routingKeys : []));
+
+// ── 按群覆盖的模式（群号 → 档位）──────────────────────
+type GroupChatMode = "mention" | "ambient" | "all";
+
+const MODE_SHORT: Record<GroupChatMode, string> = {
+  mention: "只回 @",
+  ambient: "自然接话",
+  all: "全都回",
+};
+
+const MODE_OPTIONS: ReadonlyArray<{ value: GroupChatMode; label: string }> = [
+  { value: "mention", label: "仅被 @ 时回复" },
+  { value: "ambient", label: "自然接话" },
+  { value: "all", label: "所有消息都回复" },
+];
+
+function isGroupChatMode(value: unknown): value is GroupChatMode {
+  return value === "mention" || value === "ambient" || value === "all";
+}
+
+/**
+ * 每个群自己的那一档，值是档位或 `INHERIT`（跟绑定默认档）。
+ *
+ * 为什么另开一份草稿而不是直接读 props：群号是手敲进去的，刚敲完还没保存时
+ * props 里没有它，但用户这时就想选档位了 —— 要求「先保存一次才能设」很别扭。
+ *
+ * 为什么不用空串表示「跟默认」：Element 的下拉框把空串当没选，会显示占位符
+ * 「请选择」，反而看不出「它跟默认一样」。
+ */
+const INHERIT = "inherit";
+const modeOverrides = ref<Record<string, string>>({});
+
+/**
+ * 重建按群草稿。传了 `source` 就整份以它为准（保存后刷新时用），
+ * 不传则保留已经选好的值、只补新群号、删已移除的群号（手改群号表时用）。
+ */
+function syncOverrides(keys: string[], source?: Record<string, string | undefined>) {
+  const next: Record<string, string> = {};
+  for (const key of keys) {
+    const stored = source ? source[key] : modeOverrides.value[key];
+    next[key] = isGroupChatMode(stored) ? stored : INHERIT;
+  }
+  modeOverrides.value = next;
+}
+
+syncOverrides(readRoutingKeys(props.routingKey), props.groupChatModes ?? {});
+
+function setOverride(group: string, value: unknown) {
+  modeOverrides.value = { ...modeOverrides.value, [group]: isGroupChatMode(value) ? value : INHERIT };
+}
+
+/** 已存的按群设置条目数：群号表空着时用它提示「东西还在，只是看不到」。 */
+const overrideCount = computed(() => Object.keys(props.groupChatModes ?? {}).length);
+
+// 群号表变了：新群号补一个「跟默认」，删掉的不再提交
+watch(() => groupKeyList.value.join(","), () => {
+  syncOverrides(groupKeyList.value);
+});
 
 /** 刻度上的位置：三档是顺序关系，不是三个并列开关 */
 const modeIndex = computed(() => {
@@ -148,6 +220,18 @@ const modeNote = computed(() => {
   if (bind.groupChatMode === "all") return "每轮都回（不再逐条），群里一热闹就会刷屏，也最容易一次把额度用完。";
   return "所有消息都可能看一眼：被 @ 一定会回，水群看上下文再决定说不说。";
 });
+
+/**
+ * 参数区该显示哪些：只要**有一个群**会用到，就得放出来。
+ * 默认档是「仅被 @」、某个群设成「自然接话」时，下面那堆节奏参数正是给那个群用的，
+ * 藏起来等于「它在用、页面上看不到」。
+ */
+const needsAmbientParams = computed(() =>
+  bind.groupChatMode === "ambient" || Object.values(modeOverrides.value).includes("ambient"));
+
+const needsAliases = computed(() =>
+  bind.groupChatMode !== "all"
+  || Object.values(modeOverrides.value).some((mode) => mode !== INHERIT && mode !== "all"));
 
 // 父级保存后会重新拉列表，这里跟着把草稿同步成库里的值
 watch(() => props.emojiEnabled, (value) => {
@@ -169,10 +253,11 @@ watch(
     props.replyLimitPerWindow,
     props.replyOnlyWhenMentioned,
     props.groupChat,
+    props.groupChatModes,
     props.groupBiliRunEnabled,
   ],
   () => {
-    bind.routingKeys = props.routingKey ? props.routingKey.split(",").map((key) => key.trim()).filter(Boolean) : [];
+    bind.routingKeys = readRoutingKeys(props.routingKey);
     bind.replyWindowMinutes = props.replyWindowMinutes;
     bind.replyLimitPerWindow = props.replyLimitPerWindow;
     bind.groupChatMode = props.groupChat.mode;
@@ -183,6 +268,8 @@ watch(
     bind.quietEnd = props.groupChat.quietEnd;
     bind.groupAliases = props.groupChat.aliases.join("，");
     bind.groupBiliRunEnabled = props.groupBiliRunEnabled;
+    // 保存成功后父级会重新拉列表，按群草稿跟着以库里的为准
+    syncOverrides(bind.routingKeys, props.groupChatModes ?? {});
   },
   { deep: true },
 );
@@ -199,15 +286,24 @@ function readError(error: unknown, fallback: string) {
 async function saveBind() {
   if (savingBind.value) return;
   savingBind.value = true;
+  // 只提交当前群号列表里的覆盖项：群号删了，它那一档也就没意义了（后端不会再路由到它）。
+  const groupChatModes: Record<string, GroupChatMode> = {};
+  for (const key of groupKeyList.value) {
+    const mode = modeOverrides.value[key];
+    if (isGroupChatMode(mode)) groupChatModes[key] = mode;
+  }
   try {
     await $fetch(`/api/admin/channels/${encodeURIComponent(props.connectionId)}/bindings`, {
       method: "POST",
       body: {
         characterId: props.characterId,
-        routingKey: bind.routingKeys.join(","),
+        routingKey: groupKeyList.value.join(","),
         replyWindowMinutes: bind.replyWindowMinutes,
         replyLimitPerWindow: bind.replyLimitPerWindow,
         groupChatMode: bind.groupChatMode,
+        // 群号列表空着（= 收所有群 + 私聊）时页面上看不到按群设置，顺手清掉等于一次
+        // 看不见的数据丢失，所以原样带着；后端仍会按群号应用它们。
+        groupChatModes: groupKeyList.value.length ? groupChatModes : { ...(props.groupChatModes ?? {}) },
         minGapSeconds: bind.minGapSeconds,
         dailyMax: bind.dailyMax,
         ambientChance: bind.ambientChancePercent / 100,
@@ -357,6 +453,13 @@ async function tryOnce() {
         <span class="grp-tag">只对这条生效</span>
       </div>
 
+      <!-- 刻度上面加一句「这是默认档」：一条绑定挂多个群时，下面的按群设置才是逐群的，
+           不加这句会让人以为刻度只对第一个群生效。 -->
+      <span
+        v-if="groupKeyList.length >= 2"
+        class="beh-label dial-lead"
+      >默认档：没在下面单独设过的群用这一档</span>
+
       <!-- 一条刻度：三档是同一个维度的强弱，不该是三排开关 -->
       <div
         class="dial"
@@ -414,10 +517,54 @@ async function tryOnce() {
           <em>填了群号就只在这些群里回复；可填多个群号，回车或输入逗号确认一个。</em>
         </div>
 
+        <!-- 一条绑定挂多个群时，各群的「存在感」经常不一样（大群只看被 @、小群随便聊）。
+             这里逐群覆盖上面那档；只有一个群就不显示 —— 那跟刻度重复，白占一行。 -->
+        <div
+          v-if="groupKeyList.length >= 2"
+          class="beh-field is-wide"
+        >
+          <span class="beh-label">按群分别设</span>
+          <div class="pg">
+            <div
+              v-for="group in groupKeyList"
+              :key="group"
+              class="pg-row"
+            >
+              <span class="pg-id">{{ group }}</span>
+              <el-select
+                :model-value="modeOverrides[group] ?? INHERIT"
+                class="pg-sel"
+                @change="(value: unknown) => setOverride(group, value)"
+              >
+                <el-option
+                  :label="`跟默认一样（${MODE_SHORT[bind.groupChatMode]}）`"
+                  :value="INHERIT"
+                />
+                <el-option
+                  v-for="option in MODE_OPTIONS"
+                  :key="option.value"
+                  :label="option.label"
+                  :value="option.value"
+                />
+              </el-select>
+            </div>
+          </div>
+          <em>只改这一个群的档位；节奏、安静时段、参与概率这些参数仍按下面那套（所有群共用）。</em>
+        </div>
+
+        <!-- 群号表空着 = 收所有群，按群设置没有群号可展示。存过的条目留着不动，
+             这里只把「东西还在」说出来，免得以后填上群号看到一堆旧档位以为见了鬼。 -->
+        <div
+          v-else-if="overrideCount > 0"
+          class="beh-field is-wide"
+        >
+          <em>这条绑定现在收所有群；之前按群设过的 {{ overrideCount }} 项还在，填上群号就能看到并修改。</em>
+        </div>
+
         <!-- 别名在「仅被 @」下也生效：后端把「叫到名字」当成弱线索，
              会结合上下文判断是不是在叫她；只有「每条都回」用不上 -->
         <div
-          v-if="bind.groupChatMode !== 'all'"
+          v-if="needsAliases"
           class="beh-field"
         >
           <span class="beh-label">群里怎么叫她</span>
@@ -429,7 +576,7 @@ async function tryOnce() {
         </div>
 
         <div
-          v-if="bind.groupChatMode === 'ambient'"
+          v-if="needsAmbientParams"
           class="beh-field"
         >
           <span class="beh-label">说话节奏</span>
@@ -454,7 +601,7 @@ async function tryOnce() {
         </div>
 
         <div
-          v-if="bind.groupChatMode === 'ambient'"
+          v-if="needsAmbientParams"
           class="beh-field"
         >
           <span class="beh-label">安静时段</span>
@@ -479,7 +626,7 @@ async function tryOnce() {
         </div>
 
         <div
-          v-if="bind.groupChatMode === 'ambient'"
+          v-if="needsAmbientParams"
           class="beh-field"
         >
           <span class="beh-label">无关闲聊的参与概率</span>
@@ -809,8 +956,35 @@ async function tryOnce() {
 
 .dial-note { margin: var(--sp-2) 0 0; color: var(--dim); font-size: 12px; line-height: 1.65; }
 
+/* 刻度上面的「默认档」说明：只在绑定挂了多个群时出现 */
+.dial-lead { display: block; margin-bottom: var(--sp-2); }
+
+/* ── 按群分别设：一行一个群，档位选在右侧 ─────────── */
+.pg {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  padding: 8px 10px;
+}
+.pg-row { display: flex; align-items: center; gap: 10px; }
+.pg-id {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: var(--text-2);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pg-sel { width: 210px; flex: none; }
+
 /* ── 群参数：两列铺开，标签在上、说明在下 ─────────── */
 .beh-grid.is-bind { margin-top: var(--sp-4); align-items: start; }
+/* 跨两列：按群设置是一整块列表，挤在半列里群号和档位都会换行 */
+.beh-grid.is-bind .is-wide { grid-column: 1 / -1; }
 /* 绑定级开关跟在参数后面，靠一条分隔线说明它仍属于这一组 */
 .beh-grid.is-bind + .toggle {
   margin-top: var(--sp-4);
@@ -945,6 +1119,9 @@ async function tryOnce() {
   .dial-opt[aria-checked="true"] { background: var(--surface); }
 
   .beh-grid { grid-template-columns: minmax(0, 1fr); }
+  /* 窄屏把档位选到群号下一行：210px 的下拉框会把群号挤成省略号 */
+  .pg-row { flex-direction: column; align-items: stretch; gap: 4px; }
+  .pg-sel { width: 100%; }
   .beh-state .grow { display: none; }
   .toggle-copy span { display: block; margin-top: 2px; }
 }

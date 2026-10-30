@@ -1,6 +1,7 @@
 import { createError, getRouterParam, readBody } from "h3";
 import type { Prisma } from "../../../../../../src/generated/prisma/client";
 import { requireAdminActor } from "../../../../../utils/auth";
+import { isGroupId } from "../../../../../utils/channel-adapter/onebot/group-chat";
 import { readTrimmedString, requireUuid } from "../../../../../utils/local-api";
 import { formatClockMinutes, readClockMinutes } from "../../../../../utils/proactive-settings";
 import { getPrisma } from "../../../../../utils/prisma";
@@ -127,6 +128,40 @@ export default defineEventHandler(async (event) => {
     groupBiliRunEnabled = body.groupBiliRunEnabled;
   }
 
+  /**
+   * 按群覆盖的群聊模式：`{ "<群号>": "mention" | "ambient" | "all" }`。
+   *
+   * 一条绑定挂多个群时，不同群的「存在感」经常不一样（大群只看被 @，小群随便聊）。
+   * 传 `{}` 或 `null` = 全部清除、回到绑定统一那一档。写入侧严格校验，不做静默丢弃 ——
+   * 静默丢一个群号，用户只会觉得「我明明设了它却不生效」。
+   */
+  let groupChatModes: Record<string, "mention" | "ambient" | "all"> | undefined;
+  if (body?.groupChatModes !== undefined) {
+    const raw = body.groupChatModes;
+    if (raw === null) {
+      groupChatModes = {};
+    } else if (typeof raw !== "object" || Array.isArray(raw)) {
+      throw createError({ statusCode: 400, statusMessage: "按群设置必须是「群号 → 模式」的对象。" });
+    } else {
+      const entries = Object.entries(raw as Record<string, unknown>);
+      if (entries.length > 50) {
+        throw createError({ statusCode: 400, statusMessage: "按群设置最多 50 个群。" });
+      }
+      const validated: Record<string, "mention" | "ambient" | "all"> = {};
+      for (const [key, value] of entries) {
+        const groupId = key.trim();
+        if (!isGroupId(groupId)) {
+          throw createError({ statusCode: 400, statusMessage: `群号「${groupId}」格式不对（应为纯数字）。` });
+        }
+        if (value !== "mention" && value !== "ambient" && value !== "all") {
+          throw createError({ statusCode: 400, statusMessage: `群 ${groupId} 的模式无效。` });
+        }
+        validated[groupId] = value;
+      }
+      groupChatModes = validated;
+    }
+  }
+
   const prisma = getPrisma();
   const connection = await prisma.platformConnection.findUnique({
     where: { id: connectionId },
@@ -167,8 +202,18 @@ export default defineEventHandler(async (event) => {
   if (quietEnd !== undefined) patch.quietEnd = quietEnd;
   if (groupAliases !== undefined) patch.groupAliases = groupAliases;
   if (groupBiliRunEnabled !== undefined) patch.groupBiliRunEnabled = groupBiliRunEnabled;
+  if (groupChatModes !== undefined) patch.groupChatModes = groupChatModes;
   const hasUpdate = Object.keys(patch).length > 0;
-  const config = hasUpdate ? { ...baseConfig, ...patch } : (existing?.config ?? undefined);
+  let config = hasUpdate ? { ...baseConfig, ...patch } : (existing?.config ?? undefined);
+  // 空表不留在库里：留个 `{}` 会让「有没有按群设过」变得难判断，读的时候还要再多想一层。
+  if (config && typeof config === "object" && !Array.isArray(config)) {
+    const cleaned = { ...(config as Record<string, unknown>) };
+    if (cleaned.groupChatModes && typeof cleaned.groupChatModes === "object"
+      && Object.keys(cleaned.groupChatModes as Record<string, unknown>).length === 0) {
+      delete cleaned.groupChatModes;
+    }
+    config = cleaned;
+  }
   const configForWrite = config as Prisma.InputJsonObject | undefined;
   const binding = await prisma.characterChannelBinding.upsert({
     where: { characterId_connectionId: { characterId, connectionId } },

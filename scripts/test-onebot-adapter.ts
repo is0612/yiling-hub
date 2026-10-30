@@ -489,6 +489,19 @@ try {
   assert.equal(await userCount(1005), 0, "闸门不过时连用户消息都不落库，省得下次重投再判一遍。");
   record.bindings[0]!.groupChat = { ...ambientSettings, mode: "all" };
 
+  // 9.7 按群覆盖模式：同一条绑定挂多个群时，各群走自己那一档。
+  // 默认档设成「自然接话 + 抽签概率 0」= 无关闲聊一律不接，只有被覆盖的群例外。
+  record.bindings[0]!.groupChat = { ...ambientSettings, ambientChance: 0 };
+  record.bindings[0]!.groupChatModes = { "1006": "all" };
+  await emitToGroup(1006, 70, "这个群设了全都回", 555, false);
+  await waitFor(async () => (await assistantCount(1006)) >= 1);
+  assert.equal(await assistantCount(1006), 1, "覆盖成「全都回」的群必须回，哪怕默认档抽签不过。");
+  await emitToGroup(1007, 71, "这个群沿默认档", 555, false);
+  await sleep(5000);
+  assert.equal(await assistantCount(1007), 0, "没被覆盖的群仍沿默认档：抽签不过就该静默。");
+  record.bindings[0]!.groupChatModes = {};
+  record.bindings[0]!.groupChat = { ...ambientSettings, mode: "all" };
+
   // 10. 群聊 B站 指令只认主人：群友触发被忽略，主人触发才得到回执/提示。
   record.groupBiliRunEnabled = true;
   record.bindings[0]!.groupBiliRunEnabled = true;
@@ -508,7 +521,7 @@ try {
 
   closeGateway();
 
-  console.log("OneBot 渠道端到端测试通过：WS token 鉴权与单次握手、事件接入、CQ 码解析、凭据解密、角色绑定路由、记忆检索、模型回复、表情段发送与冷却、消息持久化、外部身份 upsert、回发平台与幂等去重、群公告草稿与确认发布、普通成员越权拦截、按群滚动 10 分钟回复上限、群聊统一攒批（mention 档只在被叫到时进管道）、自然接话闸门、B站 指令主人专属。");
+  console.log("OneBot 渠道端到端测试通过：WS token 鉴权与单次握手、事件接入、CQ 码解析、凭据解密、角色绑定路由、记忆检索、模型回复、表情段发送与冷却、消息持久化、外部身份 upsert、回发平台与幂等去重、群公告草稿与确认发布、普通成员越权拦截、按群滚动 10 分钟回复上限、群聊统一攒批（mention 档只在被叫到时进管道）、自然接话闸门、按群覆盖群聊模式、B站 指令主人专属。");
 } finally {
   for (const child of children) child.kill();
   await prisma.onebotGroupAnnouncement.deleteMany({ where: { connectionId } }).catch(() => undefined);
