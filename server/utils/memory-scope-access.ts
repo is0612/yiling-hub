@@ -9,6 +9,8 @@
  * - Unknown scope types are denied by default.
  */
 
+import { getPrisma } from "./prisma";
+
 export type MemoryScopeOrigin = "character" | "private";
 
 export type MemoryScopeCandidate = {
@@ -30,6 +32,30 @@ export type AccessibleChatScope = {
 
 export function buildUserPrivateScopeKey(characterId: string, userId: string): string {
   return "character:" + characterId + ":user:" + userId;
+}
+
+/**
+ * 角色主人的私人记忆范围（USER_PRIVATE）。
+ *
+ * 「主人」是角色 `Character.ownerId` 指向的那个站内用户；QQ 渠道里主人说话时，他的私聊
+ * 会话挂到这个范围下，而不是该账号的外部身份（EXTERNAL_IDENTITY）范围。这样主人的私聊：
+ *   - 走「角色主人私人记忆」，由调度器单独排周期快照；
+ *   - 只在主人自己的对话里可读（resolveChatMemoryScopes 对 USER_PRIVATE 按 userId 放行）；
+ *   - 不混进角色全局记忆，也不会串给群友或其他人。
+ *
+ * 确定性 scopeKey（character + user），与 memories/index.post.ts 的 private 范围是同一个概念。
+ */
+export async function ensureOwnerPrivateScope(characterId: string, ownerUserId: string): Promise<string | null> {
+  if (!ownerUserId) return null;
+  const prisma = getPrisma();
+  const scopeKey = buildUserPrivateScopeKey(characterId, ownerUserId);
+  const scope = await prisma.memoryScope.upsert({
+    where: { scopeKey },
+    create: { characterId, scopeType: "USER_PRIVATE", scopeKey, userId: ownerUserId },
+    update: {},
+    select: { id: true },
+  });
+  return scope.id;
 }
 
 /**

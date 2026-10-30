@@ -37,7 +37,9 @@
     "bili:import": "tsx scripts/import-bili-desk.ts",
     "test:memory-retrieval": "tsx scripts/test-memory-retrieval.ts",
     "test:memory-budget": "tsx scripts/test-memory-budget.ts",
+    "test:memory-source-selection": "tsx scripts/test-memory-source-selection.ts",
     "test:model-usage": "tsx scripts/test-model-usage.ts",
+    "test:model-pricing": "tsx scripts/test-model-pricing.ts",
     "test:chat-model-config": "tsx scripts/test-chat-model-config.ts",
     "test:chat-reply": "tsx scripts/test-chat-reply.ts",
     "test:chat-private-memory": "tsx scripts/test-chat-private-memory.ts",
@@ -47,7 +49,11 @@
     "test:auth": "tsx scripts/test-auth.ts",
     "test:auth-db": "tsx scripts/test-auth-db.ts",
     "test:onebot": "tsx scripts/test-onebot-adapter.ts",
+    "test:onebot-multigroup": "tsx scripts/test-onebot-multigroup.ts",
     "test:onebot-faces": "tsx scripts/test-onebot-faces.ts",
+    "test:stickers": "tsx scripts/test-stickers.ts",
+    "test:sticker-collect": "tsx scripts/test-sticker-collect.ts",
+    "test:onebot-reply": "tsx scripts/test-onebot-reply.ts",
     "test:image-understanding": "tsx scripts/test-image-understanding.ts",
     "probe:vision": "tsx scripts/probe-vision.ts",
     "test:onebot-supervise": "tsx scripts/test-onebot-supervise.ts",
@@ -56,6 +62,7 @@
     "test:onebot-bili-run": "tsx scripts/test-onebot-bili-run.ts",
     "test:onebot-group-chat": "tsx scripts/test-onebot-group-chat.ts",
     "test:onebot-group-context": "tsx scripts/test-onebot-group-context.ts",
+    "test:onebot-panel": "tsx scripts/test-onebot-panel.ts",
     "test:qq-chain": "tsx scripts/test-qq-channel-chain.ts",
     "test:proactive": "tsx scripts/test-proactive.ts",
     "test:proactive-db": "tsx scripts/test-proactive-db.ts",
@@ -66,7 +73,7 @@
     "test:bili-llm": "tsx scripts/test-bili-llm.ts",
     "test:bili-cards": "tsx scripts/test-bili-cards.ts",
     "test:identity": "tsx scripts/test-identity.ts",
-    "verify:local": "yarn run db:validate && yarn run db:generate && yarn nuxt prepare && yarn run check:sfc && yarn run typecheck && yarn run test:scheduler && yarn run test:scheduler-db && yarn run test:memory-ai && yarn run test:memory-ai-request && yarn run test:memory-retrieval && yarn run test:memory-budget && yarn run test:model-usage && yarn run test:chat-model-config && yarn run test:chat-reply && yarn run test:chat-private-memory && yarn run test:chat-speaker-context && yarn run test:chat-private-memory-db && yarn run test:chat-request-idempotency-db && yarn run test:auth && yarn run test:auth-db && yarn run test:identity && yarn run test:onebot && yarn run test:onebot-faces && yarn run test:image-understanding && yarn run test:onebot-supervise && yarn run test:onebot-runner && yarn run test:onebot-announcement && yarn run test:onebot-bili-run && yarn run test:onebot-group-chat && yarn run test:onebot-group-context && yarn run test:qq-chain && yarn run test:proactive && yarn run test:proactive-db && yarn run test:bili-cards && yarn run test:bili-llm && yarn run test:bili-duty && yarn run test:bili-runner && yarn run test:bili-schema && yarn run test:bili-db && yarn run lint && yarn run build"
+    "verify:local": "yarn run db:validate && yarn run db:generate && yarn nuxt prepare && yarn run check:sfc && yarn run typecheck && yarn run test:scheduler && yarn run test:scheduler-db && yarn run test:memory-ai && yarn run test:memory-ai-request && yarn run test:memory-retrieval && yarn run test:memory-budget && yarn run test:memory-source-selection && yarn run test:model-usage && yarn run test:model-pricing && yarn run test:chat-model-config && yarn run test:chat-reply && yarn run test:chat-private-memory && yarn run test:chat-speaker-context && yarn run test:chat-private-memory-db && yarn run test:chat-request-idempotency-db && yarn run test:auth && yarn run test:auth-db && yarn run test:identity && yarn run test:onebot && yarn run test:onebot-faces && yarn run test:stickers && yarn run test:sticker-collect && yarn run test:onebot-reply && yarn run test:image-understanding && yarn run test:onebot-supervise && yarn run test:onebot-runner && yarn run test:onebot-announcement && yarn run test:onebot-bili-run && yarn run test:onebot-group-chat && yarn run test:onebot-group-context && yarn run test:onebot-panel && yarn run test:qq-chain && yarn run test:proactive && yarn run test:proactive-db && yarn run test:bili-cards && yarn run test:bili-llm && yarn run test:bili-duty && yarn run test:bili-runner && yarn run test:bili-schema && yarn run test:bili-db && yarn run lint && yarn run build"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",

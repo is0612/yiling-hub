@@ -70,6 +70,8 @@ const props = defineProps<{
   emojiEnabled: boolean;
   /** 群友发的图要不要交给视觉模型读；角色级开关，默认关。 */
   imageUnderstanding: boolean;
+  /** 群里的图要不要自动收进她的表情库；角色级开关，默认关。 */
+  stickerAutoCollect: boolean;
   /** 服务端总会带默认值；这里仍留兜底，避免老数据没有这段时表单是空的 */
   proactive?: ProactiveSettings;
 }>();
@@ -105,16 +107,18 @@ const STATUS_LABELS: Record<string, string> = {
 // ── 角色级草稿 ─────────────────────────────────────────
 const emoji = ref(props.emojiEnabled);
 const imageUnderstanding = ref(props.imageUnderstanding);
+const stickerAutoCollect = ref(props.stickerAutoCollect);
 const draft = ref<ProactiveSettings>({ ...FALLBACK, ...(props.proactive ?? {}) });
 const snapshot = ref<ProactiveSnapshot | null>(null);
 const savingEmoji = ref(false);
 const savingImageUnderstanding = ref(false);
+const savingStickerAutoCollect = ref(false);
 const savingProactive = ref(false);
 const trying = ref(false);
 
 // ── 绑定级草稿 ─────────────────────────────────────────
 const bind = reactive({
-  routingKey: props.routingKey ?? "",
+  routingKeys: props.routingKey ? props.routingKey.split(",").map((key) => key.trim()).filter(Boolean) : [],
   replyWindowMinutes: props.replyWindowMinutes,
   replyLimitPerWindow: props.replyLimitPerWindow,
   groupChatMode: props.groupChat.mode,
@@ -152,6 +156,9 @@ watch(() => props.emojiEnabled, (value) => {
 watch(() => props.imageUnderstanding, (value) => {
   imageUnderstanding.value = value;
 });
+watch(() => props.stickerAutoCollect, (value) => {
+  stickerAutoCollect.value = value;
+});
 watch(() => props.proactive, (value) => {
   draft.value = { ...FALLBACK, ...(value ?? {}) };
 }, { deep: true });
@@ -165,7 +172,7 @@ watch(
     props.groupBiliRunEnabled,
   ],
   () => {
-    bind.routingKey = props.routingKey ?? "";
+    bind.routingKeys = props.routingKey ? props.routingKey.split(",").map((key) => key.trim()).filter(Boolean) : [];
     bind.replyWindowMinutes = props.replyWindowMinutes;
     bind.replyLimitPerWindow = props.replyLimitPerWindow;
     bind.groupChatMode = props.groupChat.mode;
@@ -197,7 +204,7 @@ async function saveBind() {
       method: "POST",
       body: {
         characterId: props.characterId,
-        routingKey: bind.routingKey.trim(),
+        routingKey: bind.routingKeys.join(","),
         replyWindowMinutes: bind.replyWindowMinutes,
         replyLimitPerWindow: bind.replyLimitPerWindow,
         groupChatMode: bind.groupChatMode,
@@ -270,6 +277,27 @@ async function onImageUnderstandingChange(next: string | number | boolean) {
     ElMessage.error(readError(error, "保存失败，请稍后重试。"));
   } finally {
     savingImageUnderstanding.value = false;
+  }
+}
+
+async function onStickerAutoCollectChange(next: string | number | boolean) {
+  if (savingStickerAutoCollect.value) return;
+  const value = next === true;
+  savingStickerAutoCollect.value = true;
+  try {
+    await $fetch(`/api/characters/${encodeURIComponent(props.characterId)}`, {
+      method: "PATCH",
+      body: { stickerAutoCollect: value },
+    });
+    ElMessage.success(value
+      ? "已开启：群里发来的图会存进她的表情库，并自动起名。"
+      : "已关闭：不再自动收群里的图。");
+    emit("saved");
+  } catch (error) {
+    stickerAutoCollect.value = !value;
+    ElMessage.error(readError(error, "保存失败，请稍后重试。"));
+  } finally {
+    savingStickerAutoCollect.value = false;
   }
 }
 
@@ -377,11 +405,13 @@ async function tryOnce() {
       <div class="beh-grid is-bind">
         <div class="beh-field">
           <span class="beh-label">群号（可留空）</span>
-          <el-input
-            v-model="bind.routingKey"
+          <el-input-tag
+            v-model="bind.routingKeys"
             placeholder="留空 = 私聊 + 所有群"
+            :max="50"
+            clearable
           />
-          <em>填了群号就只在这个群回复；想同时听多个群，给这个角色多绑几条。</em>
+          <em>填了群号就只在这些群里回复；可填多个群号，回车或输入逗号确认一个。</em>
         </div>
 
         <!-- 别名在「仅被 @」下也生效：后端把「叫到名字」当成弱线索，
@@ -526,6 +556,18 @@ async function tryOnce() {
           v-model="imageUnderstanding"
           :loading="savingImageUnderstanding"
           @change="onImageUnderstandingChange"
+        />
+      </div>
+
+      <div class="toggle">
+        <span class="toggle-copy">
+          <b>偷表情包</b>
+          <span>看到群里发来的图，自动存进她的表情库并让视觉模型起名、写使用场景（一轮最多收 1 张、同一张只收一次）。她自己的图不偷。</span>
+        </span>
+        <el-switch
+          v-model="stickerAutoCollect"
+          :loading="savingStickerAutoCollect"
+          @change="onStickerAutoCollectChange"
         />
       </div>
 

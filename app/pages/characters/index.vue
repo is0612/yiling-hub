@@ -14,6 +14,7 @@ import {
   Edit,
   Key,
   Odometer,
+  Picture,
   Plus,
   Timer,
   User,
@@ -415,6 +416,9 @@ function runCharacterCommand(command: string) {
             </el-button>
             <el-button @click="navigateTo(`/characters/${selected.id}/settings/model?from=characters`)">
               <el-icon><Cpu /></el-icon>模型设置
+            </el-button>
+            <el-button @click="navigateTo(`/characters/${selected.id}/settings/stickers`)">
+              <el-icon><Picture /></el-icon>表情包
             </el-button>
             <el-dropdown
               trigger="click"

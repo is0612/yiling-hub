@@ -192,7 +192,7 @@ async function assertPublicHost(hostname: string): Promise<void> {
   }
 }
 
-async function downloadImage(rawUrl: string): Promise<{ buffer: Buffer; mime: string }> {
+export async function downloadImage(rawUrl: string): Promise<{ buffer: Buffer; mime: string }> {
   const url = assertFetchableImageUrl(rawUrl);
   await assertPublicHost(url.hostname);
 

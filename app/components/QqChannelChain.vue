@@ -61,6 +61,14 @@ const adapterOn = computed(() => props.adapter?.running === true);
 const bindingOn = computed(() => Boolean(props.binding));
 
 /**
+ * 有进程在跑才给「停止」。
+ *
+ * 它停的是本机这两条进程，和「有没有填连接」无关 —— 所以不看 `connection`，
+ * 只看谁真的活着。反过来说，四段全断的时候摆一个「停止」只会让人以为哪里还能停。
+ */
+const anyRunning = computed(() => adapterOn.value || props.snowluma?.running === true);
+
+/**
  * 断点由纯函数挑（app/utils/qq-channel.ts）—— 这里的职责只是把 props 翻成四个布尔。
  * 判断本身在 scripts/test-qq-channel-chain.ts 里有断言，改规则前先看那几条。
  */
@@ -233,6 +241,25 @@ const fix = computed(() => {
         class="verdict"
         :class="`is-${verdict.tone}`"
       >{{ verdict.text }}</span>
+      <!-- 重连是高频动作，不该藏在「连接设置」里：那里要先进弹窗、再点「保存并重新连接」。 -->
+      <button
+        type="button"
+        class="link-btn"
+        :disabled="!props.connection"
+        @click="emit('action', 'reconnect')"
+      >
+        重连
+      </button>
+      <!-- 停止和重连是一对（开 / 关），但它是破坏性的，所以只染 hover、平时压成次级色 -->
+      <button
+        v-if="anyRunning"
+        type="button"
+        class="link-btn is-stop"
+        title="停掉本机的协议端和适配器（关掉窗口不一定停得干净）"
+        @click="emit('action', 'stop')"
+      >
+        停止
+      </button>
       <button
         type="button"
         class="link-btn"
@@ -371,6 +398,11 @@ const fix = computed(() => {
 }
 .link-btn:hover { background: var(--surface-3); color: var(--brand-strong); }
 .link-btn:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+.link-btn:disabled { background: transparent; color: var(--faint); cursor: not-allowed; }
+
+/* 停止平时不抢眼（它是「今天收工」才按的），hover 才亮红 —— 免得和旁边的重连混成一排同样的按钮 */
+.link-btn.is-stop { color: var(--dim); }
+.link-btn.is-stop:hover { background: var(--red-soft); color: var(--red); }
 
 /* ── 断点条：一行原因 + 一个动作 ───────────────────── */
 .fixbar {
@@ -432,7 +464,9 @@ const fix = computed(() => {
     height: auto;
   }
 
-  .link-end { justify-content: space-between; }
+  /* 结论靠左、两个动作成组靠右：space-between 会把「重连」甩在正中间，看着像没归位 */
+  .link-end { justify-content: flex-start; }
+  .link-end .verdict { margin-right: auto; }
   .fixbar { flex-wrap: wrap; }
   .fixbar p { flex-basis: 100%; }
   .fix-act { margin-left: auto; }

@@ -1,4 +1,5 @@
 import { buildChatCompletionsEndpoint } from "./chat-model-config";
+import { readModelUsage, type ModelUsageTokens } from "./model-usage";
 export type ConversationContextMessage = { role: "USER" | "ASSISTANT"; content: string; occurredAt: string };
 /**
  * scope "character" is shared character-global knowledge; "private" belongs to the current user
@@ -16,6 +17,11 @@ export type ConversationGroupDecision = {
   relation: ConversationGroupRelation;
   topicAnchorMessageId?: string;
   evidenceMessageIds: string[];
+  /**
+   * 模型要引用回复的消息 id（本轮 transcript 里的一条）。渠道把它转成「引用回复」段，
+   * 让她的回复锚定「接的是哪一句」—— 群里多条鱼并存时，没有引用的回复容易显得认错人。
+   */
+  replyToMessageId?: string;
 };
 
 export type ConversationReplyInput = {
@@ -69,6 +75,11 @@ export type ConversationReplyInput = {
    * 传空清单却要求它返回，只会让它多写一个空数组、多烧一点 token。
    */
   emojiFaces?: ReadonlyArray<{ id: string; name: string }>;
+  /**
+   * 角色自己的表情包清单（id + 名字 + 使用场景）。**与 emojiFaces 互斥**：传了它就走表情包，
+   * 内置的 QQ 表情不再进提示词 —— 两套清单一起给，模型会在「官方脸」和「自己的图」之间犹豫。
+   */
+  emojiStickers?: ReadonlyArray<{ id: string; name: string; usage?: string }>;
 };
 export type ConversationReplyResult = {
   /** silent = 她看了这一轮，决定不说。此时 reply 为空串，调用方什么都不该发。 */
@@ -78,12 +89,14 @@ export type ConversationReplyResult = {
   usedSnapshotIds: string[];
   /** 表情 id（最多 1 个）；没传 emojiFaces 时恒为空。渠道自己决定怎么发。 */
   faceIds: string[];
+  /** 选中的表情包 id；没传 emojiStickers 或模型没挑时为空。渠道把它当图片发。 */
+  stickerId: string | null;
   /** 群聊里模型对「这轮在跟谁说话」的可选判断；没返回或字段非法时为空。 */
   groupDecision?: ConversationGroupDecision;
   model: string;
   provider: string;
   promptTemplateVersion: string;
-  usage?: { promptTokens?: number; completionTokens?: number; totalTokens?: number };
+  usage?: ModelUsageTokens;
 };
 
 const PROMPT_TEMPLATE_VERSION = "conversation-retrieval-v5";
@@ -127,27 +140,27 @@ function readIdList(value: unknown, validIds: Set<string>, limit = 12): string[]
   return [...new Set(value.filter((item): item is string => typeof item === "string" && validIds.has(item)))].slice(0, limit);
 }
 
+/** 表情包只认清单内的 id，最多一个。模型有时会把数组或名字塞进来，一律当没选。 */
+function readStickerId(value: unknown, validIds: Set<string>): string | null {
+  if (typeof value !== "string") return null;
+  const id = value.trim();
+  return validIds.has(id) ? id : null;
+}
+
 function readUsage(value: unknown): ConversationReplyResult["usage"] {
-  const record = asRecord(value);
-  if (!record) return undefined;
-  const promptTokens = typeof record.prompt_tokens === "number" ? record.prompt_tokens : undefined;
-  const completionTokens = typeof record.completion_tokens === "number" ? record.completion_tokens : undefined;
-  const totalTokens = typeof record.total_tokens === "number" ? record.total_tokens : undefined;
-  if (promptTokens === undefined && completionTokens === undefined && totalTokens === undefined) return undefined;
-  return {
-    ...(promptTokens !== undefined ? { promptTokens } : {}),
-    ...(completionTokens !== undefined ? { completionTokens } : {}),
-    ...(totalTokens !== undefined ? { totalTokens } : {}),
-  };
+  // 统一走 model-usage 的解析：它认得 prompt_cache_hit_tokens / cached_tokens。
+  // 这里以前自己读三个字段，把缓存命中丢了 —— 群聊实际命中率 85%，金额会因此高估三倍。
+  return readModelUsage({ usage: value }) ?? undefined;
 }
 
 function systemPrompt(flags: {
   withFaces?: boolean;
+  withStickers?: boolean;
   withUserAddress?: boolean;
   withSpeaker?: boolean;
   withGroupChat?: boolean;
 } = {}): string {
-  const { withFaces, withUserAddress, withSpeaker, withGroupChat } = flags;
+  const { withFaces, withStickers, withUserAddress, withSpeaker, withGroupChat } = flags;
   const lines = [
     "YILING_CONVERSATION_REPLY_V4",
     "You are the conversational character in Yiling Hub. Read characterName as your display identity and characterPrompt as your persona instructions; follow that persona and respond naturally to the current user's message.",
@@ -195,7 +208,8 @@ function systemPrompt(flags: {
   if (withGroupChat) {
     lines.push(
       'Return only a valid JSON object with: action ("reply" or "silent"), reply (string, empty when action is "silent"), usedMemoryIds, usedSnapshotIds, and an optional groupDecision.',
-      'groupDecision = { relation: "direct" | "followup" | "shared_topic" | "ambient" | "unrelated", topicAnchorMessageId (optional, must be one of groupAnchors[].id), evidenceMessageIds (array of transcript ids that support the judgment) }.',
+      'groupDecision = { relation: "direct" | "followup" | "shared_topic" | "ambient" | "unrelated", topicAnchorMessageId (optional, must be one of groupAnchors[].id), replyToMessageId (optional, the transcript id of the exact line you are answering), evidenceMessageIds (array of transcript ids that support the judgment) }.',
+      'When you reply, set replyToMessageId to the transcript id of the line you are actually answering so your reply is shown as a reply to that message. If you are not answering any specific line, omit it.',
       'Default to action "silent" when in doubt. A wrong line in a group is worse than saying nothing.',
     );
   } else {
@@ -214,6 +228,15 @@ function systemPrompt(flags: {
       "Keep faces empty for most replies. Attach one only when the emotional tone clearly calls for it — playful, shy, surprised, sulking. Never attach one to bad news, apologies, or a serious answer, and never reuse the same sticker as your previous reply.",
     );
   }
+  if (withStickers) {
+    // 表情包是她自己的图（用户存的），比内置表情更贴人设，但要挑得准：
+    // usage 写的是「什么时候用」，模型只凭名字（「猫」「哭」）很难分清几张相近的图。
+    lines.push(
+      "availableStickers lists your own sticker images (id, name, usage). You may attach one by adding sticker (a single id from availableStickers).",
+      "Pick by usage, not by name: choose one only when its usage matches what you actually feel or mean right now. If none fits, leave it empty.",
+      "Leave sticker empty for most replies. Never attach one to bad news, apologies, or a serious answer, and never reuse the sticker from your previous reply.",
+    );
+  }
   return lines.join("\n");
 }
 
@@ -223,7 +246,8 @@ const GROUP_RELATIONS: readonly ConversationGroupRelation[] = [
 
 /**
  * 群聊决策只做白名单过滤：关系必须是枚举，锚点必须来自本次提供的 groupAnchors，
- * 证据必须是本轮 transcript 的 id。任何一项不合法就只丢掉这个字段，不影响回复本身。
+ * 证据必须是本轮 transcript 的 id，引用目标必须是本轮 transcript 的 id。
+ * 任何一项不合法就只丢掉这个字段，不影响回复本身。
  */
 function readGroupDecision(
   value: unknown,
@@ -240,9 +264,13 @@ function readGroupDecision(
   const anchor = typeof record.topicAnchorMessageId === "string" && validAnchorIds.has(record.topicAnchorMessageId)
     ? record.topicAnchorMessageId
     : undefined;
+  const replyTo = typeof record.replyToMessageId === "string" && validEvidenceIds.has(record.replyToMessageId)
+    ? record.replyToMessageId
+    : undefined;
   return {
     relation,
     ...(anchor ? { topicAnchorMessageId: anchor } : {}),
+    ...(replyTo ? { replyToMessageId: replyTo } : {}),
     evidenceMessageIds: readIdList(record.evidenceMessageIds, validEvidenceIds, 5),
   };
 }
@@ -272,6 +300,10 @@ export async function generateConversationReply(input: ConversationReplyInput): 
   const timeoutMs = Number.isInteger(timeoutRaw) && timeoutRaw >= 5_000 && timeoutRaw <= 180_000 ? timeoutRaw : 60_000;
 
   const emojiFaces = input.emojiFaces ?? [];
+  // 表情包优先：有素材库就只给素材库。两套清单同时进提示词，模型会在「官方脸」和
+  // 「自己的图」之间来回犹豫，而用户想看到的显然是后者。
+  const emojiStickers = input.emojiStickers ?? [];
+  const withStickers = emojiStickers.length > 0;
 
   // Serialize only the content needed to generate a reply. Never serialize API keys,
   // provider URLs, memory scope IDs, owner IDs, or other connection settings into a prompt
@@ -321,7 +353,16 @@ export async function generateConversationReply(input: ConversationReplyInput): 
       : {}),
     ...(input.groupAnchors?.length ? { groupAnchors: input.groupAnchors } : {}),
     ...(withGroupChat ? { policy: { direct: input.direct === true } } : {}),
-    ...(emojiFaces.length ? { availableFaces: emojiFaces } : {}),
+    ...(!withStickers && emojiFaces.length ? { availableFaces: emojiFaces } : {}),
+    ...(withStickers
+      ? {
+          availableStickers: emojiStickers.map((sticker) => ({
+            id: sticker.id,
+            name: sticker.name.slice(0, 60),
+            ...(sticker.usage?.trim() ? { usage: sticker.usage.trim().slice(0, 200) } : {}),
+          })),
+        }
+      : {}),
     recentMessages: input.recentMessages.map((entry) => ({
       role: entry.role,
       content: entry.content,
@@ -366,7 +407,8 @@ export async function generateConversationReply(input: ConversationReplyInput): 
             {
               role: "system",
               content: systemPrompt({
-                withFaces: emojiFaces.length > 0,
+                withFaces: !withStickers && emojiFaces.length > 0,
+                withStickers,
                 withUserAddress: Boolean(userAddress),
                 withSpeaker: Boolean(speaker),
                 withGroupChat,
@@ -411,6 +453,7 @@ export async function generateConversationReply(input: ConversationReplyInput): 
     const validMemoryIds = new Set(input.memories.map((memory) => memory.id));
     const validSnapshotIds = new Set(input.snapshots.map((snapshot) => snapshot.id));
     const validFaceIds = new Set(emojiFaces.map((face) => face.id));
+    const validStickerIds = new Set(emojiStickers.map((sticker) => sticker.id));
     const validAnchorIds = new Set((input.groupAnchors ?? []).map((anchor) => anchor.id));
     const validEvidenceIds = new Set((input.transcript ?? []).map((entry) => entry.id).filter((id): id is string => Boolean(id)));
     const groupDecision = withGroupChat
@@ -429,13 +472,15 @@ export async function generateConversationReply(input: ConversationReplyInput): 
     // silent 只在群聊里被承认，且只在调用方允许沉默时：网页/私聊传了 allowSilent 也不该「已读不回」，
     // 被 @ 的轮次更不允许模型用 silent 逃掉。
     if (withGroupChat && input.allowSilent === true && parsed.action === "silent") {
-      return { action: "silent", reply: "", faceIds: [], ...base };
+      return { action: "silent", reply: "", faceIds: [], stickerId: null, ...base };
     }
     if (!reply) throw new Error("LLM_INVALID_RESPONSE: 模型没有返回有效的 reply 文本。");
     return {
       action: "reply",
       reply,
-      faceIds: readIdList(parsed.faces, validFaceIds, 1),
+      faceIds: withStickers ? [] : readIdList(parsed.faces, validFaceIds, 1),
+      // 模型偶尔会写个不在清单里的 id（甚至把名字写进来）—— 只认清单内的。
+      stickerId: withStickers ? readStickerId(parsed.sticker, validStickerIds) : null,
       ...base,
     };
   };

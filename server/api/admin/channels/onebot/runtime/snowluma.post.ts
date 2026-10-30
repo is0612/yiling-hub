@@ -1,4 +1,5 @@
 import { requireAdminActor } from "../../../../../utils/auth";
+import { setAutoStartPaused } from "../../../../../utils/channel-adapter/onebot/autostart";
 import { launchSnowluma, readSnowlumaStatus } from "../../../../../utils/channel-adapter/onebot/runtime";
 
 /**
@@ -10,6 +11,9 @@ import { launchSnowluma, readSnowlumaStatus } from "../../../../../utils/channel
  */
 export default defineEventHandler(async (event) => {
   await requireAdminActor(event);
+
+  // 人主动点了启动 = 撤销「停止」那把自动补起的开关
+  await setAutoStartPaused(false);
 
   const status = await readSnowlumaStatus();
   if (!status.installed) {

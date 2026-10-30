@@ -38,6 +38,8 @@ export type Character = {
   emojiEnabled?: boolean;
   /** QQ 群里发来的图是否交给视觉模型读。 */
   imageUnderstanding?: boolean;
+  /** 群里发来的图是否自动收进她的表情库。 */
+  stickerAutoCollect?: boolean;
   /** 主动找话设置；服务端返回时一定带默认值填充。 */
   proactive?: {
     enabled: boolean;

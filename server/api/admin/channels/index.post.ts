@@ -53,6 +53,8 @@ async function createOnebotConnection(body: Record<string, unknown>) {
   const submittedHttpUrl = readTrimmedString(body?.httpUrl, "HTTP API 地址", 500);
   const submittedAccessToken = readTrimmedString(body?.accessToken, "WS Token", 500);
   const submittedHttpToken = readTrimmedString(body?.httpToken, "HTTP Token", 500);
+  // 面板密码里可能有空格，所以只去首尾空白，且不做「密码强度」限制 —— 面板自己管这档事。
+  const submittedSnowlumaPassword = readTrimmedString(body?.snowlumaPassword, "SnowLuma 密码", 200);
 
   const prisma = getPrisma();
 
@@ -80,12 +82,16 @@ async function createOnebotConnection(body: Record<string, unknown>) {
   const httpUrl = reuse(submittedHttpUrl, "httpUrl") || ONEBOT_DEFAULT_HTTP_URL;
   const accessToken = reuse(submittedAccessToken, "accessToken");
   const httpToken = reuse(submittedHttpToken, "httpToken");
+  // 面板密码和 Token 走同一条加密通道：它只用来登录 SnowLuma 网页面板（自动配节点），
+  // 不参与 WS 鉴权，也不跟着连接下发 —— 只有 ?withCredentials=1 时才回显。
+  const snowlumaPassword = reuse(submittedSnowlumaPassword, "snowlumaPassword");
 
   const credentialsCiphertext = Buffer.from(await encryptApiKey(JSON.stringify({
     wsUrl,
     httpUrl,
     accessToken,
     httpToken,
+    snowlumaPassword,
   })), "utf8");
 
   const connection = await prisma.$transaction(async (tx) => {

@@ -5,13 +5,17 @@ import type {
   OverviewEvent,
   OverviewPayload,
   OverviewTaskItem,
+  OverviewUsage,
 } from "../../../app/utils/overview";
 import { requireActor } from "../../utils/auth";
 import { resolveAvatarTone } from "../../utils/character-dto";
 import { resolveChatModelSettings } from "../../utils/chat-model-config";
+import { readUsageReport, usageDayWindow } from "../../utils/model-usage";
 import { getPrisma } from "../../utils/prisma";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+/** 总览里用量趋势看最近 7 天：够看出"哪天烧得凶"，又不至于把页面变成报表。 */
+const USAGE_WINDOW_DAYS = 7;
 
 const TASK_TYPE_LABELS: Record<string, string> = {
   GENERATE_SNAPSHOT: "生成阶段总结",
@@ -130,8 +134,10 @@ export default defineEventHandler(async (event): Promise<OverviewPayload> => {
   });
 
   const jobScope = { memoryScope: { is: { character: { is: { ownerId } } } } };
+  const characterIds = characters.map((character) => character.id);
+  const usageDays = usageDayWindow(USAGE_WINDOW_DAYS, now);
 
-  const [jobGroups, recentJobs, recentSnapshots] = await Promise.all([
+  const [jobGroups, recentJobs, recentSnapshots, usageReports] = await Promise.all([
     prisma.memoryJob.groupBy({
       by: ["memoryScopeId", "status"],
       where: jobScope,
@@ -163,6 +169,7 @@ export default defineEventHandler(async (event): Promise<OverviewPayload> => {
         memoryScope: { select: { character: { select: { id: true, name: true } } } },
       },
     }),
+    readUsageReport(characterIds, USAGE_WINDOW_DAYS, now),
   ]);
 
   // memoryScopeId → characterId，用于把任务计数摊回角色。
@@ -344,9 +351,55 @@ export default defineEventHandler(async (event): Promise<OverviewPayload> => {
 
   const latest = recentSnapshots[0];
 
+  // readUsageReport 保证每个传入的角色都有一份报告（没用量的补零），这里直接取。
+  // 只透出契约里的字段：prompt/completion 拆分属于内部记账细节，页面用不到。
+  const toUsageDay = (day: {
+    day: string;
+    totalTokens: number;
+    calls: number;
+    costCny: number;
+    unpricedTokens: number;
+    cacheHitTokens: number;
+    uncachedCalls: number;
+  }) => ({
+    day: day.day,
+    totalTokens: day.totalTokens,
+    calls: day.calls,
+    costCny: day.costCny,
+    unpricedTokens: day.unpricedTokens,
+    cacheHitTokens: day.cacheHitTokens,
+    uncachedCalls: day.uncachedCalls,
+  });
+  const usageCharacters = characterIds.map((characterId) => {
+    const report = usageReports.get(characterId)!;
+    return {
+      characterId: report.characterId,
+      days: report.days.map(toUsageDay),
+      today: toUsageDay(report.today),
+      windowTokens: report.windowTokens,
+      windowCostCny: report.windowCostCny,
+      unpricedModels: report.unpricedModels,
+      uncachedCalls: report.uncachedCalls,
+    };
+  });
+
+  const roundCny = (value: number) => Math.round(value * 1_000_000) / 1_000_000;
+  const usage: OverviewUsage = {
+    day: usageDays[usageDays.length - 1] ?? "",
+    days: usageDays,
+    totalTokens: usageCharacters.reduce((sum, item) => sum + item.today.totalTokens, 0),
+    costCny: roundCny(usageCharacters.reduce((sum, item) => sum + item.today.costCny, 0)),
+    unpricedTokens: usageCharacters.reduce((sum, item) => sum + item.today.unpricedTokens, 0),
+    unpricedModels: [...new Set(usageCharacters.flatMap((item) => item.unpricedModels))].sort(),
+    cacheHitTokens: usageCharacters.reduce((sum, item) => sum + item.today.cacheHitTokens, 0),
+    uncachedCalls: usageCharacters.reduce((sum, item) => sum + item.today.uncachedCalls, 0),
+    characters: usageCharacters,
+  };
+
   return {
     generatedAt: now.toISOString(),
     characters: overviewCharacters,
+    usage,
     tasks,
     nextSnapshot: nextCharacter
       ? {

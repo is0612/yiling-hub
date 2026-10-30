@@ -51,7 +51,14 @@ type ChannelBinding = {
   groupBiliRunEnabled: boolean;
 };
 /** 接口回显的明文凭据（管理员页可见）；解不开时为 null。 */
-type QqCredentials = { wsUrl?: string; httpUrl?: string; accessToken?: string; httpToken?: string };
+type QqCredentials = {
+  wsUrl?: string;
+  httpUrl?: string;
+  accessToken?: string;
+  httpToken?: string;
+  /** SnowLuma 网页面板密码，用来在「一键启动」后自动登录配节点。 */
+  snowlumaPassword?: string;
+};
 type QqConnection = {
   id: string; platform: string; displayName: string; appId: string | null; status: string;
   lastEventAt: string | null; createdAt: string; metadata: Record<string, unknown> | null;
@@ -174,7 +181,8 @@ function initialOf(name: string) {
 /** 行副标题：先说她管哪些群，多号时再补上是谁的号 —— 单号时那半句是噪音 */
 function whereOf(row: BindRow) {
   if (!row.binding) return row.connection.appId ? `QQ ${row.connection.appId}` : row.connection.displayName;
-  const scope = row.binding.routingKey ? `只在群 ${row.binding.routingKey}` : "全部群 + 私聊";
+  const keys = row.binding.routingKey ? row.binding.routingKey.split(",").map((key) => key.trim()).filter(Boolean) : [];
+  const scope = keys.length > 0 ? (keys.length === 1 ? `只在群 ${keys[0]}` : `只在群 ${keys.join("、")}`) : "全部群 + 私聊";
   return connections.value.length > 1 ? `${scope} · ${row.connection.displayName}` : scope;
 }
 
@@ -189,10 +197,11 @@ async function refreshCharacters() {
   await loadCharacters();
 }
 
-/** 角色卡里改了绑定级或角色级字段，都回来刷新一次（连接列表 + 角色列表）。 */
+/** 角色卡里改了绑定级或角色级字段，都回来刷新一次（连接列表 + 角色列表 + 额度）。 */
 async function onBehaviorSaved() {
   await refresh();
   await refreshCharacters();
+  void loadQuota();
 }
 
 // ── 这条链路上的两个进程 ────────────────────────────────
@@ -215,6 +224,8 @@ type RuntimeStatus = {
   snowluma: SnowlumaStatus;
   /** 适配器要连的那个端口通不通；读不到连接配置时为 null */
   gateway: { wsUrl: string; host: string; port: number; reachable: boolean } | null;
+  /** 人点过「停止」后自动补起会一直关着，直到再点启动/重连 */
+  autostart: { paused: boolean; at?: string };
 };
 
 const runtime = ref<RuntimeStatus | null>(null);
@@ -270,6 +281,51 @@ async function loadRuntime() {
   } catch {
     runtime.value = null;
   }
+  void loadQuota();
+}
+
+// ── 她今天还能不能说话 ────────────────────────────────
+/**
+ * 链路四段全通 ≠ 她会回话。
+ *
+ * 额度检查在管道深处，额度用完时每条消息都会静默丢弃（返回 daily_quota_exceeded），
+ * 群里表现就是「@ 也不回」，而页面上四段全是绿的 —— 2026-10-30 就因此查了半天。
+ * 所以这里单独拿一次额度，用尽时在列表上方明说，而不是等人去翻日志。
+ */
+type QuotaRow = {
+  id: string;
+  name: string;
+  /** 0 = 没设上限（不限额） */
+  limit: number;
+  used: number;
+  remaining: number | null;
+  exceeded: boolean;
+};
+const quotaRows = ref<QuotaRow[]>([]);
+const exhaustedQuota = computed(() => quotaRows.value.filter((row) => row.exceeded));
+const exhaustedText = computed(() => exhaustedQuota.value
+  .map((row) => `${row.name} 已用 ${formatTokens(row.used)}，上限 ${formatTokens(row.limit)}`)
+  .join("、"));
+
+async function loadQuota() {
+  if (!hasConnections.value) {
+    quotaRows.value = [];
+    return;
+  }
+  try {
+    const response = await $fetch<{ characters: QuotaRow[] }>("/api/admin/channels/onebot/quota");
+    quotaRows.value = response.characters;
+  } catch {
+    // 额度只是提示，拿不到就不显示，不要因为一行提示把整页变成错误态
+    quotaRows.value = [];
+  }
+}
+
+/** 100000 → 「10 万」、103103 → 「10.3 万」，省得一行里全是数不清的零。 */
+function formatTokens(value: number): string {
+  if (value < 10_000) return String(value);
+  const scaled = value / 10_000;
+  return `${Number.isInteger(scaled) ? scaled : scaled.toFixed(1)} 万`;
 }
 
 /** 点完按钮盯一段时间：起进程要几秒，端口起来才算真的好了 */
@@ -287,19 +343,120 @@ async function startAdapter() {
   if (adapterStarting.value || adapterStatus.value?.running) return;
   adapterStarting.value = true;
   try {
-    const result = await $fetch<{ message: string }>("/api/admin/channels/onebot/runtime/adapter", { method: "POST" });
+    // 适配器连不上多半是面板里没有对应的节点（或令牌对不上）。
+    // 面板已经在跑就顺手对齐一次 —— 这一步失败不影响启动，所以是 quiet。
+    if (snowluma.value?.running) await provisionPanel(true);
+    const result = await launchAdapter();
+    if (!result.ok) {
+      ElMessage.error(result.message);
+      return;
+    }
+    if (result.alreadyRunning) {
+      ElMessage.info(result.message);
+      await loadRuntime();
+      return;
+    }
     ElMessage.success(result.message);
     void pollRuntime(Date.now() + 10_000, () => adapterStatus.value?.running === true);
-  } catch (error) {
-    // 409 = 已经有一个在跑，不算失败
-    if (readStatus(error) === 409) {
-      ElMessage.info(readErrorMessage(error, "适配器已经在运行。"));
-      await loadRuntime();
-    } else {
-      ElMessage.error(readErrorMessage(error, "启动失败，请手动运行 yarn onebot:run。"));
-    }
   } finally {
     adapterStarting.value = false;
+  }
+}
+
+/**
+ * 等面板端口应答。`pollRuntime` 只排一次检查就返回了，这里要一条能 await 的等待，
+ * 因为「启动完立刻配节点」必须等面板真的在听。
+ */
+async function waitForPanel(deadline: number): Promise<boolean> {
+  await loadRuntime();
+  if (snowluma.value?.running) return true;
+  if (Date.now() > deadline) return false;
+  await new Promise((resolve) => setTimeout(resolve, 1200));
+  return waitForPanel(deadline);
+}
+
+/** 同上，等适配器自己把「我在跑」的标记写出来。 */
+async function waitForAdapter(deadline: number): Promise<boolean> {
+  await loadRuntime();
+  if (adapterStatus.value?.running) return true;
+  if (Date.now() > deadline) return false;
+  await new Promise((resolve) => setTimeout(resolve, 800));
+  return waitForAdapter(deadline);
+}
+
+type LaunchResult = { ok: boolean; message: string; alreadyRunning?: boolean };
+
+/**
+ * 拉起协议端。已经开着（409）不算失败 —— 一键接通里「它刚好起来了」和「它本来就在」是一样的。
+ */
+async function launchGateway(): Promise<LaunchResult> {
+  try {
+    const result = await $fetch<{ message: string }>("/api/admin/channels/onebot/runtime/snowluma", { method: "POST" });
+    return { ok: true, message: result.message };
+  } catch (error) {
+    if (readStatus(error) === 409) {
+      return { ok: true, message: readErrorMessage(error, "SnowLuma 已经在运行。"), alreadyRunning: true };
+    }
+    return { ok: false, message: readErrorMessage(error, "启动 SnowLuma 失败，请手动双击 start.bat。") };
+  }
+}
+
+/** 拉起适配器；409 同理。 */
+async function launchAdapter(): Promise<LaunchResult> {
+  try {
+    const result = await $fetch<{ message: string }>("/api/admin/channels/onebot/runtime/adapter", { method: "POST" });
+    return { ok: true, message: result.message };
+  } catch (error) {
+    if (readStatus(error) === 409) {
+      return { ok: true, message: readErrorMessage(error, "适配器已经在运行。"), alreadyRunning: true };
+    }
+    return { ok: false, message: readErrorMessage(error, "启动失败，请手动运行 yarn onebot:run。") };
+  }
+}
+
+type ProvisionResponse = {
+  ok: boolean;
+  reason?: "no-password" | "unreachable" | "bad-password" | "totp" | "rate-limited" | "error";
+  message: string;
+  changes: string[];
+  warnings: string[];
+  uin?: string;
+  ports?: { ws: number; http: number };
+};
+
+/**
+ * 用存下的密码登录面板，把 WS/HTTP 节点对齐成连接里的那份。
+ *
+ * `quiet` 用在「保存并重新连接」之后：那时保存已经成功了，面板没起来是常态，
+ * 不该因为配不上节点再弹一条失败 —— 只有真改了东西才值得说一句。
+ *
+ * 面板按 IP 数失败次数（5 次锁 15 分钟），所以密码错一次就停手：
+ * 再自动试下去是把自己锁在面板外面。改完密码保存时会把闸门放开。
+ */
+const panelProvisioning = ref(false);
+const panelAuthPaused = ref(false);
+
+/** 保存过设置就说明密码可能刚改对，把「别再自动试」的闸门放开一次。 */
+function resumePanelAuth() {
+  panelAuthPaused.value = false;
+}
+
+async function provisionPanel(quiet = false) {
+  if (panelProvisioning.value || panelAuthPaused.value) return;
+  panelProvisioning.value = true;
+  try {
+    const result = await $fetch<ProvisionResponse>("/api/admin/channels/onebot/runtime/provision", { method: "POST" });
+    for (const warning of result.warnings) ElMessage.warning(warning);
+    if (result.ok) {
+      if (result.changes.length || !quiet) ElMessage.success(result.message);
+    } else {
+      if (result.reason === "bad-password" || result.reason === "rate-limited") panelAuthPaused.value = true;
+      if (!quiet) ElMessage.warning(result.message);
+    }
+  } catch (error) {
+    if (!quiet) ElMessage.warning(readErrorMessage(error, "自动配节点没成功，可以手动去面板核对。"));
+  } finally {
+    panelProvisioning.value = false;
   }
 }
 
@@ -310,11 +467,20 @@ async function startSnowluma() {
     const result = await $fetch<{ message: string }>("/api/admin/channels/onebot/runtime/snowluma", { method: "POST" });
     ElMessage.success(result.message);
     // 它要加载 QQ 客户端钩子，比适配器慢，给 40 秒
-    void pollRuntime(Date.now() + 40_000, () => snowluma.value?.running === true);
+    snowlumaStarting.value = false;
+    const up = await waitForPanel(Date.now() + 40_000);
+    if (!up) {
+      ElMessage.warning("40 秒内面板还没应答，看一眼 SnowLuma 的窗口有没有报错。");
+      return;
+    }
+    // 面板一起来就把节点对齐：这一步以前要人肉登录面板做，而密码忘了就彻底卡住。
+    await provisionPanel();
   } catch (error) {
     if (readStatus(error) === 409) {
       ElMessage.info(readErrorMessage(error, "SnowLuma 已经在运行。"));
       await loadRuntime();
+      // 已经在跑也算「一键」的结果：节点没配对的话适配器照样连不上。
+      await provisionPanel(true);
     } else {
       ElMessage.error(readErrorMessage(error, "启动失败，请手动双击 start.bat。"));
     }
@@ -373,6 +539,12 @@ function onChainAction(kind: ChainActionKind) {
     case "edit-connection":
       if (connection) void openEdit(connection);
       break;
+    case "reconnect":
+      if (connection) void reconnectConnection(connection);
+      break;
+    case "stop":
+      void stopChain();
+      break;
     case "open-steps":
       scrollToSteps();
       break;
@@ -385,11 +557,41 @@ function scrollToSteps() {
   document.getElementById("qq-steps")?.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
+/**
+ * 打开页面时问一句「链路齐了吗」。
+ *
+ * server 启动时后端已经补过一次（`server/plugins/onebot-autostart.ts`），这里兜的是运行期间掉的：
+ * 适配器崩了、进程被手动杀了、SnowLuma 跟着 QQ 客户端一起没了。点过「停止」的话服务端会直接跳过，
+ * 不会出现「我明明关了它又自己回来」。
+ */
+async function ensureStack() {
+  if (import.meta.server) return;
+  try {
+    const result = await $fetch<{ action: string; message: string; steps: string[] }>(
+      "/api/admin/channels/onebot/runtime/ensure",
+      { method: "POST" },
+    );
+    if (result.action === "started") {
+      ElMessage.success(result.message);
+      await loadRuntime();
+    } else if (result.action === "starting") {
+      // 服务端还在等 SnowLuma 起来，先给一句话，别让人以为页面没反应
+      ElMessage.info(result.message);
+      await loadRuntime();
+    }
+  } catch {
+    // 补不起来不影响看页面：链路带本来就会指出断在哪一段
+  }
+}
+
 watch(error, (value) => {
   if (value) ElMessage.error(readErrorMessage(value, "无法读取渠道连接。"));
 });
 
-onMounted(loadRuntime);
+onMounted(() => {
+  void loadRuntime();
+  void ensureStack();
+});
 onBeforeUnmount(() => {
   if (runtimePollTimer) clearTimeout(runtimePollTimer);
 });
@@ -438,6 +640,7 @@ const form = reactive({
   httpUrl: "",
   accessToken: "",
   httpToken: "",
+  snowlumaPassword: "",
   groupAnnouncementEnabled: false,
   ownerQq: "",
   ownerName: "",
@@ -450,6 +653,7 @@ function resetForm() {
   form.httpUrl = "";
   form.accessToken = "";
   form.httpToken = "";
+  form.snowlumaPassword = "";
   form.groupAnnouncementEnabled = false;
   form.ownerQq = "";
   form.ownerName = "";
@@ -495,6 +699,7 @@ async function openEdit(connection: QqConnection) {
     form.httpUrl = found?.credentials?.httpUrl ?? "";
     form.accessToken = found?.credentials?.accessToken ?? "";
     form.httpToken = found?.credentials?.httpToken ?? "";
+    form.snowlumaPassword = found?.credentials?.snowlumaPassword ?? "";
   } catch {
     // 忽略：列表还在，表单留空也能保存。
   } finally {
@@ -525,9 +730,9 @@ function stopReloadPolling() {
 async function pollReload(deadline: number) {
   if (Date.now() > deadline) {
     stopReloadPolling();
-    // 15 秒还没被适配器消费，多半是适配器没在跑，而不是配置错了
+    // 15 秒还没被适配器消费，多半是适配器已经不在了 —— 这时候点「重连」比让人去开终端快
     if (connections.value.some(reloadPending)) {
-      ElMessage.warning("适配器一直没响应重连请求，确认 yarn onebot:run 正在运行。");
+      ElMessage.warning("适配器一直没响应重连请求，点上面的「重连」让它重新起来。");
     }
     return;
   }
@@ -552,7 +757,120 @@ function startReloadPolling() {
   void pollReload(Date.now() + 15000);
 }
 
+/**
+ * 「重连」= 把这条链路一键接通，而不是只丢一个 reload 包。
+ *
+ * 2026-10-30 的教训：SnowLuma 和适配器都被关掉之后点重连，页面只回一句「去启动 SnowLuma」——
+ * 那段话本来就该由按钮自己去做。现在按链路顺序过一遍：协议端没跑就启动 → 节点没对齐就对齐 →
+ * 适配器没跑就启动、在跑就让它重连。断在哪一段，就只修那一段，别的不动。
+ */
+const reconnecting = ref(false);
+/** 接通进度：链路有几步就报几步，全在一条常驻提示里，不刷屏。 */
+const connecting = ref(false);
+const connectStep = ref("");
+
+async function reconnectConnection(connection: QqConnection) {
+  if (reconnecting.value || stopping.value) return;
+  reconnecting.value = true;
+  connecting.value = true;
+  try {
+    connectStep.value = "检查链路状态…";
+    await loadRuntime();
+
+    // ① 协议端：没在跑就拉起来。它起不来，后面两步都没有意义。
+    if (!snowluma.value?.running) {
+      connectStep.value = "协议端没在跑，正在启动 SnowLuma…";
+      const launched = await launchGateway();
+      if (!launched.ok) {
+        ElMessage.error(launched.message);
+        return;
+      }
+      connectStep.value = "等 SnowLuma 面板应答（最多 40 秒）…";
+      if (!(await waitForPanel(Date.now() + 40_000))) {
+        ElMessage.error("SnowLuma 40 秒内没起来。它挂在 QQ 客户端上 —— 先确认 QQ 已经登录，再看它的窗口有没有报错。");
+        return;
+      }
+    }
+
+    // ② 节点：面板在跑就把 WS/HTTP 对齐，不然适配器连的端口根本没人听。
+    connectStep.value = "对齐协议端节点…";
+    await provisionPanel(true);
+
+    // ③ 适配器：没在跑就启动（新进程会自己读最新配置）；已经在跑就让它重连一次。
+    if (!adapterStatus.value?.running) {
+      connectStep.value = "适配器没在跑，正在启动…";
+      const launched = await launchAdapter();
+      if (!launched.ok) {
+        ElMessage.error(launched.message);
+        return;
+      }
+      connectStep.value = "等适配器连上网关…";
+      if (!(await waitForAdapter(Date.now() + 20_000))) {
+        ElMessage.warning("适配器起来了但没连上网关，看一眼它的窗口报什么错（常见是 3001 没人监听）。");
+        return;
+      }
+    } else {
+      connectStep.value = "让适配器重新连接…";
+      await $fetch(`/api/admin/channels/${encodeURIComponent(connection.id)}/reload`, { method: "POST" });
+      startReloadPolling();
+    }
+
+    connectStep.value = "收尾…";
+    await loadRuntime();
+    await refresh();
+    ElMessage.success("链路已接通。");
+  } catch (error) {
+    ElMessage.error(readErrorMessage(error, "接通失败，看一眼上面的链路带断在哪一段。"));
+  } finally {
+    reconnecting.value = false;
+    connecting.value = false;
+    connectStep.value = "";
+  }
+}
+
 onBeforeUnmount(stopReloadPolling);
+
+/**
+ * 「停止」= 把这两条本机进程收掉。
+ *
+ * 必须由服务端按 pid 树去收，不能只让用户关窗口：点一次启动会在 nuxt 底下套出
+ * `cmd /k yarn` → `yarn` → `cmd /c tsx` → `node` 四层，关掉看得见的那个窗口，
+ * 残留的是哪一层用户根本分不出来 —— 表现就是「明明关了，刷新还说在跑」。
+ *
+ * 一次请求停两条（不是这儿连发两个），见 `runtime/stop.post.ts` 里的说明。
+ */
+const stopping = ref(false);
+
+async function stopChain() {
+  // 和「重连」互斥：一边在拉进程一边在收进程，收尾状态必然对不上
+  if (stopping.value || reconnecting.value) return;
+  stopping.value = true;
+  connecting.value = true;
+  try {
+    connectStep.value = "停止适配器和协议端…";
+    const result = await $fetch<{ stopped: boolean; message: string }>(
+      "/api/admin/channels/onebot/runtime/stop",
+      { method: "POST" },
+    );
+
+    connectStep.value = "收尾…";
+    // taskkill 是同步的，但端口真正释放、页面探活反映过来还要几百毫秒。
+    // 不等这一下，刚停完的页面会继续显示「运行中」，人以为停止没生效又点一次。
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      await loadRuntime();
+      if (!adapterStatus.value?.running && !snowluma.value?.running) break;
+      await new Promise((resolve) => setTimeout(resolve, 600));
+    }
+    await refresh();
+    ElMessage.success(result.message);
+  } catch (error) {
+    ElMessage.error(readErrorMessage(error, "停止失败，可以到任务管理器结束 node 进程。"));
+  } finally {
+    stopping.value = false;
+    connecting.value = false;
+    connectStep.value = "";
+  }
+}
 
 async function submitConnection(reconnect = false) {
   if (saving.value) return;
@@ -572,6 +890,7 @@ async function submitConnection(reconnect = false) {
         httpUrl: form.httpUrl.trim(),
         accessToken: form.accessToken,
         httpToken: form.httpToken,
+        snowlumaPassword: form.snowlumaPassword,
         groupAnnouncementEnabled: form.groupAnnouncementEnabled,
         ownerQq: form.ownerQq.trim(),
         ownerName: form.ownerName.trim(),
@@ -590,6 +909,10 @@ async function submitConnection(reconnect = false) {
     editVisible.value = false;
     await refresh();
     if (reconnect) startReloadPolling();
+    // 改了地址/Token 之后，面板那边也得跟着改，否则两边对不上、适配器照样连不上。
+    // 面板没在跑时 provision 会 409，quiet 模式直接咽下去 —— 保存本身已经成功了。
+    resumePanelAuth();
+    if (snowluma.value?.running) void provisionPanel(true);
   } catch (error) {
     ElMessage.error(readErrorMessage(error, "保存失败，请稍后重试。"));
   } finally {
@@ -601,19 +924,19 @@ async function submitConnection(reconnect = false) {
 const bindVisible = ref(false);
 const bindSaving = ref(false);
 const bindTarget = ref<QqConnection | null>(null);
-const bindForm = reactive({ characterId: "", routingKey: "" });
+const bindForm = reactive({ characterId: "", routingKeys: [] as string[] });
 
 function openBind(connection: QqConnection) {
   bindTarget.value = connection;
   bindForm.characterId = "";
-  bindForm.routingKey = "";
+  bindForm.routingKeys = [];
   bindVisible.value = true;
 }
 
 /** 选中已绑定过的角色时带回原来的群号，避免重新保存把群号清掉。 */
 function onBindCharacterChange(characterId: string) {
   const existing = bindTarget.value?.bindings.find((item) => item.characterId === characterId);
-  bindForm.routingKey = existing?.routingKey ?? "";
+  bindForm.routingKeys = existing?.routingKey ? existing.routingKey.split(",").map((key) => key.trim()).filter(Boolean) : [];
 }
 
 async function submitBind() {
@@ -628,7 +951,7 @@ async function submitBind() {
       method: "POST",
       body: {
         characterId: bindForm.characterId,
-        routingKey: bindForm.routingKey.trim(),
+        routingKey: bindForm.routingKeys.join(","),
       },
     });
     ElMessage.success("角色已绑定。");
@@ -753,9 +1076,30 @@ function copyInstallGuide() {
         @action="onChainAction"
       />
 
+      <!-- 一键接通的进度：按链路顺序报「现在在做哪一步」，比一条条弹提示安静 -->
+      <div
+        v-if="connecting"
+        class="reloadbar"
+        role="status"
+      >
+        <b>{{ stopping ? "正在停止" : "正在接通" }}</b>
+        <p>{{ connectStep }}</p>
+      </div>
+
+      <!-- 点过「停止」之后，自动补起是关着的：链路断着也不会自己回来。
+           不把这句话亮出来，用户只会以为「自动补起坏了」。 -->
+      <div
+        v-if="runtime?.autostart?.paused && !connecting"
+        class="reloadbar is-paused"
+        role="status"
+      >
+        <b>已停止，不会自动重启</b>
+        <p>你点过「停止」，所以链路断了也不会自己补起来。想恢复就点上面的「重连」—— 它会先把停止开关解掉，再补齐协议端和适配器。</p>
+      </div>
+
       <!-- 只在等适配器重连时出现：平时这行不该占版面 -->
       <div
-        v-if="reloadingConnection"
+        v-if="reloadingConnection && !connecting"
         class="reloadbar"
         role="status"
       >
@@ -763,8 +1107,8 @@ function copyInstallGuide() {
         <p>
           {{ reloadPending(reloadingConnection)
             ? (reloadPolling
-              ? "正在自动刷新（每 1.5 秒），一般一两秒就完成。若 15 秒还停在这里，先确认协议端在跑、3001 端口有监听。"
-              : "点「刷新」查看结果。若一直等待，请先启动适配器；旧版进程需手动关掉再启动一次。")
+              ? "正在自动刷新（每 1.5 秒），一般一两秒就完成。若 15 秒还停在这里，点上面的「重连」—— 协议端和适配器它会自己补齐。"
+              : "点「刷新」查看结果。一直卡住就点上面的「重连」，不用再手动去开进程。")
             : "实际是否连通看上面那条带子；历史重连完成不代表此刻在线。" }}
         </p>
         <button
@@ -775,6 +1119,23 @@ function copyInstallGuide() {
         >
           刷新
         </button>
+      </div>
+
+      <!-- 额度用完时链路依然是「四段全通」，但她一个字都不会回：必须明说，否则又只能靠猜 -->
+      <div
+        v-if="exhaustedQuota.length"
+        class="limitbar"
+        role="alert"
+      >
+        <b>今天的模型额度用完了</b>
+        <p>{{ exhaustedText }}。额度耗尽后群消息会被静默丢弃 —— 包括 @ 她，所以看起来像「不理人」。北京时间 0 点自动重置。</p>
+        <NuxtLink
+          v-if="exhaustedQuota.length === 1"
+          class="btn"
+          :to="`/characters/${exhaustedQuota[0]!.id}/settings/model`"
+        >
+          调高上限
+        </NuxtLink>
       </div>
 
       <div class="list-head">
@@ -848,6 +1209,7 @@ function copyInstallGuide() {
               :group-bili-run-enabled="row.binding.groupBiliRunEnabled"
               :emoji-enabled="row.character.emojiEnabled === true"
               :image-understanding="row.character.imageUnderstanding === true"
+              :sticker-auto-collect="row.character.stickerAutoCollect === true"
               :proactive="row.character.proactive"
               @saved="onBehaviorSaved"
             >
@@ -1330,6 +1692,21 @@ function copyInstallGuide() {
               />
             </el-form-item>
           </div>
+          <el-form-item label="SnowLuma 面板密码（用来自动配节点）">
+            <el-input
+              v-model="form.snowlumaPassword"
+              type="password"
+              show-password
+              autocomplete="new-password"
+              :disabled="credLoading"
+              :placeholder="editingId ? '留空 = 沿用原值' : '登录面板用的那个密码'"
+            />
+          </el-form-item>
+          <p class="cq-hint">
+            存下这个密码后，点「启动 SnowLuma」时后台会自动登录面板，把这上面的地址和 Token 对齐到协议端节点里
+            —— 不用再自己开面板核对，也不会因为忘了密码而卡在登录页。
+            <strong>面板本身就是登录密码，不是 Token。</strong>
+          </p>
           <p class="cq-warn">
             <el-icon><Warning /></el-icon>
             <span>
@@ -1444,14 +1821,16 @@ function copyInstallGuide() {
           </el-select>
         </el-form-item>
         <el-form-item label="群号（可留空）">
-          <el-input
-            v-model="bindForm.routingKey"
+          <el-input-tag
+            v-model="bindForm.routingKeys"
             placeholder="留空 = 私聊 + 所有群都回复"
+            :max="50"
+            clearable
           />
         </el-form-item>
         <p class="cq-hint">
-          填了群号就只在这个群里回复。想同时听多个群，给同一个角色多绑几条，每条填一个群号。
-          群聊参与度、限流、B站 口令在清单里展开那一行改。
+          填了群号就只在这些群里回复；可以填多个群号，回车或输入逗号确认一个。
+          留空则私聊和所有群都会回复。群聊参与度、限流、B站 口令在清单里展开那一行改。
         </p>
       </el-form>
 
@@ -1519,6 +1898,31 @@ function copyInstallGuide() {
 .reloadbar b { flex: none; color: #8f5c05; font-size: 14px; font-weight: 700; }
 .reloadbar p { min-width: 0; flex: 1; margin: 0; color: var(--text-2); font-size: 14px; line-height: 1.6; }
 .reloadbar .btn { height: 32px; flex: none; border-color: transparent; background: var(--surface); }
+
+/* 停止状态：不是故障（是用户自己停的），用中性灰而不是红/黄，免得和「断点」混为一谈 */
+.reloadbar.is-paused { background: var(--surface-3); }
+.reloadbar.is-paused b { color: var(--text); }
+
+/* 额度用尽：链路全绿但她不回话，宁可红一条，也不要让人去翻日志 */
+.limitbar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-3);
+  border-radius: var(--radius);
+  background: var(--red-soft);
+  padding: var(--sp-3) var(--sp-4);
+}
+.limitbar b { flex: none; color: var(--red); font-size: 14px; font-weight: 700; }
+.limitbar p { min-width: 0; flex: 1; margin: 0; color: var(--text-2); font-size: 14px; line-height: 1.6; }
+.limitbar .btn {
+  height: 32px;
+  flex: none;
+  border-color: transparent;
+  background: var(--surface);
+  color: var(--text-2);
+  text-decoration: none;
+}
 
 /* ── 清单头 ─────────────────────────────────────────── */
 .list-head {
@@ -2039,6 +2443,8 @@ function copyInstallGuide() {
 
   .reloadbar { flex-wrap: wrap; }
   .reloadbar p { flex-basis: 100%; }
+  .limitbar { flex-wrap: wrap; }
+  .limitbar p { flex-basis: 100%; }
   .errbar { flex-wrap: wrap; }
   .errbar p { flex-basis: 100%; }
 

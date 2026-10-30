@@ -72,6 +72,14 @@ export default defineEventHandler(async (event) => {
     modelConfigPatch.imageUnderstanding = body.imageUnderstanding;
   }
 
+  // 偷表情包开关：群里发来的图自动收进她的表情库。角色级，默认关。
+  if (body.stickerAutoCollect !== undefined) {
+    if (typeof body.stickerAutoCollect !== "boolean") {
+      throw createError({ statusCode: 400, statusMessage: "偷表情包开关必须是布尔值。" });
+    }
+    modelConfigPatch.stickerAutoCollect = body.stickerAutoCollect;
+  }
+
   // 主动找话的设置也挂在 modelConfig 上，但走独立的校验：写入侧宁可报错也不夹取。
   if (body.proactive !== undefined) {
     const current = config.proactive && typeof config.proactive === "object" && !Array.isArray(config.proactive)

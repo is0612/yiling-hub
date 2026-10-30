@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "../src/generated/prisma/client";
 import { ensureExternalIdentityScope, buildExternalIdentityScopeKey } from "../server/utils/identity-scope";
-import { resolveChatMemoryScopes } from "../server/utils/memory-scope-access";
+import { ensureOwnerPrivateScope, buildUserPrivateScopeKey, resolveChatMemoryScopes } from "../server/utils/memory-scope-access";
 
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) throw new Error("缺少 DATABASE_URL，身份绑定测试无法运行。");
@@ -75,9 +75,26 @@ async function main() {
   const accessibleIdsOther = accessibleOther.map((s) => s.id);
   assert.ok(!accessibleIdsOther.includes("ext"), "绑定到他人的身份记忆不应被当前用户读取");
 
+  // 7. 主人专属私人范围：角色 owner 的 USER_PRIVATE scope，幂等建立，且只对 owner 可读
+  const ownerScopeId = await ensureOwnerPrivateScope(characterId, ownerId);
+  assert.ok(ownerScopeId, "主人专属范围应建立");
+  const ownerScopeAgain = await ensureOwnerPrivateScope(characterId, ownerId);
+  assert.equal(ownerScopeId, ownerScopeAgain, "主人专属范围应幂等");
+  const ownerScopeKey = buildUserPrivateScopeKey(characterId, ownerId);
+  assert.equal(ownerScopeKey, `character:${characterId}:user:${ownerId}`);
+  const ownerScopes = [
+    { id: "global", scopeType: "CHARACTER_GLOBAL", userId: null, externalIdentityId: null, externalIdentity: null },
+    { id: "owner-private", scopeType: "USER_PRIVATE", userId: ownerId, externalIdentityId: null, externalIdentity: null },
+  ];
+  const ownerAccessible = resolveChatMemoryScopes(ownerScopes as never, ownerId);
+  assert.ok(ownerAccessible.some((s) => s.id === "owner-private"), "主人的私人范围应只对主人可读");
+  const nonOwnerAccessible = resolveChatMemoryScopes(ownerScopes as never, userId);
+  assert.ok(!nonOwnerAccessible.some((s) => s.id === "owner-private"), "主人的私人范围不应被他人读取");
+
   console.log("✅ test-identity 全部通过");
   console.log("   身份 upsert + scope 幂等：通过");
   console.log("   未验证/已验证/他人绑定 三类隔离：通过");
+  console.log("   主人专属范围建立 + 幂等 + 仅主人可读：通过");
 
   // 清理（先删 scope 和 identity，再删 character 和 user，因为 MemoryScope.character 是 Restrict）
   await prisma.memoryScope.deleteMany({ where: { characterId } });

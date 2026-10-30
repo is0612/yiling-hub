@@ -104,8 +104,9 @@ export async function enqueueDueMemorySnapshots(
       rawMessageCleanupEnabled: true,
       character: {
         select: {
+          ownerId: true,
           memoryScopes: {
-            select: { id: true, scopeType: true },
+            select: { id: true, scopeType: true, userId: true },
           },
         },
       },
@@ -176,6 +177,14 @@ export async function enqueueDueMemorySnapshots(
     }
     const memoryScopeId = globalScopeId;
 
+    // 主人专属私人范围：角色 owner 的 USER_PRIVATE scope。主人的私聊会话挂在这里，
+    // 需要和全局一起排快照 —— 否则「角色记得主人」这一环只有写入、没有提炼。
+    // 周期边界跟随全局（同一个 anchor/interval），只是 job 挂在 owner scope 上；
+    // 该周期内没有主人私聊时 worker 会按既有逻辑 SKIPPED，不产生空总结。
+    const ownerPrivateScopeId = setting.character.ownerId
+      ? setting.character.memoryScopes.find((scope) => scope.scopeType === "USER_PRIVATE" && scope.userId === setting.character.ownerId)?.id
+      : null;
+
     try {
       const result = await prisma.$transaction(async (tx) => {
         const latest = await tx.characterMemorySetting.findUnique({
@@ -190,7 +199,7 @@ export async function enqueueDueMemorySnapshots(
           },
         });
         if (!latest?.autoSnapshotEnabled) {
-          return { jobsQueued: 0, periodsConsidered: 0, advanced: false, initialized: false, notDue: false, stillDue: false };
+          return { jobsQueued: 0, periodsConsidered: 0, advanced: false, initialized: false, notDue: false, stillDue: false, periods: [] };
         }
 
         // Repair an enabled setting missing its next boundary from the saved anchor.
@@ -209,10 +218,10 @@ export async function enqueueDueMemorySnapshots(
               data: { nextSnapshotAt: firstBoundary },
             });
             if (init.count === 1) {
-              return { jobsQueued: 0, periodsConsidered: 0, advanced: false, initialized: true, notDue: true, stillDue: false };
+              return { jobsQueued: 0, periodsConsidered: 0, advanced: false, initialized: true, notDue: true, stillDue: false, periods: [] };
             }
           }
-          return { jobsQueued: 0, periodsConsidered: 0, advanced: false, initialized: false, notDue: true, stillDue: false };
+          return { jobsQueued: 0, periodsConsidered: 0, advanced: false, initialized: false, notDue: true, stillDue: false, periods: [] };
         }
 
         const built = buildDueMemoryPeriods({
@@ -224,7 +233,7 @@ export async function enqueueDueMemorySnapshots(
           maxPeriods: options.maxPeriodsPerSetting,
         });
         if (built.periods.length === 0 || !built.nextSnapshotAt) {
-          return { jobsQueued: 0, periodsConsidered: 0, advanced: false, initialized: false, notDue: false, stillDue: false };
+          return { jobsQueued: 0, periodsConsidered: 0, advanced: false, initialized: false, notDue: false, stillDue: false, periods: [] };
         }
 
         const createResult = await tx.memoryJob.createMany({
@@ -267,6 +276,7 @@ export async function enqueueDueMemorySnapshots(
           initialized: latest.nextSnapshotAt === null,
           notDue: false,
           stillDue: built.stillDue,
+          periods: built.periods,
         };
       });
 
@@ -276,6 +286,22 @@ export async function enqueueDueMemorySnapshots(
       if (result.initialized) report.settingsInitialized += 1;
       if (result.notDue) report.settingsNotDue += 1;
       if (result.stillDue) report.settingsStillDue += 1;
+
+      // 主人专属范围跟随全局周期补排快照。幂等键含 scope id，与全局不冲突；
+      // 只有全局真推进了周期（advanced）才补，避免重复。
+      if (ownerPrivateScopeId && result.advanced && result.periods.length) {
+        const ownerPeriods = result.periods.map((period) => ({
+          memoryScopeId: ownerPrivateScopeId,
+          type: "GENERATE_SNAPSHOT" as const,
+          idempotencyKey: `auto-snapshot:${ownerPrivateScopeId}:${period.periodStart.toISOString()}:${period.periodEnd.toISOString()}`,
+          periodStart: period.periodStart,
+          periodEnd: period.periodEnd,
+          status: "QUEUED" as const,
+          runAt: now,
+        }));
+        const ownerResult = await prisma.memoryJob.createMany({ data: ownerPeriods, skipDuplicates: true });
+        report.jobsQueued += ownerResult.count;
+      }
     } catch (error) {
       if (error instanceof Error && error.message === "MEMORY_SCHEDULER_RACE") continue;
       throw error;

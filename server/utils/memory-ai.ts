@@ -1,4 +1,5 @@
 import { buildChatCompletionsEndpoint, isChatModelConfigured } from "./chat-model-config";
+import { readModelUsage, type ModelUsageTokens } from "./model-usage";
 import { createHash } from "node:crypto";
 
 export const MEMORY_CATEGORIES = [
@@ -21,6 +22,10 @@ export type MemoryAiMessage = {
   eventType: string;
   occurredAt: string;
   content: string;
+  /** 这条消息来自哪种对话（`QQ群 12345678` / `私聊` / `本地对话`）。老数据没有这个字段。 */
+  origin?: string;
+  /** 这条是主人发的。主人私聊必真；群聊里主人发言也标出来，让提炼时认得主人。 */
+  isOwner?: boolean;
 };
 
 export type MemoryAiExistingItem = {
@@ -71,7 +76,7 @@ export type MemoryAiInput = {
 };
 
 const MAX_RESPONSE_BYTES = 1_000_000;
-const TEMPLATE_VERSION = "memory-extraction-v1";
+const TEMPLATE_VERSION = "memory-extraction-v2";
 
 function asText(value: unknown, maxLength = 2000): string {
   return typeof value === "string" ? value.trim().slice(0, maxLength) : "";
@@ -211,6 +216,10 @@ function systemPrompt(): string {
     "你是严格的长期记忆提炼器，不是角色扮演者。",
     "仅根据输入的原始消息和现有记忆提炼事实。绝不补造未出现的细节；区分用户明确陈述、助手建议和不确定推断。",
     "只把对后续互动有长期价值的个人事实、稳定偏好、关系、目标、承诺写入 memoryChanges；一次性闲聊不要写成长记忆。",
+    "同一周期可能同时包含私聊与群聊，每条消息的 origin 标明来源（例如「QQ群 12345678」「私聊」）。群聊里只有与她本人相关的内容才写成长期记忆：她说过的话、答应过的事、有人点名找她、她参与过的群内话题、群里的人怎么称呼她、她跟谁熟。",
+    "群友之间与她无关的闲聊只概括进 summary，不要写成她的记忆；群友的隐私（病情、住址、感情、财务、工作内幕）一律不写入 memoryChanges。需要区分场合时在记忆内容里带上群号，不要凭昵称推断同一个人在不同群或私聊里的身份。",
+    "标了 isOwner 的消息是主人说的。主人与她相关的发言要优先记住，并在关系记忆里体现「主人」这个身份；群聊里也要把主人的话和群友的话分开，不要把主人的话记成「某个群友说的」。",
+    "当你判断某个对话对象值得她长期记住时，写一条 category=RELATIONSHIP 的记忆，内容包含对方称呼、来源（哪个群或私聊）和这段关系的要点；不要为记不住的泛泛之交写关系记忆。",
     "偏好或事实发生变化时，优先 UPDATE 已提供的相关 active memory；明确不再成立时使用 INVALIDATE；确实新增时使用 ADD。",
     "UPDATE/INVALIDATE 的 relatedMemoryId 必须来自输入的 activeMemories。每条 memoryChanges 必须至少引用一个输入中的 evidenceMessageIds，且来源必须真正支持该结论。",
     "只输出 JSON，不要 Markdown 代码围栏。所有列表字段必须存在，即使为空。",
@@ -246,7 +255,7 @@ export async function analyzeMemoryPeriod(input: MemoryAiInput): Promise<{
   model: string;
   provider: string;
   promptTemplateVersion: string;
-  usage?: { promptTokens?: number; completionTokens?: number; totalTokens?: number };
+  usage?: ModelUsageTokens;
 }> {
   // Credentials must be resolved by the caller for the selected provider. Never silently
   // substitute the global environment key for a request targeting another provider.
@@ -275,8 +284,8 @@ export async function analyzeMemoryPeriod(input: MemoryAiInput): Promise<{
     timezone: input.timezone,
     scopeType: input.scopeType,
     characterName: input.characterName,
-    messages: input.messages.map(({ id, role, eventType, occurredAt, content }) => ({
-      id, role, eventType, occurredAt, content,
+    messages: input.messages.map(({ id, role, eventType, occurredAt, content, origin, isOwner }) => ({
+      id, role, eventType, occurredAt, content, ...(origin ? { origin } : {}), ...(isOwner ? { isOwner } : {}),
     })),
     totalMessageCount: input.totalMessageCount,
     omittedMessageCount: input.omittedMessageCount,
@@ -337,24 +346,15 @@ export async function analyzeMemoryPeriod(input: MemoryAiInput): Promise<{
   const sourceIds = input.messages.map((message) => message.id);
   const existingIds = input.activeMemories.map((memory) => memory.id);
   const analysis = validateMemoryAiOutput(parsed, sourceIds, existingIds);
-  const usageRecord = asRecord(payload.usage);
-  const numberField = (key: string) => {
-    const value = usageRecord?.[key];
-    return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-  };
+  // 用量统一走 model-usage 的解析，才能带上缓存命中明细（命中价只有未命中价的几十分之一）。
+  const usage = readModelUsage(payload);
 
   return {
     analysis,
     model,
     provider: endpoint.origin,
     promptTemplateVersion: TEMPLATE_VERSION,
-    ...(usageRecord ? {
-      usage: {
-        ...(numberField("prompt_tokens") !== undefined ? { promptTokens: numberField("prompt_tokens") } : {}),
-        ...(numberField("completion_tokens") !== undefined ? { completionTokens: numberField("completion_tokens") } : {}),
-        ...(numberField("total_tokens") !== undefined ? { totalTokens: numberField("total_tokens") } : {}),
-      },
-    } : {}),
+    ...(usage ? { usage } : {}),
   };
 }
 

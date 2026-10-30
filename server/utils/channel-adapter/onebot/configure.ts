@@ -48,6 +48,13 @@ export type OnebotConnectionRecord = {
   ownerQq: string;
   /** 主人称呼（可留空）；留空时回退到外部身份/群名片。 */
   ownerName: string;
+  /**
+   * SnowLuma 面板密码（凭据里加密存的）。
+   *
+   * 单独从凭据里解出来、不塞进 `config`：它不参与 WS 连接，
+   * 只在「一键启动后自动登录面板配节点」时用一次。
+   */
+  snowlumaPassword: string;
   bindings: OnebotBindingRecord[];
   reloadRequestedAt?: string;
 };
@@ -150,10 +157,22 @@ export async function loadOnebotConnections(
       || ""
     ).toString().trim();
 
+    // 面板密码和 wsUrl/Token 存在同一个加密串里，这里单独解出来给「自动配节点」用。
+    let snowlumaPassword = "";
+    if (credentials) {
+      try {
+        const parsed = JSON.parse(credentials) as Record<string, unknown>;
+        if (typeof parsed.snowlumaPassword === "string") snowlumaPassword = parsed.snowlumaPassword;
+      } catch {
+        // 解不开就当没填，自动配节点会让人去补。
+      }
+    }
+
     records.push({
       id: connection.id,
       platform: connection.platform,
       accountQq,
+      snowlumaPassword,
       config: readConfig(credentials, connection.platformAccountKey),
       replyOnlyWhenMentioned: connectionMentionOnly,
       groupAnnouncementEnabled,

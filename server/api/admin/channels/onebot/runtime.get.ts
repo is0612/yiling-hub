@@ -1,4 +1,5 @@
 import { requireAdminActor } from "../../../../utils/auth";
+import { readAutoStartPause } from "../../../../utils/channel-adapter/onebot/autostart";
 import { loadOnebotConnections } from "../../../../utils/channel-adapter/onebot/configure";
 import {
   parseWsEndpoint,
@@ -15,13 +16,17 @@ import {
  * - **gateway**：适配器要连的那个 WS 端口通不通 —— 日志里一直刷 `code=1006` 就是它不通。
  *
  * 一次请求把三件事说清楚，省得用户在日志和终端之间来回猜。
+ *
+ * 另外带一个 `autostart`：人点过「停止」之后，自动补起会一直关着，直到再点启动/重连。
+ * 不把这个状态亮出来，链路断着 + 自动补起没生效，用户只会以为是功能坏了。
  */
 export default defineEventHandler(async (event) => {
   await requireAdminActor(event);
 
-  const [adapter, snowluma] = await Promise.all([
+  const [adapter, snowluma, autostart] = await Promise.all([
     readOnebotAdapterStatus(),
     readSnowlumaStatus(),
+    readAutoStartPause(),
   ]);
 
   let gateway: { wsUrl: string; host: string; port: number; reachable: boolean } | null = null;
@@ -42,5 +47,5 @@ export default defineEventHandler(async (event) => {
     gateway = null;
   }
 
-  return { adapter, snowluma, gateway };
+  return { adapter, snowluma, gateway, autostart };
 });

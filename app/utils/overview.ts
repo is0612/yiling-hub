@@ -65,6 +65,47 @@ export type OverviewAdminPanel = {
   recentAudits: Array<{ id: string; action: string; entityType: string; atLabel: string }>;
 };
 
+/** 一天里某个角色的用量。金额只覆盖已定价的模型。 */
+export type OverviewUsageDay = {
+  day: string;
+  totalTokens: number;
+  calls: number;
+  costCny: number;
+  /** 未定价模型消耗的 token，这部分没有进 costCny。 */
+  unpricedTokens: number;
+  /** 缓存命中的输入 token（只算有明细的调用），命中价通常只有未命中价的几十分之一。 */
+  cacheHitTokens: number;
+  /** 没有缓存明细的调用数：这些只能按未命中价估算，金额偏高。 */
+  uncachedCalls: number;
+};
+
+export type OverviewUsageCharacter = {
+  characterId: string;
+  /** 从旧到新，最后一个是今天；没有用量的日子会补零。 */
+  days: OverviewUsageDay[];
+  today: OverviewUsageDay;
+  windowTokens: number;
+  windowCostCny: number;
+  unpricedModels: string[];
+  /** 窗口内没有缓存明细的调用数。 */
+  uncachedCalls: number;
+};
+
+export type OverviewUsage = {
+  /** 今天的东八区日期，用来给最后一根柱子上色。 */
+  day: string;
+  days: string[];
+  totalTokens: number;
+  costCny: number;
+  unpricedTokens: number;
+  unpricedModels: string[];
+  /** 今天命中缓存的输入 token。 */
+  cacheHitTokens: number;
+  /** 今天没有缓存明细的调用数。 */
+  uncachedCalls: number;
+  characters: OverviewUsageCharacter[];
+};
+
 export type OverviewNextSnapshot = {
   characterId: string;
   characterName: string;
@@ -105,6 +146,7 @@ export type OverviewPayload = {
   latestSnapshot: OverviewLatestSnapshot | null;
   events: OverviewEvent[];
   admin: OverviewAdminPanel | null;
+  usage: OverviewUsage;
 };
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -147,4 +189,30 @@ export function characterUrgency(character: OverviewCharacter): number {
   if (character.status === "未连接") return 3;
   if (character.status === "已暂停") return 6;
   return 4;
+}
+
+/** token 数带千分位：总览里一眼要对上额度设置里的数字，不做 1.2 万这种换算。 */
+export function formatTokenCount(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return "0";
+  return Math.round(value).toLocaleString("zh-CN");
+}
+
+/**
+ * 金额展示。一次调用常常只有几厘钱，所以小于 1 元时保留到 3 位小数；
+ * 真到 0.0005 以下就直接说「不到一厘」，不要显示成 ¥0 让人以为免费。
+ */
+export function formatCny(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return "¥0";
+  if (value >= 1000) return "¥" + Math.round(value).toLocaleString("zh-CN");
+  if (value >= 0.01) return "¥" + value.toFixed(2);
+  if (value >= 0.001) return "¥" + value.toFixed(3);
+  return "<¥0.001";
+}
+
+/** 柱状图的悬停说明：`10-29 · 12,345 tokens · ¥0.42`。 */
+export function describeUsageDay(day: OverviewUsageDay): string {
+  const label = day.day.slice(5);
+  const tokens = `${formatTokenCount(day.totalTokens)} tokens`;
+  const calls = `${day.calls} 次调用`;
+  return `${label} · ${tokens} · ${calls} · ${formatCny(day.costCny)}`;
 }

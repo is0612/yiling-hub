@@ -108,6 +108,18 @@ assert.equal(gate({ spokenToday: GROUP_CHAT_DEFAULTS.dailyMax, direct: true }).r
 
 const justSpoke = new Date(base.now.getTime() - 30 * 1000);
 assert.equal(gate({ lastSpokeAt: justSpoke }).reason, "too_soon", "刚说完 30 秒，别再刷一条。");
+// 回归：2026-10-30 线上，她 10:32:12 回完一句，10:32:48 有人 @ 她，
+// 36 秒 < minGap 90 秒，被判 too_soon 丢掉，人看到的现象就是「@ 了也不回」。
+assert.deepEqual(
+  gate({ lastSpokeAt: justSpoke, direct: true }),
+  { allowed: true, reason: "direct", mustReply: true },
+  "刚说完话又被 @ 了：必须回，间隔不能压过点名。",
+);
+assert.equal(
+  gate({ lastSpokeAt: justSpoke, named: true }).reason,
+  "too_soon",
+  "只是正文里叫到名字，仍要受间隔约束 —— 群里同款鱼太多，名字是弱线索。",
+);
 assert.equal(
   gate({ lastSpokeAt: new Date(base.now.getTime() - 120 * 1000) }).reason,
   "not_relevant",

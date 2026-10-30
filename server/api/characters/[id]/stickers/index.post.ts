@@ -1,0 +1,60 @@
+import { createError, getRouterParam, readMultipartFormData } from "h3";
+import { requireActorUserId } from "../../../../utils/auth";
+import { readTrimmedString, requireUuid } from "../../../../utils/local-api";
+import { getPrisma } from "../../../../utils/prisma";
+import {
+  MAX_STICKER_BYTES,
+  invalidateStickerCache,
+  resolveStickerExtension,
+  saveStickerFile,
+  toStickerDto,
+} from "../../../../utils/stickers";
+
+/**
+ * 上传一张表情包。
+ *
+ * multipart 而不是 JSON + base64：图片是二进制，硬塞进 JSON 要多花三分之一体积，
+ * 还得自己拆边界。字段只有三个：file（图）、name（她看到的名字）、usage（什么时候用）。
+ */
+export default defineEventHandler(async (event) => {
+  const ownerId = await requireActorUserId(event);
+  const id = requireUuid(getRouterParam(event, "id") ?? "", "角色");
+  const prisma = getPrisma();
+  const character = await prisma.character.findFirst({ where: { id, ownerId }, select: { id: true } });
+  if (!character) throw createError({ statusCode: 404, statusMessage: "角色不存在。" });
+
+  const form = await readMultipartFormData(event).catch(() => null);
+  if (!form?.length) throw createError({ statusCode: 400, statusMessage: "没有收到上传内容。" });
+
+  const filePart = form.find((part) => part.name === "file");
+  const field = (name: string): string => {
+    const part = form.find((item) => item.name === name);
+    return part?.data ? Buffer.from(part.data).toString("utf8") : "";
+  };
+  if (!filePart?.data?.length) throw createError({ statusCode: 400, statusMessage: "请先选择一张图片。" });
+  if (filePart.data.length > MAX_STICKER_BYTES) {
+    throw createError({ statusCode: 413, statusMessage: `图片不能超过 ${Math.floor(MAX_STICKER_BYTES / 1024 / 1024)}MB。` });
+  }
+
+  // 扩展名只从 mime 或原始文件名推断，**并且只用于拼自己生成的文件名**——
+  // 客户端传来的名字永远不进路径。
+  const extension = resolveStickerExtension(filePart.type, field("filename"));
+  if (!extension) throw createError({ statusCode: 415, statusMessage: "只支持 PNG / JPG / GIF / WebP 图片。" });
+
+  const name = readTrimmedString(field("name"), "表情包名字", 60, { required: true });
+  const usage = readTrimmedString(field("usage"), "使用场景", 200);
+
+  const fileName = await saveStickerFile(id, extension, filePart.data);
+  const row = await prisma.characterSticker.create({
+    data: {
+      characterId: id,
+      name,
+      usage,
+      fileName,
+      mimeType: typeof filePart.type === "string" && filePart.type ? filePart.type : `image/${extension}`,
+      sizeBytes: filePart.data.length,
+    },
+  });
+  invalidateStickerCache(id);
+  return toStickerDto(row);
+});

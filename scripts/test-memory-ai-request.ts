@@ -54,6 +54,8 @@ const input = {
     eventType: "message",
     occurredAt: "2026-10-04T10:00:00.000Z",
     content: "我喜欢星空。",
+    origin: "QQ群 12345678",
+    isOwner: true,
   }],
   totalMessageCount: 1,
   omittedMessageCount: 0,
@@ -95,6 +97,13 @@ try {
     ].sort(),
     "Only explicit memory-analysis fields should be serialized into the prompt.",
   );
+  const promptMessages = promptInput.messages as Array<Record<string, unknown>>;
+  assert.equal(promptMessages[0]?.origin, "QQ群 12345678", "群号来源必须进提示词，否则模型分不清是哪段关系在说话。");
+  assert.equal(promptMessages[0]?.isOwner, true, "主人标记必须进提示词，否则提炼时分不清主人和群友。");
+  const systemMessage = requestBody.messages.find((message) => message.role === "system");
+  assert(systemMessage?.content.includes("群聊"), "系统提示词必须写明群聊的提炼边界。");
+  assert(systemMessage?.content.includes("主人"), "系统提示词必须写明主人识别的规则。");
+  assert(systemMessage?.content.includes("RELATIONSHIP"), "系统提示词必须写明关系记忆的规则。");
   assert.equal(result.analysis.summary, "本周期测试摘要。");
   assert.equal(result.usage?.totalTokens, 16);
 

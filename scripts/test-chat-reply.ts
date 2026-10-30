@@ -24,7 +24,14 @@ globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise
         }),
       },
     }],
-    usage: { prompt_tokens: 12, completion_tokens: 8, total_tokens: 20 },
+    usage: {
+      prompt_tokens: 12,
+      completion_tokens: 8,
+      total_tokens: 20,
+      // 缓存明细必须一路带到 result.usage：群聊命中率高，丢了它金额会高估三倍。
+      prompt_cache_hit_tokens: 9,
+      prompt_cache_miss_tokens: 3,
+    },
   }), {
     status: 200,
     headers: { "content-type": "application/json" },
@@ -92,6 +99,8 @@ try {
   assert.deepEqual(result.usedMemoryIds, ["memory-1"], "Invented source IDs must be filtered out.");
   assert.deepEqual(result.usedSnapshotIds, ["snapshot-1"]);
   assert.equal(result.usage?.totalTokens, 20);
+  assert.equal(result.usage?.cacheHitTokens, 9, "缓存命中要跟着 usage 一起返回，否则记账只能按未命中价估。");
+  assert.equal(result.usage?.cacheMissTokens, 3);
 
   // ── 对话示例：只拼进 characterPrompt 尾部，带边界，且不新增顶层字段 ──
   // 为什么不能新增字段/不能做成 few-shot 轮次：这个接口要求返回 JSON 信封，
@@ -293,6 +302,7 @@ try {
             groupDecision: {
               relation: "shared_topic",
               topicAnchorMessageId: "a1",
+              replyToMessageId: "m2",
               evidenceMessageIds: ["m2", "invented"],
             },
           }),
@@ -337,6 +347,7 @@ try {
   assert.equal((groupInput.groupAnchors as Array<{ id: string }>)[0]?.id, "a1");
   assert.equal(grouped.groupDecision?.relation, "shared_topic");
   assert.equal(grouped.groupDecision?.topicAnchorMessageId, "a1", "锚点必须来自本次提供的 groupAnchors。");
+  assert.equal(grouped.groupDecision?.replyToMessageId, "m2", "引用目标必须是本轮 transcript 的 id。");
   assert.deepEqual(grouped.groupDecision?.evidenceMessageIds, ["m2"], "编造的证据 id 要被过滤掉。");
 
   // 非法 relation / 不存在锚点：整段决策丢掉，但回复照常返回。
@@ -366,6 +377,33 @@ try {
   });
   assert.equal(badDecision.reply, "嗯", "决策字段非法不能连累正常回复。");
   assert.equal(badDecision.groupDecision, undefined, "非法 relation 要整段丢弃。");
+
+  // 合法 relation 但 replyTo 编造：回复和关系都保留，只有引用目标被丢掉。
+  globalThis.fetch = async (): Promise<Response> => new Response(JSON.stringify({
+    choices: [{ message: { content: JSON.stringify({
+      reply: "来了",
+      usedMemoryIds: [],
+      usedSnapshotIds: [],
+      groupDecision: { relation: "direct", replyToMessageId: "ghost-id", evidenceMessageIds: [] },
+    }) } }],
+    usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 },
+  }), { status: 200, headers: { "content-type": "application/json" } });
+  const badReplyTo = await generateConversationReply({
+    characterName: "鲸鱼娘",
+    characterPrompt: "你是群里的一个网友。",
+    model: "test-chat-model",
+    apiKey: secretApiKey,
+    apiBaseUrl: privateProviderUrl,
+    currentMessage: "随便聊聊",
+    transcript: [{ id: "m1", member: "member_1", speaker: "A", content: "随便聊聊" }],
+    groupChat: true,
+    allowSilent: true,
+    recentMessages: [],
+    memories: [],
+    snapshots: [],
+  });
+  assert.equal(badReplyTo.groupDecision?.relation, "direct", "relation 合法时决策要保留。");
+  assert.equal(badReplyTo.groupDecision?.replyToMessageId, undefined, "编造的引用目标要被丢掉。");
 
   // 被 @ 时必须回：模型返回 silent 也不能被当成「这轮不插嘴」。
   globalThis.fetch = async (): Promise<Response> => new Response(JSON.stringify({

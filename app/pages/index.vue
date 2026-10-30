@@ -9,7 +9,7 @@ import {
   Refresh,
   User,
 } from "@element-plus/icons-vue";
-import { characterUrgency, describeCountdown, type OverviewCharacter, type OverviewPayload } from "~/utils/overview";
+import { characterUrgency, describeCountdown, describeUsageDay, formatCny, formatTokenCount, type OverviewCharacter, type OverviewPayload, type OverviewUsageDay } from "~/utils/overview";
 
 const { isAdmin } = useAuthSession();
 
@@ -42,6 +42,53 @@ const sortedCharacters = computed(() =>
     return left - right;
   }),
 );
+
+/**
+ * 用量卡：服务端按角色返回「今天 + 近 7 天」，这里只把它和角色身份拼起来。
+ * 柱子高度按各自 7 天里的峰值归一化 —— 三个角色并排比较没有意义，看的是自己哪天用得多。
+ */
+const usage = computed(() => overview.value?.usage ?? null);
+/** 只要窗口内有过调用就画卡：今天没跑不代表昨天没花钱，趋势本身就是要给人看的。 */
+const hasUsage = computed(() => (usage.value?.characters ?? []).some((item) => item.windowTokens > 0));
+const usageRows = computed(() => {
+  const data = overview.value;
+  if (!data) return [];
+  const characterById = new Map(data.characters.map((character) => [character.id, character]));
+  return data.usage.characters.map((item) => {
+    const character = characterById.get(item.characterId);
+    return {
+      ...item,
+      name: character?.name ?? "未知角色",
+      peakTokens: Math.max(1, ...item.days.map((day) => day.totalTokens)),
+    };
+  });
+});
+
+function barHeight(day: OverviewUsageDay, peakTokens: number) {
+  if (day.totalTokens <= 0) return "3px";
+  return `${Math.max(4, Math.round((day.totalTokens / peakTokens) * 30))}px`;
+}
+
+/**
+ * 金额说明要能解释「为什么和供应商账单不一样」：
+ * 没有缓存明细的旧记录只能按未命中价算，会明显偏高；有新记录后才是真实命中价。
+ */
+const usageNotes = computed(() => {
+  const data = usage.value;
+  if (!data) return [] as string[];
+  const notes: string[] = [];
+  if (data.unpricedModels.length) {
+    notes.push(`${data.unpricedModels.join(" / ")} 没有内置单价，只计 token 不计金额；可在服务端用 MODEL_PRICING 补价。`);
+  }
+  if (data.uncachedCalls > 0) {
+    notes.push(`今天有 ${data.uncachedCalls} 次调用没有记录缓存命中，这部分按未命中价估算，金额偏高；新调用按真实命中价计（常驻进程需重启一次）。`);
+  } else if (data.cacheHitTokens > 0) {
+    notes.push(`今天有 ${formatTokenCount(data.cacheHitTokens)} 个输入 token 命中缓存，已按命中价计价；实际账单以供应商为准。`);
+  } else {
+    notes.push("金额按内置参考价估算，实际账单以供应商为准。");
+  }
+  return notes;
+});
 
 const alerts = computed(() => {
   const data = overview.value;
@@ -443,6 +490,66 @@ async function handleRefresh() {
           </div>
         </button>
       </div>
+
+      <!-- 用量与花费：今日 token + 近 7 天趋势。金额是估算，未定价模型只计 token -->
+      <section
+        v-if="usage"
+        class="usage-wrap"
+      >
+        <div class="sec-h">
+          <h2>用量与花费</h2>
+          <span class="sub">东八区自然日 · 近 7 天 · 按参考价估算</span>
+          <span class="usage-total">
+            今日合计 {{ formatTokenCount(usage.totalTokens) }} tokens · {{ formatCny(usage.costCny) }}
+          </span>
+        </div>
+        <div class="card">
+          <template v-if="hasUsage">
+            <div
+              v-for="row in usageRows"
+              :key="row.characterId"
+              class="usage-row"
+            >
+              <div class="usage-id">
+                <span class="usage-name">{{ row.name }}</span>
+                <span class="usage-sub">今日 {{ formatTokenCount(row.today.totalTokens) }} tokens · {{ row.today.calls }} 次调用</span>
+              </div>
+              <div
+                class="usage-bars"
+                role="img"
+                :aria-label="`${row.name} 近 7 天 token 用量`"
+              >
+                <i
+                  v-for="day in row.days"
+                  :key="day.day"
+                  :class="{ 'is-today': day.day === usage.day, 'is-empty': day.totalTokens === 0 }"
+                  :style="{ height: barHeight(day, row.peakTokens) }"
+                  :title="describeUsageDay(day)"
+                />
+              </div>
+              <div class="usage-cost">
+                <b>{{ formatCny(row.today.costCny) }}</b>
+                <span>近 7 天 {{ formatCny(row.windowCostCny) }}</span>
+              </div>
+            </div>
+          </template>
+          <div
+            v-else
+            class="card-empty"
+          >
+            <el-icon><Cpu /></el-icon>
+            <span>最近 7 天还没有模型调用</span>
+            <span>对话、归档或值班跑起来后，这里会按天累计</span>
+          </div>
+          <p
+            v-for="note in usageNotes"
+            :key="note"
+            class="usage-note"
+          >
+            {{ note }}
+          </p>
+        </div>
+      </section>
 
       <div
         class="home-cols"
@@ -890,6 +997,101 @@ async function handleRefresh() {
 }
 .ov-a .kpi .v.is-warn {
   color: var(--amber);
+}
+
+/* 用量与花费：一行一个角色。柱子只做「自己跟自己比」，所以按各自 7 天的峰值归一化 */
+.ov-a .usage-wrap {
+  margin: 4px 0 22px;
+}
+.ov-a .usage-total {
+  margin-left: auto;
+  color: var(--text-2);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.ov-a .usage-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 140px auto;
+  grid-template-areas: "id bars cost";
+  gap: 16px;
+  align-items: center;
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.ov-a .usage-row + .usage-row {
+  margin-top: 4px;
+}
+.ov-a .usage-id {
+  display: flex;
+  grid-area: id;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+.ov-a .usage-name {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ov-a .usage-sub {
+  color: var(--dim);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.ov-a .usage-bars {
+  display: flex;
+  grid-area: bars;
+  height: 34px;
+  align-items: flex-end;
+  gap: 4px;
+}
+.ov-a .usage-bars i {
+  min-width: 4px;
+  flex: 1;
+  border-radius: 2px;
+  background: var(--brand);
+  /* 历史日期压淡、今天实色：一眼看出哪根是今天，又不至于七根一样重 */
+  opacity: .45;
+}
+.ov-a .usage-bars i.is-today {
+  opacity: 1;
+}
+.ov-a .usage-bars i.is-empty {
+  /* 没用量的日子留一条浅轨道，柱状图才读得成「7 天」而不是两根孤立的柱子 */
+  background: var(--line);
+  opacity: 1;
+}
+.ov-a .usage-cost {
+  display: flex;
+  grid-area: cost;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  text-align: right;
+}
+.ov-a .usage-cost b {
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.ov-a .usage-cost span {
+  color: var(--dim);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.ov-a .usage-note {
+  margin: 4px 0 0;
+  padding: 0 12px 4px;
+  color: var(--dim);
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 /* 主角卡（单角色）：一张白砖装下角色身份 + 四个时点 + 周期进度 */
@@ -1471,6 +1673,14 @@ async function handleRefresh() {
   .ov-a .role-card { grid-template-columns: 34px minmax(0, 1fr); }
   .ov-a .role-links { grid-column: 2; margin-top: 2px; }
   .ov-a .kpi-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ov-a .usage-wrap .sec-h { flex-wrap: wrap; }
+  .ov-a .usage-total { margin-left: 0; }
+  .ov-a .usage-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: "id cost" "bars bars";
+    row-gap: 8px;
+  }
+  .ov-a .usage-bars { height: 30px; }
   .ov-a .hero { padding: 16px; }
   .ov-a .hero-head { flex-wrap: wrap; }
   .ov-a .hero-actions { width: 100%; flex-wrap: wrap; }

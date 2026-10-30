@@ -10,10 +10,14 @@ import {
   type MemoryChange,
 } from "./memory-ai";
 import { applyMemoryChange, normalizeMemoryText } from "./memory-change-apply";
+import {
+  PER_CONVERSATION_SOURCE_WINDOW,
+  selectPeriodSourceMessages,
+} from "./memory-source-selection";
 
 const LEASE_MS = 5 * 60 * 1000;
-const MAX_SOURCE_MESSAGES = 250;
-const SOURCE_MESSAGE_WINDOW = MAX_SOURCE_MESSAGES / 2;
+/** 一个周期最多看几个会话：会话再多，也只给最近活跃的这几个分配来源配额。 */
+const MAX_SCOPE_CONVERSATIONS = 12;
 const MAX_SOURCE_MEMORIES = 250;
 const MAX_AI_MESSAGES = 120;
 const MAX_AI_MEMORIES = 80;
@@ -33,9 +37,66 @@ function ownerFilter(ownerId?: string) {
   return ownerId ? { memoryScope: { is: { character: { is: { ownerId } } } } } : {};
 }
 
-function selectAiMessages(messages: Array<{
-  id: string; role: string; eventType: string; content: string; occurredAt: Date;
-}>): MemoryAiMessage[] {
+type PeriodSourceMessage = {
+  id: string;
+  role: string;
+  eventType: string;
+  content: string;
+  occurredAt: Date;
+  conversationId: string;
+  /** 这条消息来自哪种对话：群聊带群号，私聊/本地对话各有一个固定标签。 */
+  origin: string;
+  /** 这条是主人发的。群聊里主人和群友混在一起，要靠它让提炼时认得出主人。 */
+  isOwner: boolean;
+};
+
+/** 会话在提示词里的来源标签。群聊必须带上群号，否则模型分不清是哪段关系在说话。 */
+function conversationOriginLabel(conversation: { externalConversationId: string | null }): string {
+  const key = conversation.externalConversationId ?? "";
+  const group = /^g:(\d+)$/.exec(key);
+  if (group?.[1]) return `QQ群 ${group[1]}`;
+  if (key.startsWith("c:")) return "私聊";
+  return "本地对话";
+}
+
+/**
+ * 按会话取本周期来源消息。
+ *
+ * 每个会话单独查最近的一批，再交给 selectPeriodSourceMessages 做配额分配 ——
+ * 一条 SQL 取不出「每个会话各 N 条」，而按全局时间取正是私聊被水群挤掉的原因。
+ */
+async function loadPeriodSourceMessages(
+  prisma: PrismaClient,
+  conversations: Array<{ id: string; externalConversationId: string | null }>,
+  periodStart: Date,
+  periodEnd: Date,
+): Promise<PeriodSourceMessage[]> {
+  const batches = await Promise.all(conversations.map(async (conversation) => {
+    const rows = await prisma.message.findMany({
+      where: { conversationId: conversation.id, occurredAt: { gte: periodStart, lt: periodEnd } },
+      orderBy: [{ occurredAt: "desc" }, { id: "desc" }],
+      take: PER_CONVERSATION_SOURCE_WINDOW,
+      select: { id: true, role: true, eventType: true, content: true, occurredAt: true, metadata: true },
+    });
+    const origin = conversationOriginLabel(conversation);
+    return rows.map((row) => ({
+      ...row,
+      conversationId: conversation.id,
+      origin,
+      isOwner: readIsOwnerFlag(row.metadata),
+    }));
+  }));
+  return selectPeriodSourceMessages(batches.flat());
+}
+
+function readIsOwnerFlag(metadata: unknown): boolean {
+  const record = metadata && typeof metadata === "object" && !Array.isArray(metadata)
+    ? metadata as Record<string, unknown>
+    : {};
+  return record.isOwner === true;
+}
+
+function selectAiMessages(messages: PeriodSourceMessage[]): MemoryAiMessage[] {
   let selected = messages;
   if (messages.length > MAX_AI_MESSAGES) {
     const edge = Math.floor(MAX_AI_MESSAGES / 2);
@@ -47,6 +108,8 @@ function selectAiMessages(messages: Array<{
     eventType: message.eventType,
     occurredAt: message.occurredAt.toISOString(),
     content: message.content.slice(0, 1200),
+    origin: message.origin,
+    isOwner: message.isOwner,
   }));
 }
 
@@ -443,21 +506,36 @@ export async function processNextMemoryJob(
       ],
     };
 
-    const [messageCount, eventCount, sourceMessagesFirst, sourceMessagesLast, memoryActivityCount, activeItems, scope, previousSnapshot] = await Promise.all([
+    // 先列本周期内有消息的会话，来源再按会话配额取 —— 不能再用「整个范围按时间取前后各 125 条」：
+    // 一个热闹的群就能把私聊整个挤出窗口，总结只剩群里与她无关的闲话。
+    // 会话也一样：一对一（私聊/本地）永远排在群聊前面，不能靠 lastMessageAt 硬排 —— 群多了
+    // 之后私聊会话会被挤到第 12 名开外，直接从会话级消失。所以非群聊会话先全量取，
+    // 剩下的名额再按最近活跃度给群会话。
+    const periodBaseWhere = {
+      memoryScopeId: job.memoryScopeId,
+      messages: { some: { occurredAt: { gte: job.periodStart, lt: job.periodEnd } } },
+    };
+    const [directConversations, groupConversations] = await Promise.all([
+      prisma.conversation.findMany({
+        where: { ...periodBaseWhere, OR: [
+          { externalConversationId: null },
+          { externalConversationId: { startsWith: "c:" } },
+        ] },
+        orderBy: [{ lastMessageAt: "desc" }, { updatedAt: "desc" }],
+        select: { id: true, externalConversationId: true },
+      }),
+      prisma.conversation.findMany({
+        where: { ...periodBaseWhere, externalConversationId: { startsWith: "g:" } },
+        orderBy: [{ lastMessageAt: "desc" }, { updatedAt: "desc" }],
+        take: MAX_SCOPE_CONVERSATIONS,
+        select: { id: true, externalConversationId: true },
+      }),
+    ]);
+    const periodConversations = [...directConversations, ...groupConversations];
+
+    const [messageCount, eventCount, memoryActivityCount, activeItems, scope, previousSnapshot] = await Promise.all([
       prisma.message.count({ where: messageWhere }),
       prisma.message.count({ where: { ...messageWhere, eventType: { not: "message" } } }),
-      prisma.message.findMany({
-        where: messageWhere,
-        orderBy: [{ occurredAt: "asc" }, { id: "asc" }],
-        take: SOURCE_MESSAGE_WINDOW,
-        select: { id: true, role: true, eventType: true, content: true, occurredAt: true },
-      }),
-      prisma.message.findMany({
-        where: messageWhere,
-        orderBy: [{ occurredAt: "desc" }, { id: "desc" }],
-        take: SOURCE_MESSAGE_WINDOW,
-        select: { id: true, role: true, eventType: true, content: true, occurredAt: true },
-      }),
       prisma.memoryItem.count({ where: memoryActivityWhere }),
       prisma.memoryItem.findMany({
         where: {
@@ -513,11 +591,10 @@ export async function processNextMemoryJob(
       return { processed: true, jobId: job.id, status: "SKIPPED", message: "周期内无已保存活动，已跳过总结生成。" };
     }
 
-    // Keep the oldest and newest source messages in long periods, instead of silently
-    // analyzing only the first 250 and missing the period's later conversations.
-    const sourceMessages = [...new Map(
-      [...sourceMessagesFirst, ...sourceMessagesLast].map((message) => [message.id, message]),
-    ).values()].sort((a, b) => a.occurredAt.getTime() - b.occurredAt.getTime() || a.id.localeCompare(b.id));
+    // 按会话配额取来源：每个会话先保住自己最新的一条，再在总预算内按时间填满。
+    const sourceMessages = await loadPeriodSourceMessages(
+      prisma, periodConversations, job.periodStart, job.periodEnd,
+    );
     const aiMessages = selectAiMessages(sourceMessages);
     // activeItems is newest-first, so the model sees the latest memory state.
     const aiMemoryContext = activeItems.slice(0, MAX_AI_MEMORIES).map((item) => ({

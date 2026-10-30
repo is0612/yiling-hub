@@ -6,8 +6,36 @@ import { formatClockMinutes, readClockMinutes } from "../../../../../utils/proac
 import { getPrisma } from "../../../../../utils/prisma";
 
 /**
- * Binds a character to a QQ connection. An optional routingKey limits the binding to a single
- * group openid; when omitted the binding is the connection's default (receives any group event).
+ * 规范化路由键：现在支持一个绑定挂多个群号。接收三种形态，统一存成逗号分隔的字符串：
+ * - 字符串 "12345" 或 "12345,67890"
+ * - 字符串数组 ["12345", "67890"]
+ * - 空 / 空数组 / 全空 → null（表示默认绑定，收所有群 + 私聊）
+ */
+function normalizeRoutingKey(raw: unknown): string | null {
+  if (raw === undefined || raw === null) return null;
+  let parts: string[];
+  if (Array.isArray(raw)) {
+    parts = raw.map((item) => String(item ?? "").trim()).filter((item) => item.length > 0);
+  } else if (typeof raw === "string") {
+    parts = raw
+      .split(",")
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0);
+  } else {
+    throw createError({ statusCode: 400, statusMessage: "路由键必须是字符串或字符串数组。" });
+  }
+  if (parts.length === 0) return null;
+  const joined = [...new Set(parts)].join(",");
+  if (joined.length > 255) {
+    throw createError({ statusCode: 400, statusMessage: "路由键（多个群号合计）最多 255 个字符。" });
+  }
+  return joined;
+}
+
+/**
+ * Binds a character to a QQ connection. An optional routingKey limits the binding to one or more
+ * group openids (comma-separated); when omitted the binding is the connection's default
+ * (receives any group event).
  */
 export default defineEventHandler(async (event) => {
   const admin = await requireAdminActor(event);
@@ -15,7 +43,7 @@ export default defineEventHandler(async (event) => {
   const body = await readBody<Record<string, unknown>>(event);
 
   const characterId = requireUuid(readTrimmedString(body?.characterId, "角色", 100, { required: true }), "角色");
-  const routingKey = readTrimmedString(body?.routingKey, "路由键", 255) || null;
+  const routingKey = normalizeRoutingKey(body?.routingKey);
 
   let replyWindowMinutes: number | undefined;
   if (body?.replyWindowMinutes !== undefined) {

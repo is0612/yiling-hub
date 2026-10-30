@@ -41,6 +41,8 @@ export type CharacterDto = {
   emojiEnabled: boolean;
   /** QQ 群里发来的图是否交给视觉模型读；默认关。 */
   imageUnderstanding: boolean;
+  /** 群里发来的图是否自动收进她的表情库（「偷表情包」）；默认关。 */
+  stickerAutoCollect: boolean;
   /** 主动找话设置；未配置过时是默认值（enabled=false）。 */
   proactive: ProactiveSettings;
 };
@@ -168,6 +170,7 @@ export function toCharacterDto(input: unknown): CharacterDto {
     snapshotTokenBudget: positiveNumber(config.snapshotTokenBudget) || SNAPSHOT_TOKEN_BUDGET_DEFAULT,
     emojiEnabled: config.emojiEnabled === true,
     imageUnderstanding: config.imageUnderstanding === true,
+    stickerAutoCollect: config.stickerAutoCollect === true,
     proactive: resolveProactiveSettings(config),
   };
 }

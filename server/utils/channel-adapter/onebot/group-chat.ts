@@ -162,7 +162,11 @@ export function evaluateGroupChatGate(input: GroupChatGateInput): GroupChatGateR
   if (settings.dailyMax > 0 && input.spokenToday >= settings.dailyMax) {
     return { allowed: false, reason: "daily_limit", mustReply: false };
   }
-  if (input.lastSpokeAt && settings.minGapSeconds > 0) {
+  // 最小间隔只压「没人点名时的自然接话」。
+  // @ 是明确指令，必须豁免：2026-10-30 她 10:32:12 回完一句，10:32:48 有人 @ 她，
+  // 36 秒 < 90 秒 → 被判 too_soon 丢掉，人看到的就是「@ 了也不回」。
+  // 安静时段早就有 `!direct` 豁免，这里漏了，属实现不一致。
+  if (!direct && input.lastSpokeAt && settings.minGapSeconds > 0) {
     const gapMs = now.getTime() - input.lastSpokeAt.getTime();
     if (gapMs < settings.minGapSeconds * 1000) {
       return { allowed: false, reason: "too_soon", mustReply: false };

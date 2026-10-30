@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { createWriteStream } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,6 +20,33 @@ const shutdown = new AbortController();
  */
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const STATE_FILE = path.join(REPO_ROOT, ".data", "onebot-adapter.json");
+const LOG_FILE = path.join(REPO_ROOT, ".data", "onebot-adapter.log");
+
+/**
+ * 把 stdout 再写一份到文件。
+ *
+ * 为什么非要有这个：适配器跑在一个 cmd 窗口里，出问题（比如「四段全通但没人回」）
+ * 时那扇窗口的滚动缓冲区就是唯一的证据，关掉窗口或滚动过去就没了 —— 事后只能靠猜。
+ * 每次启动清空：这里要看的是「这一轮为什么不动」，不是长期审计。
+ */
+async function teeStdoutToFile() {
+  try {
+    await fs.mkdir(path.dirname(LOG_FILE), { recursive: true });
+    await fs.writeFile(LOG_FILE, "", "utf8");
+    const stream = createWriteStream(LOG_FILE, { flags: "a" });
+    const original = process.stdout.write.bind(process.stdout);
+    process.stdout.write = ((chunk: unknown, ...rest: unknown[]) => {
+      try {
+        stream.write(chunk as string | Uint8Array);
+      } catch {
+        // 写日志失败绝不能影响适配器本身
+      }
+      return (original as (...args: unknown[]) => boolean)(chunk, ...rest);
+    }) as typeof process.stdout.write;
+  } catch {
+    // 落不了盘就退化成只有窗口输出
+  }
+}
 
 async function markRunning() {
   try {
@@ -147,6 +175,7 @@ process.on("SIGINT", stop);
 process.on("SIGTERM", stop);
 
 async function main() {
+  await teeStdoutToFile();
   await markRunning();
   try {
     while (!shutdown.signal.aborted) {

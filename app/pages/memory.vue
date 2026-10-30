@@ -86,6 +86,36 @@ const recycleBinOpen = ref(false);
 const recycleBinLoading = ref(false);
 const recycleBinEntries = ref<RecycleBinEntry[]>([]);
 const recycleBinBusyIds = ref<string[]>([]);
+
+/**
+ * 群聊记录：群聊挂在角色全局记忆范围下，本来就算她的记忆，但时间线只取记忆与总结
+ * （`kinds=memory,snapshot`），原始消息不进这条流，所以页面上看不到。
+ * 这里按群号单独拉一份：左列是群，右边是她和群友的往来。
+ */
+type GroupChatGroup = {
+  conversationId: string;
+  groupId: string | null;
+  label: string;
+  lastMessageAt: string | null;
+  updatedAt: string;
+  messageCount: number;
+  connectionName: string | null;
+};
+type GroupChatMessage = {
+  id: string;
+  role: string;
+  content: string;
+  occurredAt: string;
+  author: string | null;
+  member: string | null;
+};
+const groupChatOpen = ref(false);
+const groupChatLoading = ref(false);
+const groupChatError = ref("");
+const groupChatGroups = ref<GroupChatGroup[]>([]);
+const groupChatMessages = ref<GroupChatMessage[]>([]);
+const groupChatSelectedId = ref("");
+const selectedGroupChat = computed(() => groupChatGroups.value.find((group) => group.conversationId === groupChatSelectedId.value) ?? null);
 /**
  * 统计带用服务端的全量计数，不用「已载入条数」——
  * 这条流默认只载记忆和总结（不含消息），拿载入数当统计会显示成 0。
@@ -670,8 +700,59 @@ async function manualSnapshot() {
   }
 }
 
+/**
+ * 群聊记录一次只取一个群的消息，切换群时重拉；不传 conversationId 时服务端回最近活跃的那个群。
+ */
+async function loadGroupChats(conversationId?: string) {
+  if (!id.value) return;
+  groupChatLoading.value = true;
+  groupChatError.value = "";
+  try {
+    const result = await $fetch<{
+      groups: GroupChatGroup[];
+      selectedConversationId: string | null;
+      messages: GroupChatMessage[];
+    }>(`/api/characters/${encodeURIComponent(id.value)}/group-chats`, {
+      query: conversationId ? { conversationId } : {},
+    });
+    groupChatGroups.value = result.groups;
+    groupChatSelectedId.value = result.selectedConversationId ?? "";
+    groupChatMessages.value = result.messages;
+  } catch {
+    groupChatGroups.value = [];
+    groupChatMessages.value = [];
+    groupChatSelectedId.value = "";
+    groupChatError.value = "群聊记录读取失败，请检查本地开发服务器日志。";
+  } finally {
+    groupChatLoading.value = false;
+  }
+}
+
+function openGroupChats() {
+  groupChatOpen.value = true;
+  void loadGroupChats();
+}
+
+function selectGroupChat(conversationId: string) {
+  if (conversationId === groupChatSelectedId.value) return;
+  void loadGroupChats(conversationId);
+}
+
+/** 发言人：她自己按角色名，群友优先昵称，昵称缺失退回群内代号。 */
+function groupChatSpeaker(message: GroupChatMessage) {
+  if (message.role === "ASSISTANT") return character.value.name;
+  return message.author || message.member || "群友";
+}
+
 onMounted(() => void loadCharacter());
-watch(id, () => void loadCharacter());
+watch(id, () => {
+  // 换角色时群聊抽屉必须关掉，否则会停在上一只鱼的群记录上。
+  groupChatOpen.value = false;
+  groupChatGroups.value = [];
+  groupChatMessages.value = [];
+  groupChatSelectedId.value = "";
+  void loadCharacter();
+});
 </script>
 
 <template>
@@ -740,6 +821,12 @@ watch(id, () => void loadCharacter());
           <span class="sb-v">{{ timelineLoading ? "—" : recordedMessageCount }}<small>条</small></span>
           <span class="sb-f">
             平台事件 {{ timelineLoading ? "—" : recordedEventCount }} 项 ·
+            <button
+              type="button"
+              class="ms-link"
+              :disabled="!character.id"
+              @click="openGroupChats"
+            >群聊记录</button> ·
             <button
               type="button"
               class="ms-link"
@@ -1317,6 +1404,72 @@ watch(id, () => void loadCharacter());
         </el-button>
       </template>
     </el-dialog>
+
+    <!-- 群聊记录：群聊也算她的记忆，但不进时间线，单独一个抽屉按群号翻 -->
+    <el-drawer
+      v-model="groupChatOpen"
+      title="群聊记录"
+      size="760px"
+    >
+      <p class="gc-hint">
+        群聊属于角色全局记忆，会参与周期总结。这里按群号分开看：左边选群，右边是她和群友的往来。
+      </p>
+      <div
+        v-if="groupChatError"
+        class="gc-empty"
+      >
+        {{ groupChatError }}
+      </div>
+      <div
+        v-else-if="!groupChatLoading && !groupChatGroups.length"
+        class="gc-empty"
+      >
+        还没有群聊记录。绑定 QQ 小号、群聊过闸门之后，这里才会出现她跟别人的往来。
+      </div>
+      <div
+        v-else
+        class="gc-layout"
+      >
+        <aside class="gc-list">
+          <button
+            v-for="group in groupChatGroups"
+            :key="group.conversationId"
+            type="button"
+            class="gc-item"
+            :class="{ on: group.conversationId === groupChatSelectedId }"
+            @click="selectGroupChat(group.conversationId)"
+          >
+            <span class="gc-item-title">{{ group.label }}</span>
+            <span class="gc-item-meta">{{ group.messageCount }} 条 · {{ formatSourceTime(group.lastMessageAt || group.updatedAt) }}</span>
+          </button>
+        </aside>
+        <section
+          v-loading="groupChatLoading"
+          class="gc-thread"
+        >
+          <header class="gc-thread-h">
+            <strong>{{ selectedGroupChat?.label || "群聊" }}</strong>
+            <span class="gc-thread-sub">{{ selectedGroupChat?.connectionName || "QQ 渠道" }} · 最近 {{ groupChatMessages.length }} 条</span>
+          </header>
+          <div class="gc-msgs">
+            <article
+              v-for="message in groupChatMessages"
+              :key="message.id"
+              class="gc-msg"
+              :class="{ self: message.role === 'ASSISTANT' }"
+            >
+              <div class="gc-who">
+                <span class="gc-name">{{ groupChatSpeaker(message) }}</span>
+                <span class="gc-time">{{ formatSourceTime(message.occurredAt) }}</span>
+              </div>
+              <p class="gc-text">
+                {{ message.content }}
+              </p>
+            </article>
+          </div>
+        </section>
+      </div>
+    </el-drawer>
   </div>
 </template>
 
@@ -1416,11 +1569,41 @@ watch(id, () => void loadCharacter());
 .recycle-card-body{margin:10px 0;color:var(--dim);font-size:12px;line-height:1.8;white-space:pre-wrap;overflow-wrap:anywhere}
 .recycle-card-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px}
 
+/* ── 群聊记录抽屉 ───────────────────────────────────── */
+/* 群号是这一屏的「主键」，用等宽字把它和正文区分开，别让它看起来像一句话 */
+.gc-hint{margin:0 0 12px;color:var(--dim);font-size:12px;line-height:1.8}
+.gc-empty{border-radius:10px;background:var(--surface-2);padding:20px 16px;color:var(--dim);font-size:13px;line-height:1.8;text-align:center}
+.gc-layout{display:grid;grid-template-columns:210px minmax(0,1fr);gap:14px;min-height:420px}
+.gc-list{display:flex;flex-direction:column;gap:2px;align-self:start;max-height:70vh;overflow:auto}
+.gc-item{display:flex;flex-direction:column;gap:3px;border:0;border-radius:8px;background:none;padding:9px 11px;text-align:left;cursor:pointer;transition:background .14s var(--ease)}
+.gc-item:hover{background:var(--surface-2)}
+.gc-item.on{background:var(--brand-soft)}
+.gc-item-title{color:var(--text-2);font-size:13px;font-weight:600}
+.gc-item.on .gc-item-title{color:var(--brand-strong)}
+.gc-item-meta{color:var(--dim);font-size:12px}
+.gc-thread{display:flex;flex-direction:column;min-width:0;border-radius:10px;background:var(--surface-2);padding:12px 14px}
+.gc-thread-h{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:6px;margin-bottom:10px;border-bottom:1px solid var(--surface-3);padding-bottom:9px}
+.gc-thread-h strong{color:var(--text);font-size:14px;font-weight:600}
+.gc-thread-sub{color:var(--dim);font-size:12px}
+.gc-msgs{display:flex;flex-direction:column;gap:8px;max-height:64vh;overflow:auto;padding-right:2px}
+.gc-msg{margin:0;border-radius:8px;background:var(--surface);padding:9px 11px}
+/* 她自己说的话靠右、换底色：一眼能分出「谁在说」 */
+.gc-msg.self{background:var(--brand-soft)}
+.gc-who{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:4px}
+.gc-name{color:var(--text-2);font-size:12px;font-weight:600}
+.gc-msg.self .gc-name{color:var(--brand-strong)}
+.gc-time{color:var(--dim);font-size:12px}
+.gc-text{margin:0;color:var(--text-2);font-size:13px;line-height:1.75;white-space:pre-wrap;overflow-wrap:anywhere}
+
 /* 单列时右栏不再吸顶，否则会跟着页面滚到内容之外 */
 @media(max-width:1150px){.side-col{position:static}}
 @media(max-width:640px){
   .tl-card{padding:12px 14px 8px}
   .tl-select{width:100%}
   .stat-band{padding:14px}
+  .gc-layout{grid-template-columns:1fr;min-height:0}
+  .gc-list{flex-direction:row;overflow-x:auto;max-height:none}
+  .gc-item{flex:0 0 150px}
+  .gc-msgs{max-height:52vh}
 }
 </style>

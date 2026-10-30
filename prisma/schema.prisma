@@ -174,6 +174,7 @@ model Character {
   memorySetting    CharacterMemorySetting?
   auditLogs        AuditLog[]                @relation("CharacterAuditLogs")
   proactiveIntents ProactiveIntent[]
+  stickers         CharacterSticker[]
 
   @@index([ownerId, status])
   @@index([updatedAt])
@@ -656,6 +657,10 @@ model ModelUsage {
   totalTokens      Int      @default(0)
   /// 思考型模型（如 deepseek-flash）单独统计的 reasoning token。
   reasoningTokens  Int?
+  /// 缓存命中的输入 token（DeepSeek 的 prompt_cache_hit_tokens / OpenAI 的 cached_tokens）。
+  /// null 表示这次调用没有回传缓存明细（历史数据或供应商不提供），计价只能按未命中价算。
+  cacheHitTokens   Int?
+  cacheMissTokens  Int?
   metadata         Json?    @db.JsonB
   createdAt        DateTime @default(now()) @db.Timestamptz(6)
 
@@ -663,4 +668,35 @@ model ModelUsage {
   @@index([kind, createdAt])
   @@index([createdAt])
   @@map("model_usages")
+}
+
+/// 角色自己的表情包（贴图）：QQ 内置表情之外的「她自己的图」。
+/// 图片本体存本地磁盘（.data/stickers/<角色 id>/），库里只放清单与文件名 ——
+/// 二进制不该进数据库，迁移时按目录拷走即可；删角色时整目录一起删。
+model CharacterSticker {
+  id          String    @id @default(uuid()) @db.Uuid
+  characterId String    @db.Uuid
+  /// 表情包的名字。**模型看到的就是它**，别写太长也别写编号。
+  name        String    @db.VarChar(60)
+  /// 什么时候用这张：一句话场景说明，进提示词帮她在十来张里挑对。
+  usage       String    @default("") @db.Text
+  /// 磁盘文件名（相对 .data/stickers/<characterId>/）。由服务端生成，
+  /// 绝不取客户端传来的路径 —— 否则一个 `../` 就能写出目录之外。
+  fileName    String    @db.VarChar(120)
+  mimeType    String    @db.VarChar(60)
+  sizeBytes   Int
+  /// 关掉 = 暂时不让她用，但图留着。
+  enabled     Boolean   @default(true)
+  useCount    Int       @default(0)
+  lastUsedAt  DateTime? @db.Timestamptz(6)
+  /// 图片内容的 SHA-256，用来给「自动收图」去重：群里同一张图被转发 N 次只收一次。
+  contentHash String?   @db.VarChar(64)
+  /// 来源：manual（手动上传）/ collected（群里自动收的）。区分两者，页面才好标「从群里偷来的」。
+  source      String    @default("manual") @db.VarChar(20)
+  createdAt   DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime  @updatedAt @db.Timestamptz(6)
+  character   Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+
+  @@index([characterId, enabled])
+  @@map("character_stickers")
 }

@@ -60,6 +60,7 @@ const KIND_LABELS: Record<string, string> = {
   "bili-judge": "值班终判",
   proactive: "主动找话",
   vision: "群图片识别",
+  "sticker-label": "表情包打标",
   other: "其他",
 };
 

@@ -5,8 +5,11 @@
  * 群聊默认仅在被 @ 时回复（replyOnlyWhenMentioned），私聊总是回复。
  */
 
+import fs from "node:fs/promises";
 import { getPrisma } from "../../prisma";
+import { loadStickerCatalog, MAX_STICKER_BYTES } from "../../stickers";
 import type { OnebotConnectionConfig, OnebotOutgoingMessage, OnebotResolvedEvent } from "./client";
+import type { OnebotSegment } from "./types";
 import { sendOnebotGroupMessage, sendOnebotPrivateMessage } from "./client";
 import type { OnebotBindingRecord, OnebotConnectionRecord } from "./configure";
 import { ONEBOT_FACES, toOnebotFaceSegments } from "./faces";
@@ -47,8 +50,22 @@ export type OnebotHandleOutcome =
   | { status: "ignored"; reason: string };
 
 /**
- * 选择处理此事件的绑定角色：群聊优先匹配 routingKey（群号），否则用默认绑定（routingKey
- * 为空或 "*"）；私聊用默认绑定。
+ * 把绑定里存的 routingKey 拆成群号列表。routingKey 现在支持逗号分隔的多个群号
+ * （如 "12345,67890"），老的单群号数据天然是只有一个元素的列表。
+ */
+export function parseBindingRoutingKeys(routingKey: string | null): string[] {
+  if (!routingKey) return [];
+  return [...new Set(
+    routingKey
+      .split(",")
+      .map((key) => key.trim())
+      .filter((key) => key.length > 0),
+  )];
+}
+
+/**
+ * 选择处理此事件的绑定角色：群聊优先匹配 routingKey（支持一个绑定挂多个群号），
+ * 否则用默认绑定（routingKey 为空或 "*"）；私聊用默认绑定。
  */
 export function routeOnebotEventToBinding(
   bindings: readonly OnebotBindingRecord[],
@@ -56,7 +73,7 @@ export function routeOnebotEventToBinding(
 ): OnebotBindingRecord | null {
   const defaults = bindings.filter((binding) => !binding.routingKey || binding.routingKey === "*");
   if (event.messageType === "group" && event.groupId) {
-    const exact = bindings.find((binding) => binding.routingKey === event.groupId);
+    const exact = bindings.find((binding) => parseBindingRoutingKeys(binding.routingKey).includes(event.groupId!));
     if (exact) return exact;
   }
   return defaults[0] ?? null;
@@ -113,6 +130,8 @@ type PendingGroupMessage = {
   direct: boolean;
   /** 这一条正文里出现了她的名字/别名。 */
   named: boolean;
+  /** 这一条是主人发的。群聊里也要认得主人，落库和提炼时标「主人」。 */
+  isOwner: boolean;
 };
 
 /** 群里怎么叫她：角色名 + 手填的昵称。@ 由 isSelfMentioned 单独判。 */
@@ -378,6 +397,46 @@ async function resolveOwnerDisplayName(record: OnebotConnectionRecord, event: On
  * 回复发回原处：群消息发群，私聊发人。
  * 表情必须单独一条 —— 拼进正文会卡在句子中间，而且它发失败也没必要让正文背锅。
  */
+/**
+ * 把正文和可选的「引用回复」拼成出站消息。
+ *
+ * 群聊里多条鱼并存时，引用让「我接的是哪一句」不再靠猜：模型给的 replyToMessageId
+ * 是 transcript 里那条消息的 QQ 真实 message id，这里转成 OneBot reply 段拼在正文前。
+ * id 必须是纯数字（QQ message id），否则退回纯文本 —— 宁可少引一次，也不发坏段。
+ */
+export function buildOnebotReplyMessage(reply: string, replyToMessageId?: string): OnebotOutgoingMessage {
+  if (replyToMessageId && /^\d+$/.test(replyToMessageId)) {
+    return [
+      { type: "reply", data: { id: replyToMessageId } },
+      { type: "text", data: { text: reply } },
+    ];
+  }
+  return reply;
+}
+
+/**
+ * 表情包（贴图）段：图片走 `image` 段的 base64 形式。
+ *
+ * 用 `base64://` 而不是本地路径：网关不一定和适配器在同一台机器上，路径方式一旦跨机就是
+ * 一张发不出去的图，而表情包最多 2MB，base64 传过去完全够用（本地路径省下的那点开销不值这个风险）。
+ */
+export function toOnebotStickerSegments(base64: string): OnebotSegment[] {
+  if (!base64) return [];
+  return [{ type: "image", data: { file: `base64://${base64}` } }];
+}
+
+/** 读回表情包文件并转成段。文件没了（换电脑只搬了库）返回空数组，静默跳过。 */
+export async function loadStickerSegments(filePath: string): Promise<OnebotSegment[]> {
+  try {
+    const stat = await fs.stat(filePath);
+    if (stat.size > MAX_STICKER_BYTES) return [];
+    const file = await fs.readFile(filePath);
+    return toOnebotStickerSegments(file.toString("base64"));
+  } catch {
+    return [];
+  }
+}
+
 function createReplySender(
   config: OnebotConnectionConfig,
   target: Pick<OnebotResolvedEvent, "messageType" | "groupId" | "userId">,
@@ -392,8 +451,11 @@ function createReplySender(
       }
       return Promise.resolve();
     };
-    await send(reply);
-    const segments = toOnebotFaceSegments(options?.faces ?? []);
+    await send(buildOnebotReplyMessage(reply, options?.replyToMessageId));
+    // 表情包优先：贴了图就不再发内置表情 —— 一句话后面挂两种表情，像自动回复机器人。
+    const segments = options?.sticker
+      ? await loadStickerSegments(options.sticker.filePath)
+      : toOnebotFaceSegments(options?.faces ?? []);
     if (!segments.length) return;
     await send(segments).catch((error) => {
       console.error("[onebot] 表情发送失败：", error instanceof Error ? error.message : String(error));
@@ -474,12 +536,14 @@ export function createOnebotMessageHandler(record: OnebotConnectionRecord) {
       random: Math.random(),
     });
     if (!gate.allowed) {
-      logGroupRound(groupEvent.groupId, { reason: gate.reason, messages: items.length });
+      // direct / named 一定要一起打：早退时少了这两个，事后分不清是「@ 没认出来」
+      // 还是「认出来了但被别的闸拦了」—— 前者换协议端，后者调参数，处理方式完全不同。
+      logGroupRound(groupEvent.groupId, { reason: gate.reason, messages: items.length, direct, named });
       return;
     }
     // 群规限流仍然生效：闸门管「该不该接」，这里管「这个群十分钟能说几句」。
     if (await isGroupReplyLimited(binding, groupEvent)) {
-      logGroupRound(groupEvent.groupId, { reason: "group_reply_limit", messages: items.length });
+      logGroupRound(groupEvent.groupId, { reason: "group_reply_limit", messages: items.length, direct, named });
       return;
     }
 
@@ -499,10 +563,14 @@ export function createOnebotMessageHandler(record: OnebotConnectionRecord) {
         // 入模的正文把 @ 换成代号；落库仍是原样。
         promptContent: groupContext.formatText(contextKey, item.event.content),
         member: groupContext.memberCode(contextKey, item.event.userId),
+        // 主人发的消息带上 isOwner：群聊里也认得出主人，落库与提炼时标「主人」。
+        ...(item.isOwner ? { speaker: { isOwner: true } } : {}),
         ...(item.event.images.length ? { images: item.event.images } : {}),
         occurredAt: new Date(item.at),
       })),
       faceCatalog: ONEBOT_FACES,
+      // 她自己的表情包：清单非空时优先于内置表情（空清单 = 这个角色还没传过图）。
+      stickerCatalog: await loadStickerCatalog(binding.characterId),
       // 只有真实 @ 与 all 档不允许「想了想还是不说」。
       allowSilent: !gate.mustReply,
       group: {
@@ -519,9 +587,11 @@ export function createOnebotMessageHandler(record: OnebotConnectionRecord) {
       // 沉默但认得出「还是在聊那个话题」：有界地续一下，不新建。
       groupContext.refreshFromDecision(contextKey, result.groupDecision);
     }
+    // ignored 一定要带上原因：只写「ignored」时分不清是额度用完、模型没配、还是她不想说话，
+    // 而这三种在群里的表现完全一样——她一句话都不说，查起来只能靠猜。
     logGroupRound(groupEvent.groupId, {
       reason: gate.reason,
-      status: result.status,
+      status: result.status === "ignored" ? `ignored:${result.reason}` : result.status,
       messages: items.length,
       direct,
       topics: groupContext.activeTopicCount(contextKey),
@@ -592,7 +662,7 @@ export function createOnebotMessageHandler(record: OnebotConnectionRecord) {
     if (isGroupMessage) {
       groupChatBuffer.push(
         contextKey,
-        { event, binding, at: Date.now(), direct, named },
+        { event, binding, at: Date.now(), direct, named, isOwner: Boolean(record.ownerQq) && event.userId === record.ownerQq },
         groupChatWindowMs(binding.groupChat, direct || named),
       );
       return { status: "buffered" };
@@ -627,6 +697,7 @@ export function createOnebotMessageHandler(record: OnebotConnectionRecord) {
       ...(event.images.length ? { images: event.images } : {}),
       // QQ 是唯一能发表情的渠道；清单非空即声明能力，是否真发还要过角色开关和冷却。
       faceCatalog: ONEBOT_FACES,
+      stickerCatalog: await loadStickerCatalog(binding.characterId),
       sendReply,
     });
   };

@@ -4,7 +4,7 @@ import { decryptApiKey } from "../../../utils/credential-encryption";
 import { getPrisma } from "../../../utils/prisma";
 
 /** 只有这几个字段允许回显到管理页；将来往凭据里塞别的东西也不会被顺带漏出去。 */
-const CREDENTIAL_KEYS = ["wsUrl", "httpUrl", "accessToken", "httpToken"] as const;
+const CREDENTIAL_KEYS = ["wsUrl", "httpUrl", "accessToken", "httpToken", "snowlumaPassword"] as const;
 
 /**
  * 解密连接凭据。解不开（换过加密密钥 / 数据坏掉）就返回 null ——

@@ -1,4 +1,5 @@
 import { requireAdminActor } from "../../../../../utils/auth";
+import { setAutoStartPaused } from "../../../../../utils/channel-adapter/onebot/autostart";
 import { launchOnebotAdapter, readOnebotAdapterStatus } from "../../../../../utils/channel-adapter/onebot/runtime";
 
 /**
@@ -9,6 +10,9 @@ import { launchOnebotAdapter, readOnebotAdapterStatus } from "../../../../../uti
  */
 export default defineEventHandler(async (event) => {
   await requireAdminActor(event);
+
+  // 人主动点了启动 = 撤销「停止」那把自动补起的开关，否则下次重启 server 又不会补
+  await setAutoStartPaused(false);
 
   const status = await readOnebotAdapterStatus();
   if (status.running) {

@@ -16,6 +16,8 @@ export type ChainActionKind =
   | "start-adapter"
   | "bind-character"
   | "edit-connection"
+  | "reconnect"
+  | "stop"
   | "open-steps";
 
 /** live=通了；break=断点本人；idle=没通但不是根因（或还没轮到） */

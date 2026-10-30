@@ -40,11 +40,17 @@ AI 对话的检索范围按身份隔离：`resolveChatMemoryScopes()` 只放行�
 
 仍未完成的边界：密码重置（需 SMTP）、注册邮箱验证（需 SMTP）、渠道适配器的断线重连、渠道按外部用户隔离私人记忆、公网部署加固（HTTPS、反向代理信任、备份演练）；真实模型端到端调用也需要开发者在本机配置 API 后验证。当前 CI 用仅监听回环地址的模拟模型服务验证完整数据流。模型未配置时任务必须留在队列，不得用规则摘要冒充 AI 输出。来源证据必须通过当前周期原始消息 ID 白名单校验；不要把未验证的模型推断当作确定事实自动写入长期记忆。每次代码修改后运行适用的类型检查、测试、lint 与构建；没有实际执行的检查不能声称通过。
 
-账号模型为「1 个管理员 + 邮箱注册普通用户」：`User.role` 只有 ADMIN/USER；业务接口按会话 `userId` 过滤，天然隔离；管理员接口 `/api/admin/*` 走 `requireAdminActor()`。QQ 渠道只保留 OneBot 一条通道（`server/utils/channel-adapter/onebot/*`）：挂个人号，走 OneBot v11 网关的 WS 收消息 + HTTP API 发消息，WS/HTTP Token 加密入库，消息处理按角色绑定路由、幂等去重、回写平台；回归测试 `yarn test:onebot`。QQ 官方机器人渠道（AppID + AppSecret）已于 2026-10-27 下线，不要再恢复。
+账号模型为「1 个管理员 + 邮箱注册普通用户」：`User.role` 只有 ADMIN/USER；业务接口按会话 `userId` 过滤，天然隔离；管理员接口 `/api/admin/*` 走 `requireAdminActor()`。QQ 渠道只保留 OneBot 一条通道（`server/utils/channel-adapter/onebot/*`）：挂个人号，走 OneBot v11 网关的 WS 收消息 + HTTP API 发消息，WS/HTTP Token 加密入库，消息处理按角色绑定路由、幂等去重、回写平台；回归测试 `yarn test:onebot`。QQ 官方机器人渠道（AppID + AppSecret）已于 2026-10-27 下线，不要再恢复。绑定的 `routingKey` 存逗号分隔的多个群号（一个绑定挂多个群，前端用 InputTag 标签输入框填），路由时 `parseBindingRoutingKeys()` 拆数组做 `includes` 命中、留空或 `"*"` 是默认绑定（收所有群 + 私聊）；**不要再退回「每群绑一条、单值字符串精确匹配」** —— 后端接口 `normalizeRoutingKey()` 同时接受字符串与字符串数组并统一去重、限 255 字符，回归测试 `yarn test:onebot-multigroup`。
+
+QQ 私聊与「主人」：主人的 QQ 私聊（`speaker.isOwner`）挂在角色主人的 `USER_PRIVATE` 范围下（`ensureOwnerPrivateScope`），跟随全局周期一起排快照（`memory-scheduler.ts` 补排，幂等键含 scope id），只在主人自己的对话里可读；普通群友的私聊仍挂在该账号的 `EXTERNAL_IDENTITY` 范围、不排快照。群聊里主人发的消息落库带 `isOwner`、提炼时标「主人」，让角色在群里也认得出主人。**不要再退回「所有私聊一律挂全局 / 一律不排快照」的两种极端** —— 主人专属、其他人不自动记忆是产品决策。
 
 模型调用统一记账：`model_usages` 表由 `server/utils/model-usage.ts` 写入（kind / model / prompt / completion / total / reasoning token），四个埋点是 `chat.post.ts`、`channel-adapter/pipeline.ts`、`memory-worker.ts`、`bili/duty-pipeline.ts`（粗筛与终判分开计）。每日额度取角色 `modelConfig.dailyTokenLimit`（0 = 不限，东八区日界），超额时对话返回 429、QQ 与值班静默跳过；记账失败只写日志，不许把已经成功的回复变成错误。
 
+总览的「用量与花费」由 `readUsageReport()`（`server/utils/model-usage.ts`）按「角色 × 东八区自然日」聚合最近 7 天，金额来自 `server/utils/model-pricing.ts` 的内置参考价：**按每一行用自己的调用时间取价**（DeepSeek 分高峰/空闲，先求和再乘单价会算错）。输入必须分缓存命中/未命中两档：记账要存 `cacheHitTokens`（DeepSeek 的 `prompt_cache_hit_tokens`、OpenAI 兼容层的 `prompt_tokens_details.cached_tokens`），命中价按价目表的 `cacheHitInput` 算 —— 群聊反复发送同一段人设，命中率常在 80% 以上，只按未命中价算会把一天的花费高估三倍（2026-10-30 实测：页面 0.99 元 vs 供应商 0.34 元）。没有缓存明细的旧行只能按未命中价估，**在 `uncachedCalls` 里计数并在页面说明「金额偏高」，不许用平均命中率反推**。认不出的模型必须标成「未定价」并单独累计 `unpricedTokens`，不许当 0 元、也不许套别的模型的价格。厂商调价用 `.env` 的 `MODEL_PRICING` 覆盖（可写 `cacheHitInput`），美元模型用 `USD_CNY_RATE` 折算；回归测试 `yarn test:model-pricing`。
+
 记忆注入按 token 预算装配（`rankMemoriesWithBudget` / `rankSnapshotsWithBudget`）：记忆默认 1200、快照默认 2000（各自独立）、条数上限 8，排序 = 相关度 × 重要度 × 半衰期衰减（30 天，参照 `lastRecalledAt`）× 召回加成；装不下时跳过整条但**第一条永远放行**。不要再改回 top-N 硬截断 —— 那样提示词会静默爆掉，且看不出谁被挤掉。预算与条数走 `modelConfig.memoryTokenBudget` / `snapshotTokenBudget` / `memoryItemLimit`。
+
+群聊记录也算她的记忆：群会话挂在角色全局范围下，标题写 `QQ群 <群号>`、`metadata` 带 `kind`/`groupId`；记忆页时间线只取 `memory,snapshot`，所以群聊原文走独立接口 `GET /characters/{id}/group-chats`（群列表 + 选中群消息，按群号区分）。周期快照的来源消息必须**按会话配额**取（`memory-source-selection.ts`：每会话先保最新一条，250 条总预算内按时间填，单会话上限 80），**不要再改回「整个范围按时间取最早 125 + 最晚 125」** —— 一天几十条的群会把私聊整段挤出窗口，总结只剩群里与她无关的闲话。来源带 `origin`（`QQ群 <群号>` / `私聊` / `本地对话`）进提示词，群聊只提炼与她相关的内容，群友隐私不写长期记忆。回归测试 `yarn test:memory-source-selection`。
 
 前端渠道入口按平台拆成两个页面，**不要再合并回一个通用「渠道管理」页**（`app/pages/channels.vue` 已删除）：QQ 小号在「系统管理 → QQ 渠道」（`app/pages/qq.vue`，只列 `qq-onebot`，含四步接入引导），B站 在「系统管理 → B站 值班台」（`app/pages/bili/index.vue`，账号创建、绑定角色、值班设置都在里面）。两个页面共用 `/api/admin/channels` 系列接口；QQ 凭据不回显，保存时地址/Token 留空表示沿用旧值（`channels/index.post.ts` 里的合并逻辑，别改成直接覆盖）。
 
@@ -59,6 +65,12 @@ QQ 群聊的「自然接话」走**一条管道**：「短期上下文 → 攒�
 QQ 群公告走「草稿 → 管理员确认」两段（`onebot/announcement.ts`，表 `onebot_group_announcements`）：连接级开关 `metadata.groupAnnouncementEnabled` 默认关；只认群主/管理员（`sender.role`，缺失按 member），普通成员触发无效；管理员 @ 她说「写个群公告：主题」才拟稿，草稿 10 分钟有效，回复「确认发布」才调 SnowLuma `_send_group_notice`。草稿用 `PENDING → PUBLISHING` 原子认领，重复事件不得二次发布；成功/失败都写审计。前提是小号已是群管理员；踢人、禁言等破坏性动作不要顺手放开。
 
 QQ 表情走「模型返回 faces 字段 → 渠道拼 face 段」：清单在 `onebot/faces.ts`（精选，非 QQ 完整 face 表），能力由 `ChannelMessageInput.faceCatalog` 声明而非平台名判断，角色开关 `modelConfig.emojiEnabled` 默认关，上一条刚发过表情则 10 分钟内不再发。**表情必须单独一条消息**，表情 id 只记在 `metadata.faceIds`、绝不进 `content`。别再退回「从 reply 文本里认 `[face]` 占位符」的做法 —— 正文一旦混进段标记就会被原样当文字发出去。发送侧要查 OneBot 返回的 `retcode`：出错时 HTTP 仍是 200。
+
+表情包（贴图）走「用户传图 → 模型返回 sticker → 渠道拼 image 段」，是**与 QQ 内置表情（face 段）并列的两条路**：内置表情是 QQ 客户端自带的那几十张脸，谁发都一样；表情包是她自己的图（`character_stickers` 表 + `.data/stickers/<角色>/`，接口 `/api/characters/{id}/stickers`，管理页 `/characters/{id}/settings/stickers`）。清单非空时**优先用表情包、内置表情不再进提示词**（两套清单同时给，模型会在两者之间犹豫）；两者共用 `modelConfig.emojiEnabled` 开关、10 分钟冷却与「单独一条消息」。清单进提示词前先做减法（剔除上一张、封顶 12，`pickStickerCatalog`），发送用 `base64://`（网关可能与适配器不同机，本地路径跨机就是一张发不出去的图；若某网关不认 base64，改 `loadStickerSegments` 一处即可）。文件名一律服务端生成、只认 `uuid.ext`（`safeFileName`），客户端传来的名字只用于取扩展名。回归测试 `yarn test:stickers`。**不要再退回「只能发 QQ 默认表情」** —— 那是用户明确要换掉的东西。
+
+「偷表情包」走「群里的图 → `sticker-collect.ts` 下载 → 视觉模型起名 → 存进表情库」：开关 `modelConfig.stickerAutoCollect` 默认关（QQ 行为面板的「偷表情包」开关），只收**群聊**里的图、不收她自己（ASSISTANT）发的，一轮最多收 1 张；下载复用 `image-understanding.ts` 的 `downloadImage`（rkey 时效 + 公网白名单 + 4MB 上限），打标复用视觉模型配置但用独立提示词输出 `{name, usage}` JSON，记账 `kind = "sticker-label"`。**按图片内容 SHA-256（`contentHash`）去重**：群里一张图转来转去只收第一次；打标失败仍收下原图（名字用「收藏的表情」兜底），整条链路失败都静默、不影响这轮回复。来源存 `source`（`manual`/`collected`），页面标「从群里收的」。回归测试 `yarn test:sticker-collect`。**不要再退回「只能手动传表情包」** —— 自动收图就是用户要的「偷表情包」。
+
+QQ 群聊「引用回复」走「模型返回 `groupDecision.replyToMessageId` → 渠道拼 reply 段」：群聊里多条鱼并存时，引用让「接的是哪一句」不再靠猜。`replyToMessageId` 只能来自本轮 transcript 的 id（`chat-reply.ts` 的 `readGroupDecision` 白名单），渠道侧 `buildOnebotReplyMessage`（`onebot/serve.ts`）把它转成 `{type:"reply",data:{id}}` 拼在正文前，id 必须纯数字否则退回纯文本。回归测试 `yarn test:onebot-reply`。
 
 QQ 群看图走「段里取直链 → 视觉模型 → 文字进提示词」的旁路（`server/utils/image-understanding.ts`，文档 `6.1`）：聊天模型（`deepseek-flash` 这类）不接受 `image_url`，所以图必须在进提示词之前变成文字，正文里的 `[图片]` 换成 `[图片：<描述>]`。默认关（不配 `VISION_MODEL` 就完全不动），只认 `data.url`（`data.file` 是文件名），收到就下载（rkey 有时效），地址过公网白名单（含 DNS 解析结果与重定向后的地址），一轮最多 3 张，失败静默降级。**先过群聊闸门再调视觉** —— 被丢掉的那一轮不该为看图花钱；记账 `model_usages.kind = "vision"`。不要再退回「把图塞进聊天请求」：那在纯文本接口上等于整轮 400。
 

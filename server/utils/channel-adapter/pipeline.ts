@@ -14,17 +14,39 @@ import {
   type ChannelImageRef,
 } from "../image-understanding";
 import { ensureExternalIdentityScope } from "../identity-scope";
+import { ensureOwnerPrivateScope } from "../memory-scope-access";
 import { getPrisma } from "../prisma";
+import { pickStickerCatalog, type StickerCatalogEntry } from "../stickers";
+import { collectStickersFromTurn } from "../sticker-collect";
 
 export type ChannelReplyOptions = {
   /** 表情 id。渠道自己保证 id 合法；不支持表情的渠道忽略即可。 */
   faces?: string[];
+  /**
+   * 她自己的表情包（贴图）。渠道把它当图片单独发一条；与 faces 二选一，
+   * 传了 sticker 就不再发内置表情。
+   */
+  sticker?: { id: string; filePath: string };
+  /** 引用回复的消息 id（本平台原始 id）。群聊里让她锚定「接的是哪一句」。 */
+  replyToMessageId?: string;
 };
 
 export type ChannelReplySender = (text: string, options?: ChannelReplyOptions) => Promise<void>;
 
 /** 上一条回复带过表情后，多久之内不再发——连着两条都贴图，像自动回复机器人。 */
 const FACE_COOLDOWN_MS = 10 * 60 * 1000;
+
+/**
+ * 渠道会话键 `g:<群号>` / `c:<账号>` 里取出群号。
+ *
+ * 只用于把「这是哪个群」写进会话标题和 metadata —— 路由仍以完整的 externalConversationId
+ * 为准。群聊记录会进角色全局记忆，事后要能看出「这句话是在哪个群说的」，而标题原来
+ * 取的是第一条消息的前 80 字，翻记录时根本认不出是哪个群。
+ */
+function readGroupIdFromConversationKey(key: string): string | null {
+  const matched = /^g:(\d+)$/.exec(key);
+  return matched?.[1] ?? null;
+}
 
 /** 一轮里的一个人说的话。群聊会把几秒内的几条消息合成一轮。 */
 export type ChannelTurnMessage = {
@@ -79,6 +101,11 @@ export type ChannelMessageInput = {
    * 不传；流水线不认平台名，只认这份清单在不在。
    */
   faceCatalog?: ReadonlyArray<{ id: string; name: string }>;
+  /**
+   * 这个角色的表情包清单。**传了就等于声明「本渠道能发图片」**，并且优先于内置表情：
+   * 有清单时模型从里面挑一张，内置表情不再进提示词。
+   */
+  stickerCatalog?: ReadonlyArray<StickerCatalogEntry>;
   sendReply: ChannelReplySender;
 };
 
@@ -98,6 +125,7 @@ export type ChannelBatchInput = {
   externalConversationId: string;
   messages: ChannelTurnMessage[];
   faceCatalog?: ReadonlyArray<{ id: string; name: string }>;
+  stickerCatalog?: ReadonlyArray<StickerCatalogEntry>;
   /** 允许模型说「这轮不插嘴」。被 @ 时传 false —— 点名了还不回比乱回更糟。 */
   allowSilent?: boolean;
   /** 群聊上下文；私聊不传。 */
@@ -118,6 +146,14 @@ function readStoredFaceIds(metadata: unknown): string[] {
     : {};
   const ids = record.faceIds;
   return Array.isArray(ids) ? ids.filter((item): item is string => typeof item === "string") : [];
+}
+
+/** 从已存消息的 metadata 里取表情包 id。没有（或不是字符串）返回 null。 */
+function readStoredStickerId(metadata: unknown): string | null {
+  const record = metadata && typeof metadata === "object" && !Array.isArray(metadata)
+    ? metadata as Record<string, unknown>
+    : {};
+  return typeof record.stickerId === "string" && record.stickerId ? record.stickerId : null;
 }
 
 /**
@@ -196,6 +232,7 @@ async function runChannelTurn(input: {
   externalConversationId: string;
   messages: ChannelTurnMessage[];
   faceCatalog?: ReadonlyArray<{ id: string; name: string }>;
+  stickerCatalog?: ReadonlyArray<StickerCatalogEntry>;
   /** 允许模型说「这轮我不插嘴」。只有群聊批处理会传。 */
   allowSilent?: boolean;
   /** 群聊上下文；私聊不传。 */
@@ -216,6 +253,7 @@ async function runChannelTurn(input: {
     select: {
       id: true,
       name: true,
+      ownerId: true,
       basePrompt: true,
       styleExamples: true,
       status: true,
@@ -275,6 +313,15 @@ async function runChannelTurn(input: {
     primaryIdentityScopeId = firstUid ? identityScopeByAuthor.get(firstUid) ?? null : null;
   }
 
+  // 主人专属私人范围：说话人明确是主人（私聊里渠道传 isOwner）时，会话挂到角色主人的
+  // USER_PRIVATE 范围，而不是该账号的外部身份范围。这样主人的私聊走「角色主人私人记忆」，
+  // 由调度器单独排快照，且只在主人自己的对话里可读 —— 不会混进全局、也不会串给群友。
+  const isOwnerTurn = !isGroup && messages[0]?.speaker?.isOwner === true;
+  let ownerPrivateScopeId: string | null = null;
+  if (isOwnerTurn) {
+    ownerPrivateScopeId = await ensureOwnerPrivateScope(input.characterId, character.ownerId);
+  }
+
   const chatSettings = resolveChatModelSettings(character.modelConfig);
   let apiKey = "";
   try {
@@ -298,6 +345,27 @@ async function runChannelTurn(input: {
     bindingId: input.bindingId,
   });
 
+  // 「偷表情包」：群里的图值得收就存进她的表情库。只收群聊、不看她自己发的图，
+  // 由开关 `modelConfig.stickerAutoCollect` 控制（默认关）。失败静默，不影响这轮回复。
+  if (isGroup) {
+    const collectCandidates = messages.flatMap((message) =>
+      (message.images ?? []).filter((img) => img.url).map((img) => ({
+        url: img.url,
+        ...(img.summary ? { summary: img.summary } : {}),
+      })),
+    );
+    if (collectCandidates.length) {
+      await collectStickersFromTurn(collectCandidates, {
+        characterId: input.characterId,
+        ...(input.bindingId ? { bindingId: input.bindingId } : {}),
+        modelConfig: character.modelConfig,
+        chatModel: chatSettings.model,
+        chatApiBaseUrl: chatSettings.apiBaseUrl,
+        chatApiKey: apiKey,
+      }).catch(() => undefined);
+    }
+  }
+
   const existingConversation = await prisma.conversation.findFirst({
     where: { channelBindingId: input.bindingId, externalConversationId: input.externalConversationId },
     select: { id: true, title: true },
@@ -312,15 +380,23 @@ async function runChannelTurn(input: {
       })
     : [];
 
-  // 表情要看三件事：渠道收不收（faceCatalog）、角色开没开开关、上一条是不是刚贴过。
+  // 表情要看三件事：渠道收不收（清单）、角色开没开开关、上一条是不是刚贴过。
   // 只看前两个的话，一个爱发表情的角色会在每句后面都挂一张。
   const lastAssistant = recentStoredMessages.find((item) => item.role === "ASSISTANT");
+  const lastStickerId = lastAssistant ? readStoredStickerId(lastAssistant.metadata) : null;
   const facesCoolingDown = Boolean(
     lastAssistant
     && Date.now() - lastAssistant.occurredAt.getTime() < FACE_COOLDOWN_MS
-    && readStoredFaceIds(lastAssistant.metadata).length > 0,
+    && (readStoredFaceIds(lastAssistant.metadata).length > 0 || Boolean(lastStickerId)),
   );
-  const emojiFaces = input.faceCatalog?.length
+  // 表情包优先于内置表情：有素材库就只给素材库（并剔除上一张，避免她一直贴同一张）。
+  const stickerCatalog = input.stickerCatalog?.length
+    && isEmojiEnabled(character.modelConfig)
+    && !facesCoolingDown
+    ? pickStickerCatalog(input.stickerCatalog, lastStickerId)
+    : undefined;
+  const emojiFaces = !stickerCatalog?.length
+    && input.faceCatalog?.length
     && isEmojiEnabled(character.modelConfig)
     && !facesCoolingDown
     ? input.faceCatalog
@@ -347,9 +423,12 @@ async function runChannelTurn(input: {
 
   // Retrieval scope: character-global (shared persona) plus the author's own identity scope
   // (per-platform private memory). 群聊只用全局：一轮里好几个人，谁的私人记忆都不该端出来。
+  // 主人私聊用 owner 的 USER_PRIVATE 范围（而不是外部身份范围）。
   const readableScopeIds = isGroup
     ? [globalScope.id]
-    : (primaryIdentityScopeId ? [globalScope.id, primaryIdentityScopeId] : [globalScope.id]);
+    : (isOwnerTurn && ownerPrivateScopeId
+      ? [globalScope.id, ownerPrivateScopeId]
+      : (primaryIdentityScopeId ? [globalScope.id, primaryIdentityScopeId] : [globalScope.id]));
 
   const memoryCandidates = await prisma.memoryItem.findMany({
     where: { memoryScopeId: { in: readableScopeIds }, status: "ACTIVE", deletedAt: null },
@@ -454,6 +533,7 @@ async function runChannelTurn(input: {
       memories,
       snapshots,
       ...(emojiFaces ? { emojiFaces } : {}),
+      ...(stickerCatalog?.length ? { emojiStickers: stickerCatalog } : {}),
     });
   } catch (error) {
     return { status: "ignored", reason: (error instanceof Error ? error.message : "model_error").slice(0, 200) };
@@ -461,9 +541,18 @@ async function runChannelTurn(input: {
 
   const now = new Date();
   const assistantAt = new Date(now.getTime() + 1);
-  const title = existingConversation?.title || currentMessage.slice(0, 80);
+  const groupId = isGroup ? readGroupIdFromConversationKey(input.externalConversationId) : null;
+  // 群会话标题用群号：原来的「第一条消息前 80 字」在记忆页翻记录时完全认不出是哪个群。
+  const title = existingConversation?.title
+    || (groupId ? `QQ群 ${groupId}` : currentMessage.slice(0, 80));
   const replyFaces = generated.action === "silent" ? [] : generated.faceIds;
-  const conversationScopeId = isGroup ? globalScope.id : (primaryIdentityScopeId ?? globalScope.id);
+  // 贴纸只认本次给的清单：模型返回了 id 但图不在清单里（比如刚被删掉），就当没选。
+  const replySticker = generated.action === "silent" || !generated.stickerId
+    ? null
+    : input.stickerCatalog?.find((entry) => entry.id === generated.stickerId) ?? null;
+  const conversationScopeId = isGroup
+    ? globalScope.id
+    : (isOwnerTurn && ownerPrivateScopeId ? ownerPrivateScopeId : (primaryIdentityScopeId ?? globalScope.id));
 
   const conversationId = await prisma.$transaction(async (tx) => {
     const conversation = existingConversation ?? await tx.conversation.create({
@@ -475,7 +564,12 @@ async function runChannelTurn(input: {
         externalConversationId: input.externalConversationId,
         title,
         status: "ACTIVE",
-        metadata: { platform: input.platform },
+        // kind/groupId 让「这段记录属于哪个群」可查；记忆页的群聊记录按它分组。
+        metadata: {
+          platform: input.platform,
+          kind: isGroup ? "group" : "private",
+          ...(groupId ? { groupId } : {}),
+        },
       },
       select: { id: true, title: true },
     });
@@ -493,6 +587,10 @@ async function runChannelTurn(input: {
             platform: input.platform,
             authorOpenId: message.authorOpenId,
             ...(message.authorDisplayName ? { authorDisplayName: message.authorDisplayName } : {}),
+            // 群聊的成员代号（member_n）：昵称可能缺失或被改，代号在同一个群里稳定。
+            ...(message.member ? { member: message.member } : {}),
+            // 主人发的消息：群聊提炼时也要认得出「这是主人」，不能跟群友混。
+            ...(message.speaker?.isOwner ? { isOwner: true } : {}),
           },
         },
         select: { id: true },
@@ -516,6 +614,7 @@ async function runChannelTurn(input: {
             usedSnapshotIds: generated.usedSnapshotIds,
             // 表情段不进 content：正文要能原样重放给下一轮模型，混进 [face] 会被当成用户打的字。
             ...(replyFaces.length ? { faceIds: replyFaces } : {}),
+            ...(replySticker ? { stickerId: replySticker.id } : {}),
           },
         },
         select: { id: true },
@@ -528,7 +627,21 @@ async function runChannelTurn(input: {
   });
 
   if (generated.action === "reply") {
-    await input.sendReply(generated.reply, replyFaces.length ? { faces: replyFaces } : undefined);
+    const replyOptions = replyFaces.length || replySticker || generated.groupDecision?.replyToMessageId
+      ? {
+          ...(replyFaces.length ? { faces: replyFaces } : {}),
+          ...(replySticker ? { sticker: { id: replySticker.id, filePath: replySticker.filePath } } : {}),
+          ...(generated.groupDecision?.replyToMessageId ? { replyToMessageId: generated.groupDecision.replyToMessageId } : {}),
+        }
+      : undefined;
+    await input.sendReply(generated.reply, replyOptions);
+    // 记一次使用：页面要能看出「哪几张她根本没用过」。写失败不影响已经发出去的回复。
+    if (replySticker) {
+      await prisma.characterSticker.update({
+        where: { id: replySticker.id },
+        data: { useCount: { increment: 1 }, lastUsedAt: new Date() },
+      }).catch(() => undefined);
+    }
   }
   if (generated.usedMemoryIds.length) {
     await prisma.memoryItem.updateMany({
@@ -574,6 +687,7 @@ export async function handleChannelMessage(input: ChannelMessageInput): Promise<
       ...(input.speaker ? { speaker: input.speaker } : {}),
     }],
     ...(input.faceCatalog ? { faceCatalog: input.faceCatalog } : {}),
+    ...(input.stickerCatalog?.length ? { stickerCatalog: input.stickerCatalog } : {}),
     sendReply: input.sendReply,
   });
   // 单条路径不该出现 silent；真出现了就当作没说，别让调用方去处理一个它不可能遇到的状态。
@@ -590,6 +704,7 @@ export async function handleChannelBatch(input: ChannelBatchInput): Promise<Chan
     externalConversationId: input.externalConversationId,
     messages: input.messages,
     ...(input.faceCatalog ? { faceCatalog: input.faceCatalog } : {}),
+    ...(input.stickerCatalog?.length ? { stickerCatalog: input.stickerCatalog } : {}),
     ...(input.group ? { group: input.group } : {}),
     allowSilent: input.allowSilent !== false,
     sendReply: input.sendReply,

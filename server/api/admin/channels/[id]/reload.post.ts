@@ -1,5 +1,6 @@
 import { createError, getRouterParam, setResponseStatus } from "h3";
 import { requireAdminActor } from "../../../../utils/auth";
+import { setAutoStartPaused } from "../../../../utils/channel-adapter/onebot/autostart";
 import { requireUuid } from "../../../../utils/local-api";
 import { getPrisma } from "../../../../utils/prisma";
 
@@ -7,6 +8,11 @@ import { getPrisma } from "../../../../utils/prisma";
 export default defineEventHandler(async (event) => {
   await requireAdminActor(event);
   const id = requireUuid(getRouterParam(event, "id") ?? "", "渠道连接");
+
+  // 「重连」的意思就是「我要它跑」：撤销停止留下的自动补起开关。
+  // 两个进程都已经在跑时，页面的重连只会走到这里、不走启动接口 —— 不在这儿清就永远清不掉。
+  await setAutoStartPaused(false);
+
   const prisma = getPrisma();
   const requestedAt = new Date().toISOString();
   const count = await prisma.$executeRaw`
