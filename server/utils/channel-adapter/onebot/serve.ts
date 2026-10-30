@@ -65,7 +65,8 @@ export function parseBindingRoutingKeys(routingKey: string | null): string[] {
 
 /**
  * 选择处理此事件的绑定角色：群聊优先匹配 routingKey（支持一个绑定挂多个群号），
- * 否则用默认绑定（routingKey 为空或 "*"）；私聊用默认绑定。
+ * 否则用默认绑定（routingKey 为空或 "*"）；私聊优先默认绑定，
+ * 没有默认绑定但只有一条启用中的绑定时也用她（否则填了群号就私聊永久静默）。
  */
 export function routeOnebotEventToBinding(
   bindings: readonly OnebotBindingRecord[],
@@ -76,7 +77,13 @@ export function routeOnebotEventToBinding(
     const exact = bindings.find((binding) => parseBindingRoutingKeys(binding.routingKey).includes(event.groupId!));
     if (exact) return exact;
   }
-  return defaults[0] ?? null;
+  if (defaults[0]) return defaults[0]!;
+  // 私聊的兜底：没有默认绑定时，只有一条启用中的绑定就直接给她。
+  //
+  // 以前这里只有 defaults[0]，于是「把群号填进绑定」等于「私聊永久静默」——
+  // 而群里照常能回，从群聊那边完全看不出问题，用户只会觉得「她私聊不理我了」。
+  // 多条绑定又没有默认绑定时仍然返回 null：那种情况下猜错人比不回更糟。
+  return event.messageType === "private" && bindings.length === 1 ? bindings[0]! : null;
 }
 
 /**

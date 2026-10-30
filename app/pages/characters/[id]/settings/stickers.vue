@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Delete, Picture } from "@element-plus/icons-vue";
+import { Delete, EditPen, Picture } from "@element-plus/icons-vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 
 /**
@@ -117,6 +117,46 @@ async function toggleEnabled(row: StickerItem, enabled: boolean) {
   } catch (error) {
     row.enabled = !enabled;
     ElMessage.error((error as { statusMessage?: string })?.statusMessage || "更新失败。");
+  }
+}
+
+// ── 编辑：名字 + 使用场景 ───────────────────────────────
+// 自动打标（尤其「偷」来的图）经常判断不准，这里让她自己改回来。
+// 只改这两个字段：图本身不换（换图等于换一张表情，应该删了重传）。
+const editing = ref<StickerItem | null>(null);
+const editName = ref("");
+const editUsage = ref("");
+const savingEdit = ref(false);
+
+function openEdit(row: StickerItem) {
+  editing.value = row;
+  editName.value = row.name;
+  editUsage.value = row.usage;
+}
+
+async function saveEdit() {
+  const target = editing.value;
+  if (!target) return;
+  const name = editName.value.trim();
+  if (!name) {
+    ElMessage.error("名字不能为空。");
+    return;
+  }
+  savingEdit.value = true;
+  try {
+    const updated = await $fetch<StickerItem>(
+      `/api/characters/${encodeURIComponent(id.value)}/stickers/${encodeURIComponent(target.id)}`,
+      { method: "PATCH", body: { name, usage: editUsage.value.trim() } },
+    );
+    // 就地更新这一行，不整页重拉：列表滚动位置和展开状态都还在。
+    target.name = updated.name;
+    target.usage = updated.usage;
+    editing.value = null;
+    ElMessage.success("已保存。她下一轮就按新的名字和场景来挑。");
+  } catch (error) {
+    ElMessage.error((error as { statusMessage?: string })?.statusMessage || "保存失败。");
+  } finally {
+    savingEdit.value = false;
   }
 }
 
@@ -275,6 +315,13 @@ onMounted(load);
                 />
                 <el-button
                   link
+                  type="primary"
+                  @click="openEdit(sticker)"
+                >
+                  <el-icon><EditPen /></el-icon>编辑
+                </el-button>
+                <el-button
+                  link
                   type="danger"
                   @click="remove(sticker)"
                 >
@@ -293,6 +340,55 @@ onMounted(load);
         </section>
       </div>
     </div>
+
+    <el-dialog
+      :model-value="Boolean(editing)"
+      title="编辑表情包"
+      width="440px"
+      @update:model-value="(value: boolean) => { if (!value) editing = null; }"
+    >
+      <div
+        v-if="editing"
+        class="edit-body"
+      >
+        <img
+          class="edit-thumb"
+          :src="imageUrl(editing.id)"
+          :alt="editing.name"
+        >
+        <label class="sticker-field">
+          <span class="form-label">名字</span>
+          <el-input
+            v-model="editName"
+            maxlength="60"
+            placeholder="委屈 / 得意 / 拍桌笑"
+          />
+        </label>
+        <label class="sticker-field">
+          <span class="form-label">什么时候用</span>
+          <el-input
+            v-model="editUsage"
+            maxlength="200"
+            placeholder="被冤枉、想撒娇的时候用"
+          />
+        </label>
+        <p class="edit-hint">
+          她挑图时看的就是这两项。名字写情绪词、场景写具体一点，比「表情1」「好笑的图」好挑得多。
+        </p>
+      </div>
+      <template #footer>
+        <el-button @click="editing = null">
+          取消
+        </el-button>
+        <el-button
+          type="primary"
+          :loading="savingEdit"
+          @click="saveEdit"
+        >
+          保存
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -405,6 +501,28 @@ onMounted(load);
   object-fit: contain;
   border-radius: 8px;
   background: #f2f3f7;
+}
+
+.edit-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.edit-thumb {
+  width: 96px;
+  height: 96px;
+  object-fit: contain;
+  border-radius: 10px;
+  background: #f2f3f7;
+  align-self: flex-start;
+}
+
+.edit-hint {
+  margin: 0;
+  font-size: 12px;
+  color: #8a90a6;
+  line-height: 1.6;
 }
 
 .form-actions {

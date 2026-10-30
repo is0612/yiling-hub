@@ -92,7 +92,26 @@ const mixed = [def, multi];
 assert.equal(routeOnebotEventToBinding(mixed, groupEvent("222"))?.id, "b1", "多群精确命中压过默认绑定。");
 assert.equal(routeOnebotEventToBinding([def], groupEvent("222"))?.id, "bDefault", "没有精确命中时用默认绑定。");
 
-// ── 5. 私聊始终用默认绑定 ───────────────────────────
+// ── 5. 私聊路由 ─────────────────────────────────────
 assert.equal(routeOnebotEventToBinding(mixed, privateEvent())?.id, "bDefault", "私聊不看群号，走默认绑定。");
+
+// 5b. 没有默认绑定、只有一条启用中的绑定 → 私聊仍然给她。
+// 这是「填了群号，私聊就永久静默」那个 bug 的回归：群里能回、私聊不回，
+// 从群聊侧完全看不出问题。
+assert.equal(
+  routeOnebotEventToBinding([multi], privateEvent())?.id,
+  "b1",
+  "没有默认绑定时，单条绑定要接住私聊。",
+);
+assert.equal(
+  routeOnebotEventToBinding([binding("b3", "111"), binding("b4", "222")], privateEvent()),
+  null,
+  "多条绑定又没有默认绑定时不猜，宁可 no_binding —— 猜错人比不回更糟。",
+);
+assert.equal(
+  routeOnebotEventToBinding([], privateEvent()),
+  null,
+  "没有任何绑定时私聊照旧不回。",
+);
 
 console.log("多群号路由测试全部通过。");
