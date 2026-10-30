@@ -3,7 +3,7 @@ import { requireActorUserId } from "../../../../../utils/auth";
 import { requireUuid } from "../../../../../utils/local-api";
 import { getPrisma } from "../../../../../utils/prisma";
 import { readStickerFile } from "../../../../../utils/stickers";
-import { suggestStickerUsage } from "../../../../../utils/sticker-usage";
+import { stickerUsageError, suggestStickerUsage } from "../../../../../utils/sticker-usage";
 import { resolveChatModelSettings } from "../../../../../utils/chat-model-config";
 import { resolveCharacterApiKey } from "../../../../../utils/credential-encryption";
 
@@ -66,21 +66,6 @@ export default defineEventHandler(async (event) => {
     },
   });
 
-  if (!result.ok) {
-    if (result.reason === "no-model") {
-      throw createError({
-        statusCode: 503,
-        statusMessage: "没有可用的模型。请先在角色的「模型设置」里把聊天模型配好（开了看图会顺带参考画面）。",
-      });
-    }
-    if (result.reason === "no-name") {
-      throw createError({ statusCode: 422, statusMessage: "先给这张表情起个名字，她才知道该按什么写场景。" });
-    }
-    if (result.reason === "unusable-usage") {
-      throw createError({ statusCode: 422, statusMessage: "模型这次没给出能用的场景，再点一次试试，或者自己写一句。" });
-    }
-    throw createError({ statusCode: 502, statusMessage: "模型这次没有返回结果，稍后再点一次试试。" });
-  }
-
+  if (!result.ok) throw createError(stickerUsageError(result.reason));
   return { usage: result.usage, source: result.source };
 });

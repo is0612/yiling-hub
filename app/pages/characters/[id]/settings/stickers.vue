@@ -127,9 +127,63 @@ function onFileChange(file: { raw?: File } | null) {
     return;
   }
   pendingFile.value = raw;
+  // 换了图，之前那句「按画面生成」就不作数了（场景本身还留着，用户可能就想复用）。
+  draftUsageSource.value = "";
   // 没填名字时用文件名（去掉扩展名）兜底：十张图全叫「表情」，页面上根本分不清谁是谁。
   if (!draftName.value.trim()) {
     draftName.value = raw.name.replace(/\.[^.]+$/, "").slice(0, 60);
+  }
+}
+
+// ── 添加框里的「AI 生成」：图还没入库，浏览器自己缩一张带过去 ──────────
+// 这一刻贴纸没有 id，服务端查不到图，所以得由前端把图发过去。
+// 但**不能发原图**：QQ 存的图动辄 1~3MB，只为一句场景传几 MB base64 不值当，
+// 视觉模型也是图越大越贵 —— 服务端入口那边缩图的道理在这里同样成立。
+// 缩不了（HEIC、超大尺寸解码失败）就退回「只看名字」，按钮不该因此失败。
+async function previewDataUrl(file: File): Promise<string | null> {
+  try {
+    const bitmap = await createImageBitmap(file);
+    const scale = Math.min(1, 200 / bitmap.width);
+    const width = Math.max(1, Math.round(bitmap.width * scale));
+    const height = Math.max(1, Math.round(bitmap.height * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d");
+    if (!context) return null;
+    context.drawImage(bitmap, 0, 0, width, height);
+    bitmap.close();
+    // 动图只会取到第一帧 —— 视觉模型本来也只能看一帧，和「重新识别」的取舍一致。
+    return canvas.toDataURL("image/png");
+  } catch {
+    return null;
+  }
+}
+
+const generatingDraftUsage = ref(false);
+const draftUsageSource = ref<"" | "vision" | "name">("");
+
+async function generateDraftUsage() {
+  if (generatingDraftUsage.value) return;
+  const name = draftName.value.trim();
+  if (!name) {
+    ElMessage.error("先在「名字」里写个词，AI 才知道该按什么写场景。");
+    return;
+  }
+  generatingDraftUsage.value = true;
+  try {
+    const image = pendingFile.value ? await previewDataUrl(pendingFile.value) : null;
+    const result = await $fetch<{ usage: string; source: "vision" | "name" }>(
+      `/api/characters/${encodeURIComponent(id.value)}/stickers/usage-suggestion`,
+      { method: "POST", body: image ? { name, image } : { name } },
+    );
+    draftUsage.value = result.usage;
+    draftUsageSource.value = result.source;
+    ElMessage.success(result.source === "vision" ? "按「名字 + 画面」生成了一句，可以再改。" : "按名字生成了一句，可以再改。");
+  } catch (error) {
+    ElMessage.error((error as { statusMessage?: string })?.statusMessage || "生成失败。");
+  } finally {
+    generatingDraftUsage.value = false;
   }
 }
 
@@ -174,6 +228,7 @@ async function submit() {
     pendingFile.value = null;
     draftName.value = "";
     draftUsage.value = "";
+    draftUsageSource.value = "";
     ElMessage.success("已添加。她下一轮就有这张图了。");
   } catch (error) {
     ElMessage.error((error as { statusMessage?: string })?.statusMessage || "上传失败。");
@@ -389,15 +444,33 @@ onMounted(load);
                 placeholder="委屈 / 得意 / 拍桌笑"
               />
             </label>
-            <label class="sticker-field sticker-field-wide">
-              <span class="form-label">什么时候用</span>
+            <div class="sticker-field sticker-field-wide">
+              <div class="form-label-row">
+                <span class="form-label">什么时候用</span>
+                <el-button
+                  link
+                  type="primary"
+                  size="small"
+                  :loading="generatingDraftUsage"
+                  title="按名字生成一句使用场景；已选图的话会顺带参考画面"
+                  @click="generateDraftUsage"
+                >
+                  <el-icon><MagicStick /></el-icon>AI 生成
+                </el-button>
+              </div>
               <el-input
                 v-model="draftUsage"
                 maxlength="200"
                 placeholder="被冤枉、想撒娇的时候用"
               />
-            </label>
+            </div>
           </div>
+          <p
+            v-if="draftUsageSource"
+            class="sticker-hint"
+          >
+            {{ draftUsageSource === "vision" ? "这句是按「名字 + 画面」生成的。" : "这句只按名字生成，她没看到图。" }}不满意可以直接改，再点「添加」就存这个。
+          </p>
 
           <div class="form-actions">
             <el-button

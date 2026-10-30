@@ -46,7 +46,7 @@ export default defineEventHandler(async (event) => {
   const name = readTrimmedString(field("name"), "表情包名字", 60, { required: true });
   const usage = readTrimmedString(field("usage"), "使用场景", 200);
 
-  // 宽于 240 的图先等比缩小：QQ 按原始像素显示，1500px 的图发出去是一条占满屏的巨图。
+  // 宽于 200 的图先等比缩小：QQ 按原始像素显示，1500px 的图发出去是一条占满屏的巨图。
   // 缩不了（解不开）就存原件 —— 上传不该因为「图太大」而失败。
   const mimeType = stickerMimeForExtension(extension);
   const normalized = await normalizeStickerImage(filePart.data, mimeType);

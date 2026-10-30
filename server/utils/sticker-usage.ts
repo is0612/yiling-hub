@@ -35,9 +35,34 @@ const TEXT_MAX_TOKENS = 1200;
 const USAGE_MAX_CHARS = 200;
 const NAME_MAX_CHARS = 60;
 
+export type StickerUsageFailureReason = "no-name" | "no-model" | "model-failed" | "unusable-usage";
+
 export type StickerUsageSuggestion =
   | { ok: true; usage: string; source: "vision" | "name" }
-  | { ok: false; reason: "no-name" | "no-model" | "model-failed" | "unusable-usage" };
+  | { ok: false; reason: StickerUsageFailureReason };
+
+/**
+ * 把失败原因翻成「接口层能直接抛的东西」和一句人话。
+ *
+ * 放在这里而不是两个接口里各写一遍：上传框（还没有 stickerId）和编辑弹窗（有 stickerId）
+ * 是两个入口，但用户看到的错误必须一模一样 —— 同一件事在两个弹窗里说法不同会让人以为坏了。
+ */
+export function stickerUsageError(reason: StickerUsageFailureReason): { statusCode: number; statusMessage: string } {
+  switch (reason) {
+    case "no-name":
+      return { statusCode: 422, statusMessage: "先给这张表情起个名字，她才知道该按什么写场景。" };
+    case "no-model":
+      return {
+        statusCode: 503,
+        statusMessage: "没有可用的模型。请先在角色的「模型设置」里把聊天模型配好（开了看图会顺带参考画面）。",
+      };
+    case "unusable-usage":
+      return { statusCode: 422, statusMessage: "模型这次没给出能用的场景，再点一次试试，或者自己写一句。" };
+    case "model-failed":
+    default:
+      return { statusCode: 502, statusMessage: "模型这次没有返回结果，稍后再点一次试试。" };
+  }
+}
 
 function clip(text: string): string {
   return text.trim().slice(0, USAGE_MAX_CHARS);
