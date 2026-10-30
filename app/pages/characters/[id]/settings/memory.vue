@@ -456,8 +456,9 @@ watch(id, () => void loadSettings());
 </template>
 
 <style scoped>
-.settings-grid{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:18px;align-items:start}
-.settings-section-head{display:flex;align-items:flex-start;justify-content:space-between;gap:15px}
+/* 这两个现在是 main.css 里的契约：`.settings-grid` 以前只在本文件写了 scoped 版本，
+   表情包页引用它拿不到样式（两栏退化成上下堆叠），所以提上去和大家共用。
+   要改形状就在本文件 scoped 里覆盖列宽，别再回到「只在某个页面里定义」。 */
 .form-title{display:flex;align-items:center;gap:9px;color:var(--text);font-size:14px;font-weight:700}
 .section-icon{color:var(--brand);font-size:18px}
 
