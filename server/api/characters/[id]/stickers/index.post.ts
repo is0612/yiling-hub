@@ -7,8 +7,10 @@ import {
   invalidateStickerCache,
   resolveStickerExtension,
   saveStickerFile,
+  stickerMimeForExtension,
   toStickerDto,
 } from "../../../../utils/stickers";
+import { normalizeStickerImage } from "../../../../utils/sticker-image";
 
 /**
  * 上传一张表情包。
@@ -44,15 +46,24 @@ export default defineEventHandler(async (event) => {
   const name = readTrimmedString(field("name"), "表情包名字", 60, { required: true });
   const usage = readTrimmedString(field("usage"), "使用场景", 200);
 
-  const fileName = await saveStickerFile(id, extension, filePart.data);
+  // 宽于 240 的图先等比缩小：QQ 按原始像素显示，1500px 的图发出去是一条占满屏的巨图。
+  // 缩不了（解不开）就存原件 —— 上传不该因为「图太大」而失败。
+  const mimeType = stickerMimeForExtension(extension);
+  const normalized = await normalizeStickerImage(filePart.data, mimeType);
+  const stored = normalized?.resized ? normalized.buffer : filePart.data;
+  if (stored.length > MAX_STICKER_BYTES) {
+    throw createError({ statusCode: 413, statusMessage: `图片不能超过 ${Math.floor(MAX_STICKER_BYTES / 1024 / 1024)}MB。` });
+  }
+
+  const fileName = await saveStickerFile(id, extension, stored);
   const row = await prisma.characterSticker.create({
     data: {
       characterId: id,
       name,
       usage,
       fileName,
-      mimeType: typeof filePart.type === "string" && filePart.type ? filePart.type : `image/${extension}`,
-      sizeBytes: filePart.data.length,
+      mimeType: normalized?.mimeType || mimeType,
+      sizeBytes: stored.length,
     },
   });
   invalidateStickerCache(id);

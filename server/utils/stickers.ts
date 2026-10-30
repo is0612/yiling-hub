@@ -64,6 +64,12 @@ export function safeFileName(fileName: unknown): string | null {
   return fileName;
 }
 
+/** 扩展名 → mime。缩图时要用它告诉 sharp 输出成什么格式（必须与扩展名一致）。 */
+export function stickerMimeForExtension(extension: string): string {
+  const found = Object.entries(MIME_EXTENSIONS).find(([, ext]) => ext === extension);
+  return found ? found[0] : "application/octet-stream";
+}
+
 /** 客户端给的 mime / 文件名 → 扩展名。认不出来就返回 null，让调用方报「格式不支持」。 */
 export function resolveStickerExtension(mimeType: unknown, originalName?: unknown): string | null {
   if (typeof mimeType === "string" && MIME_EXTENSIONS[mimeType]) return MIME_EXTENSIONS[mimeType]!;

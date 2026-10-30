@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { buildChatCompletionsEndpoint } from "./chat-model-config";
 import { downloadImage, resolveImageUnderstandingSettings } from "./image-understanding";
 import { readModelUsage, recordModelUsage } from "./model-usage";
+import { normalizeStickerImage } from "./sticker-image";
 import {
   invalidateStickerCache,
   resolveStickerExtension,
@@ -193,7 +194,17 @@ export async function collectSticker(
   });
   if (existing) return null;
 
-  const dataUrl = `data:${image.mime};base64,${image.buffer.toString("base64")}`;
+  /**
+   * 缩到宽 240 再存：QQ 按图片原始像素显示，群里偷来的图常常 1000px 以上，
+   * 存原件就是存一张「发出去占满一屏」的巨图。
+   *
+   * 用缩好的这张去打标也有好处：240 宽的 base64 小一大截，视觉请求更快更便宜，
+   * 而判断「这张适合什么时候用」看 240 宽完全够。
+   */
+  const normalized = await normalizeStickerImage(image.buffer, image.mime);
+  const storedImage = normalized?.resized ? normalized.buffer : image.buffer;
+
+  const dataUrl = `data:${image.mime};base64,${storedImage.toString("base64")}`;
   const label = await labelSticker(dataUrl, candidate.summary ?? "", context);
   /**
    * 起不出名字就不收。
@@ -207,7 +218,7 @@ export async function collectSticker(
   const name = label.name;
   const usage = label.usage;
 
-  const fileName = await saveStickerFile(context.characterId, extension, image.buffer);
+  const fileName = await saveStickerFile(context.characterId, extension, storedImage);
   let row;
   try {
     row = await prisma.characterSticker.create({
@@ -217,7 +228,7 @@ export async function collectSticker(
         usage,
         fileName,
         mimeType: image.mime,
-        sizeBytes: image.buffer.byteLength,
+        sizeBytes: storedImage.byteLength,
         contentHash,
         source: "collected",
       },
