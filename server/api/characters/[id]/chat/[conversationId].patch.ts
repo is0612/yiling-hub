@@ -32,7 +32,7 @@ export default defineEventHandler(async (event) => {
   if (!memoryScopeId) throw createError({ statusCode: 409, statusMessage: "该角色尚未建立全局记忆范围。" });
 
   const conversation = await prisma.conversation.findFirst({
-    where: { id: conversationId, characterId, memoryScopeId },
+    where: { id: conversationId, characterId, memoryScopeId, channelBindingId: null },
     select: { id: true, title: true, status: true, updatedAt: true },
   });
   if (!conversation) throw createError({ statusCode: 404, statusMessage: "会话不存在或不属于当前角色。" });

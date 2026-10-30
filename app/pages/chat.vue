@@ -230,6 +230,11 @@ async function reload() {
     const selectedId = conversationId.value;
     if (selectedId && route.query.conversationId !== selectedId) {
       await navigateTo({ path: route.path, query: { ...route.query, conversationId: selectedId } }, { replace: true });
+    } else if (!selectedId && typeof route.query.conversationId === "string") {
+      // 会话被删/被归档后 URL 上的 id 会过期，服务端已退回列表，这里把脏参数摘掉
+      const nextQuery = { ...route.query };
+      delete nextQuery.conversationId;
+      await navigateTo({ path: route.path, query: nextQuery }, { replace: true });
     }
   } catch (error) {
     ElMessage.error(getErrorMessage(error, "读取角色对话失败，请检查本地数据库和开发服务器。"));
@@ -322,6 +327,55 @@ async function toggleConversationStatus(item: ConversationSummary) {
   }
 }
 
+/**
+ * 删掉一段对话，消息跟着走。
+ *
+ * 记忆不挂在会话下面，所以已经沉淀的记忆不会跟着消失；后端把保留条数带回来，
+ * 这里明确说一句，否则删完发现记忆页还在，人反而会怀疑删干净没有。
+ */
+async function deleteConversation(item: ConversationSummary) {
+  if (sending.value) return;
+  const count = item.messageCount ? `这 ${item.messageCount} 条消息` : "会话内容";
+  try {
+    await ElMessageBox.confirm(
+      `「${item.title}」删除后无法恢复，${count}会被永久删除。已经沉淀成记忆的内容不受影响，会继续留在记忆页。`,
+      "删除会话",
+      { confirmButtonText: "确认删除", cancelButtonText: "取消", type: "warning" },
+    );
+  } catch {
+    return;
+  }
+
+  const wasSelected = item.id === conversationId.value;
+  try {
+    const result = await $fetch<{
+      deletedMessages: number;
+      retainedMemories: number;
+      retainedSnapshotSources: number;
+    }>(
+      "/api/characters/" + encodeURIComponent(id.value) + "/chat/" + encodeURIComponent(item.id),
+      { method: "DELETE" },
+    );
+    // 有可能一条长期记忆都没有、但快照已经总结过这段（实测库里就是这样），
+    // 所以只按 retainedMemories 拼文案的话，人删完什么都看不到，反而会担心记忆没了。
+    const kept = result.retainedMemories
+      ? `，${result.retainedMemories} 条相关记忆仍保留在记忆页`
+      : result.retainedSnapshotSources
+        ? "，相关记忆快照仍保留"
+        : "";
+    ElMessage.success(`会话已删除${kept}。`);
+    // 先摘掉 URL 里的会话 id 再重新加载：不然 reload 会拿已删的 id 去查，直接 404。
+    if (wasSelected) {
+      const nextQuery = { ...route.query };
+      delete nextQuery.conversationId;
+      await navigateTo({ path: route.path, query: nextQuery }, { replace: true });
+    }
+    await reload();
+  } catch (error) {
+    ElMessage.error(getErrorMessage(error, "删除会话失败。"));
+  }
+}
+
 /** 会话菜单：列表行和对话面板头共用一套命令，避免两处行为不一致 */
 async function runConversationCommand(item: ConversationSummary | null, command: string) {
   if (!item) return;
@@ -331,6 +385,10 @@ async function runConversationCommand(item: ConversationSummary | null, command:
   }
   if (command === "status") {
     await toggleConversationStatus(item);
+    return;
+  }
+  if (command === "delete") {
+    await deleteConversation(item);
     return;
   }
   if (command === "export") await exportConversation();
@@ -628,6 +686,13 @@ watch(id, (next, previous) => {
                   <el-dropdown-item command="status">
                     {{ conversationView === "ACTIVE" ? "归档" : "恢复" }}
                   </el-dropdown-item>
+                  <el-dropdown-item
+                    command="delete"
+                    divided
+                    style="color: var(--red)"
+                  >
+                    删除
+                  </el-dropdown-item>
                 </el-dropdown-menu>
               </template>
             </el-dropdown>
@@ -674,6 +739,13 @@ watch(id, (next, previous) => {
                 </el-dropdown-item>
                 <el-dropdown-item command="status">
                   {{ conversationView === "ACTIVE" ? "归档" : "恢复" }}
+                </el-dropdown-item>
+                <el-dropdown-item
+                  command="delete"
+                  divided
+                  style="color: var(--red)"
+                >
+                  删除
                 </el-dropdown-item>
               </el-dropdown-menu>
             </template>

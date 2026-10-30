@@ -21,6 +21,13 @@ const statusFilter = ref("全部版本状态");
 const detail = ref<Snapshot | null>(null);
 /** 来源消息默认收起：这是一页要读总结的页面，6 条原文常驻会把提炼结果挤到看不见 */
 const sourcesOpen = ref(false);
+/**
+ * 来源消息分页：跨度大的总结会挂上百条原文，全量渲染会把页脚和「重新提炼」
+ * 顶到很远的位置，展开一次就得滚半天。这里只渲染当前一页，编号仍走全量序号。
+ */
+const sourcePage = ref(1);
+const sourcePageSize = ref(10);
+const sourceListEl = ref<HTMLElement | null>(null);
 const creating = ref(false);
 const regeneratingId = ref<string | null>(null);
 const aiRegeneratingId = ref<string | null>(null);
@@ -33,6 +40,19 @@ const filtered = computed(() => items.value.filter((item) => {
 }));
 const totalMessages = computed(() => items.value.reduce((sum, item) => sum + item.messages, 0));
 const hasFilters = computed(() => Boolean(query.value) || statusFilter.value !== "全部版本状态");
+
+const sourceTotal = computed(() => detail.value?.sourceMessages?.length || 0);
+const pagedSources = computed(() => {
+  const start = (sourcePage.value - 1) * sourcePageSize.value;
+  return (detail.value?.sourceMessages || []).slice(start, start + sourcePageSize.value);
+});
+/** 分页后仍按全量位置编号，「依据 #3」和列表里的 #3 才是同一条 */
+const sourceRange = computed(() => {
+  if (!sourceTotal.value) return "";
+  const start = (sourcePage.value - 1) * sourcePageSize.value + 1;
+  const end = Math.min(sourcePage.value * sourcePageSize.value, sourceTotal.value);
+  return `${start}–${end}`;
+});
 
 function countFor(status: string) {
   return status === "全部版本状态" ? items.value.length : items.value.filter((item) => item.status === status).length;
@@ -53,7 +73,19 @@ function statusTone(status: Snapshot["status"]) {
 function applyDetail(next: Snapshot | null) {
   detail.value = next;
   sourcesOpen.value = Boolean(next) && !next?.analysis;
+  sourcePage.value = 1;
 }
+
+/** 换页后回到列表顶部：一页 10 条也有近千像素，停在原地会以为没翻动 */
+watch(sourcePage, (next) => {
+  if (next > 1) sourceListEl.value?.scrollIntoView({ block: "start", behavior: "smooth" });
+});
+
+/** 换页大小、或重新拉取后条数变少时，别停在已经不存在的页码上 */
+watch([sourceTotal, sourcePageSize], () => {
+  const maxPage = Math.max(1, Math.ceil(sourceTotal.value / sourcePageSize.value));
+  if (sourcePage.value > maxPage) sourcePage.value = maxPage;
+});
 
 async function loadSnapshots(selectedId?: string) {
   if (!id.value) {
@@ -627,15 +659,18 @@ watch(id, () => void loadSnapshots());
                     <ArrowDown />
                   </el-icon>
                   来源消息与原文
-                  <span class="src-count">{{ detail.sourceMessages?.length || 0 }} 条</span>
+                  <span class="src-count">
+                    {{ detail.sourceMessages?.length || 0 }} 条<template v-if="sourceTotal > sourcePageSize"> · 第 {{ sourceRange }} 条</template>
+                  </span>
                 </button>
 
                 <div
                   v-if="sourcesOpen && detail.sourceMessages?.length"
+                  ref="sourceListEl"
                   class="src-list"
                 >
                   <article
-                    v-for="source in detail.sourceMessages"
+                    v-for="source in pagedSources"
                     :key="source.id"
                     class="src-item"
                   >
@@ -662,8 +697,28 @@ watch(id, () => void loadSnapshots());
                     </p>
                   </article>
                 </div>
+                <div
+                  v-if="sourcesOpen && sourceTotal > sourcePageSize"
+                  class="src-pager"
+                >
+                  <el-pagination
+                    v-model:current-page="sourcePage"
+                    v-model:page-size="sourcePageSize"
+                    :total="sourceTotal"
+                    :page-sizes="[10, 20, 50]"
+                    :pager-count="5"
+                    layout="sizes, prev, pager, next"
+                    size="small"
+                    background
+                  />
+                </div>
+                <!--
+                  这里必须独立 v-if，不能 v-else-if：分页器插在上面之后，
+                  v-else-if 会挂到分页器的条件上 —— 来源不足一页（≤10 条，最常见的情况）
+                  时原文照常渲染，下面却多出一句「没有可追溯的原始消息」。
+                -->
                 <p
-                  v-else-if="sourcesOpen"
+                  v-if="sourcesOpen && !sourceTotal"
                   class="list-empty"
                 >
                   没有可追溯的原始消息，可能是旧版本、纯记忆归档，或来源消息已被清理。
@@ -803,6 +858,8 @@ watch(id, () => void loadSnapshots());
 .src-more:hover{text-decoration:underline}
 .src-conv{margin:6px 0 0;overflow:hidden;color:var(--dim);font-size:12px;text-overflow:ellipsis;white-space:nowrap}
 .src-preview{display:-webkit-box;overflow:hidden;margin:5px 0 0;color:var(--text-2);font-size:14px;line-height:1.8;white-space:pre-wrap;overflow-wrap:anywhere;-webkit-box-orient:vertical;-webkit-line-clamp:3}
+/* 分页器贴右、极轻：它是翻页工具，不该和原文抢视线 */
+.src-pager{display:flex;justify-content:flex-end;margin-top:10px}
 
 /* ── 详情页脚 ──────────────────────────────────────── */
 .d-foot{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:20px;border-top:1px solid var(--surface-3);padding-top:14px}

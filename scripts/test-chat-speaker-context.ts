@@ -25,7 +25,7 @@ try {
     speaker: { displayName: "群友", isOwner: false, ownerDisplayName: "烟火清凉" },
   });
 
-  assert.equal(result.promptTemplateVersion, "conversation-retrieval-v5");
+  assert.equal(result.promptTemplateVersion, "conversation-retrieval-v6");
   const body = JSON.parse(capturedBody) as { messages: Array<{ role: string; content: string }> };
   const system = body.messages.find((item) => item.role === "system")?.content ?? "";
   const user = body.messages.find((item) => item.role === "user")?.content ?? "";

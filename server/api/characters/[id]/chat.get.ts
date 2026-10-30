@@ -41,9 +41,12 @@ export default defineEventHandler(async (event) => {
   const memoryScopeId = character.memoryScopes[0]?.id;
   if (!memoryScopeId) throw createError({ statusCode: 409, statusMessage: "该角色尚未建立全局记忆范围，请重新保存角色档案。" });
 
+  // 桌面端 AI 对话只认 channelBindingId 为空的会话：带绑定的是 QQ 等外部渠道的记录，
+  // 它们可能和本角色共用同一个 CHARACTER_GLOBAL scope，不过滤就会混进这里的会话列表。
   const conversationWhere = {
     characterId,
     memoryScopeId,
+    channelBindingId: null,
     status: conversationStatus,
     ...(searchTerm ? {
       OR: [
@@ -58,14 +61,19 @@ export default defineEventHandler(async (event) => {
     take: 50,
     select: { id: true, title: true, lastMessageAt: true, updatedAt: true, _count: { select: { messages: true } } },
   });
-  const selectedConversation = conversationId
+  /**
+   * 指定的会话查不到就退回落列表第一条，不报错。
+   *
+   * 这个 id 来自浏览器 URL，过期是常态：会话刚被删掉、从归档视图点了旧链接、浏览器后退、
+   * 或者在另一个标签页删过。以前这里抛 404，前端整页加载失败只剩一句报错；
+   * 现在有了删除功能，这种情况只会更多。退回列表第一位，前端会把 URL 换成实际选中的那个。
+   */
+  const selectedConversation = (conversationId
     ? await prisma.conversation.findFirst({
-        where: { id: conversationId, characterId, memoryScopeId, status: conversationStatus },
+        where: { id: conversationId, characterId, memoryScopeId, channelBindingId: null, status: conversationStatus },
         select: { id: true, title: true, lastMessageAt: true, updatedAt: true, _count: { select: { messages: true } } },
       })
-    : conversations[0] ?? null;
-
-  if (conversationId && !selectedConversation) throw createError({ statusCode: 404, statusMessage: "会话不存在或不属于当前角色。" });
+    : null) ?? conversations[0] ?? null;
   if (selectedConversation && !conversations.some((conversation) => conversation.id === selectedConversation.id)) {
     conversations.unshift(selectedConversation);
     conversations.splice(20);

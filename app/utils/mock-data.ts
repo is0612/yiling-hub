@@ -43,6 +43,8 @@ export type Character = {
   imageUnderstanding?: boolean;
   /** 群里发来的图是否自动收进她的表情库。 */
   stickerAutoCollect?: boolean;
+  /** 群聊之后是否自动扫一遍群里的梗（捡到的先进待确认）。 */
+  catchphraseAutoMine?: boolean;
   /** 她的回复能否发成语音条。 */
   voiceEnabled?: boolean;
   /** 她听不听得懂别人发的语音。 */
@@ -57,6 +59,10 @@ export type Character = {
   ttsModel?: string;
   ttsVoice?: string;
   asrModel?: string;
+  /** 语音服务商：openai（含兼容接口）/ minimax；空 = 按地址自动判断。 */
+  ttsProvider?: string;
+  /** MiniMax 的 GroupId。 */
+  ttsGroupId?: string;
   /** 主动找话设置；服务端返回时一定带默认值填充。 */
   proactive?: {
     enabled: boolean;
@@ -66,6 +72,15 @@ export type Character = {
     quietEnd: string;
     userActiveMinutes: number;
     minConfidence: number;
+  };
+  /** 群聊「冷场了自己找话题」；同样由服务端补齐默认值。 */
+  groupInitiative?: {
+    enabled: boolean;
+    idleMinutes: number;
+    dailyMax: number;
+    minGapMinutes: number;
+    quietStart: string;
+    quietEnd: string;
   };
 };
 
