@@ -175,6 +175,7 @@ model Character {
   auditLogs        AuditLog[]                @relation("CharacterAuditLogs")
   proactiveIntents ProactiveIntent[]
   stickers         CharacterSticker[]
+  catchphrases     CharacterCatchphrase[]
 
   @@index([ownerId, status])
   @@index([updatedAt])
@@ -619,6 +620,40 @@ model ProactiveIntent {
   @@map("proactive_intents")
 }
 
+/// QQ 群里「安静了多久」的唯一事实来源。
+///
+/// 群消息平时不落库（她没回话的那一轮一条都不存，只有真的回复才在事务里落消息），
+/// 所以「这个群多久没动静」在库里查不到；而判断这件事的 tick 是独立进程，
+/// 读不到适配器内存里的 `GroupContext`，只能落一张轻表。
+///
+/// 没有 relation：这张表只是渠道侧的事实记录，不参与角色的级联删除语义，
+/// 与 `onebot_group_announcements` 同一个处理方式。
+model GroupActivity {
+  id                     String    @id @default(uuid()) @db.Uuid
+  channelBindingId       String    @db.Uuid
+  characterId            String    @db.Uuid
+  /// `g:<群号>`，与 Conversation.externalConversationId 同口径。
+  externalConversationId String    @db.VarChar(255)
+  groupId                String    @db.VarChar(64)
+  /// 群里最后一条消息（任何人发的）的收到时刻。
+  lastMessageAt          DateTime  @db.Timestamptz(6)
+  /// 她最后一次在这个群说话的时刻。
+  lastSpokeAt            DateTime? @db.Timestamptz(6)
+  /// 她最后一次**真的**主动开了话题（页面展示用）。
+  lastInitiativeAt       DateTime? @db.Timestamptz(6)
+  /// 最后一次为这个群花过模型调用 —— 成功开口、模型判定不说、报错都算。
+  /// 闸门的「最短间隔」看它：不然一个死群会每分钟调一次模型。
+  lastAttemptAt          DateTime? @db.Timestamptz(6)
+  /// 最近几条群消息当素材：[{ speaker, text, at }]，最多 12 条。
+  recentLines            Json?     @db.JsonB
+  createdAt              DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt              DateTime  @updatedAt @db.Timestamptz(6)
+
+  @@unique([channelBindingId, externalConversationId])
+  @@index([characterId, lastMessageAt])
+  @@map("group_activities")
+}
+
 /// B站 的对外动作账本：收藏、发动态。
 /// 记在库里而不是内存，是为了做「每天最多几次」「两条动态至少隔多久」这类判定——
 /// 进程重启后内存里的计数会归零，账号那边的痕迹删不掉。
@@ -699,4 +734,43 @@ model CharacterSticker {
 
   @@index([characterId, enabled])
   @@map("character_stickers")
+}
+
+/// 角色的梗语录：她会**原样说出来**的那几句口头禅（「xxx 不烧心吗」）。
+///
+/// 为什么不塞进 `styleExamples`：那段注入时带着「别把句子原样搬出来」的指令，
+/// 是拿来对齐语气的；梗要的恰好是反的 —— 原封不动说出口。两者混在一起会互相抵消。
+///
+/// 为什么要有独立的表而不是一个长文本框：梗需要「什么时候说」才能挑对时机，
+/// 需要 `enabled` 才能说腻了先关掉而不删，需要 `lastUsedAt` 才能防复读 ——
+/// 一句连说两天，角色感当场就没了。这三件事长文本框都给不了。
+model CharacterCatchphrase {
+  id          String    @id @default(uuid()) @db.Uuid
+  characterId String    @db.Uuid
+  /// 台词本身。模型会原样使用，所以别写「（可以换成别的说法）」这类批注。
+  phrase      String    @db.VarChar(200)
+  /// 什么时候说：一句话场景说明，帮模型判断当下是不是这个梗的时机。
+  usage       String    @default("") @db.Text
+  /// 关掉 = 暂时不说，但留着。
+  enabled     Boolean   @default(true)
+  /// PENDING / ACTIVE / REJECTED。
+  ///
+  /// 手动加的直接 ACTIVE；从群里「捡」回来的一律先 PENDING，等用户点头才进候选池 ——
+  /// 梗是群体财产，冒用群里的话说错一次就很难收回，不能像表情包那样直接入库存着。
+  /// REJECTED 的行**不删**：删了下一轮扫描会把它重新捡回来，等于否不掉。
+  status      String    @default("ACTIVE") @db.VarChar(20)
+  /// 捡回来时的依据：哪个群、原话几条、出现几次。弹窗要给人看「她凭什么觉得这是梗」。
+  evidence    Json?     @db.JsonB
+  useCount    Int       @default(0)
+  /// 上次说的时刻。冷却靠它算 —— 这是防复读的唯一依据，别只当统计用。
+  lastUsedAt  DateTime? @db.Timestamptz(6)
+  /// 来源：manual（手填）/ collected（从聊天里捡的）。
+  source      String    @default("manual") @db.VarChar(20)
+  createdAt   DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime  @updatedAt @db.Timestamptz(6)
+  character   Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+
+  @@index([characterId, enabled])
+  @@index([characterId, status])
+  @@map("character_catchphrases")
 }
