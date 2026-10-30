@@ -473,8 +473,10 @@ const syncLines = computed(() => {
   const report = syncReport.value;
   if (!report) return [];
   const lines: Array<{ label: string; value: string; tone: "up" | "down" | "flat" }> = [];
+  // tone 是给 CSS 上色的；符号（↑/↓）独立于颜色，灰度或色弱下方向也读得出来
   const add = (count: number, label: string, tone: "up" | "down" | "flat" = "flat", suffix = "张") => {
-    if (count > 0) lines.push({ label, value: `${count} ${suffix}`, tone });
+    const mark = tone === "up" ? "↑ " : tone === "down" ? "↓ " : "";
+    if (count > 0) lines.push({ label, value: `${mark}${count} ${suffix}`, tone });
   };
   add(report.imported, "从 QQ 导进来");
   add(report.adopted, "认出本地已有同图，绑上了 QQ 收藏");
@@ -617,258 +619,244 @@ onMounted(load);
       角色的「表情」开关现在是关的 —— 开了她才会贴图（在「模型设置 → 表情」里打开）。
     </div>
 
-    <div class="settings-grid">
-      <div>
-        <section
-          v-loading="loading"
-          class="surface form-section"
-        >
-          <div class="settings-section-head">
-            <div>
-              <div class="form-title">
-                添加一张
-              </div><p class="section-description">
-                名字是她看到的（写「委屈」「得意」这类情绪词最好），使用场景再补一句，帮她在十几张里挑对。
-              </p>
-            </div>
-          </div>
-
-          <div class="sticker-form">
-            <el-upload
-              accept="image/png,image/jpeg,image/gif,image/webp"
-              :auto-upload="false"
-              :show-file-list="false"
-              :limit="1"
-              @change="onFileChange($event as unknown as { raw?: File })"
-            >
-              <template #trigger>
-                <el-button>
-                  <el-icon><Picture /></el-icon>选择图片
-                </el-button>
-              </template>
-            </el-upload>
-            <span class="form-help">
-              {{ pendingFile ? `已选：${pendingFile.name}（${sizeLabel(pendingFile.size)}）` : "PNG / JPG / GIF / WebP，最大 2MB" }}
-            </span>
-          </div>
-          <p class="sticker-hint">
-            宽于 200px 的图会自动等比缩小（高度跟着变），比 200 窄的原样保留 ——
-            QQ 按图片原始像素显示，不缩的话一张 1500px 的图在聊天窗里会占满一屏。
-          </p>
-
-          <div class="sticker-form-fields">
-            <label class="sticker-field">
-              <span class="form-label">名字</span>
-              <el-input
-                v-model="draftName"
-                maxlength="60"
-                placeholder="委屈 / 得意 / 拍桌笑"
-              />
-            </label>
-            <div class="sticker-field sticker-field-wide">
-              <div class="form-label-row">
-                <span class="form-label">什么时候用</span>
-                <el-button
-                  link
-                  type="primary"
-                  size="small"
-                  :loading="generatingDraftUsage"
-                  title="按名字生成一句使用场景；已选图的话会顺带参考画面"
-                  @click="generateDraftUsage"
-                >
-                  <el-icon><MagicStick /></el-icon>AI 生成
-                </el-button>
-              </div>
-              <el-input
-                v-model="draftUsage"
-                maxlength="200"
-                placeholder="被冤枉、想撒娇的时候用"
-              />
-            </div>
-          </div>
-          <p
-            v-if="draftUsageSource"
-            class="sticker-hint"
-          >
-            {{ draftUsageSource === "vision" ? "这句是按「名字 + 画面」生成的。" : "这句只按名字生成，她没看到图。" }}不满意可以直接改，再点「添加」就存这个。
-          </p>
-
-          <div class="form-actions">
-            <el-button
-              type="primary"
-              :disabled="!canSubmit"
-              :loading="saving"
-              @click="submit"
-            >
-              添加
-            </el-button>
-          </div>
-        </section>
+    <section
+      v-loading="loading"
+      class="sticker-add"
+    >
+      <div class="sec-h">
+        <h2>添加一张</h2>
+        <span class="sec-sub">名字写情绪词，场景帮她在十几张里挑对</span>
       </div>
 
-      <div>
-        <section class="surface form-section">
-          <div class="settings-section-head">
-            <div>
-              <div class="form-title">
-                已有 {{ stickers.length }} 张
-                <span
-                  v-if="disabledCount"
-                  class="title-aside"
-                >停用 {{ disabledCount }} 张</span>
-              </div><p class="section-description">
-                停用的图不会被她用到，但保留在列表里。用过几次、最近一次什么时候用，都记在这里。
-              </p>
-            </div>
-            <div class="sticker-head-ops">
-              <el-button
-                :loading="syncing"
-                title="把 QQ 收藏夹和本地表情对一次账：缺的导下来、多的推上去、QQ 删了的进回收站"
-                @click="syncWithQq"
-              >
-                从 QQ 同步
-              </el-button>
-              <el-button @click="openTrash">
-                回收站
-              </el-button>
-            </div>
-          </div>
+      <div class="sticker-form">
+        <el-upload
+          accept="image/png,image/jpeg,image/gif,image/webp"
+          :auto-upload="false"
+          :show-file-list="false"
+          :limit="1"
+          @change="onFileChange($event as unknown as { raw?: File })"
+        >
+          <template #trigger>
+            <el-button>
+              <el-icon><Picture /></el-icon>选择图片
+            </el-button>
+          </template>
+        </el-upload>
+        <span class="form-help">
+          {{ pendingFile ? `已选：${pendingFile.name}（${sizeLabel(pendingFile.size)}）` : "PNG / JPG / GIF / WebP，最大 2MB" }}
+        </span>
+      </div>
+      <p class="sticker-hint">
+        宽于 200px 的图会自动等比缩小（高度跟着变），比 200 窄的原样保留 ——
+        QQ 按图片原始像素显示，不缩的话一张 1500px 的图在聊天窗里会占满一屏。
+      </p>
 
-          <p
-            v-if="qqLinkedCount"
-            class="sticker-hint"
-          >
-            其中 {{ qqLinkedCount }} 张和 QQ 收藏夹是同一份：在这里改名会写进 QQ 备注，在这里删除 QQ 那张也会一起删。
-          </p>
-
-          <div
-            v-if="untaggedCount"
-            class="sticker-warn sticker-warn-inline"
-          >
-            <span>{{ untaggedCount }} 张还没写「什么时候用」—— 挑图时她主要看这句，空着基本轮不上。</span>
+      <div class="sticker-form-fields">
+        <label class="sticker-field">
+          <span class="sticker-label">名字</span>
+          <el-input
+            v-model="draftName"
+            maxlength="60"
+            placeholder="委屈 / 得意 / 拍桌笑"
+          />
+        </label>
+        <div class="sticker-field sticker-field-wide">
+          <div class="sticker-label-row">
+            <span class="sticker-label">什么时候用</span>
             <el-button
               link
               type="primary"
               size="small"
-              :loading="labelingAll"
-              @click="labelUntagged"
+              :loading="generatingDraftUsage"
+              title="按名字生成一句使用场景；已选图的话会顺带参考画面"
+              @click="generateDraftUsage"
             >
-              {{ labelingAll ? `识别中 ${labelProgress.done}/${labelProgress.total}` : "逐张识别补上" }}
+              <el-icon><MagicStick /></el-icon>AI 生成
             </el-button>
           </div>
-
-          <div
-            v-if="stickers.length"
-            class="sticker-toolbar"
-          >
-            <span class="form-label">排序</span>
-            <el-select
-              v-model="sortKey"
-              style="width: 150px"
-            >
-              <el-option
-                v-for="option in SORT_OPTIONS"
-                :key="option.value"
-                :label="option.label"
-                :value="option.value"
-              />
-            </el-select>
-            <span class="sticker-range">{{ rangeLabel }}</span>
-          </div>
-
-          <div
-            v-if="stickers.length"
-            class="sticker-list"
-          >
-            <div
-              v-for="sticker in pagedStickers"
-              :key="sticker.id"
-              class="sticker-card"
-              :class="{ 'is-off': !sticker.enabled }"
-            >
-              <img
-                class="sticker-thumb"
-                :src="imageUrl(sticker.id)"
-                :alt="sticker.name"
-              >
-              <div class="sticker-body">
-                <div class="sticker-name">
-                  {{ sticker.name }}
-                  <span class="sticker-count">用过 {{ sticker.useCount }} 次</span>
-                  <span
-                    v-if="sticker.source === 'collected'"
-                    class="sticker-source"
-                  >从群里收的</span>
-                  <span
-                    v-if="sticker.qqEmojiId"
-                    class="sticker-source sticker-source-qq"
-                  >QQ 收藏</span>
-                </div>
-                <p
-                  class="sticker-usage"
-                  :class="{ 'is-empty': !sticker.usage }"
-                >
-                  {{ sticker.usage || "还没写什么时候用，她只能凭名字猜" }}
-                </p>
-              </div>
-              <div class="sticker-ops">
-                <el-switch
-                  :model-value="sticker.enabled"
-                  @update:model-value="(value) => toggleEnabled(sticker, Boolean(value))"
-                />
-                <el-button
-                  link
-                  type="primary"
-                  :loading="relabelingId === sticker.id"
-                  :disabled="Boolean(relabelingId) && relabelingId !== sticker.id"
-                  title="让 AI 重新看一次这张图，重写名字和使用场景"
-                  @click="relabel(sticker)"
-                >
-                  <el-icon><MagicStick /></el-icon>重新识别
-                </el-button>
-                <el-button
-                  link
-                  type="primary"
-                  @click="openEdit(sticker)"
-                >
-                  <el-icon><EditPen /></el-icon>编辑
-                </el-button>
-                <el-button
-                  link
-                  type="danger"
-                  @click="remove(sticker)"
-                >
-                  <el-icon><Delete /></el-icon>删除
-                </el-button>
-              </div>
-            </div>
-          </div>
-
-          <div
-            v-if="sortedStickers.length > pageSize"
-            class="sticker-pager"
-          >
-            <el-pagination
-              v-model:current-page="page"
-              v-model:page-size="pageSize"
-              :total="sortedStickers.length"
-              :page-sizes="[12, 24, 48]"
-              :pager-count="5"
-              layout="sizes, prev, pager, next"
-              size="small"
-              background
-            />
-          </div>
-
-          <p
-            v-else-if="!stickers.length"
-            class="section-description"
-          >
-            还没有表情包。传一张，她回复时就能贴自己的图了。
-          </p>
-        </section>
+          <el-input
+            v-model="draftUsage"
+            maxlength="200"
+            placeholder="被冤枉、想撒娇的时候用"
+          />
+        </div>
       </div>
-    </div>
+      <p
+        v-if="draftUsageSource"
+        class="sticker-hint"
+      >
+        {{ draftUsageSource === "vision" ? "这句是按「名字 + 画面」生成的。" : "这句只按名字生成，她没看到图。" }}不满意可以直接改，再点「添加」就存这个。
+      </p>
+
+      <div class="sticker-add-foot">
+        <el-button
+          type="primary"
+          :disabled="!canSubmit"
+          :loading="saving"
+          @click="submit"
+        >
+          添加
+        </el-button>
+      </div>
+    </section>
+
+    <section class="sticker-shelf">
+      <div class="sec-h">
+        <h2>
+          已有 {{ stickers.length }} 张
+          <span
+            v-if="disabledCount"
+            class="title-aside"
+          >停用 {{ disabledCount }} 张</span>
+        </h2>
+        <span class="sec-sub">停用的图不会被用到；用过几次、最近什么时候用都记在这里</span>
+        <div class="sticker-head-ops">
+          <el-button
+            :loading="syncing"
+            title="把 QQ 收藏夹和本地表情对一次账：缺的导下来、多的推上去、QQ 删了的进回收站"
+            @click="syncWithQq"
+          >
+            从 QQ 同步
+          </el-button>
+          <el-button @click="openTrash">
+            回收站
+          </el-button>
+        </div>
+      </div>
+
+      <p
+        v-if="qqLinkedCount"
+        class="sticker-hint"
+      >
+        其中 {{ qqLinkedCount }} 张和 QQ 收藏夹是同一份：在这里改名会写进 QQ 备注，在这里删除 QQ 那张也会一起删。
+      </p>
+
+      <div
+        v-if="untaggedCount"
+        class="sticker-warn sticker-warn-inline"
+      >
+        <span>{{ untaggedCount }} 张还没写「什么时候用」—— 挑图时她主要看这句，空着基本轮不上。</span>
+        <el-button
+          link
+          type="primary"
+          size="small"
+          :loading="labelingAll"
+          @click="labelUntagged"
+        >
+          {{ labelingAll ? `识别中 ${labelProgress.done}/${labelProgress.total}` : "逐张识别补上" }}
+        </el-button>
+      </div>
+
+      <div
+        v-if="stickers.length"
+        class="sticker-toolbar"
+      >
+        <span class="sticker-label">排序</span>
+        <el-select
+          v-model="sortKey"
+          style="width: 150px"
+        >
+          <el-option
+            v-for="option in SORT_OPTIONS"
+            :key="option.value"
+            :label="option.label"
+            :value="option.value"
+          />
+        </el-select>
+        <span class="sticker-range">{{ rangeLabel }}</span>
+      </div>
+
+      <div
+        v-if="stickers.length"
+        class="sticker-list"
+      >
+        <div
+          v-for="sticker in pagedStickers"
+          :key="sticker.id"
+          class="sticker-card"
+          :class="{ 'is-off': !sticker.enabled }"
+        >
+          <img
+            class="sticker-thumb"
+            :src="imageUrl(sticker.id)"
+            :alt="sticker.name"
+          >
+          <div class="sticker-body">
+            <div class="sticker-name">
+              {{ sticker.name }}
+              <span class="sticker-count">用过 {{ sticker.useCount }} 次</span>
+              <span
+                v-if="sticker.source === 'collected'"
+                class="sticker-source"
+              >从群里收的</span>
+              <span
+                v-if="sticker.qqEmojiId"
+                class="sticker-source sticker-source-qq"
+              >QQ 收藏</span>
+            </div>
+            <p
+              class="sticker-usage"
+              :class="{ 'is-empty': !sticker.usage }"
+            >
+              {{ sticker.usage || "还没写什么时候用，她只能凭名字猜" }}
+            </p>
+          </div>
+          <div class="sticker-ops">
+            <el-switch
+              :model-value="sticker.enabled"
+              @update:model-value="(value) => toggleEnabled(sticker, Boolean(value))"
+            />
+            <el-button
+              link
+              type="primary"
+              :loading="relabelingId === sticker.id"
+              :disabled="Boolean(relabelingId) && relabelingId !== sticker.id"
+              title="让 AI 重新看一次这张图，重写名字和使用场景"
+              @click="relabel(sticker)"
+            >
+              <el-icon><MagicStick /></el-icon>重新识别
+            </el-button>
+            <el-button
+              link
+              type="primary"
+              @click="openEdit(sticker)"
+            >
+              <el-icon><EditPen /></el-icon>编辑
+            </el-button>
+            <el-button
+              link
+              type="danger"
+              @click="remove(sticker)"
+            >
+              <el-icon><Delete /></el-icon>删除
+            </el-button>
+          </div>
+        </div>
+      </div>
+
+      <div
+        v-if="sortedStickers.length > pageSize"
+        class="sticker-pager"
+      >
+        <el-pagination
+          v-model:current-page="page"
+          v-model:page-size="pageSize"
+          :total="sortedStickers.length"
+          :page-sizes="[12, 24, 48]"
+          :pager-count="5"
+          layout="sizes, prev, pager, next"
+          size="small"
+          background
+        />
+      </div>
+
+      <p
+        v-else-if="!stickers.length"
+        class="sticker-empty"
+      >
+        还没有表情包。传一张，她回复时就能贴自己的图了。
+      </p>
+    </section>
 
     <el-dialog
       :model-value="Boolean(editing)"
@@ -1065,41 +1053,85 @@ onMounted(load);
 </template>
 
 <style scoped>
+/* ══════════════════════════════════════════════════════════════
+   表情包页 —— 单列，套用总览页 C 套「柔光轨道」的语言：
+   白卡柔光、去描边、行内 3px 轨道说状态、语义色只用一套变量。
+   层次只落在明度 / 字号 / 形状，不靠 1px 描边补层次。
+   字号 12 / 14 / 16，间距走 --sp-*，信息文字用 --dim（--faint 只给装饰）。
+   ══════════════════════════════════════════════════════════════ */
+
+/* 区块标题：与总览 C 套同构，一块「加图」一块「已有」 */
+.sec-h {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  margin: 0 0 var(--sp-3);
+}
+.sec-h h2 {
+  margin: 0;
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -.01em;
+}
+.sec-sub {
+  color: var(--dim);
+  font-size: 12px;
+}
+.sec-h .sticker-head-ops {
+  margin-left: auto;
+}
+
+/* 加图块 / 已有块：白卡 + 柔光，零描边 */
+.sticker-add,
+.sticker-shelf {
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: var(--sp-4) var(--sp-5);
+  box-shadow: var(--sh-1);
+}
+.sticker-shelf {
+  margin-top: var(--sp-5);
+}
+
+/* 开关没开的提醒条：琥珀软底 + 左侧实色轨道，不描边 */
 .sticker-warn {
-  margin-bottom: 14px;
-  padding: 10px 12px;
-  border-radius: 10px;
-  border: 1px solid #f3d7a4;
-  background: #fff8ec;
-  color: #8a5a12;
-  font-size: 13px;
+  margin-bottom: var(--sp-4);
+  border-radius: var(--radius);
+  background: var(--amber-soft);
+  box-shadow: inset 3px 0 0 var(--amber);
+  padding: var(--sp-3) var(--sp-4);
+  color: var(--amber);
+  font-size: 12px;
+  line-height: 1.7;
 }
 
 .sticker-form {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--sp-3);
   flex-wrap: wrap;
 }
 
+/* 说明文字：12px + --dim。原来用 #8a90a6（约 3.4:1）承载信息，不达 AA */
 .sticker-hint {
-  margin: 10px 0 0;
+  margin: var(--sp-2) 0 0;
+  color: var(--dim);
   font-size: 12px;
   line-height: 1.6;
-  color: #8a90a6;
 }
 
 .sticker-form-fields {
   display: flex;
-  gap: 12px;
-  margin-top: 14px;
+  gap: var(--sp-3);
+  margin-top: var(--sp-4);
   flex-wrap: wrap;
 }
 
 .sticker-field {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--sp-2);
   min-width: 180px;
 }
 
@@ -1108,71 +1140,105 @@ onMounted(load);
   min-width: 240px;
 }
 
-.form-label {
-  font-size: 13px;
+/* 字段标签：12px/600，色用 --text-2。原来的 --ink-2 变量不存在，一直吃 fallback */
+.sticker-label {
+  color: var(--text-2);
+  font-size: 12px;
   font-weight: 600;
-  color: var(--ink-2, #4a4f63);
 }
 
 /* 标签右侧挂一个「AI 生成」：贴着它服务的那一栏，比放到弹窗底部更不容易找错。 */
-.form-label-row {
+.sticker-label-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: var(--sp-2);
   min-height: 24px;
 }
 
-.form-label-row .el-button {
+.sticker-label-row .el-button {
   font-size: 12px;
   padding: 0;
   height: auto;
 }
 
+.sticker-add-foot {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: var(--sp-4);
+}
+
 .sticker-list {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--sp-2);
 }
 
 .sticker-toolbar {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin-bottom: 12px;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-3);
 }
 
 .sticker-range {
   margin-left: auto;
+  color: var(--dim);
   font-size: 12px;
-  color: #8a90a6;
+  font-variant-numeric: tabular-nums;
 }
 
 .sticker-pager {
   display: flex;
   justify-content: center;
-  margin-top: 14px;
+  margin-top: var(--sp-4);
 }
 
 .title-aside {
-  margin-left: 8px;
+  margin-left: var(--sp-2);
+  color: var(--dim);
   font-size: 12px;
   font-weight: 400;
-  color: #8a90a6;
 }
 
+/* 卡片：柔光行，去描边。状态轨道长在左侧，hover 才上浅底 */
 .sticker-card {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 10px 12px;
-  border: 1px solid #e6e8f0;
-  border-radius: 10px;
-  background: #fff;
+  gap: var(--sp-3);
+  border-radius: var(--radius-sm);
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--surface-2);
+  transition: background .14s var(--ease);
+}
+.sticker-card::before {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  height: 24px;
+  margin-top: -12px;
+  width: 3px;
+  border-radius: 2px;
+  background: transparent;
+  content: "";
+}
+.sticker-card:hover,
+.sticker-card:focus-within {
+  background: var(--surface-3);
 }
 
+/* 停用：降色不降透明度。原来的 opacity:.55 会把 12px 灰字一起压到 2:1 以下 */
 .sticker-card.is-off {
-  opacity: 0.55;
+  background: var(--surface-2);
+}
+.sticker-card.is-off .sticker-name,
+.sticker-card.is-off .sticker-usage {
+  color: var(--dim);
+}
+.sticker-card.is-off .sticker-thumb {
+  filter: grayscale(1);
+  opacity: .7;
 }
 
 .sticker-body {
@@ -1180,97 +1246,96 @@ onMounted(load);
   min-width: 0;
 }
 
+/* 名字 + 次数 + 来源 + QQ 标签：标签多了掉第二行，名字本身不断字 */
 .sticker-name {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
-  gap: 8px;
-  font-size: 13px;
+  column-gap: var(--sp-2);
+  row-gap: 2px;
+  color: var(--text);
+  font-size: 14px;
   font-weight: 600;
+  line-height: 1.5;
 }
 
 .sticker-count {
+  color: var(--dim);
   font-size: 12px;
   font-weight: 400;
-  color: #8a90a6;
+  font-variant-numeric: tabular-nums;
 }
 
+/* 来源药丸统一中性色：只是标注，不抢名字的视觉重量。
+   原来的 #7c5cd6 是全站唯一紫，另造一套只会让药丸长得比名字还响 */
 .sticker-source {
+  color: var(--dim);
+  background: var(--surface-3);
+  padding: 1px 8px;
+  border-radius: 999px;
   font-size: 12px;
   font-weight: 500;
-  color: #7c5cd6;
-  background: #f0ebff;
-  padding: 1px 8px;
-  border-radius: 10px;
 }
 
 .sticker-usage {
   margin: 2px 0 0;
+  color: var(--dim);
   font-size: 12px;
-  color: #6b7186;
+  line-height: 1.6;
 }
 
 /* 没写场景的单独标出来：她挑图时看的就是名字 + 场景，缺一项就容易挑错。 */
 .sticker-usage.is-empty {
-  color: #a8701a;
+  color: var(--amber);
 }
 
 .sticker-ops {
   display: flex;
   align-items: center;
-  gap: 10px;
-  /* 四个操作（开关 / 重新识别 / 编辑 / 删除）在窄窗口里会挤，允许换行并右对齐。 */
+  gap: var(--sp-2);
   flex-wrap: wrap;
   justify-content: flex-end;
+  flex: none;
 }
 
 .sticker-thumb {
   width: 48px;
   height: 48px;
   object-fit: contain;
-  border-radius: 8px;
-  background: #f2f3f7;
+  border-radius: var(--radius-sm);
+  background: var(--surface-3);
+  flex: none;
 }
 
+/* 编辑弹窗 */
 .edit-body {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--sp-3);
 }
 
 .edit-thumb {
   width: 96px;
   height: 96px;
   object-fit: contain;
-  border-radius: 10px;
-  background: #f2f3f7;
+  border-radius: var(--radius);
+  background: var(--surface-3);
   align-self: flex-start;
 }
 
 .edit-hint {
   margin: 0;
+  color: var(--dim);
   font-size: 12px;
-  color: #8a90a6;
   line-height: 1.6;
-}
-
-.form-actions {
-  margin-top: 16px;
 }
 
 /* ── QQ 同步 / 回收站 ─────────────────────────────── */
 
-/* 这个类名在别的设置页里是各自定义的，表情页原本没写，加操作按钮后需要它来左右排开。 */
-.settings-section-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 15px;
-}
-
 .sticker-head-ops {
   display: flex;
-  gap: 8px;
-  flex-shrink: 0;
+  gap: var(--sp-2);
+  flex: none;
 }
 
 /* 提示条放进列表里时不要外上边距，否则会把它和排序栏顶开一行。 */
@@ -1278,26 +1343,29 @@ onMounted(load);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
-  margin: 0 0 12px;
+  gap: var(--sp-2);
+  margin: 0 0 var(--sp-3);
   flex-wrap: wrap;
 }
 
+/* QQ 收藏角标：复用绿色语义变量，不再另造 #e6f6ee / #1a7f56 */
 .sticker-source-qq {
-  color: #1a7f56;
-  background: #e6f6ee;
+  color: var(--green);
+  background: var(--green-soft);
 }
+
+/* ── 同步弹窗 ── */
 
 .sync-body {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--sp-3);
 }
 
 .sync-summary {
   margin: 0;
-  font-size: 13px;
-  color: #6b7186;
+  color: var(--text-2);
+  font-size: 14px;
 }
 
 .sync-lines {
@@ -1306,61 +1374,64 @@ onMounted(load);
   list-style: none;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--sp-2);
 }
 
 .sync-lines li {
   display: flex;
   justify-content: space-between;
-  gap: 12px;
-  padding: 8px 10px;
-  border-radius: 8px;
-  background: #f7f8fa;
+  gap: var(--sp-3);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  padding: var(--sp-2) var(--sp-3);
+  color: var(--text-2);
   font-size: 13px;
-  color: #3d4358;
 }
 
+/* 状态不只靠颜色一个通道：方向上/下用「入/出」符号一起说，色弱和灰度下也分得清 */
 .sync-lines li.is-up strong {
-  color: #1a7f56;
+  color: var(--green);
 }
-
 .sync-lines li.is-down strong {
-  color: #b4571f;
+  color: var(--red);
 }
 
 .sync-warnings {
   margin: 0;
-  padding: 10px 12px 10px 26px;
-  border-radius: 10px;
-  border: 1px solid #f3d7a4;
-  background: #fff8ec;
-  color: #8a5a12;
+  padding: var(--sp-3) var(--sp-3) var(--sp-3) 26px;
+  border-radius: var(--radius);
+  background: var(--amber-soft);
+  box-shadow: inset 3px 0 0 var(--amber);
+  color: var(--amber);
   font-size: 12px;
   line-height: 1.7;
 }
 
+/* ── 回收站抽屉 ── */
+
 .trash-body {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--sp-2);
   min-height: 120px;
 }
 
 .trash-item {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 8px;
-  border-radius: 10px;
-  border: 1px solid #eceef3;
+  gap: var(--sp-3);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  padding: var(--sp-2);
 }
 
 .trash-thumb {
   width: 48px;
   height: 48px;
   object-fit: contain;
-  border-radius: 8px;
-  background: #f7f8fa;
+  border-radius: var(--radius-sm);
+  background: var(--surface-3);
+  flex: none;
 }
 
 .trash-info {
@@ -1369,9 +1440,9 @@ onMounted(load);
 }
 
 .trash-name {
-  font-size: 13px;
-  font-weight: 500;
-  color: #2b3040;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1379,13 +1450,42 @@ onMounted(load);
 
 .trash-time {
   margin-top: 2px;
+  color: var(--dim);
   font-size: 12px;
-  color: #8a90a6;
 }
 
 .trash-ops {
   display: flex;
-  gap: 4px;
+  gap: var(--sp-1);
   flex-shrink: 0;
+}
+
+.sticker-empty {
+  margin: 0;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  padding: var(--sp-5) var(--sp-4);
+  color: var(--dim);
+  font-size: 13px;
+  line-height: 1.7;
+  text-align: center;
+}
+
+/* 窄屏：加图字段从横排折成上下，卡片名字与操作堆叠 */
+@media (max-width: 720px) {
+  .sticker-form-fields {
+    flex-direction: column;
+  }
+  .sticker-field,
+  .sticker-field-wide {
+    min-width: 0;
+  }
+  .sticker-card {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+  .sticker-ops {
+    justify-content: flex-start;
+  }
 }
 </style>
