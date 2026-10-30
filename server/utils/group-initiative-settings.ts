@@ -198,6 +198,8 @@ const REASON_LABELS: Record<string, string> = {
   model_error: "模型调用失败",
   send_failed: "群消息发送失败",
   no_group: "没有可用的群",
+  /** 闸门放行但还没开口：tick 里 `ok` 是「真的发出去了」，页面状态卡不能借用同一句。 */
+  ready: "现在可以开口",
   ok: "发出去了",
 };
 

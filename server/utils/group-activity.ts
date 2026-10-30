@@ -17,9 +17,9 @@ import { getPrisma } from "./prisma";
 /** 同一个群最多每这么多毫秒落一次库。 */
 const THROTTLE_MS = 20_000;
 /** recentLines 留几条。给模型看「刚才聊到哪」，不是给它复盘全群。 */
-const MAX_LINES = 12;
+export const MAX_LINES = 12;
 /** 单条正文进库前截断：这里存的是素材，不是证据。 */
-const MAX_LINE_CHARS = 120;
+export const MAX_LINE_CHARS = 120;
 /** 内存里最多同时跟踪多少个群；超了丢最久没动静的（长时间运行的适配器不会无限涨）。 */
 const MAX_TRACKED_GROUPS = 500;
 

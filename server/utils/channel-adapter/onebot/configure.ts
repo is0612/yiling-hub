@@ -36,6 +36,36 @@ export type OnebotBindingRecord = {
   groupBiliRunEnabled: boolean;
 };
 
+/**
+ * 把绑定里存的 routingKey 拆成群号列表。routingKey 支持逗号分隔的多个群号
+ * （如 "12345,67890"），老的单群号数据天然是只有一个元素的列表。
+ */
+export function parseBindingRoutingKeys(routingKey: string | null): string[] {
+  if (!routingKey) return [];
+  return [...new Set(
+    routingKey
+      .split(",")
+      .map((key) => key.trim())
+      .filter((key) => key.length > 0),
+  )];
+}
+
+/**
+ * 这条绑定的 routingKey 管不管这个群。空或 `"*"` 是默认绑定，收所有群。
+ *
+ * 抽出来是因为「路由时该不该理这个群」和「主动开口时能不能在这个群说话」
+ * 必须是同一套判断：用户把群号从 routingKey 里删掉，意思是「这个群我不管了」，
+ * 但 `group_activities` 里的旧行不会跟着消失 —— 只看绑定 ID 就选候选，
+ * 她会跑到一个已经解绑的群里自己开口。
+ *
+ * 注意别拿它替换 `routeOnebotEventToBinding` 里的精确匹配：那边默认绑定排在
+ * 具体绑定之后，语义不同。
+ */
+export function bindingAcceptsGroup(routingKey: string | null, groupId: string): boolean {
+  if (!routingKey || routingKey.trim() === "*") return true;
+  return parseBindingRoutingKeys(routingKey).includes(groupId);
+}
+
 export type OnebotConnectionRecord = {
   id: string;
   platform: string;

@@ -10,7 +10,12 @@
  */
 
 import { resolveChatModelSettings } from "./chat-model-config";
-import { loadOnebotConnections, type OnebotBindingRecord, type OnebotConnectionRecord } from "./channel-adapter/onebot/configure";
+import {
+  bindingAcceptsGroup,
+  loadOnebotConnections,
+  type OnebotBindingRecord,
+  type OnebotConnectionRecord,
+} from "./channel-adapter/onebot/configure";
 import { sendOnebotGroupMessage } from "./channel-adapter/onebot/client";
 import { groupChatForGroup, groupChatDayStart, type GroupChatMode } from "./channel-adapter/onebot/group-chat";
 import { ONEBOT_PLATFORM } from "./channel-adapter/onebot/types";
@@ -290,6 +295,14 @@ async function loadCandidates(
     const linked = byBinding.get(row.channelBindingId);
     if (!linked) continue;
     /**
+     * 群号还在不在这个绑定的 routingKey 里。
+     *
+     * 活跃度表是「见过这个群就记一行」，而 routingKey 是「我现在管哪些群」——
+     * 用户把某个群号从绑定里删掉之后，旧行不会自动消失。只看 bindingId 就选候选，
+     * 她会跑到一个已经解绑的群里主动开口，而这个错没法撤回。
+     */
+    if (!bindingAcceptsGroup(linked.binding.routingKey, row.groupId)) continue;
+    /**
      * 档位必须走 `groupChatForGroup` 按群解析，不能直读 `binding.groupChat`：
      * 一条绑定可以挂多个群，`groupChatModes` 里可能单独把某个群设成「仅 @ 时回复」。
      * 直读绑定会让那个群被当成 ambient，然后在里面自己冒头。
@@ -343,14 +356,17 @@ export async function readGroupInitiativeStatus(characterId: string, modelConfig
       lastAttemptAt: candidate.lastAttemptAt,
       quotaExceeded: quota.exceeded,
     });
+    // 这里只说「现在能不能开口」，千万不能回 `ok` —— 那个文案是「发出去了」，
+    // 而这条路径一个字都没发，页面会显示成刚在群里说过话。
+    const reason = gate.allowed ? "ready" : gate.reason;
     groups.push({
       groupId: candidate.groupId,
       idleMinutes: Math.round(candidate.idleMinutes),
       sentToday,
       lastInitiativeAt: candidate.lastInitiativeAt?.toISOString() ?? null,
       canSendNow: gate.allowed,
-      reason: gate.reason,
-      reasonLabel: describeGroupInitiativeReason(gate.reason),
+      reason,
+      reasonLabel: describeGroupInitiativeReason(reason),
     });
   }
 
