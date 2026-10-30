@@ -229,11 +229,11 @@ export async function collectSticker(
   if (existing) return null;
 
   /**
-   * 缩到宽 240 再存：QQ 按图片原始像素显示，群里偷来的图常常 1000px 以上，
+   * 缩到宽 200 再存：QQ 按图片原始像素显示，群里偷来的图常常 1000px 以上，
    * 存原件就是存一张「发出去占满一屏」的巨图。
    *
-   * 用缩好的这张去打标也有好处：240 宽的 base64 小一大截，视觉请求更快更便宜，
-   * 而判断「这张适合什么时候用」看 240 宽完全够。
+   * 用缩好的这张去打标也有好处：200 宽的 base64 小一大截，视觉请求更快更便宜，
+   * 而判断「这张适合什么时候用」看 200 宽完全够。
    */
   const normalized = await normalizeStickerImage(image.buffer, image.mime);
   const storedImage = normalized?.resized ? normalized.buffer : image.buffer;

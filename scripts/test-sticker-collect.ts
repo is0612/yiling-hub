@@ -98,6 +98,22 @@ assert.deepEqual(
   "没配模型时回 no-model，交给接口层翻译成人话。",
 );
 
+// 两个入口（上传框 / 编辑弹窗）共用同一套失败文案：同一件事说法不一样，用户会以为坏了。
+const { stickerUsageError } = await import("../server/utils/sticker-usage");
+assert.equal(stickerUsageError("no-name").statusCode, 422, "没名字是用户没填，不是服务器错。");
+assert.equal(stickerUsageError("no-model").statusCode, 503, "没配模型是「服务还没就绪」。");
+assert.equal(stickerUsageError("unusable-usage").statusCode, 422, "模型回了空话，让用户重试或自己写。");
+assert.equal(stickerUsageError("model-failed").statusCode, 502, "上游模型失败是网关错误。");
+assert.ok(
+  new Set([
+    stickerUsageError("no-name").statusMessage,
+    stickerUsageError("no-model").statusMessage,
+    stickerUsageError("unusable-usage").statusMessage,
+    stickerUsageError("model-failed").statusMessage,
+  ]).size === 4,
+  "四种失败必须给出四句不同的话，否则用户分不清该改什么。",
+);
+
 // collectStickersFromTurn 在开关关着时必须一帧不跑（不下载、不调模型）。
 // 这里用一个带 url 的候选验证它直接早退 —— 开关关着，url 再合法也不该被碰。
 const { collectStickersFromTurn } = await import("../server/utils/sticker-collect");

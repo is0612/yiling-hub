@@ -89,10 +89,31 @@ export async function saveStickerFile(characterId: string, extension: string, da
   return fileName;
 }
 
+/**
+ * 原件备份的落点。`stickers:normalize` 缩图前把原图存到这里（`<角色>/<文件名>`），
+ * 好让「再缩一次」永远从原件出发、不在压缩过的图上叠压缩。
+ */
+export function stickerOriginalsDir(characterId: string): string {
+  return path.join(process.cwd(), ".data", "sticker-originals", characterId);
+}
+
+export function stickerOriginalFilePath(characterId: string, fileName: string): string | null {
+  const safe = safeFileName(fileName);
+  if (!safe) return null;
+  return path.join(stickerOriginalsDir(characterId), safe);
+}
+
+/**
+ * 删一张贴图的文件。**连带删原件备份** —— 否则每删一张，`.data/sticker-originals`
+ * 就多留一份永远用不到的原图（实测删过的 4 张各留了几百 KB，21MB 的备份目录里一直在涨）。
+ * 备份的意义只是「以后换个宽度重缩」，贴纸都没了就没有以后了。
+ */
 export async function deleteStickerFile(characterId: string, fileName: string): Promise<void> {
   const filePath = stickerFilePath(characterId, fileName);
   if (!filePath) return;
   await fs.rm(filePath, { force: true });
+  const original = stickerOriginalFilePath(characterId, fileName);
+  if (original) await fs.rm(original, { force: true });
 }
 
 /** 读回图片字节。文件没了（换电脑只搬了库）返回 null，让发送侧静默跳过。 */
