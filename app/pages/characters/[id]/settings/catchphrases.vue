@@ -10,8 +10,10 @@ import { ElMessage, ElMessageBox } from "element-plus";
  *   ② 「为什么我加了但她不说」—— 靠 usage 判断时机，时机不对就不说，这是设计不是故障。
  *   ③ 「为什么刚加就标了不可用」—— 冷却两小时，说过的先歇一会。
  *
- * 版式上没有照抄 stickers.vue 的 `.settings-grid`：那个类是 memory.vue 里 scoped 定义的，
- * 在表情包页其实没生效（两栏退化成上下堆叠）。梗这一页内容更轻，单栏两段更直接。
+ * 版式上不用 stickers.vue 那套两栏。两栏契约现在是 main.css 里的 `.settings-grid`
+ * （左主内容 + 右 320 侧栏，那是给「右栏只读辅助板」用的形状；
+ *   更早它只写在 memory.vue 的 scoped 里，表情包页引用它一直没生效）。
+ * 梗这一页没有辅助板，一条梗也就一两行，通着排比切成两半更好读。
  */
 type CatchphraseEvidence = {
   groupLabel?: string;
@@ -563,19 +565,29 @@ onMounted(load);
 </template>
 
 <style scoped>
+/* 与表情包页同一套语言：单列、白卡柔光、去描边、语义色走变量。
+   间距走 --sp-*，字号 12/14，信息文字 --dim（--faint 只给装饰）。 */
+
+/* 两个 section 复用全局 surface/form-section 的版式，但去掉 1px 描边，
+   与表情包页的白卡柔光对齐 —— 层次交给背景明度和阴影，不靠描边 */
+:deep(.surface.form-section) {
+  border: 0;
+  box-shadow: var(--sh-1);
+}
+
 .cp-list-section {
-  margin-top: 14px;
+  margin-top: var(--sp-4);
 }
 
 .cp-field {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  margin-top: 14px;
+  gap: var(--sp-2);
+  margin-top: var(--sp-4);
 }
 
 .cp-field:first-of-type {
-  margin-top: 16px;
+  margin-top: var(--sp-4);
 }
 
 .cp-label {
@@ -587,7 +599,7 @@ onMounted(load);
 
 /* 标签里的补充说明：不占一行，但必须可读（--faint 承载不了信息） */
 .cp-label-sub {
-  margin-left: 8px;
+  margin-left: var(--sp-2);
   color: var(--dim);
   font-size: 12px;
   font-weight: 400;
@@ -596,7 +608,7 @@ onMounted(load);
 
 /* 12px 是硬下限；说明文字用 --dim，--faint 只够给图标和分隔符 */
 .cp-tip {
-  margin: 8px 0 0;
+  margin: var(--sp-2) 0 0;
   color: var(--dim);
   font-size: 12px;
   line-height: 1.6;
@@ -605,22 +617,29 @@ onMounted(load);
 .cp-list {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  margin-top: 14px;
+  gap: var(--sp-2);
+  margin-top: var(--sp-4);
 }
 
+/* 卡片：柔光行，去描边（和表情包页卡片同构） */
 .cp-card {
   display: flex;
   align-items: center;
-  gap: 14px;
-  padding: 12px 14px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--surface);
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  transition: background .14s var(--ease);
+}
+.cp-card:hover,
+.cp-card:focus-within {
+  background: var(--surface-3);
 }
 
-.cp-card.is-off {
-  opacity: .55;
+/* 停用：降色不降透明度。原 opacity:.55 会把 12px 灰字一起压到 2:1 以下 */
+.cp-card.is-off .cp-phrase,
+.cp-card.is-off .cp-usage {
+  color: var(--dim);
 }
 
 .cp-body {
@@ -630,7 +649,7 @@ onMounted(load);
 
 .cp-phrase {
   display: flex;
-  gap: 8px;
+  gap: var(--sp-2);
   align-items: baseline;
   color: var(--text);
   font-size: 14px;
@@ -641,9 +660,9 @@ onMounted(load);
 
 .cp-badge {
   flex: none;
-  padding: 1px 8px;
-  border-radius: 10px;
-  background: var(--surface-2);
+  padding: 1px var(--sp-2);
+  border-radius: 999px;
+  background: var(--surface-3);
   color: var(--dim);
   font-size: 12px;
   font-weight: 400;
@@ -664,19 +683,20 @@ onMounted(load);
 .cp-ops {
   display: flex;
   flex: none;
-  gap: 10px;
+  gap: var(--sp-2);
   align-items: center;
 }
 
+/* 「说过 N 次」是信息不是装饰，用 --dim 不用 --faint */
 .cp-count {
-  color: var(--faint);
+  color: var(--dim);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
 
 /* 「从群里捡的」用中性药丸，不抢台词的视觉重量 —— 它只是个来源标注 */
 .cp-source {
-  padding: 1px 8px;
+  padding: 1px var(--sp-2);
   border-radius: 999px;
   background: var(--surface-3);
   color: var(--dim);
@@ -686,7 +706,7 @@ onMounted(load);
 
 /* ── 待确认弹窗 ── */
 .cp-review-intro {
-  margin: 0 0 14px;
+  margin: 0 0 var(--sp-4);
   color: var(--dim);
   font-size: 12px;
   line-height: 1.7;
@@ -695,7 +715,7 @@ onMounted(load);
 .cp-review-list {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--sp-2);
   /* 候选可能有七八条，弹窗本身不该长到屏幕外面去 */
   max-height: 52vh;
   overflow-y: auto;
@@ -704,11 +724,10 @@ onMounted(load);
 .cp-review-card {
   display: flex;
   align-items: flex-start;
-  gap: 12px;
-  padding: 12px 14px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--surface);
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
 }
 
 .cp-review-main {
@@ -735,15 +754,15 @@ onMounted(load);
 .cp-review-evidence {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
-  margin-top: 6px;
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
   color: var(--dim);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
 
 .cp-review-samples {
-  margin: 6px 0 0;
+  margin: var(--sp-2) 0 0;
   color: var(--dim);
   font-size: 12px;
   line-height: 1.6;
@@ -754,7 +773,7 @@ onMounted(load);
   display: flex;
   flex: none;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--sp-2);
 }
 
 /* el-button 在纵向 flex 里会被拉满宽，两个按钮宽度还不一致 —— 统一一下 */
@@ -764,7 +783,7 @@ onMounted(load);
 }
 
 .cp-aside {
-  margin-left: 8px;
+  margin-left: var(--sp-2);
   color: var(--dim);
   font-size: 12px;
   font-weight: 400;
@@ -773,7 +792,7 @@ onMounted(load);
 .cp-edit-body {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: var(--sp-4);
 }
 
 /* 窄窗口下把「说过几次 + 开关 + 编辑 + 删除」挪到台词下面一行，不然台词被挤成一列字 */
