@@ -1,6 +1,11 @@
 # 主动找话（Proactive Messaging）
 
-让她在没人跟她说话的时候，先发一条 QQ 私信。**默认关闭**。
+让她在没人跟她说话的时候先开口。两条链，各自独立的开关与闸门：
+
+- **私聊**：攒着想说的话，挑一条发 QQ 私信（第 1–10 节）。
+- **群聊**：群安静够久了，她起个头（第 11 节）。
+
+两条都**默认关闭**。
 
 这不是「定时群发」：没有「每 3 小时提醒一次」这类配置。能不能开口由两部分决定 ——
 她**有没有真正想说的话**，以及**此刻适不适合说**。
@@ -10,11 +15,18 @@
 ```
 server/utils/proactive-settings.ts   # 设置读取、硬闸门、目的打分（纯函数）
 server/utils/proactive-prompt.ts     # 两类提示词 + 解析（想 / 说）
-server/utils/proactive.ts            # runProactiveTick：闸门 → 补池 → 挑 → 写 → 发
-scripts/run-proactive.ts             # 60 秒 tick 的常驻进程
+server/utils/proactive.ts            # runProactiveTick：闸门 → 补池 → 挑 → 写 → 发（私聊）
+server/utils/group-initiative-settings.ts  # 群聊那条的设置与闸门（纯函数，见第 11 节）
+server/utils/group-initiative-prompt.ts    # 群里怎么起个头
+server/utils/group-initiative.ts           # runGroupInitiativeTick：读活跃度 → 闸门 → 写 → 发群
+server/utils/group-activity.ts       # 群「安静了多久」的落库记录（适配器侧，节流写）
+scripts/run-proactive.ts             # 60 秒 tick 的常驻进程（跑上面两条链）
 scripts/test-proactive.ts            # 纯函数回归
 scripts/test-proactive-db.ts         # 去重约束 / 按日计数 / 闸门分支
+scripts/test-group-initiative.ts       # 群聊那条的纯函数回归
+scripts/test-group-initiative-db.ts    # 活跃度唯一键 / 按群计数 / 配置性早退
 app/pages/characters/[id]/settings/model.vue   # 设置卡片 + 「立即试一次」
+app/components/QqCharacterBehavior.vue          # QQ 渠道里的「主动找话 / 群里自己找话题」
 ```
 
 ---
@@ -157,3 +169,90 @@ yarn test:proactive-db   # 去重约束 / 跨角色去重 / 东八区日界计�
 
 `test-proactive-db` 故意**不测「真发一条」**：那需要能连上的 OneBot。
 一旦它依赖本机有没有开 QQ，红两次之后大家就开始忽略这个测试了。
+
+---
+
+## 11. 群聊：冷场了自己找话题
+
+同一套人设、同一个 tick 进程，但**另一条链**：「这个群安静太久了，她起个头」。
+
+```
+① 记录   适配器每收到一条群消息就更新 group_activities（节流 20 秒一次）
+② 判     enabled / 每群每天条数 / 额度 / 安静时段 / 冷场时间 / 最短间隔 —— 不花 token
+③ 说     读最近 12 条群消息 + 几条长期记忆 → 写一句话 → 发群 → 落 ASSISTANT 消息
+```
+
+### 为什么不能沿用私聊那条
+
+- **节奏的单位不同**：私聊是「这个人」，群里是「这个群」。一个群安静两小时、
+  另一个群一分钟几十条，共用一个阈值必然有一边是错的。
+- **风险不同**：私聊是「我想跟他说」，群里是当众起头。所以默认更保守
+  （`enabled = false`、60 分钟、每群每天 3 条），并且提示词里写死三条：
+  不 @ 任何人、不寒暄开场（「大家好」是公告腔）、想不出就输出 `-`。
+- **素材不同**：私聊靠目的池（攒着「想做但还没做的事」）；群里没有「非说不可的事」，
+  只有「接着刚才的话题说一句」或者「抛个轻的」。所以**不用目的池**，直接现想现说。
+
+### 「安静了多久」为什么要落库
+
+群消息平时**不落库**（她没回话的那一轮一条都不存），所以 `conversations.lastMessageAt`
+根本不能当活跃时间用 —— 群里正热闹但没人叫她时，它在库里一动不动，
+照它判就会在热聊中插一句「你们怎么都不说话」。
+
+`GroupActivity`（`group_activities` 表，绑定 + 群唯一）记四件事：
+
+| 字段 | 含义 |
+| --- | --- |
+| `lastMessageAt` | 群里最后一条消息（任何人）的收到时刻 |
+| `lastSpokeAt` | 她最后一次在这个群说话的时刻 |
+| `lastInitiativeAt` | 她最后一次**真的**开了话题（页面展示用） |
+| `lastAttemptAt` | 最后一次为这个群花过模型调用（含「判定不说」），闸门的间隔看它 |
+
+冷场时长取 `lastMessageAt` 与 `lastSpokeAt` 里**更近**的那个：她刚回过一句、
+之后没人说话，那不该算冷场。
+
+写入是**节流**的（同一个群最多 20 秒落一次库）：热群一分钟几十条，逐条 upsert 是纯浪费，
+而冷场判断的精度是分钟级。被节流掉的消息不会丢 —— 内存里的时间一直是最新的，
+下一次落库一起写进去。
+
+### 闸门（`evaluateGroupInitiativeGate`）
+
+| 顺序 | 原因码 | 判什么 |
+| --- | --- | --- |
+| 1 | `disabled` | 总开关 |
+| 2 | `daily_max_zero` | `dailyMax = 0` |
+| 3 | `mention_only` | 这个群设的是「仅被 @ 时回复」 |
+| 4 | `quota_exceeded` | 当日模型额度 |
+| 5 | `daily_limit` | **这个群**今天已开过 ≥ 上限 |
+| 6 | `quiet_hours` | 安静时段（默认 23:30–07:30） |
+| 7 | `not_idle` | 还没安静够 `idleMinutes` |
+| 8 | `min_gap` | 离上次**尝试**不足 `minGapMinutes` |
+| 9 | `just_attempted` | （角色级）刚在别的群开过口，30 分钟内不追第二个群 |
+
+第 3 条单独说：「仅被 @ 时回复」是这个群的显式意图（绑定级 `groupChatMode`，或
+`groupChatModes` 里对这一群的覆盖），她在那种群里连开口的资格都没有。
+档位必须走 `groupChatForGroup()` 按群解析，**不许直读 `binding.groupChat`** ——
+一条绑定挂好几个群时，直读会把被覆盖成 `mention` 的群当成 `ambient`，
+结果就是「明明设了只回 @，她却自己说起话来」。`force`（页面上的「立即试一次」）也绕不过这条。
+
+第 9 条是按角色算的：每群每天 3 条是「按群」的口径，挂了十个群就是一天三十条，
+用户看到的是「这条鱼今天到处找人说话」。所以加一层跨群冷却。
+
+### 一次 tick 只花一次模型调用
+
+按安静时长排序，**第一个过闸门的群**才调模型，然后本角色这一轮就结束。
+「判定不说」（模型输出 `-`）也算一次尝试（写 `lastAttemptAt`），
+于是不会出现「死群每分钟调一次模型、每次都觉得没话说」。
+
+### 「立即试一次」会真发一条
+
+`POST /characters/{id}/proactive/group-try` → `runGroupInitiativeTick({ force: true })`。
+`force` 只跳时间类闸门（安静时段 / 冷场 / 间隔 / 每日条数），
+开关、`dailyMax = 0`、额度照判 —— 和私聊那个按钮同一套规矩。
+
+### 已知限制
+
+- **不判断「有多少人在看」**。QQ 群没有可靠的在线人数/已读数，所以「说了没人接」她不知道。
+  真实缓解手段是每群每天 3 条 + 跨群冷却。
+- **进程重启会丢最多 20 秒的活跃度**（节流窗口内还没落库的那部分）。对分钟级的判断无影响。
+- **只在她有消息记录的群里开口**（`group_activities` 有行才可能被挑中）。
+  从没说过话、也没人说过话的群，她不会凭空出现。

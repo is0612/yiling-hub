@@ -87,6 +87,29 @@ type CharacterForProactive = {
   memoryScopes: Array<{ id: string }>;
 };
 
+/**
+ * 记忆打分：重要度和新鲜度各占一半。只看重要度会翻出三个月前的老账，
+ * 只看新鲜度会挑到鸡毛蒜皮。
+ *
+ * 私聊主动找话与群内找话题共用这一份口径 —— 两边挑出来的素材不一样，
+ * 会让同一个角色在私聊里「记得」的事和在群里「想起」的事对不上。
+ */
+export function rankMemoryLines(
+  rows: ReadonlyArray<{ category: string; content: string; importance: number; updatedAt: Date }>,
+  now: Date,
+  limit = MAX_MEMORY_LINES,
+): string[] {
+  return rows
+    .map((row) => {
+      const ageDays = Math.max(0, (now.getTime() - row.updatedAt.getTime()) / 86_400_000);
+      const freshness = 1 / (1 + ageDays / 14);
+      return { row, score: row.importance * 0.5 + freshness * 0.5 };
+    })
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit)
+    .map(({ row }) => `[${row.category}] ${row.content.slice(0, 220)}`);
+}
+
 /** 素材：高重要度 + 新鲜的长期记忆，加上最近一次会话的尾巴。 */
 async function collectMaterials(
   characterId: string,
@@ -101,16 +124,7 @@ async function collectMaterials(
     select: { category: true, content: true, importance: true, updatedAt: true },
   });
 
-  // 重要度和新鲜度各占一半：只看重要度会翻出三个月前的老账，只看新鲜度会挑到鸡毛蒜皮。
-  const ranked = rows
-    .map((row) => {
-      const ageDays = Math.max(0, (now.getTime() - row.updatedAt.getTime()) / 86_400_000);
-      const freshness = 1 / (1 + ageDays / 14);
-      return { row, score: row.importance * 0.5 + freshness * 0.5 };
-    })
-    .sort((a, b) => b.score - a.score)
-    .slice(0, MAX_MEMORY_LINES)
-    .map(({ row }) => `[${row.category}] ${row.content.slice(0, 220)}`);
+  const ranked = rankMemoryLines(rows, now);
 
   const conversation = await prisma.conversation.findFirst({
     where: { characterId },

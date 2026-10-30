@@ -2,6 +2,7 @@ import { resolveChatModelSettings } from "./chat-model-config";
 import { resolveEmojiFrequency } from "./emoji-frequency";
 import { MEMORY_TOKEN_BUDGET_DEFAULT, SNAPSHOT_TOKEN_BUDGET_DEFAULT } from "./memory-retrieval";
 import { resolveProactiveSettings, type ProactiveSettings } from "./proactive-settings";
+import { resolveGroupInitiativeSettings, type GroupInitiativeSettings } from "./group-initiative-settings";
 import { isVoiceApiKeySaved } from "./credential-encryption";
 import { resolveVoiceChance } from "./voice";
 
@@ -49,6 +50,8 @@ export type CharacterDto = {
   imageUnderstanding: boolean;
   /** 群里发来的图是否自动收进她的表情库（「偷表情包」）；默认关。 */
   stickerAutoCollect: boolean;
+  /** 群聊之后是否自动扫一遍群里的梗（捡到的先进待确认）；默认关。 */
+  catchphraseAutoMine: boolean;
   /** 她的回复能不能发成语音条；默认关。 */
   voiceEnabled: boolean;
   /** 她听不听得懂别人发的语音（自动转写）；默认关。 */
@@ -63,8 +66,14 @@ export type CharacterDto = {
   ttsModel: string;
   ttsVoice: string;
   asrModel: string;
+  /** 语音服务商：openai（含兼容接口）/ minimax。空 = 按地址自动判断。 */
+  ttsProvider: string;
+  /** MiniMax 的 GroupId（查询参数）。 */
+  ttsGroupId: string;
   /** 主动找话设置；未配置过时是默认值（enabled=false）。 */
   proactive: ProactiveSettings;
+  /** 群内「冷场了自己找话题」；未配置过时是默认值（enabled=false）。 */
+  groupInitiative: GroupInitiativeSettings;
 };
 
 type CharacterRecord = {
@@ -196,6 +205,7 @@ export function toCharacterDto(input: unknown): CharacterDto {
     emojiPerWindow: emojiFrequency.perWindow,
     imageUnderstanding: config.imageUnderstanding === true,
     stickerAutoCollect: config.stickerAutoCollect === true,
+    catchphraseAutoMine: config.catchphraseAutoMine === true,
     voiceEnabled: config.voiceEnabled === true,
     voiceTranscribe: config.voiceTranscribe === true,
     voiceChance: resolveVoiceChance(config),
@@ -204,6 +214,9 @@ export function toCharacterDto(input: unknown): CharacterDto {
     ttsModel: typeof config.ttsModel === "string" ? config.ttsModel : "",
     ttsVoice: typeof config.ttsVoice === "string" ? config.ttsVoice : "",
     asrModel: typeof config.asrModel === "string" ? config.asrModel : "",
+    ttsProvider: typeof config.ttsProvider === "string" ? config.ttsProvider : "",
+    ttsGroupId: typeof config.ttsGroupId === "string" ? config.ttsGroupId : "",
     proactive: resolveProactiveSettings(config),
+    groupInitiative: resolveGroupInitiativeSettings(config),
   };
 }

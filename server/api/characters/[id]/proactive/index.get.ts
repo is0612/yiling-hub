@@ -14,6 +14,7 @@ import {
   proactiveDayKey,
   resolveProactiveSettings,
 } from "../../../../utils/proactive-settings";
+import { readGroupInitiativeStatus } from "../../../../utils/group-initiative";
 
 /**
  * 主动找话的现状：设置 + 现在到底能不能发 + 池子里剩下什么。
@@ -79,8 +80,12 @@ export default defineEventHandler(async (event) => {
     ? Math.max(0, Math.ceil((settings.minGapMinutes * 60_000 - (now.getTime() - lastSentAt.getTime())) / 60_000))
     : 0;
 
+  // 群聊那条是独立的设置与独立的闸门（每个群一个节奏），所以整块单独返回。
+  const group = await readGroupInitiativeStatus(characterId, character.modelConfig);
+
   return {
     settings,
+    group,
     status: {
       sentToday,
       pendingCount: pending,

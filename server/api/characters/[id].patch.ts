@@ -6,6 +6,7 @@ import { encryptApiKey } from "../../utils/credential-encryption";import { requi
 import { readTrimmedString, requireUuid } from "../../utils/local-api";
 import { getPrisma } from "../../utils/prisma";
 import { readProactivePatch, resolveProactiveSettings } from "../../utils/proactive-settings";
+import { readGroupInitiativePatch, resolveGroupInitiativeSettings } from "../../utils/group-initiative-settings";
 
 export default defineEventHandler(async (event) => {
   const ownerId = await requireActorUserId(event);
@@ -98,6 +99,15 @@ export default defineEventHandler(async (event) => {
     modelConfigPatch.stickerAutoCollect = body.stickerAutoCollect;
   }
 
+  // 自动捡梗：群聊回复之后顺手扫一次，捡到的先进待确认。默认关 ——
+  // 它会在用户不知情时花一次模型调用，得让人自己打开。
+  if (body.catchphraseAutoMine !== undefined) {
+    if (typeof body.catchphraseAutoMine !== "boolean") {
+      throw createError({ statusCode: 400, statusMessage: "自动捡梗开关必须是布尔值。" });
+    }
+    modelConfigPatch.catchphraseAutoMine = body.catchphraseAutoMine;
+  }
+
   // 语音是两个独立开关：她「能不能说」和「听不听得懂」是两件事，
   // 合成按字符计费、转写按秒计费，合在一起关不掉其中一半。
   if (body.voiceEnabled !== undefined) {
@@ -129,6 +139,8 @@ export default defineEventHandler(async (event) => {
     ["ttsModel", "语音合成模型", 120],
     ["ttsVoice", "语音音色", 100],
     ["asrModel", "语音识别模型", 120],
+    // MiniMax 的 GroupId：查询参数，不是密钥但也不是能随便公开的东西。
+    ["ttsGroupId", "语音服务 GroupId", 100],
   ] as const) {
     if (body[key] === undefined) continue;
     if (typeof body[key] !== "string") {
@@ -139,6 +151,21 @@ export default defineEventHandler(async (event) => {
       throw createError({ statusCode: 400, statusMessage: `${label}不能超过 ${max} 个字符。` });
     }
     modelConfigPatch[key] = value;
+  }
+
+  /**
+   * 语音服务商。空字符串 = 自动判断（看地址里有没有 minimax），
+   * 显式写了就必须是认得的那两个 —— 写错了会静默走另一家的协议，报错信息会非常难懂。
+   */
+  if (body.ttsProvider !== undefined) {
+    if (typeof body.ttsProvider !== "string") {
+      throw createError({ statusCode: 400, statusMessage: "语音服务商必须是文本。" });
+    }
+    const value = body.ttsProvider.trim();
+    if (value && value !== "openai" && value !== "minimax") {
+      throw createError({ statusCode: 400, statusMessage: "语音服务商只支持 openai（含兼容接口）或 minimax。" });
+    }
+    modelConfigPatch.ttsProvider = value;
   }
 
   if (body.voiceApiBaseUrl !== undefined) {
@@ -184,6 +211,19 @@ export default defineEventHandler(async (event) => {
       modelConfigPatch.proactive = resolveProactiveSettings({ proactive: { ...current, ...patch } });
     } catch (error) {
       throw createError({ statusCode: 400, statusMessage: error instanceof Error ? error.message : "主动找话设置无效。" });
+    }
+  }
+
+  // 群内「冷场了自己找话题」：和主动找话同一套写法，独立的字段与校验。
+  if (body.groupInitiative !== undefined) {
+    const current = config.groupInitiative && typeof config.groupInitiative === "object" && !Array.isArray(config.groupInitiative)
+      ? config.groupInitiative as Record<string, unknown>
+      : {};
+    try {
+      const patch = readGroupInitiativePatch(body.groupInitiative);
+      modelConfigPatch.groupInitiative = resolveGroupInitiativeSettings({ groupInitiative: { ...current, ...patch } });
+    } catch (error) {
+      throw createError({ statusCode: 400, statusMessage: error instanceof Error ? error.message : "群内找话题设置无效。" });
     }
   }
 
