@@ -144,4 +144,60 @@ assert.equal(
 );
 assert.equal(readOnebotReplyToId({ message: [{ type: "text", data: { text: "嗯" } }] }), "", "没有引用就是空串。");
 
-console.log("群聊上下文测试通过：成员代号、@ 代号化、背景预算、话题建立/候选/过期/续期上限、并行话题淘汰、@ 与引用解析。");
+// ── 8. 归属：谁是谁的人 ────────────────────────────────────────
+// 2026-10-31 21:00「我的鱼也是成气候了」说的是他自己那条鱼，她认成自己，回「谁是你的鱼了」。
+// 光靠提示词说「所有格不是你」她无处可比，得把群里的归属摆出来。
+const ownership = createGroupContext({ selfQq: SELF, now: () => now });
+
+// 自述（硬证据）：@ 了谁又喊「主人」，那个 QQ 就是他的主人。
+ownership.remember("g:o", facts({
+  messageId: "o1",
+  senderQq: "111",
+  displayName: "何处归千人",
+  text: "在吗",
+}));
+ownership.remember("g:o", facts({
+  messageId: "o2",
+  senderQq: "222",
+  displayName: "千人安知鱼之乐",
+  text: "主人夸我了",
+  mentionQqs: ["111"],
+}));
+assert.deepEqual(
+  ownership.members("g:o"),
+  [{ member: "member_2", speaker: "千人安知鱼之乐", belongsTo: "member_1", belongsToName: "何处归千人" }],
+  "「@某人 主人夸我了」要能学成归属。",
+);
+
+// 群名片（弱线索）：`X的Y` 与 `Y（主人：X）` 两种写法都认。
+const fromNames = createGroupContext({ selfQq: SELF, now: () => now });
+fromNames.remember("g:n", facts({ messageId: "n1", senderQq: "311", displayName: "DIO", text: "在" }));
+fromNames.remember("g:n", facts({ messageId: "n2", senderQq: "312", displayName: "DIO的小肥鱼", text: "在" }));
+fromNames.remember("g:n", facts({ messageId: "n3", senderQq: "313", displayName: "搁浅.", text: "在" }));
+fromNames.remember("g:n", facts({ messageId: "n4", senderQq: "314", displayName: "鱼小二（主人：搁浅.）", text: "在" }));
+assert.deepEqual(
+  fromNames.members("g:n").map((entry) => [entry.speaker, entry.belongsToName]),
+  [["DIO的小肥鱼", "DIO"], ["鱼小二（主人：搁浅.）", "搁浅."]],
+  "群名片里的两种归属写法都要认。",
+);
+
+// 名字对不上人就不上表：一张半准的表比没有表更糟。
+const ghost = createGroupContext({ selfQq: SELF, now: () => now });
+ghost.remember("g:g", facts({ messageId: "g1", senderQq: "411", displayName: "某人家的鱼", text: "在" }));
+assert.deepEqual(ghost.members("g:g"), [], "主人不在窗口里，宁可不给，也不要给个查不到的代号。");
+
+// 只认「恰好 @ 一个别人」：@ 两个分不清认的是谁；@ 她自己更不算。
+const ambiguous = createGroupContext({ selfQq: SELF, now: () => now });
+ambiguous.remember("g:a", facts({ messageId: "a1", senderQq: "511", displayName: "甲", text: "在" }));
+ambiguous.remember("g:a", facts({ messageId: "a2", senderQq: "512", displayName: "乙", text: "主人" }));
+ambiguous.remember("g:a", facts({
+  messageId: "a3",
+  senderQq: "513",
+  displayName: "丙",
+  text: "主人好",
+  mentionQqs: ["511", "512"],
+}));
+ambiguous.remember("g:a", facts({ messageId: "a4", senderQq: "514", displayName: "丁", text: "主人", mentionQqs: [SELF] }));
+assert.deepEqual(ambiguous.members("g:a"), [], "@ 了两个别人或 @ 了她自己时都不记归属。");
+
+console.log("群聊上下文测试通过：成员代号、@ 代号化、背景预算、话题建立/候选/过期/续期上限、并行话题淘汰、@ 与引用解析、群内归属（自述优先于群名片、查不到人就不上表）。");

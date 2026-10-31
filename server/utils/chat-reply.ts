@@ -149,6 +149,15 @@ export type ConversationReplyInput = {
   /** 她参与过、还没过期的话题锚点，模型只能从里面选。 */
   groupAnchors?: Array<{ id: string; label: string }>;
   /**
+   * 群内归属：谁是谁的人。
+   *
+   * 判断「我的鱼」「我家宝」「这鱼」到底指谁，靠的不是禁令而是这张表 ——
+   * 2026-10-31 21:00「我的鱼也是成气候了」说的是他自己那条鱼，她接了一句
+   * 「谁是你的鱼了」。光说「所有格不是你」她没法查，给了表她才能查：
+   * 说话人 member → 表里 belongsTo 等于他的那些成员 → 那才是「我的X」。
+   */
+  groupMembers?: Array<{ member: string; speaker: string; belongsTo: string; belongsToName: string }>;
+  /**
    * 本轮说话的人里，她之前就认识的那些。
    *
    * 只有关系元信息（认识多久、聊过几次、最近一次），**不含任何聊过的内容** ——
@@ -241,8 +250,11 @@ export type ConversationReplyResult = {
  *     @ 它）她接「谁是你的鱼了」。加上前面 16:08 的「这鱼」，三次都是同一个毛病：
  *     没有 @ 她、没有她名字的话，被她认成了自己。所以补上所有格、无 @ 即无关、
  *     斜杠命令三类，并写明「从旁边接一句」和「当成本轮在说我」是两件事。
+ * v16：v15 只给了规矩，没给依据 —— 「我的X 不是你」她无处可比，还是得猜。这一版把
+ *     群里的归属关系（`groupMembers`：谁属于谁，来自「@某人 主人夸我了」与「X的Y」
+ *     这类群名片）直接摆进提示词，并要求她**先查表再判断**。规矩变成可执行的步骤。
  */
-const PROMPT_TEMPLATE_VERSION = "conversation-retrieval-v15";
+const PROMPT_TEMPLATE_VERSION = "conversation-retrieval-v16";
 
 export const STYLE_EXAMPLES_HEADING = "## 对话示例（只学语气，不要照抄）";
 
@@ -311,10 +323,12 @@ function systemPrompt(flags: {
   withVoiceReply?: boolean;
   /** 本轮带了熟人卡（groupAcquaintances）。没带就别提这个字段，否则模型会自己编）。 */
   withAcquaintances?: boolean;
+  /** 本轮带了群内归属表（groupMembers）。没带就别提，否则模型会凭空认亲戚。 */
+  withGroupMembers?: boolean;
 } = {}): string {
-  const { withFaces, withStickers, withCatchphrases, withUserAddress, withSpeaker, withGroupChat, mustReply, repair, withVoiceReply, withAcquaintances } = flags;
+  const { withFaces, withStickers, withCatchphrases, withUserAddress, withSpeaker, withGroupChat, mustReply, repair, withVoiceReply, withAcquaintances, withGroupMembers } = flags;
   const lines = [
-    "YILING_CONVERSATION_REPLY_V12",
+    "YILING_CONVERSATION_REPLY_V16",
     "You are the conversational character in Yiling Hub. Read characterName as your display identity and characterPrompt as your persona instructions; follow that persona and respond naturally to the current user's message.",
     "Use recent dialogue, retrieved long-term memories, and retrieved snapshots only when relevant. If the supplied context does not support a claim, do not present it as a remembered fact.",
     "now is the current moment for this persona: now.local is the local date-time, now.weekday is the day of week, now.timeZone is the IANA zone, and now.utc is the same instant in UTC. Resolve every relative expression (今天/昨天/前天/上周/上个月 and equivalents) against now.local, never against the timestamp of the last message.",
@@ -375,6 +389,16 @@ function systemPrompt(flags: {
       "Stay silent when the group is talking among themselves, when a message is clearly addressed to another bot or member, when you would only repeat or summarize what was said, or when you have nothing worth adding.",
       "groupAnchors lists topics you already took part in. You may add to those topics even when the latest question is aimed at someone else, but never answer as if you were the person being asked, and never claim another bot's exchange as your own.",
     );
+    if (withGroupMembers) {
+      // 归属表：让她能「查」而不是「猜」。这张表是 2026-10-31 21:00 那轮缺的东西 ——
+      // 「我的鱼也是成气候了」说的是他自己那条鱼，她手上没有任何依据，只能认成自己。
+      // 规则里必须写出**查表这一步**，光说「所有格不是你」她无处可比。
+      lines.push(
+        "groupMembers says who belongs to whom in this group: each entry means that member belongs to belongsTo, whose name is belongsToName. It comes from members @-ing someone and calling them 主人, and from display names shaped like X的Y or Y（主人：X）.",
+        "Check it before you treat a possessive as yours. When a member says 我的鱼 / 我家宝 / 咱家的, the one they mean is the member listed under them in groupMembers — never you. Only your own owner can call you theirs. If nobody in the group belongs to that speaker, then 我的X is simply not about you.",
+      );
+    }
+
     if (withAcquaintances) {
       // 熟人卡：只给「认识多久、聊过几次」，不给聊过什么。写成「可以念出来」就会变成
       // 在群里复述私聊内容 —— 那是把私下的话摊给一屋子人看。
@@ -628,6 +652,7 @@ export async function generateConversationReply(input: ConversationReplyInput): 
         }
       : {}),
     ...(input.groupAnchors?.length ? { groupAnchors: input.groupAnchors } : {}),
+    ...(input.groupMembers?.length ? { groupMembers: input.groupMembers } : {}),
     ...(withGroupChat && input.groupAcquaintances?.length
       ? {
           groupAcquaintances: input.groupAcquaintances.map((entry) => ({
@@ -742,6 +767,7 @@ export async function generateConversationReply(input: ConversationReplyInput): 
                 mustReply: input.allowSilent !== true,
                 withVoiceReply: input.voiceReply === true,
                 withAcquaintances: Boolean(input.groupAcquaintances?.length),
+                withGroupMembers: Boolean(input.groupMembers?.length),
                 // 第一次的答案没有可用正文时才补这句 —— 不是每次重试都喊，喊多了像责骂。
                 ...(repair ? { repair: true } : {}),
               }),

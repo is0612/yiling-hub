@@ -30,7 +30,7 @@ import {
 } from "./group-chat";
 import { createGroupContext, type GroupMessageFacts } from "./group-context";
 import { createGroupActivityRecorder } from "../../group-activity";
-import { ONEBOT_PLATFORM, readOnebotMentionTargets, readOnebotReplyToId } from "./types";
+import { ONEBOT_PLATFORM, readOnebotMentionQqs, readOnebotMentionTargets, readOnebotReplyToId } from "./types";
 import {
   resolveVoiceTtsSettings,
   synthesizeSpeechSilk,
@@ -646,6 +646,8 @@ export function createOnebotMessageHandler(record: OnebotConnectionRecord) {
     displayName: event.displayName,
     text: event.content,
     mentionTargets: readOnebotMentionTargets(event.data, event.selfId || record.accountQq),
+    // 具体 @ 了谁：分类结果只够判断「是不是叫她」，学归属要原始 QQ。
+    mentionQqs: readOnebotMentionQqs(event.data),
     replyToMessageId: readOnebotReplyToId(event.data),
   });
 
@@ -847,6 +849,8 @@ export function createOnebotMessageHandler(record: OnebotConnectionRecord) {
         direct,
         background: groupContext.background(contextKey, currentIds),
         anchors: groupContext.anchors(contextKey),
+        // 谁是谁的人：让她判断「我的鱼」「我家宝」时能查表，而不是猜自己。
+        members: groupContext.members(contextKey),
       },
       sendReply: createReplySender(record.config, groupEvent, {
         // 引用谁就 @ 谁：transcript 里只有 message id，真实 QQ 号留在进程内查。

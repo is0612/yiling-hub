@@ -100,7 +100,7 @@ try {
   assert.equal(requestBody.model, "test-chat-model");
   const systemMessage = requestBody.messages.find((item) => item.role === "system");
   assert(systemMessage, "The request must include a system prompt.");
-  assert(systemMessage.content.includes("YILING_CONVERSATION_REPLY_V12"), "The system prompt marker must stay in sync with the prompt template version.");
+  assert(systemMessage.content.includes("YILING_CONVERSATION_REPLY_V16"), "The system prompt marker must stay in sync with the prompt template version.");
   const userMessage = requestBody.messages.find((item) => item.role === "user");
   assert(userMessage, "The request must include a structured user context.");
   const promptInput = JSON.parse(userMessage.content) as Record<string, unknown>;

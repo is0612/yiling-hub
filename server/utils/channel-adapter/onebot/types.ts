@@ -187,7 +187,39 @@ export function readOnebotMentionTargets(data: unknown, selfId: string): OnebotM
   return [...targets];
 }
 
-/** 引用回复的目标消息 id；没有就返回空串（不猜）。 */
+/**
+ * 一条消息 @ 到的**原始 QQ**（含她自己和 all），去重、保序。
+ *
+ * 和 `readOnebotMentionTargets` 的分工：那个把人分成「她/全体/别人」三类，够判断
+ * 「是不是在叫她」；但判断「谁是谁的人」需要具体 QQ —— 「@何处归千人 主人夸我了」
+ * 这一句里，那个 QQ 就是说话人的主人。分类结果把身份抹平了，反查不出来。
+ */
+export function readOnebotMentionQqs(data: unknown): string[] {
+  const message = (data as { message?: unknown } | null)?.message;
+  const qqs: string[] = [];
+  const push = (raw: string) => {
+    if (raw && !qqs.includes(raw)) qqs.push(raw);
+  };
+  if (Array.isArray(message)) {
+    for (const segment of message) {
+      if (!segment || typeof segment !== "object") continue;
+      const seg = segment as OnebotSegment;
+      if (seg.type !== "at") continue;
+      const qq = seg.data?.qq;
+      if (qq === undefined || qq === null) continue;
+      push(String(qq));
+    }
+  } else if (typeof message === "string") {
+    for (const match of message.matchAll(/\[CQ:at,qq=([^,\]]+)/g)) {
+      if (match[1]) push(match[1]);
+    }
+  }
+  return qqs;
+}
+
+/**
+ * 引用回复的目标消息 id；没有就返回空串（不猜）。
+ */
 export function readOnebotReplyToId(data: unknown): string {
   const message = (data as { message?: unknown } | null)?.message;
   if (Array.isArray(message)) {

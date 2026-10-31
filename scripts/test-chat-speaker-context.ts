@@ -25,7 +25,7 @@ try {
     speaker: { displayName: "群友", isOwner: false, ownerDisplayName: "烟火清凉" },
   });
 
-  assert.equal(result.promptTemplateVersion, "conversation-retrieval-v15");
+  assert.equal(result.promptTemplateVersion, "conversation-retrieval-v16");
   const body = JSON.parse(capturedBody) as { messages: Array<{ role: string; content: string }> };
   const system = body.messages.find((item) => item.role === "system")?.content ?? "";
   const user = body.messages.find((item) => item.role === "user")?.content ?? "";
@@ -96,8 +96,39 @@ try {
   const recentSection = body3.messages.length ? user3.slice(user3.indexOf("\"recentMessages\"")) : "";
   assert(recentSection.includes("\"speaker\":\"何处归千人\""), "历史 USER 行必须带发言人。");
   assert(!recentSection.includes("\"speaker\":\"小鲸鱼\""), "她自己说的话不该被当成 USER 带发言人。");
+  assert(!system3.includes("groupMembers says who belongs"), "没带归属表时不许提这个字段，否则模型会凭空认亲戚。");
 
-  console.log("对话主人上下文测试通过：主人/群友区分、主人名字注入、群聊逐行 isOwner、平台账号 ID 不进入提示词。");
+  /**
+   * 群内归属：21:00「我的鱼也是成气候了」说的是他自己那条鱼，她接「谁是你的鱼了」。
+   * v15 只给了「所有格不是你」这条规矩，她无处可比；v16 把表摆进来，让她查。
+   */
+  await generateConversationReply({
+    characterName: "小鲸鱼",
+    characterPrompt: "你是一条嘴硬心软的鲸鱼。",
+    model: "test-chat-model",
+    apiKey: "sk-speaker-test",
+    apiBaseUrl: "https://speaker-provider.example/v1",
+    currentMessage: "（本轮消息见 transcript）",
+    groupChat: true,
+    allowSilent: true,
+    transcript: [
+      { id: "m9", member: "member_1", speaker: "何处归千人", content: "我的鱼也是成气候了", isOwner: false },
+    ],
+    groupMembers: [
+      { member: "member_2", speaker: "千人安知鱼之乐", belongsTo: "member_1", belongsToName: "何处归千人" },
+    ],
+    recentMessages: [],
+    memories: [],
+    snapshots: [],
+  });
+  const body4 = JSON.parse(capturedBody) as { messages: Array<{ role: string; content: string }> };
+  const system4 = body4.messages.find((item) => item.role === "system")?.content ?? "";
+  const user4 = body4.messages.find((item) => item.role === "user")?.content ?? "";
+  assert(system4.includes("groupMembers says who belongs"), "有归属表时必须解释这张表是什么。");
+  assert(system4.includes("Check it before you treat a possessive as yours"), "必须写出「先查表再判断所有格」这一步。");
+  assert(user4.includes("\"belongsTo\":\"member_1\""), "归属关系必须进 payload，否则提示词让她查也没得查。");
+
+  console.log("对话主人上下文测试通过：主人/群友区分、主人名字注入、群聊逐行 isOwner、群内归属表（谁属于谁）、平台账号 ID 不进入提示词。");
 } finally {
   globalThis.fetch = originalFetch;
 }

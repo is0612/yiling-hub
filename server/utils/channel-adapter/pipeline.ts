@@ -218,6 +218,8 @@ export function buildStoredMessageMetadata(input: {
   direct: boolean;
   background: Array<{ id: string; at: number; member: string; speaker: string; text: string }>;
   anchors: Array<{ id: string; label: string }>;
+  /** 群内归属（「X的Y」「@某人 主人夸我了」学来的）。空数组 = 这轮没学到，不注入。 */
+  members?: Array<{ member: string; speaker: string; belongsTo: string; belongsToName: string }>;
 };
 
 /** 群聊一轮：几秒内几个人说的话，一次看、最多回一次。 */
@@ -947,6 +949,7 @@ async function runChannelTurn(input: {
                 }
               : {}),
             ...(input.group.anchors.length ? { groupAnchors: input.group.anchors } : {}),
+            ...(input.group.members?.length ? { groupMembers: input.group.members } : {}),
           }
         : {}),
       ...(allowSilent ? { allowSilent } : {}),

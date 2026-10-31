@@ -22,6 +22,23 @@ export type GroupMessageFacts = {
   text: string;
   mentionTargets: GroupMentionTarget[];
   replyToMessageId: string;
+  /** 这条 @ 到的原始 QQ（含她自己和 all）。只用于学「谁是谁的人」，不入提示词。 */
+  mentionQqs?: string[];
+};
+
+/**
+ * 群里一个人属于谁 —— 给模型判断「我的鱼」「我家宝」到底指谁用。
+ *
+ * 只说归属，不说关系性质：自述「主人夸我了」和显示名「X的Y」都只是线索，
+ * 有的是主人，有的是饲养员，模型不该把这层说得比线索更硬。
+ */
+export type GroupMemberOwnership = {
+  /** 这个人的代号（member_n）。 */
+  member: string;
+  speaker: string;
+  /** 他属于的人的代号。 */
+  belongsTo: string;
+  belongsToName: string;
 };
 
 export type GroupBackgroundLine = {
@@ -60,6 +77,8 @@ type ConversationState = {
   topics: Topic[];
   memberCodes: Map<string, string>;
   nextMember: number;
+  /** senderQq → ownerQq：从群里自述学来的归属（「@某人 主人夸我了」）。 */
+  owners: Map<string, string>;
 };
 
 export type GroupContextOptions = {
@@ -122,7 +141,24 @@ export class GroupContext {
     const state = this.state(key);
     if (state.messages.some((item) => item.messageId === message.messageId)) return;
     state.messages.push({ ...message });
+    this.learnOwnership(state, message);
     this.prune(state);
+  }
+
+  /**
+   * 从一条消息里学「谁属于谁」。
+   *
+   * 只在两个条件同时成立时记账：正文里有「主人」，且**恰好 @ 了一个别人**。
+   * 那句「@何处归千人 嘿嘿主人夸我了」是硬证据；@ 了两个人就分不清认的是哪个，
+   * 宁可不记 —— 记错了比不记更糟，模型会拿着一张错的表去判断「我的鱼」是谁。
+   */
+  private learnOwnership(state: ConversationState, message: GroupMessageFacts): void {
+    if (!message.text || !/主人/u.test(message.text)) return;
+    const others = (message.mentionQqs ?? []).filter(
+      (qq) => qq && qq !== "all" && qq !== this.selfQq && qq !== message.senderQq,
+    );
+    if (others.length !== 1) return;
+    state.owners.set(message.senderQq, others[0]!);
   }
 
   /** 给模型看的正文：@ 她 → @self，@ 已知成员 → @member_n，@全体保留。 */
@@ -168,6 +204,49 @@ export class GroupContext {
     const found = this.state(key).messages.find((message) =>
       message.messageId === messageId && now - message.at <= this.windowMs);
     return found?.senderQq || null;
+  }
+
+  /**
+   * 群里已知的归属：谁是谁的人。
+   *
+   * 只给**能对上人的**那些：显示名推断出的名字如果在窗口里找不到，就当没这回事 ——
+   * 一张半准不准的表比没有表更糟，模型会拿它当事实用。
+   * 上限 20 条：这个群同时有二十几条鱼，再多也只是噪音。
+   */
+  members(key: string): GroupMemberOwnership[] {
+    const state = this.state(key);
+    const nameOfQq = new Map<string, string>();
+    const qqOfName = new Map<string, string>();
+    for (const message of state.messages) {
+      if (!message.senderQq || !message.displayName) continue;
+      nameOfQq.set(message.senderQq, message.displayName);
+      if (!qqOfName.has(message.displayName)) qqOfName.set(message.displayName, message.senderQq);
+    }
+    // 代号按发言先后分配，和 transcript 里的顺序一致 —— 否则这里先给「被归属的人」
+    // 分配代号，主客就颠倒了，模型看到的 member_1 和 transcript 里对不上。
+    for (const qq of nameOfQq.keys()) this.memberCode(key, qq);
+    const pairs = new Map<string, string>();
+    for (const [qq, name] of nameOfQq) {
+      const ownerName = parseDisplayNameOwner(name);
+      const ownerQq = ownerName ? qqOfName.get(ownerName) : undefined;
+      if (ownerQq && ownerQq !== qq) pairs.set(qq, ownerQq);
+    }
+    // 自述优先：名字可能有歧义，自己 @ 着人喊「主人」不会。
+    for (const [qq, ownerQq] of state.owners) pairs.set(qq, ownerQq);
+    const out: GroupMemberOwnership[] = [];
+    for (const [qq, ownerQq] of pairs) {
+      const speaker = nameOfQq.get(qq);
+      const ownerName = nameOfQq.get(ownerQq);
+      if (!speaker || !ownerName) continue;
+      out.push({
+        member: this.memberCode(key, qq),
+        speaker: speaker.slice(0, 40),
+        belongsTo: this.memberCode(key, ownerQq),
+        belongsToName: ownerName.slice(0, 40),
+      });
+      if (out.length >= 20) break;
+    }
+    return out;
   }
 
   /** 本轮之外、仍在窗口内的背景，按时间正序；超预算时从最旧的开始丢。 */
@@ -293,7 +372,7 @@ export class GroupContext {
   private state(key: string): ConversationState {
     let state = this.states.get(key);
     if (!state) {
-      state = { messages: [], topics: [], memberCodes: new Map(), nextMember: 0 };
+      state = { messages: [], topics: [], memberCodes: new Map(), nextMember: 0, owners: new Map() };
       this.states.set(key, state);
     }
     return state;
@@ -329,6 +408,25 @@ export class GroupContext {
   private truncate(text: string): string {
     return text.length > this.maxTextPerMessage ? `${text.slice(0, this.maxTextPerMessage)}…` : text;
   }
+}
+
+/**
+ * 从群名片里读「属于谁」。
+ *
+ * 这个群的 bot 起名高度规律：`DIO的小肥鱼`、`鱼小二（主人：搁浅.）`、`第五珂玥的宝宝`。
+ * 两种写法都认，但都只是**弱线索** —— 名字里带「X的」也可能只是随口起的。
+ * 硬证据是自述（`learnOwnership`），两者冲突时以自述为准。
+ *
+ * 「X的Y」只认第一个「的」，且 X 不超过 16 字：再长就多半是句子不是名字了。
+ */
+export function parseDisplayNameOwner(displayName: string): string {
+  const name = displayName.trim();
+  if (!name) return "";
+  const tagged = name.match(/[（(]\s*主人\s*[：:]\s*([^）)]+)[）)]/u);
+  if (tagged?.[1]) return tagged[1].trim().slice(0, 40);
+  const possessive = name.match(/^([^的]{1,16})的.+$/u);
+  if (possessive?.[1]) return possessive[1].trim();
+  return "";
 }
 
 export function createGroupContext(options?: GroupContextOptions): GroupContext {
