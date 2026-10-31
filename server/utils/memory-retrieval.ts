@@ -187,9 +187,18 @@ export function rankSnapshotCandidates<T extends { id: string; summary: string; 
 // ② 截断是无声的，没有任何地方能看出「有一条更该进来的记忆被挤掉了」。
 // 现在改成按 token 预算装配，并给排序加时间衰减 —— 旧记忆不是被硬删，是慢慢变淡。
 
-export const MEMORY_TOKEN_BUDGET_DEFAULT = 1200;
-export const SNAPSHOT_TOKEN_BUDGET_DEFAULT = 2000;
+export const MEMORY_TOKEN_BUDGET_DEFAULT = 1800;
+export const SNAPSHOT_TOKEN_BUDGET_DEFAULT = 2500;
 export const MEMORY_HALF_LIFE_DAYS_DEFAULT = 30;
+/**
+ * 一次回复回看多少条已落库消息。
+ *
+ * 40 条在桌面端约等于 20 轮问答；群里一轮就有三五条，同样的 40 条只覆盖几轮，
+ * 所以群聊侧可以单独调大。上限压住是必要的：再多除了烧 token，模型还会「中间失忆」。
+ */
+export const RECENT_MESSAGE_LIMIT_DEFAULT = 40;
+export const RECENT_MESSAGE_LIMIT_MIN = 20;
+export const RECENT_MESSAGE_LIMIT_MAX = 200;
 
 export type MemoryBudgetOptions = {
   /** 最多注入几条。0 或不传 = 不按条数限制，只受 token 预算约束。 */
@@ -362,5 +371,20 @@ export function resolveSnapshotTokenBudget(modelConfig: unknown): number {
 /** 记忆注入条数上限（防止一堆短句把提示词塞满）。 */
 export function resolveMemoryItemLimit(modelConfig: unknown): number {
   const record = modelConfig && typeof modelConfig === "object" ? modelConfig as Record<string, unknown> : {};
-  return positiveNumber(record.memoryItemLimit) || 8;
+  return positiveNumber(record.memoryItemLimit) || 12;
+}
+
+/**
+ * 最近对话回看条数。
+ *
+ * 页面只让人填「条」，token 不暴露 —— 但值和范围都要夹住：太小接不上话，
+ * 太大既烧钱又会让真正相关的几句被稀释。写入侧已校验，这里再兜一层，
+ * 因为渠道和 Worker 可能不走同一个入口。
+ */
+export function resolveRecentMessageLimit(modelConfig: unknown): number {
+  const record = modelConfig && typeof modelConfig === "object" ? modelConfig as Record<string, unknown> : {};
+  const raw = record.recentMessageLimit;
+  const value = typeof raw === "number" ? raw : Number(raw);
+  if (!Number.isFinite(value) || value <= 0) return RECENT_MESSAGE_LIMIT_DEFAULT;
+  return Math.min(RECENT_MESSAGE_LIMIT_MAX, Math.max(RECENT_MESSAGE_LIMIT_MIN, Math.round(value)));
 }

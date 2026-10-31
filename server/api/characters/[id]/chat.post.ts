@@ -8,7 +8,7 @@ import { resolveChatModelSettings } from "../../../utils/chat-model-config";
 import { resolveCharacterApiKey } from "../../../utils/credential-encryption";
 import {
   rankMemoriesWithBudget, rankSnapshotsWithBudget,
-  resolveMemoryItemLimit, resolveMemoryTokenBudget, resolveSnapshotTokenBudget,
+  resolveMemoryItemLimit, resolveMemoryTokenBudget, resolveRecentMessageLimit, resolveSnapshotTokenBudget,
 } from "../../../utils/memory-retrieval";
 import { recordModelUsage, readDailyQuota, toUsageTokens } from "../../../utils/model-usage";
 import { resolveChatMemoryScopes } from "../../../utils/memory-scope-access";
@@ -162,9 +162,9 @@ export default defineEventHandler(async (event) => {
     ? await prisma.message.findMany({
         where: { conversationId: existingConversation.id },
         orderBy: [{ occurredAt: "desc" }, { id: "desc" }],
-        // 40 条约 20 轮问答。20 条时她经常接不上十分钟前提过的事，
-        // 用户会以为「记性差」，其实只是没被喂进去。网页对话没有群聊那些素材，多 20 条压力不大。
-        take: 40,
+        // 40 条约 20 轮问答，条数可在「模型设置」里按角色调整。
+        // 20 条时她经常接不上十分钟前提过的事，用户会以为「记性差」，其实只是没被喂进去。
+        take: resolveRecentMessageLimit(character.modelConfig),
         select: { role: true, content: true, occurredAt: true },
       })
     : [];

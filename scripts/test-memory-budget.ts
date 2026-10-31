@@ -4,8 +4,12 @@ import {
   MEMORY_TOKEN_BUDGET_DEFAULT,
   rankMemoriesWithBudget,
   rankSnapshotsWithBudget,
+  RECENT_MESSAGE_LIMIT_DEFAULT,
+  RECENT_MESSAGE_LIMIT_MAX,
+  RECENT_MESSAGE_LIMIT_MIN,
   resolveMemoryItemLimit,
   resolveMemoryTokenBudget,
+  resolveRecentMessageLimit,
   resolveSnapshotTokenBudget,
 } from "../server/utils/memory-retrieval";
 
@@ -84,7 +88,14 @@ assert.equal(resolveMemoryTokenBudget({}), MEMORY_TOKEN_BUDGET_DEFAULT, "缺省�
 assert.equal(resolveMemoryTokenBudget({ memoryTokenBudget: 3000 }), 3000, "读得到自定义预算。");
 assert.equal(resolveMemoryTokenBudget({ memoryTokenBudget: -1 }), MEMORY_TOKEN_BUDGET_DEFAULT, "非法值回落默认。");
 assert.equal(resolveSnapshotTokenBudget({ snapshotTokenBudget: 500 }), 500, "快照预算独立读取。");
-assert.equal(resolveMemoryItemLimit({}), 8, "条数上限默认 8。");
+assert.equal(resolveMemoryItemLimit({}), 12, "条数上限默认 12。");
 assert.equal(resolveMemoryItemLimit({ memoryItemLimit: 3 }), 3, "条数上限可配。");
 
-console.log("记忆预算与衰减测试通过：token 估算、预算装配、首条保底、时间衰减、重要度加权、召回加成、条数上限、快照独立预算。");
+// ── 最近对话窗口 ────────────────────────────────────────────
+assert.equal(resolveRecentMessageLimit({}), RECENT_MESSAGE_LIMIT_DEFAULT, "窗口默认 40 条。");
+assert.equal(resolveRecentMessageLimit({ recentMessageLimit: 80 }), 80, "窗口条数可配。");
+assert.equal(resolveRecentMessageLimit({ recentMessageLimit: 9999 }), RECENT_MESSAGE_LIMIT_MAX, "超过上限要夹住。");
+assert.equal(resolveRecentMessageLimit({ recentMessageLimit: 3 }), RECENT_MESSAGE_LIMIT_MIN, "低于下限要夹住。");
+assert.equal(resolveRecentMessageLimit({ recentMessageLimit: "abc" }), RECENT_MESSAGE_LIMIT_DEFAULT, "非法值回落默认。");
+
+console.log("记忆预算与衰减测试通过：token 估算、预算装配、首条保底、时间衰减、重要度加权、召回加成、条数上限、快照独立预算、最近对话窗口。");

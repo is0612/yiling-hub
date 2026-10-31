@@ -3,7 +3,7 @@ import { isEmojiEnabled, resolveChatModelSettings } from "../chat-model-config";
 import { resolveCharacterApiKey, resolveCharacterVoiceApiKey } from "../credential-encryption";
 import {
   rankMemoriesWithBudget, rankSnapshotsWithBudget,
-  resolveMemoryItemLimit, resolveMemoryTokenBudget, resolveSnapshotTokenBudget,
+  resolveMemoryItemLimit, resolveMemoryTokenBudget, resolveRecentMessageLimit, resolveSnapshotTokenBudget,
 } from "../memory-retrieval";
 import { recordModelUsage, readDailyQuota, toUsageTokens } from "../model-usage";
 import {
@@ -80,16 +80,11 @@ export type ChannelReplySender = (text: string, options?: ChannelReplyOptions) =
  * 取的是第一条消息的前 80 字，翻记录时根本认不出是哪个群。
  */
 /**
- * 一轮回复回看多少条已落库的消息。
+ * 一轮回复回看多少条已落库的消息，按角色 `modelConfig.recentMessageLimit` 取（默认 40）。
  *
- * 原来是 20 条。20 条是「消息」不是「轮」：热群里一轮就三五条，实际只覆盖三四轮，
- * 她接不上十分钟前的话，也记不住那句是谁说的。40 条约 8-10 轮，是这个场景的甜点 ——
- * 再往上收益递减，而每条历史都要占 prompt token（现在还带 speaker/isOwner）。
- *
- * 注意别指望它做「十分钟内发了几张表情」这种统计：40 条在热群依旧覆盖不到十分钟，
+ * 别指望它做「十分钟内发了几张表情」这种统计：40 条在热群依旧覆盖不到十分钟，
  * 那类判断必须按 occurredAt 回表数（见 `emoji-frequency.ts`）。
  */
-const RECENT_MESSAGE_LIMIT = 40;
 
 function readGroupIdFromConversationKey(key: string): string | null {
   const matched = /^g:(\d+)$/.exec(key);
@@ -568,7 +563,7 @@ async function runChannelTurn(input: {
     ? await prisma.message.findMany({
         where: { conversationId: existingConversation.id },
         orderBy: [{ occurredAt: "desc" }, { id: "desc" }],
-        take: RECENT_MESSAGE_LIMIT,
+        take: resolveRecentMessageLimit(character.modelConfig),
         select: { role: true, content: true, occurredAt: true, metadata: true, externalMessageId: true },
       })
     : [];
@@ -615,8 +610,8 @@ async function runChannelTurn(input: {
   /**
    * 额度：「每 N 分钟最多 N 张」，按**这个会话**算（A 群贴过三张不该让 B 群闭嘴）。
    *
-   * 只取窗口内的助手消息，不看全部：`recentStoredMessages` 只有 20 条，热聊时
-   * 二十条可能还没覆盖十分钟，用它数会少算。
+   * 只取窗口内的助手消息，不看全部：`recentStoredMessages` 只是最近对话窗口（默认 40 条），
+   * 热聊时几十条可能还没覆盖十分钟，用它数会少算。
    */
   const emojiFrequency = resolveEmojiFrequency(character.modelConfig);
   const emojiHistory = existingConversation

@@ -4,6 +4,7 @@ import { characterInclude, toCharacterDto } from "../../utils/character-dto";
 import { readChatModelSettingsPatch, validateChatApiBaseUrl } from "../../utils/chat-model-config";
 import { encryptApiKey } from "../../utils/credential-encryption";import { requireActorUserId } from "../../utils/auth";
 import { readTrimmedString, requireUuid } from "../../utils/local-api";
+import { RECENT_MESSAGE_LIMIT_MAX, RECENT_MESSAGE_LIMIT_MIN } from "../../utils/memory-retrieval";
 import { getPrisma } from "../../utils/prisma";
 import { readProactivePatch, resolveProactiveSettings } from "../../utils/proactive-settings";
 import { readGroupInitiativePatch, resolveGroupInitiativeSettings } from "../../utils/group-initiative-settings";
@@ -58,6 +59,18 @@ export default defineEventHandler(async (event) => {
       throw createError({ statusCode: 400, statusMessage: `${label}必须是 0 到 ${max} 之间的数字。` });
     }
     modelConfigPatch[key] = Math.round(value);
+  }
+
+  // 最近对话条数：0 不代表「不限」，所以不能塞进上面那个 0 起的循环。
+  if (body.recentMessageLimit !== undefined) {
+    const value = typeof body.recentMessageLimit === "number" ? body.recentMessageLimit : Number(body.recentMessageLimit);
+    if (!Number.isInteger(value) || value < RECENT_MESSAGE_LIMIT_MIN || value > RECENT_MESSAGE_LIMIT_MAX) {
+      throw createError({
+        statusCode: 400,
+        statusMessage: `最近对话条数必须是 ${RECENT_MESSAGE_LIMIT_MIN} 到 ${RECENT_MESSAGE_LIMIT_MAX} 之间的整数。`,
+      });
+    }
+    modelConfigPatch.recentMessageLimit = value;
   }
 
   if (body.emojiEnabled !== undefined) {

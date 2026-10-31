@@ -35,8 +35,9 @@ const draftChatApiKey = ref("");
 const clearSavedApiKey = ref(false);
 const draftProviderKey = ref("openai");
 const draftDailyTokenLimit = ref(0);
-const draftMemoryTokenBudget = ref(1200);
-const draftSnapshotTokenBudget = ref(2000);
+const draftMemoryTokenBudget = ref(1800);
+const draftSnapshotTokenBudget = ref(2500);
+const draftRecentMessageLimit = ref(40);
 
 // ── 语音模型：从「QQ 渠道 → 角色行为」搬过来的 ──
 // 服务商、Key、模型名都属于「模型配置」，跟「她发不发语音」这种行为开关不该混在一个面板里。
@@ -97,6 +98,7 @@ const draftSignature = computed(() => JSON.stringify([
   draftDailyTokenLimit.value,
   draftMemoryTokenBudget.value,
   draftSnapshotTokenBudget.value,
+  draftRecentMessageLimit.value,
   // 语音模型：Key 的明文不进指纹（留空=不改，没法从明文判断），布尔勾选要进
   draftVoiceProvider.value,
   draftVoiceApiBaseUrl.value.trim(),
@@ -192,24 +194,59 @@ const voiceKeyPlaceholder = computed(() => {
 });
 const voiceKeyHint = computed(() => {
   if (voiceKeyConfigured.value) return "此角色已保存语音 Key。留空保持现有 Key，不会回显原文。";
-  return "语音服务的 Key，加密保存、不回传网页。与上面的对话 Key 分开两把。";
+  return "语音模型用的 Key，加密保存、不回传网页；与对话模型那把 Key 分开两把。";
 });
 
 /**
- * 选 MiniMax 时把地址 / 模型 / 音色一起带过去。
- * 只在「空着」或「还填着另一家的值」时才替换 —— 用户自己调过的参数不能被一次下拉冲掉。
+ * 语音的开放平台入口：和对话模型那块对齐 —— 用户卡住的点不是「填什么」，而是「去哪拿 Key」。
+ * 优先按地址认服务商（改了路径也认得出），地址还空着时按下拉框兜底：
+ * MiniMax 走 MiniMax，其余（OpenAI 兼容 / 自动判断）跟着占位符那家（硅基流动）。
+ */
+const voiceProviderPreset = computed(() => {
+  const byUrl = providerByBaseUrl(draftVoiceApiBaseUrl.value);
+  if (byUrl) return byUrl;
+  if (draftVoiceProvider.value === "minimax") return providerByKey("minimax");
+  return providerByKey("siliconflow");
+});
+const voiceConsoleUrl = computed(() => voiceProviderPreset.value?.consoleUrl ?? "");
+const voiceProviderName = computed(() => voiceProviderPreset.value?.name ?? "");
+
+/** 两家的默认三件套：选服务商时一键带过去（和对话模型「选服务商自动填地址」同一套思路） */
+const VOICE_PRESET: Record<string, { baseUrl: string; model: string; voice: string }> = {
+  minimax: { baseUrl: "https://api.minimaxi.com/v1", model: "speech-2.5-turbo-preview", voice: "female-shaonv" },
+  openai: { baseUrl: "https://api.siliconflow.cn/v1", model: "FunAudioLLM/CosyVoice2-0.5B", voice: "FunAudioLLM/CosyVoice2-0.5B:claire" },
+};
+
+/**
+ * 选服务商时把地址 / 模型 / 音色一起带过去。
+ * 只在「空着」或「还填着另一家的默认值」时才替换 —— 用户自己调过的参数不能被一次下拉冲掉。
+ * 「自动判断」一个字段都不改：它的定义就是「看下面填的地址」，替用户改写地址等于替它下判断。
+ *
+ * ⚠️ 两个方向都要处理。以前只在 provider === "minimax" 时填，切回 OpenAI 兼容时地址和模型
+ * 仍停在 MiniMax，界面上写着 OpenAI 兼容、实际打的是 MiniMax 的接口，合成必然失败。
  */
 function applyVoiceProviderTemplate(provider: string) {
-  if (provider !== "minimax") return;
-  if (!draftVoiceApiBaseUrl.value.trim() || /siliconflow|api\.openai\.com/i.test(draftVoiceApiBaseUrl.value)) {
-    draftVoiceApiBaseUrl.value = "https://api.minimaxi.com/v1";
+  const preset = VOICE_PRESET[provider];
+  if (!preset) return;
+  const toMinimax = provider === "minimax";
+
+  const url = draftVoiceApiBaseUrl.value.trim();
+  if (!url || (toMinimax ? /siliconflow|api\.openai\.com/i.test(url) : /minimax/i.test(url))) {
+    draftVoiceApiBaseUrl.value = preset.baseUrl;
   }
-  if (!draftVoiceTtsModel.value.trim() || /cosyvoice|^tts-|gpt-4o-mini-tts|moss/i.test(draftVoiceTtsModel.value)) {
-    draftVoiceTtsModel.value = "speech-2.5-turbo-preview";
+
+  const model = draftVoiceTtsModel.value.trim();
+  if (!model || (toMinimax ? /cosyvoice|^tts-|gpt-4o-mini-tts|moss/i.test(model) : /^speech-|minimax/i.test(model))) {
+    draftVoiceTtsModel.value = preset.model;
   }
-  if (!draftVoiceTtsVoice.value.trim() || /funaudiollm|^(alloy|nova|shimmer|echo|fable|onyx|sage|coral)$/i.test(draftVoiceTtsVoice.value)) {
-    draftVoiceTtsVoice.value = "female-shaonv";
+
+  const voice = draftVoiceTtsVoice.value.trim();
+  if (!voice || (toMinimax ? /funaudiollm|^(alloy|nova|shimmer|echo|fable|onyx|sage|coral)$/i.test(voice) : /^(female|male)-/i.test(voice))) {
+    draftVoiceTtsVoice.value = preset.voice;
   }
+
+  // 换了一家用，「获取模型」上一家拉回来的清单就不作数了
+  fetchedVoiceModels.value = [];
 }
 
 /** 语音模型下拉选项：已保存的值 + 拉回来的清单，去重 */
@@ -294,14 +331,29 @@ function applyProvider(key: string) {
   draftProviderKey.value = key;
   const preset = providerByKey(key);
   if (preset?.baseUrl) draftChatApiBaseUrl.value = preset.baseUrl;
+
+  // 换了一家，模型名不能还停在上一家的清单里（deepseek-flash 配通义的地址必然调不通）。
+  // 只换「空着」或「属于别家内置清单」的值：自己手填的名字、以及新家没有内置清单
+  // （硅基流动、自定义）时都不动 —— 那种情况本来就得先「获取模型」再看。
+  const model = draftChatModel.value.trim();
+  const belongsToOther = MODEL_PROVIDERS.some(
+    (provider) => provider.key !== key && provider.models.includes(model),
+  );
+  const nextModel = preset?.models[0] ?? "";
+  if (nextModel && (!model || belongsToOther)) draftChatModel.value = nextModel;
+  else if (belongsToOther) ElMessage.info(`${preset?.name ?? "这家"}没有内置模型清单，点「获取模型」拉一份再选。`);
+
+  // 上一家「获取模型」拉回来的清单跟着作废
+  fetchedModels.value = [];
 }
 
 function resetRecommendedGenerationSettings() {
   draftChatTemperature.value = 0.8;
   draftChatMaxTokens.value = 2048;
-  draftDailyTokenLimit.value = 100000;
-  draftMemoryTokenBudget.value = 1600;
-  draftSnapshotTokenBudget.value = 2400;
+  draftDailyTokenLimit.value = 0;
+  draftMemoryTokenBudget.value = 1800;
+  draftSnapshotTokenBudget.value = 2500;
+  draftRecentMessageLimit.value = 40;
   ElMessage.success("已填入日常陪伴推荐参数，点击保存设置后生效。");
 }
 
@@ -325,8 +377,9 @@ async function loadCharacter() {
     draftChatApiKey.value = "";
     clearSavedApiKey.value = false;
     draftDailyTokenLimit.value = data.dailyTokenLimit ?? 0;
-    draftMemoryTokenBudget.value = data.memoryTokenBudget ?? 1200;
-    draftSnapshotTokenBudget.value = data.snapshotTokenBudget ?? 2000;
+    draftMemoryTokenBudget.value = data.memoryTokenBudget ?? 1800;
+    draftSnapshotTokenBudget.value = data.snapshotTokenBudget ?? 2500;
+    draftRecentMessageLimit.value = data.recentMessageLimit ?? 40;
     draftProviderKey.value = providerByBaseUrl(draftChatApiBaseUrl.value)?.key ?? "custom";
     // 语音模型
     draftVoiceProvider.value = data.ttsProvider || "auto";
@@ -370,6 +423,7 @@ async function save(silent = false): Promise<boolean> {
         dailyTokenLimit: draftDailyTokenLimit.value,
         memoryTokenBudget: draftMemoryTokenBudget.value,
         snapshotTokenBudget: draftSnapshotTokenBudget.value,
+        recentMessageLimit: draftRecentMessageLimit.value,
         // 语音模型
         voiceApiBaseUrl: draftVoiceApiBaseUrl.value.trim(),
         ttsModel: draftVoiceTtsModel.value.trim(),
@@ -748,7 +802,7 @@ watch(id, () => void loadCharacter());
                   每日 token 额度
                 </div>
                 <p class="field-help">
-                  建议先设 100,000：观察几天用量后再调整。按东八区统计所有调用，达到额度后会暂停相关调用；这不是金额上限，0 表示不限。
+                  默认不限（0）。想设上限时再填：按东八区统计所有调用，达到额度后会暂停相关调用；这不是金额上限，建议先观察几天「用量与花费」再决定。
                 </p>
                 <div class="knob-ctl">
                   <el-input-number
@@ -764,10 +818,29 @@ watch(id, () => void loadCharacter());
 
               <div class="knob">
                 <div class="knob-label">
+                  最近对话保留（条）
+                </div>
+                <p class="field-help">
+                  推荐 40 条（网页对话约 20 轮）。群里一轮就有好几条，同样的条数覆盖的轮次会少一些，可以调大；范围 20–200。调得太大不只是费 token，真正相关的几句反而会被稀释。
+                </p>
+                <div class="knob-ctl">
+                  <el-input-number
+                    v-model="draftRecentMessageLimit"
+                    class="knob-number"
+                    :min="20"
+                    :max="200"
+                    :step="10"
+                    aria-label="最近对话保留条数"
+                  />
+                </div>
+              </div>
+
+              <div class="knob">
+                <div class="knob-label">
                   记忆注入预算（token）
                 </div>
                 <p class="field-help">
-                  推荐 1600：比基础预算多留一些相关记忆，适合持续陪伴。预算并非严格硬上限，首条记忆始终放行；0 回退到系统默认 1200。
+                  推荐 1800：约 12 条长期记忆的量，适合持续陪伴。预算并非严格硬上限，首条记忆始终放行；0 回退到系统默认 1800。
                 </p>
                 <div class="knob-ctl">
                   <el-input-number
@@ -786,7 +859,7 @@ watch(id, () => void loadCharacter());
                   阶段总结注入预算（token）
                 </div>
                 <p class="field-help">
-                  推荐 2400：给过往经历留更多上下文，与长期记忆预算独立。首条总结始终放行，可能超出预算；0 回退到系统默认 2000。
+                  推荐 2500：约 1.5 份周期总结，与长期记忆预算独立。首条总结始终放行，可能超出预算；0 回退到系统默认 2500。
                 </p>
                 <div class="knob-ctl">
                   <el-input-number
@@ -851,9 +924,36 @@ watch(id, () => void loadCharacter());
                 </p>
               </div>
 
+              <!-- 顺序与右边的对话模型一致：服务商 → API 地址 → API Key。
+                   填地址的人八成手里还没有 Key，所以先把「去哪拿」摆在这一行 -->
               <div class="field">
                 <div class="field-head">
-                  <span class="field-label">语音服务的 Key</span>
+                  <span class="field-label">API 地址</span>
+                  <a
+                    v-if="voiceConsoleUrl"
+                    class="field-link"
+                    :href="voiceConsoleUrl"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    去 {{ voiceProviderName }} 开放平台取 Key
+                    <el-icon><TopRight /></el-icon>
+                  </a>
+                </div>
+                <el-input
+                  v-model="draftVoiceApiBaseUrl"
+                  maxlength="500"
+                  aria-label="语音 API 地址"
+                  :placeholder="voiceUsesMinimax ? 'https://api.minimaxi.com/v1' : 'https://api.siliconflow.cn/v1'"
+                />
+                <p class="field-help">
+                  填 API 根地址，不要追加 /audio/speech 或 /t2a_v2。
+                </p>
+              </div>
+
+              <div class="field">
+                <div class="field-head">
+                  <span class="field-label">API Key</span>
                   <span
                     class="pill"
                     :class="voiceKeyConfigured ? 'pill-green' : 'pill-rose'"
@@ -865,7 +965,7 @@ watch(id, () => void loadCharacter());
                   show-password
                   autocomplete="new-password"
                   maxlength="8192"
-                  aria-label="语音服务的 API Key"
+                  aria-label="语音 API Key"
                   :placeholder="voiceKeyPlaceholder"
                 />
                 <p class="field-help">
@@ -897,21 +997,6 @@ watch(id, () => void loadCharacter());
                 <p class="field-help">
                   新版接口多数情况不需要它。要找的话在 platform.minimaxi.com → 个人信息 → 空间管理 →
                   个人空间那一行的「管理」，页里叫「空间 ID（GID）」。
-                </p>
-              </div>
-
-              <div class="field">
-                <div class="field-head">
-                  <span class="field-label">服务地址</span>
-                </div>
-                <el-input
-                  v-model="draftVoiceApiBaseUrl"
-                  maxlength="500"
-                  aria-label="语音服务地址"
-                  :placeholder="voiceUsesMinimax ? 'https://api.minimaxi.com/v1' : 'https://api.siliconflow.cn/v1'"
-                />
-                <p class="field-help">
-                  填 API 根地址，不要追加 /audio/speech 或 /t2a_v2。
                 </p>
               </div>
 

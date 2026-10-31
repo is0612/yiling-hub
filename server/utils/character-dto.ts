@@ -1,6 +1,6 @@
 import { resolveChatModelSettings } from "./chat-model-config";
 import { resolveEmojiFrequency } from "./emoji-frequency";
-import { MEMORY_TOKEN_BUDGET_DEFAULT, SNAPSHOT_TOKEN_BUDGET_DEFAULT } from "./memory-retrieval";
+import { MEMORY_TOKEN_BUDGET_DEFAULT, SNAPSHOT_TOKEN_BUDGET_DEFAULT, resolveRecentMessageLimit } from "./memory-retrieval";
 import { resolveProactiveSettings, type ProactiveSettings } from "./proactive-settings";
 import { resolveGroupInitiativeSettings, type GroupInitiativeSettings } from "./group-initiative-settings";
 import { isVoiceApiKeySaved } from "./credential-encryption";
@@ -41,6 +41,8 @@ export type CharacterDto = {
   /** 每次对话注入的记忆 / 快照 token 预算。 */
   memoryTokenBudget: number;
   snapshotTokenBudget: number;
+  /** 每次回复回看多少条已落库消息；桌面端约等于「轮数 × 2」。 */
+  recentMessageLimit: number;
   /** QQ 渠道回复是否允许附一张表情；默认关。 */
   emojiEnabled: boolean;
   /** 表情额度：多少分钟内最多贴几次（贴图与内置表情共用一个额度，按会话分别算）。 */
@@ -199,6 +201,7 @@ export function toCharacterDto(input: unknown): CharacterDto {
     dailyTokenLimit: positiveNumber(config.dailyTokenLimit),
     memoryTokenBudget: positiveNumber(config.memoryTokenBudget) || MEMORY_TOKEN_BUDGET_DEFAULT,
     snapshotTokenBudget: positiveNumber(config.snapshotTokenBudget) || SNAPSHOT_TOKEN_BUDGET_DEFAULT,
+    recentMessageLimit: resolveRecentMessageLimit(config),
     emojiEnabled: config.emojiEnabled === true,
     // 额度读的时候就把默认值补齐，页面不用再猜「没填是多少」。
     emojiWindowMinutes: emojiFrequency.windowMinutes,
