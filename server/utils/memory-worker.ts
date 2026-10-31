@@ -347,6 +347,27 @@ async function runDailyEventJob(
         occurredAt: draft.occurredAt,
         title: draft.title,
       })));
+      /**
+       * 每块跑完就把水位推到「这一块的最后一条」。
+       *
+       * 这样后面某块失败进入重试时，下一次从断点继续，而不是把整天重跑一遍
+       * （2026-11-01 实测：6 块里第 5 块 JSON 解析失败，重跑要从第 1 块重新烧 token）。
+       */
+      const chunkEnd = chunk[chunk.length - 1]!.occurredAt;
+      await prisma.memoryEventDay.upsert({
+        where: { memoryScopeId_dayKey: { memoryScopeId: job.memoryScopeId, dayKey } },
+        create: {
+          memoryScopeId: job.memoryScopeId,
+          dayKey,
+          state: finalize ? "FINAL" : "DRAFT",
+          eventCount: result.applied.length,
+          extractedAt: chunkEnd,
+        },
+        update: {
+          eventCount: { increment: result.applied.length },
+          extractedAt: chunkEnd,
+        },
+      });
       // 一行可观测性日志：跑完能看出「这一块喂了多少、模型给了几条、落了几条」，
       // 少了事件时不用猜是没进模型还是模型没写。
       console.log(
@@ -371,21 +392,17 @@ async function runDailyEventJob(
     return { processed: true, jobId: job.id, status: "RETRY_WAIT", message: detail.slice(0, 300) };
   }
 
-  // 进度行：记下「抽到哪」，下一次只处理增量；收口任务顺便把状态落成 FINAL。
-  await prisma.memoryEventDay.upsert({
-    where: { memoryScopeId_dayKey: { memoryScopeId: job.memoryScopeId, dayKey } },
-    create: {
-      memoryScopeId: job.memoryScopeId,
-      dayKey,
-      state: finalize ? "FINAL" : "DRAFT",
-      eventCount: appliedCount,
-      extractedAt: now,
-    },
-    update: {
-      state: finalize ? "FINAL" : "DRAFT",
-      eventCount: { increment: appliedCount },
-      extractedAt: now,
-    },
+  /**
+   * 收口任务把整天的状态落成 FINAL，并把条数对齐成数据库里的真实值。
+   *
+   * 分块增量会累积 `eventCount`，但重跑/去重跳过之后它和「实际有多少条」会漂移
+   * （2026-11-01 实测：实际 29 条，进度行还写着 17）。这里以 count 为准，别让页面上
+   * 的「那天几条」长期错着。
+   */
+  const totalEvents = await prisma.memoryEvent.count({ where: { memoryScopeId: job.memoryScopeId, dayKey } });
+  await prisma.memoryEventDay.updateMany({
+    where: { memoryScopeId: job.memoryScopeId, dayKey },
+    data: { state: finalize ? "FINAL" : "DRAFT", eventCount: totalEvents },
   });
 
   return finish(
