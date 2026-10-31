@@ -405,8 +405,20 @@ async function runChannelTurn(input: {
 }): Promise<ChannelMessageResult> {
   const prisma = getPrisma();
   const isGroup = input.eventType === "GROUP_MESSAGE";
+  /**
+   * 同一批里可能出现同一条消息两次（网关重投、或者两个适配器都连着 —— 后者已经在
+   * `run-onebot-adapter.ts` 里用单实例标记挡住）。不去重的话，整轮会撞
+   * `messages(conversationId, externalMessageId)` 唯一约束，事务回滚，**整轮都不回**：
+   * 一条重复消息把同一轮里别人的话也一起拖死。
+   */
+  const seenInBatch = new Set<string>();
   let messages = input.messages
     .filter((message) => message.externalMessageId && message.content)
+    .filter((message) => {
+      if (seenInBatch.has(message.externalMessageId)) return false;
+      seenInBatch.add(message.externalMessageId);
+      return true;
+    })
     .slice(-10);
   if (!messages.length) return { status: "ignored", reason: "missing_fields" };
 

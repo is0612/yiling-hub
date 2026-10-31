@@ -48,16 +48,48 @@ async function teeStdoutToFile() {
   }
 }
 
-async function markRunning() {
+/**
+ * 认领「我在跑」的标记。已经有实例在跑就把它的 pid 返回，调用方直接退出。
+ *
+ * 为什么必须拦：网关的 WS 是**广播**的 —— 两个适配器同时连着，同一条群消息两边都收到、
+ * 都想落库，后到的那个撞 `messages(conversationId, externalMessageId)` 唯一约束，
+ * 整轮事务回滚，于是那一轮谁也没回（日志里只有一行「群聊批次处理失败」）。
+ * 用户看到的就是「不是每条都回」。今天的两个实例分别是面板自动拉起和手动启动的。
+ *
+ * 用 `flag: "wx"` 抢占（不存在才创建），而不是「先读再写」：两个进程同时启动时，
+ * 先读再写会双双读到空、双双启动。标记里的 pid 已经不在（上次被 kill 掉）就算陈旧，删掉重来。
+ */
+async function claimRunning(): Promise<number | null> {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      await fs.mkdir(path.dirname(STATE_FILE), { recursive: true });
+      await fs.writeFile(
+        STATE_FILE,
+        JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString(), cwd: REPO_ROOT }),
+        { encoding: "utf8", flag: "wx" },
+      );
+      return null;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") return null; // 写不了就照常跑，别把适配器卡死
+      const pid = await runningPid();
+      if (pid) return pid;
+      await fs.rm(STATE_FILE, { force: true });
+    }
+  }
+  return null;
+}
+
+/** 标记文件里的 pid 还活着吗。活着返回它，陈旧或读不动返回 null。 */
+async function runningPid(): Promise<number | null> {
   try {
-    await fs.mkdir(path.dirname(STATE_FILE), { recursive: true });
-    await fs.writeFile(
-      STATE_FILE,
-      JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString(), cwd: REPO_ROOT }),
-      "utf8",
-    );
+    const raw = await fs.readFile(STATE_FILE, "utf8");
+    const parsed = JSON.parse(raw) as { pid?: number };
+    const pid = typeof parsed.pid === "number" ? parsed.pid : null;
+    if (!pid || pid === process.pid) return null;
+    process.kill(pid, 0);
+    return pid;
   } catch {
-    // 写不了也不影响适配器本身干活
+    return null;
   }
 }
 
@@ -175,8 +207,19 @@ process.on("SIGINT", stop);
 process.on("SIGTERM", stop);
 
 async function main() {
+  /**
+   * 先认领，再开日志。
+   *
+   * 顺序不能反：`teeStdoutToFile` 会**清空**日志文件，跑了第二个实例的话，
+   * 第一个实例的日志会当场消失 —— 那正是排查这类问题时唯一的证据。
+   */
+  const existing = await claimRunning();
+  if (existing) {
+    log({ event: "onebot-adapter-already-running", pid: existing });
+    await prisma.$disconnect();
+    return;
+  }
   await teeStdoutToFile();
-  await markRunning();
   try {
     while (!shutdown.signal.aborted) {
       try {
