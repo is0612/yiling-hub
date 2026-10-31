@@ -7,6 +7,10 @@
  *
  * 口径（和产品对齐过）：私聊一进来就记；群里只记她真的回了谁。所以这里出现的人，
  * 都是跟她有过一来一往的，不是「在群里出现过」。
+ *
+ * 名单会一直长（群里认人会一直往上加），所以筛选、排序、翻页全在服务端做：
+ * 页面每次只拿一页，统计带和来源计数由接口按「这个角色的全部朋友」另算，
+ * 不会因为翻了页或筛了来源就变形。
  */
 import { Refresh, Search, User } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
@@ -28,7 +32,25 @@ type Friend = {
   conversationCount: number;
 };
 
-type Character = { id: string; name: string; status: string };
+type Character = { id: string; name: string; status: string; friendCount: number };
+
+type FriendPage = {
+  items: Friend[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+  hasMore: boolean;
+  characters: Character[];
+  /** 后端兜底选好的角色：没传 characterId 时落在「朋友最多的那个」 */
+  activeCharacterId: string;
+  /** 都按这个角色的全部朋友算，不受关键词/来源筛选影响 */
+  stats: { total: number; familiar: number; recent: number };
+  sourceCounts: { all: number; private: number; group: number };
+};
+
+/** 一页 12 个＝四列三行，正好铺满不剩半行。与接口默认值保持一致。 */
+const PAGE_SIZE = 12;
 
 const loading = ref(true);
 const friends = ref<Friend[]>([]);
@@ -40,11 +62,17 @@ type SortBy = "recent" | "count" | "closeness" | "known";
 type SortDirection = "asc" | "desc";
 const sortBy = ref<SortBy>("recent");
 
-const SORT_OPTIONS: ReadonlyArray<{ value: SortBy; label: string; defaultDirection: SortDirection }> = [
-  { value: "recent", label: "最近互动", defaultDirection: "desc" },
-  { value: "count", label: "互动次数", defaultDirection: "desc" },
-  { value: "closeness", label: "关系亲疏", defaultDirection: "desc" },
-  { value: "known", label: "认识先后", defaultDirection: "asc" },
+const page = ref(1);
+const total = ref(0);
+const totalPages = ref(1);
+const stats = ref({ total: 0, familiar: 0, recent: 0 });
+const sourceCounts = ref({ all: 0, private: 0, group: 0 });
+
+const SORT_OPTIONS: ReadonlyArray<{ value: SortBy; label: string }> = [
+  { value: "recent", label: "最近互动" },
+  { value: "count", label: "互动次数" },
+  { value: "closeness", label: "关系亲疏" },
+  { value: "known", label: "认识先后" },
 ];
 
 /**
@@ -59,14 +87,6 @@ const sortDirections = ref<Record<SortBy, SortDirection>>({
   closeness: "desc",
   known: "asc",
 });
-
-function pickSort(value: SortBy) {
-  if (sortBy.value === value) {
-    sortDirections.value[value] = sortDirections.value[value] === "asc" ? "desc" : "asc";
-    return;
-  }
-  sortBy.value = value;
-}
 
 function readErrorMessage(error: unknown, fallback: string) {
   if (error && typeof error === "object" && "statusMessage" in error) {
@@ -107,133 +127,34 @@ const currentCharacter = computed(
   () => characters.value.find((item) => item.id === activeCharacterId.value) ?? null,
 );
 
-const characterFriends = computed(
-  () => friends.value.filter((item) => item.characterId === activeCharacterId.value),
-);
-
-/** 聊过两次以上才算「熟」。只回一句就再没出现过的，是路人，不是朋友。 */
-const familiarCount = computed(
-  () => characterFriends.value.filter((item) => item.interactionCount >= 2).length,
-);
-
-const recentCount = computed(() => {
-  const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
-  return characterFriends.value.filter(
-    (item) => item.lastInteractedAt && Date.parse(item.lastInteractedAt) >= weekAgo,
-  ).length;
-});
-
-const sourceCounts = computed(() => ({
-  ALL: characterFriends.value.length,
-  PRIVATE: characterFriends.value.filter((item) => item.firstSource === "PRIVATE").length,
-  GROUP: characterFriends.value.filter((item) => item.firstSource === "GROUP").length,
-}));
-
 const sourceOptions = computed<Array<{ value: "ALL" | "PRIVATE" | "GROUP"; label: string; count: number }>>(() => [
-  { value: "ALL", label: "全部", count: sourceCounts.value.ALL },
-  { value: "PRIVATE", label: "私聊认识", count: sourceCounts.value.PRIVATE },
-  { value: "GROUP", label: "群里认识", count: sourceCounts.value.GROUP },
+  { value: "ALL", label: "全部", count: sourceCounts.value.all },
+  { value: "PRIVATE", label: "私聊认识", count: sourceCounts.value.private },
+  { value: "GROUP", label: "群里认识", count: sourceCounts.value.group },
 ]);
 
-function timeOf(value: string | null) {
-  return value ? Date.parse(value) : 0;
-}/** 私聊是对方主动找上来的，比在群里被回一句更近 —— 「关系亲疏」拿它做第一权重。 */
-function closenessRank(item: Friend) {
-  return item.firstSource === "PRIVATE" ? 1 : 0;
-}
-
-const visibleFriends = computed(() => {
-  const keyword = query.value.trim().toLowerCase();
-  return characterFriends.value
-    .filter((item) => sourceFilter.value === "ALL" || item.firstSource === sourceFilter.value)
-    .filter((item) => {
-      if (!keyword) return true;
-      return (item.displayName ?? "").toLowerCase().includes(keyword)
-        || item.platformUid.toLowerCase().includes(keyword)
-        || platformLabel(item.platform).toLowerCase().includes(keyword);
-    })
-    .sort((a, b) => {
-      // factor 是这一维度自己的方向：升序 1、降序 -1。次级条件跟着一起翻，
-      // 否则「次数升序」里同次数的人会被另一套顺序排回去，看起来像没生效。
-      const factor = sortDirections.value[sortBy.value] === "asc" ? 1 : -1;
-      const byRecentAsc = timeOf(a.lastInteractedAt) - timeOf(b.lastInteractedAt);
-      if (sortBy.value === "recent") {
-        return byRecentAsc * factor || timeOf(a.knownSince) - timeOf(b.knownSince);
-      }
-      if (sortBy.value === "count") {
-        return (a.interactionCount - b.interactionCount) * factor || byRecentAsc * -1;
-      }
-      if (sortBy.value === "known") {
-        return (Date.parse(a.knownSince) - Date.parse(b.knownSince)) * factor;
-      }
-      return (closenessRank(a) - closenessRank(b)) * factor
-        || (a.interactionCount - b.interactionCount) * factor
-        || byRecentAsc * -1;
-    });
-});
-
-/** 一页 12 个＝四列三行，正好铺满不剩半行。 */
-const PAGE_SIZE = 12;
-const page = ref(1);
-
-const totalPages = computed(() => Math.max(1, Math.ceil(visibleFriends.value.length / PAGE_SIZE)));
-
-const pagedFriends = computed(() => {
-  const start = (page.value - 1) * PAGE_SIZE;
-  return visibleFriends.value.slice(start, start + PAGE_SIZE);
-});
-
-const rangeText = computed(() => {
-  const total = visibleFriends.value.length;
-  if (!total) return "0 人";
-  const start = (page.value - 1) * PAGE_SIZE + 1;
-  const end = Math.min(total, page.value * PAGE_SIZE);
-  return `${start}–${end} / 共 ${total} 人`;
-});
-
-/** 页码最多摊七个位置，中间用 0 当省略号：1 … 4 5 6 … 20 */
-const pageNumbers = computed(() => {
-  const total = totalPages.value;
-  const current = page.value;
-  if (total <= 7) return Array.from({ length: total }, (_, index) => index + 1);
-  const picked = [...new Set([1, total, current - 1, current, current + 1])]
-    .filter((value) => value >= 1 && value <= total)
-    .sort((a, b) => a - b);
-  const result: number[] = [];
-  let previous = 0;
-  for (const value of picked) {
-    if (previous && value - previous > 1) result.push(0);
-    result.push(value);
-    previous = value;
-  }
-  return result;
-});
-
-/** 换了角色、筛了来源、改了关键词或排序，都回第一页 —— 停在第 5 页看新条件是空的会以为没数据。 */
-watch([activeCharacterId, query, sourceFilter, sortBy, sortDirections], () => {
-  page.value = 1;
-}, { deep: true });
-
-function goPage(target: number) {
-  page.value = Math.min(totalPages.value, Math.max(1, target));
-}
-
-function countOfCharacter(characterId: string) {
-  return friends.value.filter((item) => item.characterId === characterId).length;
-}
-
-async function loadFriends() {
+async function load(target = page.value) {
   loading.value = true;
   try {
-    const response = await $fetch<{ friends: Friend[]; characters: Character[] }>("/api/admin/identities");
-    friends.value = response.friends;
+    const response = await $fetch<FriendPage>("/api/admin/identities", {
+      query: {
+        characterId: activeCharacterId.value || undefined,
+        q: query.value.trim() || undefined,
+        source: sourceFilter.value,
+        sort: sortBy.value,
+        dir: sortDirections.value[sortBy.value],
+        page: target,
+        pageSize: PAGE_SIZE,
+      },
+    });
+    friends.value = response.items;
     characters.value = response.characters;
-    const stillValid = response.characters.some((item) => item.id === activeCharacterId.value);
-    if (!stillValid) {
-      // 默认落在「朋友最多的那个角色」上，而不是列表第一个 —— 空名单开局只会让人以为没数据。
-      const ranked = [...response.characters].sort((a, b) => countOfCharacter(b.id) - countOfCharacter(a.id));
-      activeCharacterId.value = ranked[0]?.id ?? "";
-    }
+    activeCharacterId.value = response.activeCharacterId;
+    page.value = response.page;
+    total.value = response.total;
+    totalPages.value = response.totalPages;
+    stats.value = response.stats;
+    sourceCounts.value = response.sourceCounts;
   } catch (error) {
     ElMessage.error(readErrorMessage(error, "无法读取朋友列表。"));
   } finally {
@@ -241,7 +162,43 @@ async function loadFriends() {
   }
 }
 
-onMounted(loadFriends);
+/** 换角色直接重取：名单变了，停在原来的页码上没有意义。 */
+function pickCharacter(characterId: string) {
+  if (characterId === activeCharacterId.value) return;
+  activeCharacterId.value = characterId;
+  load(1);
+}
+
+function pickSource(value: "ALL" | "PRIVATE" | "GROUP") {
+  if (value === sourceFilter.value) return;
+  sourceFilter.value = value;
+  load(1);
+}
+
+function pickSort(value: SortBy) {
+  if (sortBy.value === value) {
+    sortDirections.value[value] = sortDirections.value[value] === "asc" ? "desc" : "asc";
+  } else {
+    sortBy.value = value;
+  }
+  load(1);
+}
+
+/** 搜索防抖：每敲一个字就发一次请求，中文输入法下等于连打十次。 */
+let searchTimer: ReturnType<typeof setTimeout> | null = null;
+function onQueryInput() {
+  if (searchTimer) clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => {
+    searchTimer = null;
+    load(1);
+  }, 260);
+}
+
+onBeforeUnmount(() => {
+  if (searchTimer) clearTimeout(searchTimer);
+});
+
+onMounted(() => load(1));
 </script>
 
 <template>
@@ -256,7 +213,7 @@ onMounted(loadFriends);
           type="button"
           class="btn"
           :disabled="loading"
-          @click="loadFriends"
+          @click="load()"
         >
           <el-icon><Refresh /></el-icon>刷新
         </button>
@@ -268,7 +225,7 @@ onMounted(loadFriends);
       class="friend-grid"
     >
       <div
-        v-for="i in 2"
+        v-for="i in 4"
         :key="'sk-' + i"
         class="friend-card is-skeleton"
       >
@@ -302,9 +259,9 @@ onMounted(loadFriends);
             type="button"
             class="seg-btn"
             :class="{ 'is-on': activeCharacterId === item.id }"
-            @click="activeCharacterId = item.id"
+            @click="pickCharacter(item.id)"
           >
-            {{ item.name }}<span class="seg-n">{{ countOfCharacter(item.id) }}</span>
+            {{ item.name }}<span class="seg-n">{{ item.friendCount }}</span>
           </button>
         </div>
         <label class="fr-search">
@@ -313,6 +270,7 @@ onMounted(loadFriends);
             v-model="query"
             type="search"
             placeholder="搜昵称或 UID"
+            @input="onQueryInput"
           >
         </label>
         <span class="seg-label">来源</span>
@@ -323,7 +281,7 @@ onMounted(loadFriends);
             type="button"
             class="seg-btn"
             :class="{ 'is-on': sourceFilter === option.value }"
-            @click="sourceFilter = option.value"
+            @click="pickSource(option.value)"
           >
             {{ option.label }}<span class="seg-n">{{ option.count }}</span>
           </button>
@@ -348,34 +306,34 @@ onMounted(loadFriends);
       </div>
 
       <div
-        v-if="characterFriends.length"
+        v-if="stats.total"
         class="band"
       >
         <div class="band-cell">
           <span class="band-k">{{ currentCharacter?.name ?? "她" }}认识的人</span>
-          <span class="band-v">{{ characterFriends.length }}<small>个</small></span>
+          <span class="band-v">{{ stats.total }}<small>个</small></span>
           <span class="band-f">有过一来一往的都算</span>
         </div>
         <div class="band-cell">
           <span class="band-k">聊过两次以上</span>
-          <span class="band-v">{{ familiarCount }}<small>个</small></span>
+          <span class="band-v">{{ stats.familiar }}<small>个</small></span>
           <span class="band-f">只回一句就消失的算路人</span>
         </div>
         <div class="band-cell">
           <span class="band-k">最近七天有来往</span>
-          <span class="band-v">{{ recentCount }}<small>个</small></span>
+          <span class="band-v">{{ stats.recent }}<small>个</small></span>
           <span class="band-f">按最后一次互动算</span>
         </div>
       </div>
 
       <div
-        v-if="!visibleFriends.length"
+        v-if="!friends.length && !loading"
         class="empty-block"
       >
         <span class="empty-icon"><el-icon><User /></el-icon></span>
-        <h3>{{ characterFriends.length ? "没有找到这个人" : "还没有朋友" }}</h3>
-        <p v-if="characterFriends.length">
-          换个关键词试试。
+        <h3>{{ stats.total ? "没有找到这个人" : "还没有朋友" }}</h3>
+        <p v-if="stats.total">
+          换个关键词，或者把来源切回「全部」。
         </p>
         <p v-else>
           有人在 QQ 上私聊她，或者她在群里回了谁，这里就会出现那个人。
@@ -387,7 +345,7 @@ onMounted(loadFriends);
         class="friend-grid"
       >
         <article
-          v-for="friend in pagedFriends"
+          v-for="friend in friends"
           :key="friend.scopeId"
           class="friend-card"
         >
@@ -423,48 +381,14 @@ onMounted(loadFriends);
         </article>
       </div>
 
-      <div
-        v-if="totalPages > 1"
-        class="pager"
-      >
-        <span class="pager-info">{{ rangeText }}</span>
-        <div class="pager-btns">
-          <button
-            type="button"
-            class="pager-btn"
-            :disabled="page === 1"
-            @click="goPage(page - 1)"
-          >
-            上一页
-          </button>
-          <template
-            v-for="(item, index) in pageNumbers"
-            :key="index"
-          >
-            <span
-              v-if="item === 0"
-              class="pager-gap"
-            >…</span>
-            <button
-              v-else
-              type="button"
-              class="pager-btn is-num"
-              :class="{ 'is-on': item === page }"
-              @click="goPage(item)"
-            >
-              {{ item }}
-            </button>
-          </template>
-          <button
-            type="button"
-            class="pager-btn"
-            :disabled="page === totalPages"
-            @click="goPage(page + 1)"
-          >
-            下一页
-          </button>
-        </div>
-      </div>
+      <PagerBar
+        :page="page"
+        :total="total"
+        :total-pages="totalPages"
+        :page-size="PAGE_SIZE"
+        unit="人"
+        @update:page="load"
+      />
     </template>
   </div>
 </template>
@@ -537,32 +461,6 @@ onMounted(loadFriends);
   padding: 14px 16px 13px;
 }
 .friend-card.is-skeleton { gap: 10px; padding-bottom: 18px; }
-
-/* 分页：白砖一条，左边范围右边翻页 */
-.pager { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: var(--sp-4); border-radius: 10px; background: var(--surface); padding: 8px 12px; }
-.pager-info { color: var(--dim); font-size: 12px; font-variant-numeric: tabular-nums; }
-.pager-btns { display: flex; align-items: center; gap: 2px; }
-.pager-btn {
-  display: inline-flex;
-  height: 30px;
-  min-width: 30px;
-  align-items: center;
-  justify-content: center;
-  border: 0;
-  border-radius: 6px;
-  background: none;
-  padding: 0 9px;
-  color: var(--text-2);
-  font-size: 12px;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  cursor: pointer;
-  transition: background .14s var(--ease), color .14s var(--ease);
-}
-.pager-btn:hover:not(:disabled) { background: var(--surface-2); }
-.pager-btn:disabled { color: var(--faint); cursor: default; }
-.pager-btn.is-num.is-on { background: var(--brand-soft); color: var(--brand-strong); }
-.pager-gap { padding: 0 2px; color: var(--faint); font-size: 12px; }
 
 .fr-head { display: flex; align-items: flex-start; gap: 11px; }
 .fr-avatar {

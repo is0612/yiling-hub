@@ -342,6 +342,8 @@ model Message {
   @@map("messages")
 }
 
+/// 请求级的幂等与并发锁：同一个 `requestKey` 只处理一次，重复提交拿同一条回复。
+/// 没有外键，删角色时由 server/utils/character-delete.ts 显式清理。
 model ChatRequest {
   id             String   @id @default(uuid()) @db.Uuid
   ownerId        String   @db.Uuid
@@ -508,6 +510,8 @@ model MemoryJob {
 
 /// QQ 群公告草稿。管理员在群里让角色拟稿，确认后才发布；草稿有有效期，
 /// 避免几天后一句「确认发布」把过期内容发出去。
+///
+/// `characterId` 没有外键，删角色时由 server/utils/character-delete.ts 显式清理。
 model OnebotGroupAnnouncement {
   id           String    @id @default(uuid()) @db.Uuid
   connectionId String    @db.Uuid
@@ -658,7 +662,10 @@ model ProactiveIntent {
 /// 所以「这个群多久没动静」在库里查不到；而判断这件事的 tick 是独立进程，
 /// 读不到适配器内存里的 `GroupContext`，只能落一张轻表。
 ///
-/// 没有 relation：这张表只是渠道侧的事实记录，不参与角色的级联删除语义，
+/// 没有 relation：这张表只是渠道侧的事实记录，故意不挂外键 ——
+/// 但**删角色时必须显式清理**（见 server/utils/character-delete.ts），
+/// 解绑渠道时也要清（见 server/api/admin/channels/[id]/bindings/[bindingId].delete.ts），
+/// 否则每删一个角色 / 解一次绑就在库里留一批指向已不存在对象的活跃度行。
 /// 与 `onebot_group_announcements` 同一个处理方式。
 model GroupActivity {
   id                     String    @id @default(uuid()) @db.Uuid

@@ -18,6 +18,8 @@ type BundleCounts = {
   events: number;
   snapshots: number;
   catchphrases: number;
+  friends: number;
+  friendMemories: number;
 };
 
 type BundlePreview = {
@@ -75,17 +77,23 @@ function asArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
 }
 
-function readCounts(source: unknown, memories: unknown[], events: unknown[], snapshots: unknown[], phrases: unknown[]): BundleCounts {
+function readCounts(source: unknown, memories: unknown[], events: unknown[], snapshots: unknown[], phrases: unknown[], friends: unknown[]): BundleCounts {
   const declared = asRecord(asRecord(source).counts);
   const privateMemories = Array.isArray(memories)
     ? memories.filter((item) => asRecord(item).scope === "private").length
     : 0;
+  const friendMemories = friends.reduce<number>((total, friend) => {
+    const list = asRecord(friend).memories;
+    return total + (Array.isArray(list) ? list.length : 0);
+  }, 0);
   return {
     memories: typeof declared.memories === "number" ? declared.memories : memories.length,
     privateMemories: typeof declared.privateMemories === "number" ? declared.privateMemories : privateMemories,
     events: typeof declared.events === "number" ? declared.events : events.length,
     snapshots: typeof declared.snapshots === "number" ? declared.snapshots : snapshots.length,
     catchphrases: typeof declared.catchphrases === "number" ? declared.catchphrases : phrases.length,
+    friends: typeof declared.friends === "number" ? declared.friends : friends.length,
+    friendMemories: typeof declared.friendMemories === "number" ? declared.friendMemories : friendMemories,
   };
 }
 
@@ -95,13 +103,14 @@ function buildPreview(source: Record<string, unknown>): BundlePreview {
   const events = asArray(source.events);
   const snapshots = asArray(source.snapshots);
   const phrases = asArray(source.catchphrases);
+  const friends = asArray(source.friends);
   return {
     name: typeof character.name === "string" && character.name.trim() ? character.name.trim() : "未命名角色",
     alias: typeof character.alias === "string" ? character.alias : "",
     description: typeof character.description === "string" ? character.description : "",
     exportedAt: typeof source.exportedAt === "string" ? source.exportedAt : null,
     formatVersion: typeof source.formatVersion === "number" ? source.formatVersion : null,
-    counts: readCounts(source, memories, events, snapshots, phrases),
+    counts: readCounts(source, memories, events, snapshots, phrases, friends),
   };
 }
 
@@ -303,6 +312,10 @@ function formatExportedAt(value: string | null): string {
           <dt>梗语录</dt>
           <dd>{{ preview.counts.catchphrases }} 条</dd>
         </div>
+        <div>
+          <dt>她的朋友</dt>
+          <dd>{{ preview.counts.friends }} 位</dd>
+        </div>
       </dl>
 
       <p
@@ -310,6 +323,14 @@ function formatExportedAt(value: string | null): string {
         class="private-note"
       >
         其中 {{ preview.counts.privateMemories }} 条是导出者的私人记忆，导入后会成为你的私人记忆，只在你和她对话时参与检索。
+      </p>
+
+      <p
+        v-if="preview.counts.friends > 0"
+        class="friend-note"
+      >
+        还带着 {{ preview.counts.friends }} 位朋友（{{ preview.counts.friendMemories }} 条关于他们的记忆）。
+        对方的 QQ 号会留在本机；同一个人若已存在，会沿用已有身份，不会重复建。
       </p>
     </div>
 
@@ -421,7 +442,7 @@ function formatExportedAt(value: string | null): string {
 }
 .preview-counts {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(88px, 1fr));
   gap: var(--sp-3);
   margin: var(--sp-4) 0 0;
   padding-top: var(--sp-3);
@@ -435,6 +456,15 @@ function formatExportedAt(value: string | null): string {
   background: #fff8ec;
   padding: 8px 10px;
   color: #8a5a12;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.friend-note {
+  margin: var(--sp-2) 0 0;
+  border-radius: 8px;
+  background: var(--surface-3);
+  padding: 8px 10px;
+  color: var(--dim);
   font-size: 12px;
   line-height: 1.6;
 }

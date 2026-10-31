@@ -14,6 +14,14 @@ import { parseEventTimeRange, type EventTimeRange } from "./memory-event-time";
 
 export const RAW_MESSAGE_TOKEN_BUDGET_DEFAULT = 900;
 export const RAW_MESSAGE_LIMIT_DEFAULT = 6;
+/**
+ * 单条原文最多进多少字。
+ *
+ * 不截断的时候只有两种结局：一条几千字的粘贴把整个预算吃光（第一条永远放行，所以它会**整条**进去），
+ * 或者因为它装不下而被整条跳过、那天就「什么都不记得」。截断只是少给尾巴，前面的事实还在，
+ * 而且明确告诉模型「后面还有字」，它不会把省略当成话说完了。
+ */
+export const RAW_MESSAGE_MAX_CHARS = 180;
 
 export type RawMessageCandidate = {
   id: string;
@@ -22,7 +30,7 @@ export type RawMessageCandidate = {
   occurredAt: Date;
 };
 
-export type RankedRawMessage<T> = T & { relevanceScore: number; tokens: number };
+export type RankedRawMessage<T> = T & { relevanceScore: number; tokens: number; truncated: boolean };
 
 export type SelectedRawMessages<T> = {
   items: RankedRawMessage<T>[];
@@ -52,11 +60,24 @@ function scoreOf(query: string, content: string): number {
   return Math.round(hit * 100) / 100;
 }
 
+/** 按码点切，避免把 emoji 或代理对切成半个字符。 */
+function clipContent(content: string): { content: string; truncated: boolean } {
+  const chars = Array.from(content);
+  if (chars.length <= RAW_MESSAGE_MAX_CHARS) return { content, truncated: false };
+  const rest = chars.length - RAW_MESSAGE_MAX_CHARS;
+  return {
+    content: chars.slice(0, RAW_MESSAGE_MAX_CHARS).join("") + `…（后面还有 ${rest} 字未展开）`,
+    truncated: true,
+  };
+}
+
 /**
  * 在「问句指向的那一天」里挑几句原文。
  *
  * 挑法：先按关键词匹配；匹配不到就按离问句最近的时间补足 —— 那天确实没有相关话时，
  * 至少给她一句当时在场的话，而不是空手说「记不得」。
+ * 每条只取前 `RAW_MESSAGE_MAX_CHARS` 字（超出明确标注还有多少字没展开），
+ * 这样一条长粘贴不会撑爆预算，也不会把同一天的其它几句挤掉。
  */
 export function selectRawMessagesForPrompt<T extends RawMessageCandidate>(
   query: string,
@@ -80,11 +101,17 @@ export function selectRawMessagesForPrompt<T extends RawMessageCandidate>(
     return at >= range.start.getTime() && at < range.end.getTime();
   });
 
-  const scored = inRange.map((message) => ({
-    ...message,
-    relevanceScore: scoreOf(query, message.content),
-    tokens: estimateTokens(message.content),
-  }));
+  const scored = inRange.map((message) => {
+    const clipped = clipContent(message.content);
+    return {
+      ...message,
+      content: clipped.content,
+      truncated: clipped.truncated,
+      // 相关度按**原文**算：要匹配的词可能正好落在被截掉的尾巴上。
+      relevanceScore: scoreOf(query, message.content),
+      tokens: estimateTokens(clipped.content),
+    };
+  });
   const matched = scored
     .filter((message) => message.relevanceScore > 0)
     .sort((left, right) =>

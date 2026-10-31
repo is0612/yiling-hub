@@ -210,20 +210,37 @@ paths:
   /admin/users:
     get:
       tags: [Auth]
-      summary: 列出所有账号（仅管理员）
-      description: 只返回身份与活动统计（角色数、最后活跃时间），不包含任何对话或记忆内容。
+      summary: 分页列出账号（仅管理员）
+      description: 只返回身份与活动统计（角色数、最后活跃时间），不包含任何对话或记忆内容。分页由服务端做，`stats` 按全表统计，与当前页无关。
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
       responses:
         '200':
-          description: 账号列表
+          description: 账号列表分页
           content:
             application/json:
               schema:
                 type: object
-                required: [users]
+                required: [items, total, page, pageSize, totalPages, hasMore, stats]
                 properties:
-                  users:
+                  items:
                     type: array
                     items: { $ref: '#/components/schemas/AdminUserSummary' }
+                  total: { type: integer }
+                  page: { type: integer }
+                  pageSize: { type: integer }
+                  totalPages: { type: integer }
+                  hasMore: { type: boolean }
+                  stats:
+                    type: object
+                    required: [total, adminCount, disabledCount]
+                    properties:
+                      total: { type: integer }
+                      adminCount: { type: integer }
+                      disabledCount: { type: integer }
+        '400':
+          description: 分页参数无效
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -715,23 +732,27 @@ paths:
   /admin/audit:
     get:
       tags: [Auth]
-      summary: 最近审计活动（仅管理员）
-      description: 默认返回鉴权相关审计（登录、登出、注册、改密、撤销会话）；可用 action 精确筛选。
+      summary: 分页读取审计活动（仅管理员）
+      description: 默认返回鉴权相关审计（登录、登出、注册、改密、撤销会话）；可用 action 精确筛选。审计表只增不减，因此分页由服务端做（旧参数 limit 仍按 pageSize 解释）。
       parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
         - name: limit
           in: query
-          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+          required: false
+          description: 兼容旧调用，等价于 pageSize
+          schema: { type: integer, minimum: 1, maximum: 100 }
         - name: action
           in: query
           schema: { type: string }
       responses:
         '200':
-          description: 审计事件列表
+          description: 审计事件分页
           content:
             application/json:
               schema:
                 type: object
-                required: [items]
+                required: [items, total, page, pageSize, totalPages, hasMore]
                 properties:
                   items:
                     type: array
@@ -746,6 +767,110 @@ paths:
                         details: { type: object, nullable: true }
                         createdAt: { type: string, format: date-time }
                         actor: { type: string, nullable: true }
+                  total: { type: integer }
+                  page: { type: integer }
+                  pageSize: { type: integer }
+                  totalPages: { type: integer }
+                  hasMore: { type: boolean }
+        '400':
+          description: 分页参数无效
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: 仅管理员可访问
+  /admin/identities:
+    get:
+      tags: [Auth]
+      summary: 分页读取「她的朋友」（仅管理员）
+      description: |
+        一行 = 某角色认识的某个人（一条关系），不是一个账号；同一个人跟两个角色都聊过就是两行。
+        只返回关系元信息（平台、UID、昵称、互动次数、来源、最近一次），不含任何对话或记忆正文。
+        `stats` 与 `sourceCounts` 始终按该角色的全部朋友统计，不受 `q`、`source` 影响。
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - name: pageSize
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 12 }
+        - name: characterId
+          in: query
+          description: 不传时落在「朋友最多的那个角色」上
+          schema: { type: string, format: uuid }
+        - name: q
+          in: query
+          description: 匹配昵称、平台 UID、平台名（含「B站 / QQ / 微信」这类展示名）
+          schema: { type: string, maxLength: 60 }
+        - name: source
+          in: query
+          schema: { type: string, enum: [ALL, PRIVATE, GROUP], default: ALL }
+        - name: sort
+          in: query
+          schema: { type: string, enum: [recent, count, closeness, known], default: recent }
+        - name: dir
+          in: query
+          description: 升降序；不传时 known 默认 asc，其余默认 desc
+          schema: { type: string, enum: [asc, desc] }
+      responses:
+        '200':
+          description: 朋友列表分页 + 角色分段 + 统计
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, total, page, pageSize, totalPages, hasMore, characters, activeCharacterId, stats, sourceCounts]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      required: [scopeId, characterId, characterName, identityId, platform, platformUid, interactionCount, knownSince, conversationCount]
+                      properties:
+                        scopeId: { type: string, format: uuid }
+                        characterId: { type: string, format: uuid }
+                        characterName: { type: string }
+                        identityId: { type: string, format: uuid }
+                        platform: { type: string }
+                        platformUid: { type: string }
+                        displayName: { type: string, nullable: true }
+                        status: { type: string, enum: [UNVERIFIED, VERIFIED, REVOKED] }
+                        linkedUserId: { type: string, format: uuid, nullable: true }
+                        interactionCount: { type: integer }
+                        lastInteractedAt: { type: string, format: date-time, nullable: true }
+                        knownSince: { type: string, format: date-time }
+                        firstSource: { type: string, nullable: true, enum: [PRIVATE, GROUP, null] }
+                        conversationCount: { type: integer }
+                  total: { type: integer }
+                  page: { type: integer }
+                  pageSize: { type: integer }
+                  totalPages: { type: integer }
+                  hasMore: { type: boolean }
+                  characters:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, name, status, friendCount]
+                      properties:
+                        id: { type: string, format: uuid }
+                        name: { type: string }
+                        status: { type: string }
+                        friendCount: { type: integer }
+                  activeCharacterId: { type: string, format: uuid }
+                  stats:
+                    type: object
+                    required: [total, familiar, recent]
+                    properties:
+                      total: { type: integer, description: 这个角色的全部朋友 }
+                      familiar: { type: integer, description: 聊过两次以上 }
+                      recent: { type: integer, description: 最近七天有来往 }
+                  sourceCounts:
+                    type: object
+                    required: [all, private, group]
+                    properties:
+                      all: { type: integer }
+                      private: { type: integer }
+                      group: { type: integer }
+        '400':
+          description: 分页参数无效
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -885,10 +1010,48 @@ paths:
           $ref: '#/components/responses/NotFound'
     delete:
       tags: [Characters]
-      summary: 删除角色（实现时必须使用明确的删除/归档策略）
+      operationId: deleteCharacter
+      summary: 删除角色（连同全部关联数据）
+      description: |
+        删角色是**彻底删除**，没有归档、没有回收站。数据分三类处理：
+
+        1. 有外键的交给数据库级联：会话与消息、记忆范围与记忆/忆泡/事件/任务、渠道绑定与
+           B站账本、记忆设置、表情包清单、梗、主动意图；审计日志保留但 `characterId` 置空。
+        2. 没有外键的三张表由服务端显式清理：`chat_requests`、`group_activities`、
+           `onebot_group_announcements`。
+        3. 磁盘上 `.data/stickers/<角色 id>/` 与 `.data/sticker-originals/<角色 id>/`
+           整个目录删除。
+
+        故意**不删**：`model_usages`（token 账单不随角色消失）、外部身份（`(platform, platformUid)`
+        全局唯一，同一个账号可能同时是几个角色的朋友）。
       responses:
-        '204':
-          description: 删除或归档完成
+        '200':
+          description: 删除完成
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        required: [ok, id, name, removedStickerDirs, purged]
+                        properties:
+                          ok: { type: boolean, example: true }
+                          id: { type: string, format: uuid }
+                          name: { type: string }
+                          removedStickerDirs:
+                            type: boolean
+                            description: 是否真的删掉了磁盘上的表情包目录（本来就没有时为 false）
+                          purged:
+                            type: object
+                            description: 三张没有外键的表各删了多少行
+                            required: [chatRequests, groupActivities, announcements]
+                            properties:
+                              chatRequests: { type: integer }
+                              groupActivities: { type: integer }
+                              announcements: { type: integer }
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
@@ -900,7 +1063,13 @@ paths:
       tags: [Characters]
       operationId: exportCharacterCard
       summary: 导出角色卡
-      description: "导出人设、少量模型参数、角色全局记忆、**导出者自己的**私人记忆、忆泡、当前版本阶段总结与梗。不包含会话原文、他人（其他用户 / QQ 群友）的私人记忆、渠道绑定、任务队列、用量审计、API Key 与表情包图片 —— 表情包换机器后从 QQ 收藏夹重新同步，API Key 重新填写。响应同时写入 `character.exported` 审计。"
+      description: "导出人设、少量模型参数、角色全局记忆、**导出者自己的**私人记忆、忆泡、当前版本阶段总结、梗，以及（默认）她的朋友。不包含会话原文、其他站内用户的私人记忆、朋友的账号绑定、渠道绑定、任务队列、用量审计、API Key 与表情包图片 —— 表情包换机器后从 QQ 收藏夹重新同步，API Key 重新填写。响应同时写入 `character.exported` 审计。"
+      parameters:
+        - name: friends
+          in: query
+          required: false
+          description: "`0` 或 `false` 时不导出朋友段。朋友段包含别人的平台账号与「她怎么看他们」，把卡发给别人时应当关掉；换电脑自己用则保持默认。"
+          schema: { type: string, enum: ['0', 'false', '1', 'true'], default: '1' }
       responses:
         '200':
           description: 角色卡 JSON，`Content-Disposition` 为附件
@@ -2443,7 +2612,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [generatedAt, characters, tasks, nextSnapshot, cycle, latestSnapshot, events, admin, usage]
+                required: [generatedAt, characters, tasks, nextSnapshot, cycle, latestSnapshot, events, admin, usage, watchdog]
                 properties:
                   generatedAt: { type: string, format: date-time }
                   characters:
@@ -2482,6 +2651,36 @@ paths:
                         chatApiKeyConfigured: { type: boolean, description: false 时该角色的快照任务会留在队列中不执行 }
                         failedTaskCount: { type: integer, minimum: 0, description: FAILED + RETRY_WAIT }
                         pendingTaskCount: { type: integer, minimum: 0, description: QUEUED + RUNNING }
+                  watchdog:
+                    type: object
+                    description: |
+                      停滞检测：不看进程存活，看「事情有没有往前走」。
+                      覆盖五类：任务卡在运行中没人回收、队列积压没人认领、该归档却没排任务、自动归档长期零产出、
+                      B站 值班长期没跑过一轮（记忆流水线四项互斥，值班一项独立，同一角色可能两条都给）。
+                      每个角色只报最上游的那一条原因；模型未配置时不报「Worker 没在跑」（留在队列是设计行为，
+                      `characters[].chatApiKeyConfigured` 已经说明这件事）。
+                    required: [checkedAt, findings]
+                    properties:
+                      checkedAt: { type: string, format: date-time }
+                      findings:
+                        type: array
+                        items:
+                          type: object
+                          required: [code, severity, characterId, characterName, message, detail]
+                          properties:
+                            code:
+                              type: string
+                              enum: [task_stuck, worker_stalled, scheduler_stalled, snapshot_silent, duty_silent]
+                              description: |
+                                task_stuck=任务卡在运行中没人回收；worker_stalled=队列积压没人认领；
+                                scheduler_stalled=归档时间已过却没有任务；snapshot_silent=自动归档长期零产出；
+                                duty_silent=B站 值班开着但很久没跑过一轮（与上面四项互斥地属于不同流水线，
+                                一个角色可能同时出现记忆类与值班类各一条）
+                            severity: { type: string, enum: [err, warn] }
+                            characterId: { type: string, format: uuid }
+                            characterName: { type: string }
+                            message: { type: string, description: 一句给人看的话，总览页直接显示 }
+                            detail: { type: string, description: 判定依据，附对应进程和排查方向 }
                   tasks:
                     type: object
                     required: [pending, failed, items]
@@ -3714,16 +3913,61 @@ components:
               usage: { type: string, maxLength: 2000 }
               enabled: { type: boolean, default: true }
               source: { type: string, maxLength: 20 }
+        friends:
+          type: array
+          maxItems: 500
+          description: "她的朋友：只要 `interactionCount > 0` 的关系。分享型导出（`?friends=0`）时为空数组。不含账号绑定字段。"
+          items:
+            type: object
+            required: [platform, platformUid]
+            properties:
+              platform: { type: string, maxLength: 50, description: '渠道标识，如 qq-onebot / bili' }
+              platformUid: { type: string, maxLength: 255, description: '平台账号（QQ 号 / B站 uid）。导入时按它认人：已有身份就沿用，不新建。' }
+              displayName: { type: string, maxLength: 255 }
+              firstSource: { type: string, nullable: true, enum: [PRIVATE, GROUP, null], description: '在哪儿认识的' }
+              interactionCount: { type: integer, minimum: 0 }
+              lastInteractedAt: { type: string, format: date-time, nullable: true }
+              knownSince: { type: string, format: date-time, nullable: true, description: 关系建立时间 }
+              memories:
+                type: array
+                maxItems: 300
+                items:
+                  type: object
+                  required: [content]
+                  properties:
+                    category: { type: string, enum: [FACT, PREFERENCE, RELATIONSHIP, COMMITMENT, GOAL, EVENT, SUMMARY, OTHER] }
+                    content: { type: string, maxLength: 12000 }
+                    confidence: { type: number, minimum: 0, maximum: 1, nullable: true }
+                    importance: { type: number, minimum: 0, maximum: 1, default: 0.5 }
+                    validFrom: { type: string, format: date-time, nullable: true }
+                    validTo: { type: string, format: date-time, nullable: true }
+                    dedupeKey: { type: string, nullable: true }
+              snapshots:
+                type: array
+                maxItems: 60
+                items:
+                  type: object
+                  required: [periodStart, periodEnd, summary]
+                  properties:
+                    kind: { type: string, enum: [AUTOMATIC, MANUAL] }
+                    periodStart: { type: string, format: date-time }
+                    periodEnd: { type: string, format: date-time }
+                    summary: { type: string, maxLength: 20000 }
+                    structuredContent: { type: object, additionalProperties: true }
+                    generatedAt: { type: string, format: date-time, nullable: true }
+                    createdAt: { type: string, format: date-time }
         counts: { $ref: '#/components/schemas/CharacterCardCounts' }
     CharacterCardCounts:
       type: object
-      required: [memories, privateMemories, events, snapshots, catchphrases]
+      required: [memories, privateMemories, events, snapshots, catchphrases, friends, friendMemories]
       properties:
         memories: { type: integer }
         privateMemories: { type: integer, description: 其中属于导出者本人的私人记忆条数；导入后成为导入者的私人记忆 }
         events: { type: integer }
         snapshots: { type: integer }
         catchphrases: { type: integer }
+        friends: { type: integer, description: 带走的朋友数；`?friends=0` 时为 0 }
+        friendMemories: { type: integer, description: 朋友名下的记忆总条数，不含朋友本人以外的角色记忆 }
     CharacterPatch:
       type: object
       description: 更新角色时的部分字段；所有字段均为可选。API Key 仅可写入，服务端会加密保存且不会回传。

@@ -3,9 +3,12 @@
  * 用户管理。
  *
  * 内容排序：① 有几个账号、几个管理员、几个停用（统计带）② 账号清单（要动手的就是「重置密码 / 停用」）
- * ③ 最近登录活动（审计，排最后，默认只露 8 条）。
+ * ③ 最近登录活动（审计，排最后）。
  * 表格用 CSS grid 排：原来的「角色」「角色数」两列并进账号格（管理员徽章 + 「1 个角色」），
  * 7 列压到 5 列，一行不用横向滚。
+ *
+ * 两处列表都走后端分页：账号 20/页、审计 10/页。审计是全站唯一只增不减的表，
+ * 之前一次拉 30 条还能忍，上服务器后不行，所以接口和页面一起改了。
  */
 import { Clock, Refresh } from "@element-plus/icons-vue";
 import { ElMessage, ElMessageBox } from "element-plus";
@@ -22,8 +25,24 @@ type AdminUser = {
   lastActiveAt: string | null;
 };
 
+type AdminUserPage = {
+  items: AdminUser[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+  hasMore: boolean;
+  /** 全表统计，与当前页无关 —— 否则翻到第 3 页数字会缩水 */
+  stats: { total: number; adminCount: number; disabledCount: number };
+};
+
 const loading = ref(true);
 const users = ref<AdminUser[]>([]);
+const USER_PAGE_SIZE = 20;
+const userPage = ref(1);
+const userTotal = ref(0);
+const userTotalPages = ref(1);
+const stats = ref({ total: 0, adminCount: 0, disabledCount: 0 });
 const resetting = ref(false);
 const dialogVisible = ref(false);
 const resetTarget = ref<AdminUser | null>(null);
@@ -45,8 +64,8 @@ function formatDateTime(value: string | null) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-const adminCount = computed(() => users.value.filter((item) => item.role === "ADMIN").length);
-const disabledCount = computed(() => users.value.filter((item) => item.status === "DISABLED").length);
+const adminCount = computed(() => stats.value.adminCount);
+const disabledCount = computed(() => stats.value.disabledCount);
 
 function labelOf(user: AdminUser) {
   return user.displayName || user.email || user.username;
@@ -57,11 +76,17 @@ function initialOf(user: AdminUser) {
   return Array.from(labelOf(user))[0] ?? "?";
 }
 
-async function loadUsers() {
+async function loadUsers(target = userPage.value) {
   loading.value = true;
   try {
-    const response = await $fetch<{ users: AdminUser[] }>("/api/admin/users");
-    users.value = response.users;
+    const response = await $fetch<AdminUserPage>("/api/admin/users", {
+      query: { page: target, pageSize: USER_PAGE_SIZE },
+    });
+    users.value = response.items;
+    userPage.value = response.page;
+    userTotal.value = response.total;
+    userTotalPages.value = response.totalPages;
+    stats.value = response.stats;
   } catch (error) {
     ElMessage.error(readErrorMessage(error, "无法读取用户列表。"));
   } finally {
@@ -70,10 +95,12 @@ async function loadUsers() {
 }
 
 type AuditItem = { id: string; action: string; createdAt: string; actor: string | null; details: unknown };
+type AuditPage = { items: AuditItem[]; total: number; page: number; totalPages: number };
 const auditItems = ref<AuditItem[]>([]);
-const auditExpanded = ref(false);
-/** 审计只是参考信息，默认露 8 条就够 —— 30 行会把页面拉得很长 */
-const visibleAudit = computed(() => (auditExpanded.value ? auditItems.value : auditItems.value.slice(0, 8)));
+const AUDIT_PAGE_SIZE = 10;
+const auditPage = ref(1);
+const auditTotal = ref(0);
+const auditTotalPages = ref(1);
 const actionLabels: Record<string, string> = {
   "auth.login": "登录",
   "auth.login_failed": "登录失败",
@@ -84,10 +111,15 @@ const actionLabels: Record<string, string> = {
   "auth.sessions_revoked": "退出其他设备",
 };
 
-async function loadAudit() {
+async function loadAudit(target = auditPage.value) {
   try {
-    const response = await $fetch<{ items: AuditItem[] }>("/api/admin/audit?limit=30");
+    const response = await $fetch<AuditPage>("/api/admin/audit", {
+      query: { page: target, pageSize: AUDIT_PAGE_SIZE },
+    });
     auditItems.value = response.items;
+    auditPage.value = response.page;
+    auditTotal.value = response.total;
+    auditTotalPages.value = response.totalPages;
   } catch {
     // 审计读取失败不影响用户管理主功能。
   }
@@ -163,7 +195,7 @@ onMounted(() => {
           type="button"
           class="btn"
           :disabled="loading"
-          @click="loadUsers"
+          @click="loadUsers()"
         >
           <el-icon><Refresh /></el-icon>刷新
         </button>
@@ -173,7 +205,7 @@ onMounted(() => {
     <div class="band">
       <div class="band-cell">
         <span class="band-k">全部账号</span>
-        <span class="band-v">{{ users.length }}<small>个</small></span>
+        <span class="band-v">{{ stats.total }}<small>个</small></span>
         <span class="band-f">只显示账号信息，不含对话与记忆</span>
       </div>
       <div class="band-cell">
@@ -276,19 +308,21 @@ onMounted(() => {
           </span>
         </div>
       </div>
+
+      <PagerBar
+        :page="userPage"
+        :total="userTotal"
+        :total-pages="userTotalPages"
+        :page-size="USER_PAGE_SIZE"
+        unit="个账号"
+        flush
+        @update:page="loadUsers"
+      />
     </div>
 
     <div class="sec-label">
       <h2>最近登录活动</h2>
-      <span class="count">{{ auditItems.length }}</span>
-      <button
-        v-if="auditItems.length > 8"
-        type="button"
-        class="more"
-        @click="auditExpanded = !auditExpanded"
-      >
-        {{ auditExpanded ? "收起" : `展开全部 ${auditItems.length} 条` }}
-      </button>
+      <span class="count">{{ auditTotal }}</span>
     </div>
 
     <div class="audit-panel">
@@ -300,7 +334,7 @@ onMounted(() => {
         <span>还没有登录记录 —— 账号登录、失败与登出都会留在这里</span>
       </div>
       <div
-        v-for="item in visibleAudit"
+        v-for="item in auditItems"
         :key="item.id"
         class="audit-row"
       >
@@ -311,6 +345,16 @@ onMounted(() => {
         <span class="audit-actor">{{ item.actor || "—" }}</span>
         <span class="audit-time">{{ formatDateTime(item.createdAt) }}</span>
       </div>
+
+      <PagerBar
+        :page="auditPage"
+        :total="auditTotal"
+        :total-pages="auditTotalPages"
+        :page-size="AUDIT_PAGE_SIZE"
+        unit="条记录"
+        flush
+        @update:page="loadAudit"
+      />
     </div>
 
     <el-dialog
@@ -451,8 +495,6 @@ onMounted(() => {
 .sec-label { display: flex; align-items: baseline; gap: 8px; margin: var(--sp-5) 0 var(--sp-3); }
 .sec-label h2 { margin: 0; color: var(--text-2); font-size: 14px; font-weight: 700; }
 .sec-label .count { color: var(--dim); font-size: 12px; font-variant-numeric: tabular-nums; }
-.sec-label .more { margin-left: auto; border: 0; background: none; padding: 0; color: var(--brand-strong); font-size: 12px; font-weight: 600; cursor: pointer; }
-.sec-label .more:hover { text-decoration: underline; }
 
 .audit-panel { border-radius: 10px; background: var(--surface); padding: 4px 18px 6px; }
 .audit-row {

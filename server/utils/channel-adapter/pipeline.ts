@@ -37,6 +37,7 @@ import {
   resolveVoiceAsrSettings,
   resolveVoiceTtsSettings,
   transcribeVoices,
+  VOICE_TEXT_MAX_CHARS,
   type ChannelVoiceRef,
   type VoiceTtsSettings,
 } from "../voice";
@@ -888,7 +889,9 @@ async function runChannelTurn(input: {
     rawMessages = selected.items.map((message) => ({
       id: message.id,
       role: message.role,
-      content: message.content.slice(0, 300),
+      // 截断在 selectRawMessagesForPrompt 里做（并按截断后的长度算预算），这里不要再切一刀：
+      // 两处各有一个上限时，短的那个生效、长的那个没人知道它已经失效了。
+      content: message.content,
       occurredAt: message.occurredAt.toISOString(),
       scope: message.conversation.memoryScopeId === globalScope.id ? ("character" as const) : ("private" as const),
     }));
@@ -1016,6 +1019,20 @@ async function runChannelTurn(input: {
   const replyVoice = generated.action === "reply"
     && voicePlanned
     && canSpeakReply(generated.reply);
+  /**
+   * 「决定了要发语音，结果发了文字」必须留痕。
+   *
+   * 这一层原本一行日志都没有，用户看到的只是「她又不说话」，而可能的原因有三个：
+   * 没抽中/冷却（走不到这里）、太长降级（这里）、合成失败（serve.ts 有日志）。
+   * 不记的话，事后只能靠猜 —— 分清这三件事是排查「语音发不出去」的第一步。
+   */
+  if (generated.action === "reply" && voicePlanned && !replyVoice) {
+    console.log("[voice] 该发语音却降级成文字 " + JSON.stringify({
+      chars: generated.reply.length,
+      limit: VOICE_TEXT_MAX_CHARS,
+      reason: "too_long",
+    }));
+  }
   const conversationScopeId = isGroup
     ? globalScope.id
     : (isOwnerTurn && ownerPrivateScopeId ? ownerPrivateScopeId : (primaryIdentityScopeId ?? globalScope.id));

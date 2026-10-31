@@ -146,6 +146,17 @@ export default defineEventHandler(async (event) => {
     modelConfigPatch.voiceChance = Math.round(value);
   }
 
+  // 两条语音之间至少隔多少分钟：0 = 不冷却。上限一天，再长等于永久关掉。
+  if (body.voiceCooldownMinutes !== undefined) {
+    const value = typeof body.voiceCooldownMinutes === "number"
+      ? body.voiceCooldownMinutes
+      : Number(body.voiceCooldownMinutes);
+    if (!Number.isFinite(value) || value < 0 || value > 1440) {
+      throw createError({ statusCode: 400, statusMessage: "语音冷却必须是 0 到 1440 分钟之间的数字。" });
+    }
+    modelConfigPatch.voiceCooldownMinutes = Math.round(value);
+  }
+
   // 语音服务商：地址与模型名都可以在页面上填，不必去改 .env。
   // 空字符串是有效值（= 回落到环境变量 / 角色的聊天地址），所以这里不做「非空」校验。
   for (const [key, label, max] of [

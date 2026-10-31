@@ -133,6 +133,26 @@ export type OverviewLatestSnapshot = {
   version: number;
 };
 
+export type OverviewWatchdogFinding = {
+  code: "task_stuck" | "worker_stalled" | "scheduler_stalled" | "snapshot_silent" | "duty_silent";
+  severity: "err" | "warn";
+  characterId: string;
+  characterName: string;
+  /** 一句给人看的话，页面直接显示。 */
+  message: string;
+  /** 判定依据，排查时看。 */
+  detail: string;
+};
+
+/**
+ * 停滞检测：回答「进程都活着，为什么没有产出」。
+ * 和 `tasks.failed` 不同 —— 那是有任务失败了，这里是任务根本没被排、没被认领或没人回收。
+ */
+export type OverviewWatchdog = {
+  checkedAt: string;
+  findings: OverviewWatchdogFinding[];
+};
+
 export type OverviewPayload = {
   generatedAt: string;
   characters: OverviewCharacter[];
@@ -141,6 +161,7 @@ export type OverviewPayload = {
     failed: number;
     items: OverviewTaskItem[];
   };
+  watchdog: OverviewWatchdog;
   nextSnapshot: OverviewNextSnapshot | null;
   cycle: OverviewCycleSummary | null;
   latestSnapshot: OverviewLatestSnapshot | null;

@@ -28,6 +28,8 @@ const prisma = new PrismaClient({ adapter });
 const ownerA = randomUUID();
 const userB = randomUUID();
 const characterIds: string[] = [];
+/** 测试里建的外部身份，收尾时要一起删干净：qq 号是全局唯一的，留着会污染后续测试。 */
+const identityIds: string[] = [];
 
 async function main() {
   await prisma.user.createMany({
@@ -66,12 +68,46 @@ async function main() {
   const privateAId = randomUUID();
   const privateBId = randomUUID();
   const externalScopeId = randomUUID();
+  // 「她的朋友」：一个真实的外部身份（QQ 号）+ 一条关系范围。
+  // 这里故意把它绑定到 userB，用来验证导入不会顺手改掉已有身份的验证绑定。
+  const friendIdentityId = randomUUID();
+  const strangerIdentityId = randomUUID();
+  identityIds.push(friendIdentityId, strangerIdentityId);
+  await prisma.externalIdentity.create({
+    data: {
+      id: friendIdentityId,
+      platform: "qq-onebot",
+      platformUid: "888888",
+      displayName: "小关",
+      status: "VERIFIED",
+      linkedUserId: userB,
+    },
+  });
+  await prisma.externalIdentity.create({
+    data: { id: strangerIdentityId, platform: "qq-onebot", platformUid: "999999", displayName: "路人", status: "UNVERIFIED" },
+  });
   await prisma.memoryScope.createMany({
     data: [
       { id: globalScopeId, characterId, scopeType: "CHARACTER_GLOBAL", scopeKey: `character:${characterId}:global` },
       { id: privateAId, characterId, scopeType: "USER_PRIVATE", scopeKey: buildUserPrivateScopeKey(characterId, ownerA), userId: ownerA },
       { id: privateBId, characterId, scopeType: "USER_PRIVATE", scopeKey: buildUserPrivateScopeKey(characterId, userB), userId: userB },
-      { id: externalScopeId, characterId, scopeType: "EXTERNAL_IDENTITY", scopeKey: `character:${characterId}:external:qq-onebot:888888` },
+      {
+        id: externalScopeId,
+        characterId,
+        scopeType: "EXTERNAL_IDENTITY",
+        scopeKey: `character:${characterId}:external:qq-onebot:888888`,
+        externalIdentityId: friendIdentityId,
+        firstSource: "GROUP",
+        interactionCount: 7,
+        lastInteractedAt: new Date("2026-10-30T10:00:00Z"),
+      },
+      // 群里出现过但没被搭理的残留：interactionCount = 0，不算朋友，也不该进包。
+      {
+        characterId,
+        scopeType: "EXTERNAL_IDENTITY",
+        scopeKey: `character:${characterId}:external:qq-onebot:999999`,
+        externalIdentityId: strangerIdentityId,
+      },
     ],
   });
 
@@ -96,7 +132,7 @@ async function main() {
       { memoryScopeId: globalScopeId, category: "PREFERENCE", content: "主人怕辣", importance: 0.6 },
       { memoryScopeId: privateAId, category: "PREFERENCE", content: "主人喜欢冰美式", importance: 0.5 },
       { memoryScopeId: privateBId, category: "FACT", content: "B 的秘密：他姓王", importance: 0.9 },
-      { memoryScopeId: externalScopeId, category: "FACT", content: "群里某人的私人信息", importance: 0.9 },
+      { memoryScopeId: externalScopeId, category: "FACT", content: "小关住在北海，怕冷", importance: 0.9 },
     ],
   });
 
@@ -181,11 +217,36 @@ async function main() {
   assert.ok(contents.includes("主人住在杭州"));
   assert.ok(contents.includes("主人喜欢冰美式"));
   assert.ok(!contents.includes("B 的秘密：他姓王"), "别的用户的私人记忆绝对不能进包");
-  assert.ok(!contents.includes("群里某人的私人信息"), "外部身份（群友）的记忆不能进包");
+  assert.ok(
+    !contents.includes("小关住在北海，怕冷"),
+    "朋友的记忆走 friends 段，不混进角色自己的记忆列表",
+  );
+
+  // 她的朋友：只有真的互动过的才算
+  assert.equal(bundle.counts.friends, 1, "只有 interactionCount > 0 的关系才算朋友");
+  assert.equal(bundle.counts.friendMemories, 1);
+  assert.equal(bundle.friends[0]?.platform, "qq-onebot");
+  assert.equal(bundle.friends[0]?.platformUid, "888888");
+  assert.equal(bundle.friends[0]?.displayName, "小关");
+  assert.equal(bundle.friends[0]?.interactionCount, 7, "聊过几次要带过去");
+  assert.equal(bundle.friends[0]?.firstSource, "GROUP", "在哪儿认识的要带过去");
+  assert.equal(bundle.friends[0]?.lastInteractedAt, "2026-10-30T10:00:00.000Z");
+  assert.equal(bundle.friends[0]?.memories[0]?.content, "小关住在北海，怕冷");
+  assert.ok(
+    !bundle.friends.some((friend) => friend.platformUid === "999999"),
+    "0 次互动的残留不是朋友，不该进包",
+  );
 
   const serialized = JSON.stringify(bundle);
   assert.ok(!serialized.includes("v1.aaa.bbb.ccc"), "导出的 JSON 里不能出现 API Key 密文");
   assert.ok(!serialized.includes("chatApiKeyEncrypted"));
+  assert.ok(!serialized.includes("linkedUserId"), "账号绑定不随包走");
+
+  // 分享型导出：朋友整段清空（QQ 号是别人的，发出去前应当由人决定）
+  const shareable = await loadCharacterExportBundle({ characterId, ownerId: ownerA, includeFriends: false });
+  assert.equal(shareable?.bundle.counts.friends, 0, "includeFriends=false 时不带朋友");
+  assert.deepEqual(shareable?.bundle.friends, []);
+  assert.ok(!JSON.stringify(shareable?.bundle).includes("888888"), "分享型导出里不能残留朋友的 QQ 号");
 
   // 非本人导出 = 查不到
   assert.equal(
@@ -239,6 +300,27 @@ async function main() {
   assert.equal(importedEvent?.sourceMessageId, null, "来源指针必须置空，不能指向别的消息");
   assert.equal(importedEvent?.participants[0], "小关", "参与者照常保留");
 
+  // 朋友：关系、计数和记忆都要回来，但身份不能重复建、绑定不能被改写
+  const importedFriend = imported.memoryScopes.find((scope) => scope.scopeType === "EXTERNAL_IDENTITY");
+  assert.ok(importedFriend, "朋友要建一条 EXTERNAL_IDENTITY 范围");
+  assert.equal(importedFriend?.externalIdentityId, friendIdentityId, "沿用已存在的外部身份，不新建");
+  assert.equal(importedFriend?.interactionCount, 7, "聊过几次要保住");
+  assert.equal(importedFriend?.firstSource, "GROUP", "在哪儿认识的保住");
+  assert.equal(importedFriend?.lastInteractedAt?.toISOString(), "2026-10-30T10:00:00.000Z");
+  assert.equal(importedFriend?.memoryItems.length, 1);
+  assert.equal(importedFriend?.memoryItems[0]?.content, "小关住在北海，怕冷");
+  assert.ok(
+    importedFriend?.scopeKey.endsWith(`qq-onebot:888888`),
+    "scopeKey 按新角色重建，指向同一个人",
+  );
+
+  const identities = await prisma.externalIdentity.findMany({
+    where: { platform: "qq-onebot", platformUid: "888888" },
+  });
+  assert.equal(identities.length, 1, "同一个 QQ 号不能因为导入多出一行身份");
+  assert.equal(identities[0]?.linkedUserId, userB, "导入不能改写已有身份的验证绑定");
+  assert.equal(identities[0]?.status, "VERIFIED", "导入不能把已验证身份改回未验证");
+
   // 原角色一条记忆都不能少
   const originalMemoryCount = await prisma.memoryItem.count({
     where: { memoryScope: { characterId } },
@@ -257,7 +339,7 @@ async function main() {
   assert.equal(bPrivate?.userId, userB, "私人记忆换人后归导入者，不串给导出者");
   assert.ok(bPrivate?.memoryItems.some((item) => item.content === "主人喜欢冰美式"));
 
-  console.log("角色卡数据库测试通过：范围过滤（他人私人 / 外部身份记忆不出包）、密钥不出包、导入只新增、来源置空、双人导入归属正确。");
+  console.log("角色卡数据库测试通过：他人私人记忆不出包、朋友段只收互动过的关系、分享型导出清空朋友、身份复用且不改绑定、导入只新增、来源置空、双人导入归属正确。");
 }
 
 main()
@@ -278,6 +360,7 @@ main()
     await prisma.memoryScope.deleteMany({ where: { characterId: { in: characterIds } } });
     await prisma.auditLog.deleteMany({ where: { characterId: { in: characterIds } } });
     await prisma.character.deleteMany({ where: { id: { in: characterIds } } });
+    await prisma.externalIdentity.deleteMany({ where: { id: { in: identityIds } } });
     await prisma.user.deleteMany({ where: { id: { in: [ownerA, userB] } } });
     await prisma.$disconnect();
   });

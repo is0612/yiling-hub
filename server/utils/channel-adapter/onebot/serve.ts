@@ -566,8 +566,10 @@ function createReplySender(
       const silk = await synthesizeSpeechSilk(reply, options.voiceSettings);
       if (silk?.length) {
         // 语音条同样要带引用和 @：只发语音不带这两段，被回的人根本不知道是在跟他说话。
+        // 一次算好：既给 `withQuote` 用，也给下面那行日志用（结果只取决于 options）。
+        const atTarget = atQq();
         const withQuote = (segments: OnebotSegment[]): OnebotSegment[] =>
-          [...buildQuoteSegments(options.replyToMessageId, atQq()), ...segments];
+          [...buildQuoteSegments(options.replyToMessageId, atTarget), ...segments];
 
         /**
          * 先 `file://` 再 `base64://`。
@@ -588,7 +590,18 @@ function createReplySender(
         for (const attempt of attempts) {
           try {
             await send(withQuote(buildVoiceSegment(attempt.file)));
-            console.log("[onebot] 语音已发送 " + JSON.stringify({ via: attempt.via, bytes: silk.length }));
+            /**
+             * `quoted` 单独记：带引用的语音在 QQ 里是「引用框里嵌一条语音」，
+             * 渲染本来就不如纯语音稳。日后有人报「发不出去」，先看这一项 ——
+             * `quoted:true` 又确实发出去了，那就是客户端/服务端展示的问题，
+             * 不是没发；反过来就得继续查发送。
+             */
+            console.log("[onebot] 语音已发送 " + JSON.stringify({
+              via: attempt.via,
+              bytes: silk.length,
+              quoted: Boolean(options.replyToMessageId),
+              at: Boolean(atTarget),
+            }));
             return;
           } catch (error) {
             console.error(`[onebot] 语音发送失败（${attempt.via}）：`, error instanceof Error ? error.message : String(error));

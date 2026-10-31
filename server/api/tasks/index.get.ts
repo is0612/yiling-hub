@@ -1,5 +1,6 @@
 import { createError, getQuery } from "h3";
 import { requireActorUserId } from "../../utils/auth";
+import { buildPage, readPageQuery } from "../../utils/pagination";
 import { getPrisma } from "../../utils/prisma";
 
 const statuses = ["QUEUED", "RUNNING", "SUCCEEDED", "FAILED", "SKIPPED", "RETRY_WAIT", "CANCELLED"] as const;
@@ -12,10 +13,12 @@ export default defineEventHandler(async (event) => {
   if (statusValue && !(statuses as readonly string[]).includes(statusValue)) {
     throw createError({ statusCode: 400, statusMessage: "任务状态筛选值无效。" });
   }
-  const limitRaw = typeof query.limit === "string" ? Number(query.limit) : 50;
-  if (!Number.isInteger(limitRaw) || limitRaw < 1 || limitRaw > 100) {
-    throw createError({ statusCode: 400, statusMessage: "每页任务数必须为 1–100。" });
-  }
+  // 任务表只增不减，分页口径和其它列表接口一致（旧的 `?limit=` 仍当 pageSize 用）。
+  const { page, pageSize, skip } = readPageQuery(query, {
+    defaultPageSize: 50,
+    maxPageSize: 100,
+    legacySizeKey: "limit",
+  });
 
   const prisma = getPrisma();
   const where = {
@@ -26,7 +29,8 @@ export default defineEventHandler(async (event) => {
     prisma.memoryJob.findMany({
       where,
       orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-      take: limitRaw,
+      skip,
+      take: pageSize,
       select: {
         id: true,
         type: true,
@@ -83,25 +87,29 @@ export default defineEventHandler(async (event) => {
   }
 
   return {
-    items: jobs.map((job) => ({
-      id: job.id,
-      type: job.type,
-      status: job.status,
-      attemptCount: job.attemptCount,
-      maxAttempts: job.maxAttempts,
-      runAt: job.runAt.toISOString(),
-      periodStart: job.periodStart?.toISOString() ?? null,
-      periodEnd: job.periodEnd?.toISOString() ?? null,
-      lastError: job.lastError,
-      startedAt: job.startedAt?.toISOString() ?? null,
-      completedAt: job.completedAt?.toISOString() ?? null,
-      createdAt: job.createdAt.toISOString(),
-      updatedAt: job.updatedAt.toISOString(),
-      characterId: job.memoryScope.character.id,
-      characterName: job.memoryScope.character.name,
-      cleanupResult: cleanupResultByJobId.get(job.id) ?? null,
-    })),
-    total,
+    ...buildPage(
+      jobs.map((job) => ({
+        id: job.id,
+        type: job.type,
+        status: job.status,
+        attemptCount: job.attemptCount,
+        maxAttempts: job.maxAttempts,
+        runAt: job.runAt.toISOString(),
+        periodStart: job.periodStart?.toISOString() ?? null,
+        periodEnd: job.periodEnd?.toISOString() ?? null,
+        lastError: job.lastError,
+        startedAt: job.startedAt?.toISOString() ?? null,
+        completedAt: job.completedAt?.toISOString() ?? null,
+        createdAt: job.createdAt.toISOString(),
+        updatedAt: job.updatedAt.toISOString(),
+        characterId: job.memoryScope.character.id,
+        characterName: job.memoryScope.character.name,
+        cleanupResult: cleanupResultByJobId.get(job.id) ?? null,
+      })),
+      total,
+      page,
+      pageSize,
+    ),
     statusCounts: {
       QUEUED: statusGroups.find((group) => group.status === "QUEUED")?._count._all ?? 0,
       RUNNING: statusGroups.find((group) => group.status === "RUNNING")?._count._all ?? 0,

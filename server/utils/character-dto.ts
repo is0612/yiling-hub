@@ -4,7 +4,7 @@ import { MEMORY_TOKEN_BUDGET_DEFAULT, SNAPSHOT_TOKEN_BUDGET_DEFAULT, resolveRece
 import { resolveProactiveSettings, type ProactiveSettings } from "./proactive-settings";
 import { resolveGroupInitiativeSettings, type GroupInitiativeSettings } from "./group-initiative-settings";
 import { isVoiceApiKeySaved } from "./credential-encryption";
-import { resolveVoiceChance } from "./voice";
+import { resolveVoiceChance, resolveVoiceCooldownMinutes } from "./voice";
 
 function positiveNumber(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.round(value) : 0;
@@ -60,6 +60,8 @@ export type CharacterDto = {
   voiceTranscribe: boolean;
   /** 发语音的概率（0-100），默认 25。 */
   voiceChance: number;
+  /** 两条语音之间至少隔多少分钟（0 = 不冷却），默认 20。 */
+  voiceCooldownMinutes: number;
   /** 语音服务地址（页面上填的）；空 = 用环境变量或角色聊天地址。 */
   voiceApiBaseUrl: string;
   /** 语音 Key 是否已保存（只回显布尔，绝不回显 Key 本身）。 */
@@ -212,6 +214,7 @@ export function toCharacterDto(input: unknown): CharacterDto {
     voiceEnabled: config.voiceEnabled === true,
     voiceTranscribe: config.voiceTranscribe === true,
     voiceChance: resolveVoiceChance(config),
+    voiceCooldownMinutes: resolveVoiceCooldownMinutes(config),
     voiceApiBaseUrl: typeof config.voiceApiBaseUrl === "string" ? config.voiceApiBaseUrl : "",
     voiceApiKeyConfigured: isVoiceApiKeySaved(config),
     ttsModel: typeof config.ttsModel === "string" ? config.ttsModel : "",

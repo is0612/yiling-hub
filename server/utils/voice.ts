@@ -24,7 +24,13 @@
  * 所以语音**不写 model_usages**，只在日志里留 `[voice]` 一行，便于按天估算。
  */
 
-import { decode as decodeSilk, encode as encodeSilk, isSilk, isWav } from "silk-wasm";
+import {
+  decode as decodeSilk,
+  encode as encodeSilk,
+  getDuration as getSilkDuration,
+  isSilk,
+  isWav,
+} from "silk-wasm";
 
 import { validateChatApiBaseUrl } from "./chat-model-config";
 import { assertFetchableImageUrl, assertPublicHost } from "./image-understanding";
@@ -32,8 +38,41 @@ import { assertFetchableImageUrl, assertPublicHost } from "./image-understanding
 /** 这条回复最多合成多少字。再长就该用文字说：没人愿意听 40 秒的语音条。 */
 export const VOICE_TEXT_MAX_CHARS = 60;
 
-/** 上一条发过语音后多久之内不再发。连发两条语音像在读稿。 */
-export const VOICE_COOLDOWN_MS = 20 * 60 * 1000;
+/**
+ * 上一条发过语音后多久之内不再发（分钟）。连发两条语音像在读稿。
+ *
+ * 这个默认值是**给页面兜底**的：真实取值走 `modelConfig.voiceCooldownMinutes`，
+ * 因为合理的间隔取决于服务商 —— MiniMax 合成 1~3 秒，20 分钟太死；硅基流动要
+ * 16~21 秒（排队），那时候反而希望她别动不动就说。别顺手改这个常数。
+ */
+export const DEFAULT_VOICE_COOLDOWN_MINUTES = 20;
+
+/** 上限一天：再长就等于永久关闭，那不如直接把「发语音」关掉。 */
+const VOICE_COOLDOWN_MAX_MINUTES = 24 * 60;
+
+/** 默认冷却的毫秒形式。测试与「没配时是多少」都以它为准。 */
+export const VOICE_COOLDOWN_MS = DEFAULT_VOICE_COOLDOWN_MINUTES * 60 * 1000;
+
+/**
+ * 合成后在末尾补多少静音（毫秒）。**这不是为了好听，是为了不被切掉最后一个字。**
+ *
+ * QQ 语音的时长是整数秒，网关按帧数四舍五入自己算（实测 6.41s 报 6s、7.60s 报 8s，
+ * 传进去的 `duration` 它根本不看）。四舍五入最多能把尾巴砍掉 0.5 秒，而 TTS 生成的
+ * 音频最后一个音素紧贴 EOF，被砍掉的正好是半句话 —— 听感就是「说到一半没了」。
+ *
+ * 补 700ms 静音，误差就落在静音里，内容一个字都不会丢；顺带也让客户端有自然收尾，
+ * 不至于在最后一帧硬停、吞掉尾音。
+ */
+export const VOICE_TAIL_SILENCE_MS = 700;
+
+/**
+ * 每秒最少说几个字 —— 低于这个数就认为音频只有半截。
+ *
+ * 中文 TTS 正常 3~5 字/秒，拉到 14 字/秒已经不属于「语速快」了，只可能是服务商
+ * 只返回了前一半。这种情况下发出去就是「半拉」，用户只会怪她话没说完，所以宁可
+ * 退回文字。
+ */
+const MIN_CHARS_PER_SEC = 14;
 
 /** 一轮最多转写几条语音。群里一轮三条已经不少，再多就是在替群友开会。 */
 export const MAX_VOICES_PER_TURN = 2;
@@ -77,6 +116,24 @@ export function resolveVoiceChance(configValue: unknown): number {
   const raw = asRecord(configValue).voiceChance;
   if (typeof raw !== "number" || !Number.isFinite(raw)) return 0;
   return Math.min(100, Math.max(0, Math.round(raw)));
+}
+
+/**
+ * 语音冷却（分钟）：距上一条她发过的语音多久之内不再发。**0 = 不冷却**。
+ *
+ * 原来这条是纯硬编码，页面上改不了 —— 但它其实是个「看服务商脸色」的参数：
+ * MiniMax 1~3 秒合成，20 分钟的间隔等于大半轮对话都在打字；换成硅基流动那种
+ * 16~21 秒的排队，用户又会希望她别太频繁。所以交给页面，默认值仍是 20。
+ */
+export function resolveVoiceCooldownMinutes(configValue: unknown): number {
+  const raw = asRecord(configValue).voiceCooldownMinutes;
+  if (typeof raw !== "number" || !Number.isFinite(raw)) return DEFAULT_VOICE_COOLDOWN_MINUTES;
+  return Math.min(VOICE_COOLDOWN_MAX_MINUTES, Math.max(0, Math.round(raw)));
+}
+
+/** 同上的毫秒形式。`planVoiceReply` 用它，0 表示不设冷却。 */
+export function resolveVoiceCooldownMs(configValue: unknown): number {
+  return resolveVoiceCooldownMinutes(configValue) * 60 * 1000;
 }
 
 export type VoiceTtsProvider = "openai" | "minimax";
@@ -339,7 +396,111 @@ export function repairWavSizes(buffer: Buffer): Buffer {
   return fixed;
 }
 
-/** wav → silk。不是 wav 就抛错 —— 这里宁可失败也不想发一段别人听不了的文件。 */
+type WavLayout = {
+  dataOffset: number;
+  dataLength: number;
+  sampleRate: number;
+  channels: number;
+  bitsPerSample: number;
+};
+
+/**
+ * 自己读 wav 的 chunk 布局。
+ *
+ * 为什么不用 `silk-wasm` 的 `getWavFileInfo()`：它返回的 `dataOffset` 会带上
+ * 同一进程里前一次解析的偏移 —— 先解析过 22 万字节的 wav，再解析 524 字节的，
+ * 报出来的 `dataOffset` 是 724（文件本身才 524 字节）。照它写会把长度字段写到
+ * 文件外面去，写完看着"成功"、语音却被切。这点解析只有二十行，自己算更稳。
+ *
+ * 长度字段越界（服务商实测给负值）时夹到文件内，不因此判定「不是 wav」。
+ */
+function readWavLayout(wav: Buffer): WavLayout | null {
+  if (wav.length < 44) return null;
+  if (wav.subarray(0, 4).toString("latin1") !== "RIFF") return null;
+  if (wav.subarray(8, 12).toString("latin1") !== "WAVE") return null;
+
+  let dataOffset = -1;
+  let dataLength = 0;
+  let sampleRate = 0;
+  let channels = 0;
+  let bitsPerSample = 0;
+
+  // 不能「顺着声明的 size 走」—— 坏掉的那个 size 正是我们要容错的。
+  let offset = 12;
+  while (offset + 8 <= wav.length) {
+    const id = wav.subarray(offset, offset + 4).toString("latin1");
+    const body = offset + 8;
+    const size = Math.min(wav.readUInt32LE(offset + 4), wav.length - body);
+    if (id === "fmt " && size >= 16) {
+      channels = wav.readUInt16LE(body + 2);
+      sampleRate = wav.readUInt32LE(body + 4);
+      bitsPerSample = wav.readUInt16LE(body + 14);
+    } else if (id === "data") {
+      dataOffset = body;
+      dataLength = size;
+      // fmt 在 data 前面是常态；已经拿到采样率就不必再往后找。
+      if (sampleRate > 0) break;
+    }
+    if (size <= 0) break;
+    offset = body + size + (size % 2);
+  }
+
+  if (dataOffset < 0 || dataLength <= 0 || sampleRate <= 0) return null;
+  return {
+    dataOffset,
+    dataLength,
+    sampleRate,
+    channels: Math.max(1, channels),
+    bitsPerSample: bitsPerSample || 16,
+  };
+}
+
+/**
+ * 在 wav 的 PCM 末尾追加一段静音。
+ *
+ * 为什么必须有它：QQ 语音条的长度元数据是整数秒，网关按帧数四舍五入算出来，
+ * 传 `duration` 也不认（2026-10-31 实测：传 99，日志里还是它自己算的 8s）。
+ * 于是 6.41 秒的语音会被标成 6 秒，客户端播到 6 秒就停 —— 而尾部正是最后一个字。
+ * 补静音把这段误差垫进去，切掉的顶多是静音。
+ *
+ * 只动 data 的长度，格式字段一个都不碰：采样率/声道/位深全部从文件里读，
+ * 服务商换成 44.1k 或立体声也不会读错。
+ *
+ * `data` 之后如果还有别的 chunk（个别服务商会塞 LIST），重建时丢掉 —— silk 只读
+ * PCM，留着反而会把尾部元数据当采样。
+ */
+export function padWavSilence(wav: Buffer, ms: number): Buffer {
+  if (!(ms > 0)) return wav;
+  const layout = readWavLayout(wav);
+  if (!layout) throw new Error("VOICE_NOT_WAV");
+
+  const bytesPerSample = Math.max(1, Math.round(layout.bitsPerSample / 8));
+  const frames = Math.round((layout.sampleRate * ms) / 1000);
+  const silenceBytes = frames * layout.channels * bytesPerSample;
+  if (silenceBytes <= 0) return wav;
+
+  // 8bit PCM 是无符号的，静音是 0x80；16/24/32bit 整型与 float 的静音都是 0。
+  const silence = Buffer.alloc(silenceBytes, layout.bitsPerSample === 8 ? 0x80 : 0x00);
+  const pcm = wav.subarray(layout.dataOffset, layout.dataOffset + layout.dataLength);
+  const body = Buffer.concat([pcm, silence]);
+  const out = Buffer.concat([wav.subarray(0, layout.dataOffset), body]);
+
+  // data 的长度字段就在 dataOffset 前 4 字节（chunkId 占 4 字节）。
+  out.writeUInt32LE(body.length, layout.dataOffset - 4);
+  out.writeUInt32LE(out.length - 8, 4);
+  return out;
+}
+
+/** 从 silk 读时长（毫秒）。读不出来返回 0 —— 调用方按「不知道」处理，不当作失败。 */
+export function readSilkDurationMs(silk: Buffer): number {
+  try {
+    return getSilkDuration(silk) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+
 export async function wavToSilk(wav: Buffer): Promise<Buffer> {
   let input = wav;
   if (!isWav(input)) input = repairWavSizes(input);
@@ -498,12 +659,43 @@ export async function synthesizeSpeechSilk(
   const audio = await requestWav(spoken, settings);
   if (!audio?.length) return null;
 
+  // 补静音失败不许挡住语音：退回原音频顶多被切掉尾巴，好过一条都发不出去。
+  let prepared = audio;
   try {
-    const silk = await wavToSilk(audio);
+    prepared = padWavSilence(audio, VOICE_TAIL_SILENCE_MS);
+  } catch {
+    console.warn("[voice] wav 解析失败，跳过补静音（语音照发，尾部可能被切）");
+  }
+
+  try {
+    const silk = await wavToSilk(prepared);
+    const chars = Array.from(spoken).length;
+    const durationMs = readSilkDurationMs(silk);
+
+    /**
+     * 时长兜底：TTS 偶尔只返回前一半的音频，发出去就是「说了半句话」。
+     * 时长读不出来（0）时不做判断 —— 不能因为算不出时长就把语音干掉。
+     */
+    if (durationMs > 0 && chars > 0) {
+      const charsPerSec = chars / (durationMs / 1000);
+      if (charsPerSec > MIN_CHARS_PER_SEC) {
+        console.error("[voice] 合成音频疑似只有一半，退回文字 " + JSON.stringify({
+          chars,
+          durationMs,
+          charsPerSec: Number(charsPerSec.toFixed(1)),
+        }));
+        return null;
+      }
+    }
+
     console.log("[voice] tts ok " + JSON.stringify({
       provider: settings.provider,
-      chars: spoken.length,
+      chars,
       silkBytes: silk.length,
+      durationMs,
+      // 有这一项，下次「半拉」就能一眼分出是合成短了还是播放端的问题：
+      // 4~5 字/秒是正常语速，明显高于它是音频被截断，明显低于它是补的静音太多。
+      charsPerSec: durationMs > 0 ? Number((chars / (durationMs / 1000)).toFixed(1)) : null,
     }));
     return silk;
   } catch {
@@ -709,11 +901,27 @@ export function isVoiceRequested(text: string): boolean {
   const compact = text.replace(/\s+/g, "");
   if (!compact) return false;
   if (/(别|不要|不用|不许|不准|不想听)[^，。！？]{0,4}(语音|声音)/.test(compact)) return false;
-  return /(发|来|给|用|整|录|说)[^，。！？]{0,4}(语音|声音|条)/.test(compact)
+  return /(发|来|给|用|整|录|说)[^，。！？]{0,4}(语音|声音)/.test(compact)
+    /**
+     * 「来条」「发条」后面跟语音或直接收尾才算。
+     *
+     * 不能把裸「条」算进上面那组动词：旧写法 `(发|来|…)…条` 会让「引用**这条**聊聊」
+     * 借「用 + 这条」命中 —— 一引用就无缘无故发语音，正是「引用时语音行为很怪」的另一半。
+     */
+    || /(来|发|整)条(语音|声音)?[呢吧呗啊嘛]?[？?！!。]*$/.test(compact)
     // 「语音条呢」「语音？听听」：没有动词但句尾在催。只认句尾，避免「这语音条音质不错」被当成要求。
     || /(语音|声音)(条)?[呢吧呗啊嘛]?[？?！!。]*$/.test(compact)
     || /(语音|声音)(说|回|发)/.test(compact)
-    || /说(一)?句话/.test(compact);
+    || /说(一)?句话/.test(compact)
+    /**
+     * 「引用他说一句」「引用他念一段」：整句里没有「语音」两个字，但「说/念 + 量词」
+     * 就是要她开口。这类说法集中在**要她引用某人**的时候（平时直接说「发个语音」），
+     * 漏掉它的后果是这一轮不会被 force —— 落回冷却与概率，于是多数时候只发文字，
+     * 用户看到的就是「引用别人的时候语音老是发不出去」。
+     *
+     * 只认「引用」开头：「回他一句」这种多半只是打字，不能一并抢过来。
+     */
+    || /引用[^，。！？]{0,6}(说|念|来)(一|几)?(句|段|声)/.test(compact);
 }
 
 /** 这段话能不能读出来：有可读内容，且长度在限度内（超长不截断，直接不读）。 */
@@ -732,6 +940,7 @@ export function canSpeakReply(text: string): boolean {
  * 实测她会写出「我这打字声你当语音听吧」这种话，因为提示词里压根没提语音。
  *
  * 这里不看回复内容（还不知道），只看开关、冷却与概率；长度在生成后用 `canSpeakReply` 复核。
+ * 冷却时长走 `modelConfig.voiceCooldownMinutes`（默认 20 分钟，0 = 不冷却，见 `resolveVoiceCooldownMinutes`）。
  */
 export function planVoiceReply(input: {
   modelConfig: unknown;
@@ -746,7 +955,9 @@ export function planVoiceReply(input: {
 
   const now = input.now ?? new Date();
   const lastVoiceAt = input.lastVoiceAt ?? null;
-  if (lastVoiceAt && now.getTime() - lastVoiceAt.getTime() < VOICE_COOLDOWN_MS) return false;
+  // 0 分钟 = 不冷却（页面上可以关掉这条闸门）。
+  const cooldownMs = resolveVoiceCooldownMs(input.modelConfig);
+  if (cooldownMs > 0 && lastVoiceAt && now.getTime() - lastVoiceAt.getTime() < cooldownMs) return false;
 
   const chance = resolveVoiceChance(input.modelConfig);
   if (chance <= 0) return false;

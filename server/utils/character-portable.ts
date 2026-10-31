@@ -5,18 +5,24 @@
  * 渠道 Token、任务队列和工作日志。整库 dump 里那些东西既带不走（换台机器连不上原来的
  * QQ 网关），也不该带到别人电脑上（别人的私聊和凭据）。
  *
- * 因此包里只有四类内容，且每类都做过取舍：
+ * 因此包里只有五类内容，且每类都做过取舍：
  *   - 人设：name / basePrompt / styleExamples / userAddress + 少量模型参数
  *   - 记忆：CHARACTER_GLOBAL 与**导出者自己的** USER_PRIVATE 长期记忆
  *   - 忆泡：发生过什么（事实层）
  *   - 阶段总结：只带 CURRENT 版本，来源消息不随包走
+ *   - 她的朋友（可选）：认识谁、聊过几次、分别记得他什么
+ *
+ * 朋友这一段的取舍最需要说清楚：**导出者可以关掉它**。换台电脑继续养需要它（否则她
+ * 一夜之间忘了整个群），但把卡发给别人时，它同时交出去的是别人的 QQ 号和「她怎么看他们」。
+ * 所以这是唯一一个由导出者当场决定的内容段，默认带走、但不静默带走。
+ * 只带走关系的元信息与记忆，**不带**账号绑定（`status` / `linkedUserId`）——
+ * 那是站内用户与外部身份的验证结果，换人导入不该跟过去。
  *
  * 明确不带：
  *   - API Key（`chatApiKeyEncrypted` / `voiceApiKeyEncrypted`）—— 换机器本来就得重填，
  *     而且带出去等于把凭据交给任何拿到这个 json 的人
  *   - 表情包图片：图在 `.data/stickers/<id>/`，换机器后从 QQ 收藏夹重新同步即可
  *   - 会话原文、渠道绑定、任务队列、用量与审计：与具体机器/账号绑定
- *   - 他人（QQ 群友）的私人记忆：那不是导出者的数据
  *
  * 导入端把包当成**不可信输入**：字段逐个校验、超限直接拒绝，模型参数走白名单，
  * 任何密钥字段都不读。导入永远新建角色与新记忆范围，不会往已有角色里塞东西。
@@ -34,6 +40,13 @@ export const CHARACTER_BUNDLE_LIMITS = {
   events: 4000,
   snapshots: 600,
   catchphrases: 400,
+  /** 一个角色最多带走多少位朋友：超过这个数的多半是群里刷出来的残留，不是真的认识。 */
+  friends: 500,
+  /** 单个朋友名下最多多少条记忆 / 总结。 */
+  friendMemories: 300,
+  friendSnapshots: 60,
+  /** 全部朋友名下的记忆合计上限，防止 500 × 300 把包撑爆。 */
+  friendMemoriesTotal: 4000,
   name: 100,
   alias: 100,
   description: 2000,
@@ -129,12 +142,41 @@ export type CharacterBundleCatchphrase = {
   source: string;
 };
 
+/** 朋友名下的记忆与总结没有 `scope`：它属于谁由所在的 `friends[i]` 决定。 */
+export type CharacterBundleMemoryBody = Omit<CharacterBundleMemory, "scope">;
+export type CharacterBundleSnapshotBody = Omit<CharacterBundleSnapshot, "scope">;
+
+/**
+ * 「她的朋友」= 一条关系，不是一个账号。
+ *
+ * 只带「谁」和「她记得他什么」，**不带**账号绑定（`status` / `linkedUserId`）：
+ * 那是站内用户与外部身份的验证结果，换台电脑、换个人导入都不该跟着走。
+ */
+export type CharacterBundleFriend = {
+  platform: string;
+  /** QQ 号 / B站 uid。群里认人靠它，所以必须带；这也是分享时最该慎重的字段。 */
+  platformUid: string;
+  displayName: string;
+  /** 在哪儿认识的：PRIVATE（私聊）/ GROUP（群里）。空 = 没记过。 */
+  firstSource: string | null;
+  interactionCount: number;
+  lastInteractedAt: string | null;
+  /** 关系建立时间，也就是第一次遇到这个人的时间。 */
+  knownSince: string | null;
+  memories: CharacterBundleMemoryBody[];
+  snapshots: CharacterBundleSnapshotBody[];
+};
+
 export type CharacterBundleCounts = {
   memories: number;
   privateMemories: number;
   events: number;
   snapshots: number;
   catchphrases: number;
+  /** 带走了几位朋友。为 0 时包里没有朋友数据（分享给别人时通常会关掉）。 */
+  friends: number;
+  /** 朋友名下的记忆条数（已计入 memories 之外的单独统计，避免和角色记忆混着数）。 */
+  friendMemories: number;
 };
 
 export type CharacterBundle = {
@@ -153,6 +195,7 @@ export type CharacterBundle = {
   events: CharacterBundleEvent[];
   snapshots: CharacterBundleSnapshot[];
   catchphrases: CharacterBundleCatchphrase[];
+  friends: CharacterBundleFriend[];
   counts: CharacterBundleCounts;
 };
 
@@ -287,6 +330,8 @@ function buildCounts(bundle: Omit<CharacterBundle, "counts">): CharacterBundleCo
     events: bundle.events.length,
     snapshots: bundle.snapshots.length,
     catchphrases: bundle.catchphrases.length,
+    friends: bundle.friends.length,
+    friendMemories: bundle.friends.reduce((total, friend) => total + friend.memories.length, 0),
   };
 }
 
@@ -307,6 +352,54 @@ export function computeImportedCharacterName(name: string, existingNames: readon
   return `${base} ${Date.now()}`;
 }
 
+type MemorySource = {
+  category: string;
+  content: string;
+  confidence: number | null;
+  importance: number;
+  validFrom: Date | null;
+  validTo: Date | null;
+  dedupeKey: string | null;
+};
+
+type SnapshotSource = {
+  kind: string;
+  periodStart: Date;
+  periodEnd: Date;
+  summary: string;
+  structuredContent: unknown;
+  generatedAt: Date | null;
+  createdAt: Date;
+};
+
+function toBundleMemory(item: MemorySource): CharacterBundleMemoryBody {
+  return {
+    category: (MEMORY_CATEGORIES as readonly string[]).includes(item.category)
+      ? item.category as BundleMemoryCategory
+      : "OTHER",
+    content: item.content,
+    confidence: item.confidence,
+    importance: item.importance,
+    validFrom: item.validFrom ? item.validFrom.toISOString() : null,
+    validTo: item.validTo ? item.validTo.toISOString() : null,
+    dedupeKey: item.dedupeKey,
+  };
+}
+
+function toBundleSnapshot(snapshot: SnapshotSource): CharacterBundleSnapshotBody {
+  return {
+    kind: (SNAPSHOT_KINDS as readonly string[]).includes(snapshot.kind)
+      ? snapshot.kind as BundleSnapshotKind
+      : "AUTOMATIC",
+    periodStart: snapshot.periodStart.toISOString(),
+    periodEnd: snapshot.periodEnd.toISOString(),
+    summary: snapshot.summary,
+    structuredContent: snapshot.structuredContent ?? {},
+    generatedAt: snapshot.generatedAt ? snapshot.generatedAt.toISOString() : null,
+    createdAt: snapshot.createdAt.toISOString(),
+  };
+}
+
 export type BundleBuildInput = {
   character: {
     name: string;
@@ -323,15 +416,7 @@ export type BundleBuildInput = {
   scopes: Array<{
     scopeType: string;
     userId?: string | null;
-    memoryItems?: Array<{
-      category: string;
-      content: string;
-      confidence: number | null;
-      importance: number;
-      validFrom: Date | null;
-      validTo: Date | null;
-      dedupeKey: string | null;
-    }>;
+    memoryItems?: MemorySource[];
     events?: Array<{
       dayKey: string;
       state: string;
@@ -345,15 +430,22 @@ export type BundleBuildInput = {
       participants: string[];
       confidence: number | null;
     }>;
-    snapshots?: Array<{
-      kind: string;
-      periodStart: Date;
-      periodEnd: Date;
-      summary: string;
-      structuredContent: unknown;
-      generatedAt: Date | null;
-      createdAt: Date;
-    }>;
+    snapshots?: SnapshotSource[];
+  }>;
+  /**
+   * 「她的朋友」。只在导出者明确要带走时才传（分享型导出传空数组），
+   * 传入的一定是 `interactionCount > 0` 的关系 —— 0 次的是群里没搭理的残留。
+   */
+  friends?: Array<{
+    platform: string;
+    platformUid: string;
+    displayName: string | null;
+    firstSource: string | null;
+    interactionCount: number;
+    lastInteractedAt: Date | null;
+    knownSince: Date | null;
+    memoryItems?: MemorySource[];
+    snapshots?: SnapshotSource[];
   }>;
   catchphrases?: Array<{ phrase: string; usage: string; enabled: boolean; source: string }>;
   now?: Date;
@@ -372,18 +464,7 @@ export function buildCharacterBundle(input: BundleBuildInput): CharacterBundle {
   for (const scope of input.scopes) {
     const kind: BundleScopeKind = scope.scopeType === "CHARACTER_GLOBAL" ? "character" : "private";
     for (const item of scope.memoryItems ?? []) {
-      memories.push({
-        scope: kind,
-        category: (MEMORY_CATEGORIES as readonly string[]).includes(item.category)
-          ? item.category as BundleMemoryCategory
-          : "OTHER",
-        content: item.content,
-        confidence: item.confidence,
-        importance: item.importance,
-        validFrom: item.validFrom ? item.validFrom.toISOString() : null,
-        validTo: item.validTo ? item.validTo.toISOString() : null,
-        dedupeKey: item.dedupeKey,
-      });
+      memories.push({ scope: kind, ...toBundleMemory(item) });
     }
     for (const event of scope.events ?? []) {
       events.push({
@@ -404,20 +485,21 @@ export function buildCharacterBundle(input: BundleBuildInput): CharacterBundle {
       });
     }
     for (const snapshot of scope.snapshots ?? []) {
-      snapshots.push({
-        scope: kind,
-        kind: (SNAPSHOT_KINDS as readonly string[]).includes(snapshot.kind)
-          ? snapshot.kind as BundleSnapshotKind
-          : "AUTOMATIC",
-        periodStart: snapshot.periodStart.toISOString(),
-        periodEnd: snapshot.periodEnd.toISOString(),
-        summary: snapshot.summary,
-        structuredContent: snapshot.structuredContent ?? {},
-        generatedAt: snapshot.generatedAt ? snapshot.generatedAt.toISOString() : null,
-        createdAt: snapshot.createdAt.toISOString(),
-      });
+      snapshots.push({ scope: kind, ...toBundleSnapshot(snapshot) });
     }
   }
+
+  const friends: CharacterBundleFriend[] = (input.friends ?? []).map((friend) => ({
+    platform: friend.platform.slice(0, 50),
+    platformUid: friend.platformUid.slice(0, 255),
+    displayName: (friend.displayName ?? "").slice(0, 255),
+    firstSource: friend.firstSource === "PRIVATE" || friend.firstSource === "GROUP" ? friend.firstSource : null,
+    interactionCount: Math.max(0, Math.trunc(friend.interactionCount)),
+    lastInteractedAt: friend.lastInteractedAt ? friend.lastInteractedAt.toISOString() : null,
+    knownSince: friend.knownSince ? friend.knownSince.toISOString() : null,
+    memories: (friend.memoryItems ?? []).map(toBundleMemory),
+    snapshots: (friend.snapshots ?? []).map(toBundleSnapshot),
+  }));
 
   const payload: Omit<CharacterBundle, "counts"> = {
     format: CHARACTER_BUNDLE_FORMAT,
@@ -452,6 +534,7 @@ export function buildCharacterBundle(input: BundleBuildInput): CharacterBundle {
       enabled: item.enabled,
       source: item.source || "manual",
     })),
+    friends,
   };
 
   return { ...payload, counts: buildCounts(payload) };
@@ -466,6 +549,7 @@ export type ParsedCharacterBundle = {
   events: CharacterBundleEvent[];
   snapshots: CharacterBundleSnapshot[];
   catchphrases: CharacterBundleCatchphrase[];
+  friends: CharacterBundleFriend[];
   counts: CharacterBundleCounts;
   exportedAt: string | null;
 };
@@ -622,6 +706,96 @@ export function parseCharacterBundle(raw: unknown): ParsedCharacterBundle {
     };
   });
 
+  // 朋友是可选段：老角色卡没有这一段，分享型导出也会把它清空，所以缺省就是空数组。
+  let friendMemoriesTotal = 0;
+  const friends: CharacterBundleFriend[] = readArray(
+    body.friends,
+    "朋友",
+    CHARACTER_BUNDLE_LIMITS.friends,
+  ).map((candidate, index) => {
+    const item = asRecord(candidate);
+    const label = `第 ${index + 1} 位朋友`;
+    const platform = readText(item.platform, `${label}的平台`, 50, true);
+    const platformUid = readText(item.platformUid, `${label}的平台账号`, 255, true);
+    const friendMemories = readArray(
+      item.memories,
+      `${label}的记忆`,
+      CHARACTER_BUNDLE_LIMITS.friendMemories,
+    ).map((entry, memoryIndex) => {
+      const memory = asRecord(entry);
+      const memoryLabel = `${label}的第 ${memoryIndex + 1} 条记忆`;
+      const categoryInput = typeof memory.category === "string" ? memory.category : "";
+      return {
+        category: (MEMORY_CATEGORIES as readonly string[]).includes(categoryInput)
+          ? categoryInput as BundleMemoryCategory
+          : "OTHER",
+        content: readText(memory.content, memoryLabel, CHARACTER_BUNDLE_LIMITS.memoryContent, true),
+        confidence: readOptionalNumber(memory.confidence, `${memoryLabel}的可信度`, 0, 1),
+        importance: readNumber(memory.importance, `${memoryLabel}的重要度`, 0, 1, 0.5),
+        validFrom: readOptionalDate(memory.validFrom, `${memoryLabel}的生效时间`)?.toISOString() ?? null,
+        validTo: readOptionalDate(memory.validTo, `${memoryLabel}的失效时间`)?.toISOString() ?? null,
+        dedupeKey: typeof memory.dedupeKey === "string" && memory.dedupeKey.trim()
+          ? memory.dedupeKey.trim().slice(0, 255)
+          : null,
+      } satisfies CharacterBundleMemoryBody;
+    });
+    friendMemoriesTotal += friendMemories.length;
+    if (friendMemoriesTotal > CHARACTER_BUNDLE_LIMITS.friendMemoriesTotal) {
+      bad(`朋友名下的记忆合计超过 ${CHARACTER_BUNDLE_LIMITS.friendMemoriesTotal} 条，请先精简这张卡。`);
+    }
+
+    const friendSnapshots = readArray(
+      item.snapshots,
+      `${label}的阶段总结`,
+      CHARACTER_BUNDLE_LIMITS.friendSnapshots,
+    ).map((entry, snapshotIndex) => {
+      const snapshot = asRecord(entry);
+      const snapshotLabel = `${label}的第 ${snapshotIndex + 1} 篇总结`;
+      const periodStart = readOptionalDate(snapshot.periodStart, `${snapshotLabel}的周期开始时间`);
+      const periodEnd = readOptionalDate(snapshot.periodEnd, `${snapshotLabel}的周期结束时间`);
+      if (!periodStart || !periodEnd) bad(`${snapshotLabel}缺少周期时间。`);
+      if (periodEnd < periodStart) bad(`${snapshotLabel}的周期结束时间早于开始时间。`);
+      const kindInput = typeof snapshot.kind === "string" ? snapshot.kind : "";
+      const generatedAt = readOptionalDate(snapshot.generatedAt, `${snapshotLabel}的生成时间`);
+      const createdAt = readOptionalDate(snapshot.createdAt, `${snapshotLabel}的创建时间`) ?? periodEnd;
+      const structured = snapshot.structuredContent;
+      return {
+        kind: (SNAPSHOT_KINDS as readonly string[]).includes(kindInput)
+          ? kindInput as BundleSnapshotKind
+          : "AUTOMATIC",
+        periodStart: periodStart.toISOString(),
+        periodEnd: periodEnd.toISOString(),
+        summary: readText(snapshot.summary, `${snapshotLabel}的正文`, CHARACTER_BUNDLE_LIMITS.snapshotSummary, true),
+        structuredContent: structured && typeof structured === "object" && !Array.isArray(structured) ? structured : {},
+        generatedAt: generatedAt ? generatedAt.toISOString() : null,
+        createdAt: createdAt.toISOString(),
+      } satisfies CharacterBundleSnapshotBody;
+    });
+
+    const firstSource = item.firstSource === "PRIVATE" || item.firstSource === "GROUP" ? item.firstSource : null;
+    return {
+      platform,
+      platformUid,
+      displayName: readText(item.displayName, `${label}的昵称`, 255),
+      firstSource,
+      interactionCount: Math.round(readNumber(item.interactionCount, `${label}的互动次数`, 0, 1_000_000, 0)),
+      lastInteractedAt: readOptionalDate(item.lastInteractedAt, `${label}的最后互动时间`)?.toISOString() ?? null,
+      knownSince: readOptionalDate(item.knownSince, `${label}的认识时间`)?.toISOString() ?? null,
+      memories: friendMemories,
+      snapshots: friendSnapshots,
+    };
+  });
+
+  // 同一个 (platform, platformUid) 只能有一位：scopeKey 是确定性的，重复会直接撞唯一键。
+  const seenFriendKeys = new Set<string>();
+  for (const friend of friends) {
+    const key = `${friend.platform}:${friend.platformUid}`;
+    if (seenFriendKeys.has(key)) {
+      bad(`朋友列表里有重复的 ${friend.platform} 账号 ${friend.platformUid}，请检查这份角色卡。`);
+    }
+    seenFriendKeys.add(key);
+  }
+
   const payload: Omit<CharacterBundle, "counts"> = {
     format: CHARACTER_BUNDLE_FORMAT,
     formatVersion: version,
@@ -634,6 +808,7 @@ export function parseCharacterBundle(raw: unknown): ParsedCharacterBundle {
     events,
     snapshots,
     catchphrases,
+    friends,
   };
 
   return {
@@ -645,6 +820,7 @@ export function parseCharacterBundle(raw: unknown): ParsedCharacterBundle {
     events,
     snapshots,
     catchphrases,
+    friends,
     counts: buildCounts(payload),
     exportedAt: payload.exportedAt || null,
   };

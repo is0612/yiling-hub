@@ -8,12 +8,16 @@
 
 import { randomUUID } from "node:crypto";
 import {
+  CHARACTER_BUNDLE_LIMITS,
   buildCharacterBundle,
   computeImportedCharacterName,
   parseCharacterBundle,
   type CharacterBundle,
   type CharacterBundleCounts,
+  type CharacterBundleMemoryBody,
+  type CharacterBundleSnapshotBody,
 } from "./character-portable";
+import { buildExternalIdentityScopeKey } from "./identity-scope";
 import { buildUserPrivateScopeKey } from "./memory-scope-access";
 import { getPrisma } from "./prisma";
 
@@ -25,13 +29,16 @@ export type CharacterExportResult = {
 /**
  * 读出导出包。角色不属于该用户时返回 null（而不是抛错），由调用方决定回 404。
  *
- * 范围过滤在 SQL 里：`CHARACTER_GLOBAL` + `userId = 当前用户` 的 `USER_PRIVATE`。
- * `EXTERNAL_IDENTITY` 范围永远不导出 —— 那是 QQ / B站 上其他人的私人记忆。
+ * 角色自身的范围过滤在 SQL 里：`CHARACTER_GLOBAL` + `userId = 当前用户` 的 `USER_PRIVATE`。
+ * `EXTERNAL_IDENTITY` 是「她的朋友」，只有 `includeFriends` 为真时才单独查一段 ——
+ * 它既是她的人际关系，也是别人的 QQ 号和「她怎么看他们」，所以由导出者当场决定带不带。
  */
 export async function loadCharacterExportBundle(input: {
   characterId: string;
   ownerId: string;
   now?: Date;
+  /** 默认带朋友：换电脑继续养需要它；发给别人时调用方传 false。 */
+  includeFriends?: boolean;
 }): Promise<CharacterExportResult | null> {
   const prisma = getPrisma();
   const character = await prisma.character.findFirst({
@@ -110,6 +117,7 @@ export async function loadCharacterExportBundle(input: {
 
   if (!character) return null;
 
+  const includeFriends = input.includeFriends !== false;
   const now = input.now ?? new Date();
   const bundle = buildCharacterBundle({
     character,
@@ -119,6 +127,7 @@ export async function loadCharacterExportBundle(input: {
     scopes: character.memoryScopes.filter(
       (scope) => scope.scopeType === "CHARACTER_GLOBAL" || scope.userId === input.ownerId,
     ),
+    friends: includeFriends ? await loadCharacterFriends(input.characterId) : [],
     catchphrases: character.catchphrases,
     now,
   });
@@ -137,11 +146,84 @@ export async function loadCharacterExportBundle(input: {
         events: bundle.counts.events,
         snapshots: bundle.counts.snapshots,
         catchphrases: bundle.counts.catchphrases,
+        friends: bundle.counts.friends,
+        friendMemories: bundle.counts.friendMemories,
       },
     },
   }).catch(() => undefined);
 
   return { bundle, characterName: character.name };
+}
+
+/**
+ * 她的朋友：`interactionCount > 0` 的关系，和「她的朋友」页面同一套口径。
+ * 0 次的行是「在群里出现过但没被搭理」的残留，不是朋友，也不该跟着卡走。
+ */
+async function loadCharacterFriends(characterId: string) {
+  const prisma = getPrisma();
+  const scopes = await prisma.memoryScope.findMany({
+    where: {
+      characterId,
+      scopeType: "EXTERNAL_IDENTITY",
+      externalIdentityId: { not: null },
+      interactionCount: { gt: 0 },
+    },
+    orderBy: [{ lastInteractedAt: "desc" }, { createdAt: "desc" }],
+    take: CHARACTER_BUNDLE_LIMITS.friends,
+    select: {
+      createdAt: true,
+      firstSource: true,
+      interactionCount: true,
+      lastInteractedAt: true,
+      externalIdentity: {
+        select: { platform: true, platformUid: true, displayName: true },
+      },
+      memoryItems: {
+        where: { status: "ACTIVE" },
+        orderBy: { createdAt: "asc" },
+        take: CHARACTER_BUNDLE_LIMITS.friendMemories,
+        select: {
+          category: true,
+          content: true,
+          confidence: true,
+          importance: true,
+          validFrom: true,
+          validTo: true,
+          dedupeKey: true,
+        },
+      },
+      snapshots: {
+        where: { status: "CURRENT" },
+        orderBy: { periodEnd: "asc" },
+        take: CHARACTER_BUNDLE_LIMITS.friendSnapshots,
+        select: {
+          kind: true,
+          periodStart: true,
+          periodEnd: true,
+          summary: true,
+          structuredContent: true,
+          generatedAt: true,
+          createdAt: true,
+        },
+      },
+    },
+  });
+
+  return scopes.flatMap((scope) => {
+    const identity = scope.externalIdentity;
+    if (!identity) return [];
+    return [{
+      platform: identity.platform,
+      platformUid: identity.platformUid,
+      displayName: identity.displayName,
+      firstSource: scope.firstSource,
+      interactionCount: scope.interactionCount,
+      lastInteractedAt: scope.lastInteractedAt,
+      knownSince: scope.createdAt,
+      memoryItems: scope.memoryItems,
+      snapshots: scope.snapshots,
+    }];
+  });
 }
 
 const DEFAULT_RAW_MESSAGE_RETENTION_DAYS = 30;
@@ -228,7 +310,7 @@ export async function importCharacterCard(input: {
       select: { id: true },
     });
 
-    const createMemories = async (memoryScopeId: string, items: typeof bundle.memories) => {
+    const createMemories = async (memoryScopeId: string, items: CharacterBundleMemoryBody[]) => {
       if (!items.length) return;
       await tx.memoryItem.createMany({
         data: items.map((item) => ({
@@ -271,7 +353,7 @@ export async function importCharacterCard(input: {
       });
     };
 
-    const createSnapshots = async (memoryScopeId: string, items: typeof bundle.snapshots) => {
+    const createSnapshots = async (memoryScopeId: string, items: CharacterBundleSnapshotBody[]) => {
       if (!items.length) return;
       const seen = new Set<string>();
       const data: Array<{
@@ -341,6 +423,41 @@ export async function importCharacterCard(input: {
       });
     }
 
+    // 她的朋友：身份按 (platform, platformUid) 全局唯一，所以是 upsert 而不是新建 ——
+    // 这台机器上同一个人可能已经跟另一个角色聊过，不能给他开出第二个身份。
+    for (const friend of bundle.friends) {
+      const identity = await tx.externalIdentity.upsert({
+        where: {
+          platform_platformUid: { platform: friend.platform, platformUid: friend.platformUid },
+        },
+        create: {
+          platform: friend.platform,
+          platformUid: friend.platformUid,
+          displayName: friend.displayName || null,
+          status: "UNVERIFIED",
+        },
+        // 已经存在就不动：昵称以本机 QQ 上看到的为准，验证绑定更不该被一张角色卡改写。
+        update: {},
+        select: { id: true },
+      });
+
+      const friendScope = await tx.memoryScope.create({
+        data: {
+          characterId,
+          scopeType: "EXTERNAL_IDENTITY",
+          scopeKey: buildExternalIdentityScopeKey(characterId, friend.platform, friend.platformUid),
+          externalIdentityId: identity.id,
+          firstSource: friend.firstSource,
+          interactionCount: friend.interactionCount,
+          lastInteractedAt: friend.lastInteractedAt ? new Date(friend.lastInteractedAt) : null,
+        },
+        select: { id: true },
+      });
+
+      await createMemories(friendScope.id, friend.memories);
+      await createSnapshots(friendScope.id, friend.snapshots);
+    }
+
     await tx.auditLog.create({
       data: {
         actorType: "USER",
@@ -357,6 +474,8 @@ export async function importCharacterCard(input: {
           events: bundle.counts.events,
           snapshots: bundle.counts.snapshots,
           catchphrases: bundle.counts.catchphrases,
+          friends: bundle.counts.friends,
+          friendMemories: bundle.counts.friendMemories,
         },
       },
     });

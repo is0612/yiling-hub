@@ -222,7 +222,10 @@ async function toggleCharacterStatus(character: Character) {
 async function deleteCharacter(character: Character) {
   try {
     await ElMessageBox.confirm(
-      `确定删除角色「${character.name}」吗？该角色下的所有会话、记忆、阶段总结都会被一并删除，且无法恢复。`,
+      // 这里要列全，是因为删除是真的彻底删：会话、记忆、忆泡、阶段总结、梗、
+      // 她的朋友关系、表情包图片都会没，没有回收站可以捞回来。
+      `确定删除角色「${character.name}」吗？她的会话、记忆、忆泡、阶段总结、梗、朋友关系和表情包图片都会被彻底删除，无法恢复。`
+        + "想留着的话，先「导出角色」再删。",
       "删除角色",
       { confirmButtonText: "删除", cancelButtonText: "取消", type: "warning" },
     );
@@ -245,12 +248,16 @@ async function deleteCharacter(character: Character) {
  * 这里用原生 fetch 而不是 `$fetch`：要的是原始文件流和 `Content-Disposition` 头，
  * 而 `$fetch` 会把响应按 JSON 解析（Nuxt 还会按路由反推类型）。
  * 下载失败（401 / 404）时也能读到服务端给的中文原因，而不是白页。
+ *
+ * `includeFriends` 是唯一一个要当场决定的段：她的朋友里存着别人的 QQ 号和「她怎么看他们」。
+ * 换电脑继续养要带上，发给别人前应当关掉 —— 所以菜单里给两个入口，而不是默默替人决定。
  */
-async function exportCharacter(character: Character) {
+async function exportCharacter(character: Character, includeFriends = true) {
   if (exportingId.value) return;
   exportingId.value = character.id;
   try {
-    const response = await fetch(`/api/characters/${character.id}/export`, {
+    const query = includeFriends ? "" : "?friends=0";
+    const response = await fetch(`/api/characters/${character.id}/export${query}`, {
       credentials: "same-origin",
       headers: { accept: "application/json" },
     });
@@ -263,7 +270,11 @@ async function exportCharacter(character: Character) {
     const encoded = /filename\*=UTF-8''([^;]+)/.exec(disposition)?.[1];
     const fileName = encoded ? decodeURIComponent(encoded) : `yiling-character-${character.name}.json`;
     downloadBlob(blob, fileName);
-    ElMessage.success("角色卡已下载：人设、记忆、忆泡、梗与阶段总结。表情包和 API Key 不在包内。");
+    ElMessage.success(
+      includeFriends
+        ? "角色卡已下载：人设、记忆、忆泡、梗、阶段总结和她的朋友。表情包和 API Key 不在包内。"
+        : "角色卡已下载（不含她的朋友）：适合发给别人。表情包和 API Key 也不在包内。",
+    );
   } catch (error) {
     ElMessage.error(
       error instanceof Error && error.message ? error.message : "导出失败，请稍后重试。",
@@ -296,7 +307,8 @@ function onImported(character: Character) {
 function runCharacterCommand(command: string) {
   const character = selected.value;
   if (!character) return;
-  if (command === "export") void exportCharacter(character);
+  if (command === "export") void exportCharacter(character, true);
+  else if (command === "export-public") void exportCharacter(character, false);
   else if (command === "duplicate") void duplicateCharacter(character);
   else if (command === "toggle") void toggleCharacterStatus(character);
   else if (command === "delete") void deleteCharacter(character);
@@ -504,7 +516,10 @@ function runCharacterCommand(command: string) {
               <template #dropdown>
                 <el-dropdown-menu>
                   <el-dropdown-item command="export">
-                    <el-icon><Download /></el-icon>导出角色
+                    <el-icon><Download /></el-icon>导出角色（含朋友）
+                  </el-dropdown-item>
+                  <el-dropdown-item command="export-public">
+                    <el-icon><Download /></el-icon>导出（不含朋友，可分享）
                   </el-dropdown-item>
                   <el-dropdown-item command="duplicate">
                     <el-icon><CopyDocument /></el-icon>复制角色

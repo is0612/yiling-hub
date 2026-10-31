@@ -1313,6 +1313,7 @@ function copyInstallGuide() {
               :voice-enabled="row.character.voiceEnabled === true"
               :voice-transcribe="row.character.voiceTranscribe === true"
               :voice-chance="row.character.voiceChance ?? 0"
+              :voice-cooldown-minutes="row.character.voiceCooldownMinutes ?? 20"
               :proactive="row.character.proactive"
               :group-initiative="row.character.groupInitiative"
               @saved="onBehaviorSaved"

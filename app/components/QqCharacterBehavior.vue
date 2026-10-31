@@ -124,6 +124,8 @@ const props = defineProps<{
   voiceTranscribe: boolean;
   /** 发语音的概率（0-100）。 */
   voiceChance: number;
+  /** 两条语音之间至少隔多少分钟；0 = 不冷却。服务端会补默认值，这里留兜底。 */
+  voiceCooldownMinutes?: number;
   /** 服务端总会带默认值；这里仍留兜底，避免老数据没有这段时表单是空的 */
   proactive?: ProactiveSettings;
   /** 群聊找话题；同样是服务端补默认值，这里只做兜底。 */
@@ -187,6 +189,8 @@ const voice = reactive({
   enabled: props.voiceEnabled,
   transcribe: props.voiceTranscribe,
   chance: props.voiceChance,
+  // 冷却也属于「行为」：它决定她多久才又肯开口，和用哪家服务商无关。
+  cooldown: props.voiceCooldownMinutes ?? 20,
 });
 const draft = ref<ProactiveSettings>({ ...FALLBACK, ...(props.proactive ?? {}) });
 const groupDraft = ref<GroupInitiativeSettings>({ ...GROUP_FALLBACK, ...(props.groupInitiative ?? {}) });
@@ -346,11 +350,12 @@ watch(() => props.catchphraseAutoMine, (value) => {
   catchphraseAutoMine.value = value;
 });
 watch(
-  () => [props.voiceEnabled, props.voiceTranscribe, props.voiceChance],
+  () => [props.voiceEnabled, props.voiceTranscribe, props.voiceChance, props.voiceCooldownMinutes],
   () => {
     voice.enabled = props.voiceEnabled;
     voice.transcribe = props.voiceTranscribe;
     voice.chance = props.voiceChance;
+    voice.cooldown = props.voiceCooldownMinutes ?? 20;
   },
 );
 // 保存成功后父级会重拉列表，额度跟着库里的值（服务端会把默认值补齐）
@@ -576,6 +581,7 @@ async function saveVoice() {
         voiceEnabled: voice.enabled,
         voiceTranscribe: voice.transcribe,
         voiceChance: voice.chance,
+        voiceCooldownMinutes: voice.cooldown,
       },
     });
     ElMessage.success(voice.enabled || voice.transcribe
@@ -587,6 +593,7 @@ async function saveVoice() {
     voice.enabled = props.voiceEnabled;
     voice.transcribe = props.voiceTranscribe;
     voice.chance = props.voiceChance;
+    voice.cooldown = props.voiceCooldownMinutes ?? 20;
     ElMessage.error(readError(error, "保存失败，请稍后重试。"));
   } finally {
     savingVoice.value = false;
@@ -1083,6 +1090,25 @@ async function tryGroupOnce() {
             <em>
               默认 0 = 只有被要求时才发。语音合成实测要十几秒（服务商的排队开销，与字数无关），
               所以随机发等于随机让一条回复迟到 —— 除非你的服务商很快，否则别调高。
+            </em>
+          </div>
+
+          <div class="beh-field">
+            <span class="beh-label">两条语音至少隔</span>
+            <div class="beh-limit">
+              <el-input-number
+                v-model="voice.cooldown"
+                :min="0"
+                :max="1440"
+                :step="5"
+                :disabled="!voice.enabled"
+              />
+              <span>分钟</span>
+            </div>
+            <em>
+              默认 20 分钟。它只挡「她自己随机开口」那部分：被明确要求「发个语音」时冷却不生效，直接发。
+              填 0 = 不冷却 —— 用 MiniMax 这类 1~3 秒合成的服务商可以调小，合成慢的别调。
+              概率是 0 时这条本来也不起作用。
             </em>
           </div>
 

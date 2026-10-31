@@ -18,10 +18,13 @@ import {
   isVoiceTranscribeEnabled,
   MAX_VOICES_PER_TURN,
   normalizeSpeakableText,
+  padWavSilence,
   planVoiceReply,
+  readSilkDurationMs,
   repairWavSizes,
   resolveVoiceAsrSettings,
   resolveVoiceChance,
+  resolveVoiceCooldownMinutes,
   resolveVoiceTtsSettings,
   sanitizeTranscript,
   shouldSendVoice,
@@ -111,7 +114,46 @@ await assert.rejects(() => silkToWav(Buffer.from("not a silk")), /VOICE_NOT_SILK
   assert.ok((await wavToSilk(repairedList)).length > 0, "带 LIST chunk 的 wav 也能用。");
 }
 
-// ── 5. 转写回填 ────────────────────────────────────────
+// ── 4.1 尾部补静音（防「半拉」）────────────────────────
+// QQ 的时长是整数秒，网关按帧数四舍五入，最多切掉尾巴 0.5 秒。
+// 补静音把这段误差垫进去，被切掉的只能是静音，不能是最后一个字。
+{
+  const padded = padWavSilence(wav, 100);
+  const expected = Math.round(24000 * 0.1) * 2; // 24k × 100ms × 16bit 单声道
+  assert.equal(padded.length, wav.length + expected, "补的字节数与采样率/位深对得上。");
+  assert.equal(padded.readUInt32LE(4), padded.length - 8, "RIFF 长度跟着重算。");
+  assert.equal(padded.readUInt32LE(40), padded.length - 44, "data 长度跟着重算。");
+  assert.equal(padded.readUInt32LE(24), 24000, "采样率不许被改。");
+  assert.equal(padded.readUInt16LE(34), 16, "位深不许被改。");
+  assert.ok(padded.subarray(wav.length).every((byte) => byte === 0), "补的是静音，不是垃圾。");
+
+  // 补完照样能编成 silk，而且确实变长了 —— 否则等于没补。
+  const before = readSilkDurationMs(await wavToSilk(wav));
+  const after = readSilkDurationMs(await wavToSilk(padded));
+  assert.ok(after >= before + 90, `补静音后 silk 要变长（前 ${before}ms → 后 ${after}ms）。`);
+
+  assert.equal(padWavSilence(wav, 0), wav, "0 毫秒原样返回，不白复制一次。");
+
+  // 头部坏掉的 wav 也要能补：服务商回来的是负长度字段，先修再补。
+  const broken = Buffer.from(wav);
+  broken.writeUInt32LE(0xffffffa6, 4);
+  broken.writeUInt32LE(0xffffff00, 40);
+  assert.equal(padWavSilence(broken, 100).length, wav.length + expected, "坏头 wav 补静音前先修长度。");
+
+  // data 后面还挂了 LIST chunk 时，重建要丢掉它 —— 留着会把元数据当采样点编进语音。
+  const withTailList = Buffer.concat([
+    wav,
+    Buffer.from("LIST"), Buffer.from([0x04, 0x00, 0x00, 0x00]), Buffer.from("INFO"),
+  ]);
+  withTailList.writeUInt32LE(withTailList.length - 8, 4);
+  const paddedList = padWavSilence(withTailList, 100);
+  assert.equal(paddedList.length, wav.length + expected, "尾部 LIST 被丢掉，只留 PCM + 静音。");
+  assert.equal(paddedList.readUInt32LE(40), 480 + expected, "data 长度只算 PCM + 静音。");
+
+  assert.throws(() => padWavSilence(Buffer.from("not a wav"), 100), /VOICE_NOT_WAV/);
+}
+
+// ── 6. 转写回填 ────────────────────────────────────────
 assert.equal(applyVoiceTranscripts("早上好", []), "早上好");
 assert.equal(applyVoiceTranscripts("听听[语音]", ["我今天不去"]), "听听[语音：我今天不去]");
 assert.equal(
@@ -202,6 +244,17 @@ for (const text of ["别发语音", "不要用语音", "语音没有，我只有
   assert.equal(isVoiceRequested(text), false, `不该识别为要语音：${text}`);
 }
 
+// 「引用他说一句」这类没有「语音」二字，但就是在要她开口。
+// 漏判的后果不是「识别错」，而是这一轮不 force → 落回冷却与概率 → 多数时候只发文字，
+// 用户看到的是「引用别人的时候语音老是发不出去」。
+for (const text of ["引用他说一句", "引用他念一段", "引用上面那条说一句", "引用他说几声"]) {
+  assert.equal(isVoiceRequested(text), true, `引用 + 说/念 应该算要语音：${text}`);
+}
+// 但「回他一句」多半只是打字，不能被一起抢过来。
+for (const text of ["引用他", "回他一句", "引用这条聊聊"]) {
+  assert.equal(isVoiceRequested(text), false, `不能过度识别：${text}`);
+}
+
 // 明确要求时跳过概率与冷却，但**不**跳过开关和长度。
 assert.equal(
   shouldSendVoice({ modelConfig: { voiceEnabled: true, voiceChance: 0 }, text: "在的", force: true, random: () => 0.99 }),
@@ -242,6 +295,36 @@ assert.equal(
   false,
   "冷却期内不计划（否则提示词会让她按语音写，最后却发文字）。",
 );
+
+// ── 7.3 冷却时长可配（默认 20 分钟，0 = 不冷却）────────
+assert.equal(resolveVoiceCooldownMinutes({}), 20, "默认 20 分钟。");
+assert.equal(resolveVoiceCooldownMinutes({ voiceCooldownMinutes: 5 }), 5);
+assert.equal(resolveVoiceCooldownMinutes({ voiceCooldownMinutes: 0 }), 0, "0 = 不冷却。");
+assert.equal(resolveVoiceCooldownMinutes({ voiceCooldownMinutes: -10 }), 0, "负数夹到 0。");
+assert.equal(resolveVoiceCooldownMinutes({ voiceCooldownMinutes: 99999 }), 1440, "上限一天。");
+assert.equal(resolveVoiceCooldownMinutes({ voiceCooldownMinutes: "5" }), 20, "非数字当没配。");
+assert.equal(VOICE_COOLDOWN_MS, 20 * 60 * 1000, "老常量仍是 20 分钟，别被顺手改掉。");
+
+{
+  // 30 分钟前发过：默认 20 分钟该放行，配成 120 分钟就该拦住。
+  const lastVoiceAt = new Date(Date.now() - 30 * 60 * 1000);
+  assert.equal(
+    planVoiceReply({ modelConfig: { voiceEnabled: true, voiceChance: 100 }, lastVoiceAt, random: () => 0 }),
+    true,
+    "默认 20 分钟：30 分钟前发过，可以再发。",
+  );
+  assert.equal(
+    planVoiceReply({ modelConfig: { voiceEnabled: true, voiceChance: 100, voiceCooldownMinutes: 120 }, lastVoiceAt, random: () => 0 }),
+    false,
+    "配成 120 分钟：30 分钟前发过，这轮不发。",
+  );
+  // 0 = 不冷却：刚发过也照样发。
+  assert.equal(
+    planVoiceReply({ modelConfig: { voiceEnabled: true, voiceChance: 100, voiceCooldownMinutes: 0 }, lastVoiceAt: new Date(), random: () => 0 }),
+    true,
+    "冷却 0：刚发过也能发。",
+  );
+}
 
 assert.equal(canSpeakReply("在的，怎么啦"), true);
 assert.equal(canSpeakReply("啊".repeat(VOICE_TEXT_MAX_CHARS + 1)), false, "超长不读。");

@@ -105,6 +105,31 @@ const built = buildCharacterBundle({
     },
   ],
   catchphrases: [{ phrase: "不烧心吗", usage: "吃到辣的", enabled: true, source: "manual" }],
+  friends: [
+    {
+      platform: "qq-onebot",
+      platformUid: "888888",
+      displayName: "小关",
+      firstSource: "GROUP",
+      interactionCount: 12,
+      lastInteractedAt: new Date("2026-10-30T10:00:00Z"),
+      knownSince: new Date("2026-09-01T00:00:00Z"),
+      memoryItems: [
+        { category: "FACT", content: "小关住在北海", confidence: 0.8, importance: 0.6, validFrom: null, validTo: null, dedupeKey: "f1" },
+      ],
+      snapshots: [
+        {
+          kind: "AUTOMATIC",
+          periodStart: new Date("2026-10-25T00:00:00Z"),
+          periodEnd: new Date("2026-10-26T00:00:00Z"),
+          summary: "他们一起去了海边。",
+          structuredContent: {},
+          generatedAt: null,
+          createdAt: new Date("2026-10-26T01:00:00Z"),
+        },
+      ],
+    },
+  ],
   now: new Date("2026-10-31T13:00:00Z"),
 });
 
@@ -117,6 +142,15 @@ assert.equal(built.counts.privateMemories, 1, "其中一条是私人记忆");
 assert.equal(built.counts.events, 1);
 assert.equal(built.counts.snapshots, 1);
 assert.equal(built.counts.catchphrases, 1);
+assert.equal(built.counts.friends, 1, "朋友单独成段");
+assert.equal(built.counts.friendMemories, 1, "朋友名下的记忆单独计数");
+assert.equal(built.friends[0]?.displayName, "小关");
+assert.equal(built.friends[0]?.interactionCount, 12);
+assert.equal(built.friends[0]?.firstSource, "GROUP", "在哪儿认识的要保留");
+assert.ok(
+  !built.memories.some((item) => item.content === "小关住在北海"),
+  "朋友的记忆不能混进角色自己的记忆列表",
+);
 assert.equal(built.memories.filter((item) => item.scope === "private").length, 1, "私人记忆带 scope 标记");
 assert.equal(built.memories[0]?.scope, "character", "全局记忆默认 scope=character");
 assert.equal(built.modelConfig.chatApiKeyEncrypted, undefined, "构建出的包不含密钥字段");
@@ -132,6 +166,11 @@ assert.equal(roundTrip.events[0]?.participants[0], "小关", "参与者是数组
 assert.equal(roundTrip.snapshots[0]?.summary, "这一段她学会了游泳。");
 assert.deepEqual(roundTrip.snapshots[0]?.structuredContent, { highlights: ["游泳"] });
 assert.equal(roundTrip.memorySetting.snapshotIntervalDays, 8);
+assert.equal(roundTrip.friends.length, 1, "朋友要能原样解析回来");
+assert.equal(roundTrip.friends[0]?.platformUid, "888888");
+assert.equal(roundTrip.friends[0]?.memories[0]?.content, "小关住在北海");
+assert.equal(roundTrip.friends[0]?.snapshots[0]?.summary, "他们一起去了海边。");
+assert.equal(roundTrip.friends[0]?.knownSince, "2026-09-01T00:00:00.000Z", "认识的时间要保住");
 
 // ── 4. 名称去重 ────────────────────────────────────────────
 assert.equal(computeImportedCharacterName("小鱼", []), "小鱼", "不撞名就用原名");
@@ -192,6 +231,28 @@ assert.throws(
   /台词不能为空/,
   "空梗要拒绝",
 );
+assert.throws(
+  () => parseCharacterBundle(minimal({ friends: [{ platform: "qq-onebot" }] })),
+  /平台账号不能为空/,
+  "朋友没有账号要拒绝",
+);
+assert.throws(
+  () => parseCharacterBundle(minimal({
+    friends: [
+      { platform: "qq-onebot", platformUid: "123" },
+      { platform: "qq-onebot", platformUid: "123" },
+    ],
+  })),
+  /重复的 qq-onebot 账号/,
+  "同一个账号出现两次会撞唯一键，必须在解析阶段就拒绝",
+);
+assert.throws(
+  () => parseCharacterBundle(minimal({
+    friends: [{ platform: "qq-onebot", platformUid: "123", interactionCount: -1 }],
+  })),
+  /互动次数必须在/,
+  "负的互动次数要拒绝",
+);
 
 // ── 6. 宽容但不含糊的字段 ──────────────────────────────────
 const lenient = parseCharacterBundle(minimal({
@@ -211,6 +272,12 @@ assert.equal(lenient.memories[0]?.scope, "private");
 assert.equal(lenient.events[0]?.precision, "day", "不认识的精度回落到 day");
 assert.equal(lenient.events[0]?.state, "FINAL", "不认识的状态回落到 FINAL");
 assert.equal(lenient.snapshots.length, 0, "没有阶段总结时不报错，就是空数组");
+assert.equal(lenient.friends.length, 0, "老角色卡没有 friends 段，解析成空数组而不是报错");
+
+const friendLenient = parseCharacterBundle(minimal({
+  friends: [{ platform: "qq-onebot", platformUid: "1", firstSource: "WHATEVER" }],
+}));
+assert.equal(friendLenient.friends[0]?.firstSource, null, "不认识的来源标成 null，不当成私聊");
 
 // 密钥字段即使塞在包里也会被剥掉
 const withSecrets = parseCharacterBundle(minimal({
@@ -224,4 +291,4 @@ assert.equal("chatApiKey" in withSecrets.modelConfig, false);
 const fileName = characterBundleFileName('小/鱼: "test"', new Date("2026-10-31T13:11:10Z"));
 assert.match(fileName, /^yiling-character-小_鱼_ _test_-202610311311\.json$/, "文件名要过滤路径分隔符并带时间戳");
 
-console.log("角色卡格式测试通过：密钥剥离、白名单、构建、回环、名称去重、非法输入拒绝、时区与分类兜底、文件名。");
+console.log("角色卡格式测试通过：密钥剥离、白名单、构建、朋友段、回环、名称去重、非法输入拒绝、时区与分类兜底、文件名。");

@@ -53,6 +53,8 @@ export type Character = {
   voiceTranscribe?: boolean;
   /** 发语音的概率（0-100）。 */
   voiceChance?: number;
+  /** 两条语音之间至少隔多少分钟；0 = 不冷却。 */
+  voiceCooldownMinutes?: number;
   /** 语音服务地址；空 = 用环境变量或角色聊天地址。 */
   voiceApiBaseUrl?: string;
   /** 语音 Key 是否已保存（只回布尔）。 */

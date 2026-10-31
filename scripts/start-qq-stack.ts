@@ -55,20 +55,8 @@ function startSnowLuma(): ChildProcess {
   // 用协议端自带的 node（版本是它挑过的），没有才退回当前这个。
   const nodeExe = existsSync(join(SNOWLUMA_HOME, "node.exe")) ? join(SNOWLUMA_HOME, "node.exe") : process.execPath;
   const child = spawn(nodeExe, ["index.mjs"], { cwd: SNOWLUMA_HOME, stdio: ["ignore", "pipe", "pipe"] });
-  const prefix = (stream: NodeJS.ReadableStream | null) => {
-    if (!stream) return;
-    let buffer = "";
-    stream.on("data", (chunk: Buffer) => {
-      buffer += chunk.toString("utf8");
-      const lines = buffer.split("\n");
-      buffer = lines.pop() ?? "";
-      for (const line of lines) {
-        if (line.trim()) process.stdout.write("[snowluma] " + line + "\n");
-      }
-    });
-  };
-  prefix(child.stdout);
-  prefix(child.stderr);
+  pipeWithPrefix(child.stdout, "snowluma");
+  pipeWithPrefix(child.stderr, "snowluma");
   child.on("error", (error) => log({ event: "snowluma-spawn-failed", error: error.message }));
   child.on("exit", (code) => {
     if (running) log({ event: "snowluma-exited", code: code ?? "未知" });
@@ -76,12 +64,49 @@ function startSnowLuma(): ChildProcess {
   return child;
 }
 
-function startAdapter(): ChildProcess {
+/** 子进程的输出逐行转成带前缀的一行，一个窗口里能分清是谁在说话。 */
+function pipeWithPrefix(stream: NodeJS.ReadableStream | null, label: string) {
+  if (!stream) return;
+  let buffer = "";
+  stream.on("data", (chunk: Buffer) => {
+    buffer += chunk.toString("utf8");
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+    for (const line of lines) {
+      if (line.trim()) process.stdout.write(`[${label}] ` + line + "\n");
+    }
+  });
+}
+
+function tsxArgs(script: string): string[] {
   const tsxCli = join(REPO_ROOT, "node_modules", "tsx", "dist", "cli.mjs");
-  const args = existsSync(tsxCli)
-    ? [tsxCli, "scripts/run-onebot-adapter.ts"]
-    : ["--import", "tsx", "scripts/run-onebot-adapter.ts"];
-  const child = spawn(process.execPath, args, { cwd: REPO_ROOT, stdio: "inherit" });
+  return existsSync(tsxCli)
+    ? [tsxCli, script]
+    : ["--import", "tsx", script];
+}
+
+/**
+ * 停滞检测跟着这条链路一起起：它只看产出，不看进程，所以和 QQ 是否连通无关。
+ * 放在这里是「既然你已经开着一个常驻窗口，就别再多开一个」—— 它自己崩了不影响 QQ 收发，
+ * 但要留下 `watchdog-exited` 这一行，否则仪表没了没人知道。
+ */
+function startWatchdog(): ChildProcess {
+  const child = spawn(process.execPath, tsxArgs("scripts/watchdog.ts").concat("--watch"), {
+    cwd: REPO_ROOT,
+    stdio: ["ignore", "pipe", "pipe"],
+    env: process.env,
+  });
+  pipeWithPrefix(child.stdout, "watchdog");
+  pipeWithPrefix(child.stderr, "watchdog");
+  child.on("error", (error) => log({ event: "watchdog-spawn-failed", error: error.message }));
+  child.on("exit", (code) => {
+    if (running) log({ event: "watchdog-exited", code: code ?? "未知" });
+  });
+  return child;
+}
+
+function startAdapter(): ChildProcess {
+  const child = spawn(process.execPath, tsxArgs("scripts/run-onebot-adapter.ts"), { cwd: REPO_ROOT, stdio: "inherit" });
   child.on("error", (error) => log({ event: "adapter-spawn-failed", error: error.message }));
   child.on("exit", (code) => {
     if (running) log({ event: "adapter-exited", code: code ?? "未知" });
@@ -109,11 +134,16 @@ async function main() {
   }
   log({ event: "snowluma-ready", ports: PORTS });
 
+  // 停滞检测挂在同一个窗口里（`YILING_WATCHDOG_DISABLED=1` 可以关掉）。
+  const watchdog = process.env.YILING_WATCHDOG_DISABLED === "1" ? null : startWatchdog();
+  if (!watchdog) log({ event: "watchdog-skipped", reason: "YILING_WATCHDOG_DISABLED=1" });
+
   const adapter = startAdapter();
   const exitCode = await new Promise<number | null>((resolveExit) => {
     adapter.once("exit", (code) => resolveExit(code ?? 0));
   });
   running = false;
+  watchdog?.kill();
   snowluma?.kill();
   process.exitCode = exitCode ?? 0;
 }

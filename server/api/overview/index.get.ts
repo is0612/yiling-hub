@@ -12,6 +12,7 @@ import { resolveAvatarTone } from "../../utils/character-dto";
 import { resolveChatModelSettings } from "../../utils/chat-model-config";
 import { readUsageReport, usageDayWindow } from "../../utils/model-usage";
 import { getPrisma } from "../../utils/prisma";
+import { collectWatchdogFindings, type WatchdogFinding } from "../../utils/watchdog";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 /** 总览里用量趋势看最近 7 天：够看出"哪天烧得凶"，又不至于把页面变成报表。 */
@@ -137,7 +138,7 @@ export default defineEventHandler(async (event): Promise<OverviewPayload> => {
   const characterIds = characters.map((character) => character.id);
   const usageDays = usageDayWindow(USAGE_WINDOW_DAYS, now);
 
-  const [jobGroups, recentJobs, recentSnapshots, usageReports] = await Promise.all([
+  const [jobGroups, recentJobs, recentSnapshots, usageReports, watchdogFindings] = await Promise.all([
     prisma.memoryJob.groupBy({
       by: ["memoryScopeId", "status"],
       where: jobScope,
@@ -170,6 +171,12 @@ export default defineEventHandler(async (event): Promise<OverviewPayload> => {
       },
     }),
     readUsageReport(characterIds, USAGE_WINDOW_DAYS, now),
+    // 停滞检测是「附加信息」，不是总览的主体。它出任何问题（SQL 报错、字段类型变了）
+    // 都不能把整页打挂 —— 少一行提醒，好过一个 500。失败只记日志，常驻脚本那边仍然会报。
+    collectWatchdogFindings(prisma, now, ownerId).catch((error: unknown) => {
+      console.error("[watchdog] 总览页判定失败：", error instanceof Error ? error.message : String(error));
+      return [] as WatchdogFinding[];
+    }),
   ]);
 
   // memoryScopeId → characterId，用于把任务计数摊回角色。
@@ -401,6 +408,10 @@ export default defineEventHandler(async (event): Promise<OverviewPayload> => {
     characters: overviewCharacters,
     usage,
     tasks,
+    watchdog: {
+      checkedAt: now.toISOString(),
+      findings: watchdogFindings,
+    },
     nextSnapshot: nextCharacter
       ? {
           characterId: nextCharacter.id,

@@ -291,7 +291,8 @@ export default defineEventHandler(async (event) => {
     rawMessages = selected.items.map((message) => ({
       id: message.id,
       role: message.role,
-      content: message.content.slice(0, 300),
+      // 截断由 selectRawMessagesForPrompt 统一负责（含「后面还有 N 字」标记），这里不再切片。
+      content: message.content,
       occurredAt: message.occurredAt.toISOString(),
       scope: scopeOriginById.get(message.conversation.memoryScopeId) ?? "character",
     }));

@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import {
   localDayHour, localDayKey, parseEventTimeRange, resolveDailyEventWindow, resolveDayWindow, zonedDateTime,
 } from "../server/utils/memory-event-time";
-import { selectRawMessagesForPrompt } from "../server/utils/message-retrieval";
+import {
+  RAW_MESSAGE_MAX_CHARS, RAW_MESSAGE_TOKEN_BUDGET_DEFAULT, selectRawMessagesForPrompt,
+} from "../server/utils/message-retrieval";
+import { estimateTokens } from "../server/utils/memory-retrieval";
 import { toMemoryTimelineDtos } from "../server/utils/memory-timeline-dto";
 import { selectEventsForPrompt } from "../server/utils/memory-event-retrieval";
 import { isNearDuplicateEvent, longestCommonSubstringLength, makeEventDedupeKey } from "../server/utils/memory-ai";
@@ -126,6 +129,29 @@ assert.equal(
   "问句没有时间指向时不该额外查原文 —— 那是最近窗口的活",
 );
 
+// ── 单条原文截断：一条长粘贴不能把那天挤没 ──────────────────
+// 不截断时只有两种结局：第一条永远放行（整条进提示词），或者装不下被整条跳过。
+const longPaste = "前".repeat(RAW_MESSAGE_MAX_CHARS) + "后".repeat(400) + "关键词在尾巴上";
+const clipped = selectRawMessagesForPrompt("前天翻车了吗", [
+  { id: "m-long", role: "USER", content: longPaste, occurredAt: new Date("2026-10-29T15:00:00+08:00") },
+], { now, timeZone: TZ });
+assert.equal(clipped.items.length, 1, "只有这一条时也要给出来");
+const clippedItem = clipped.items[0]!;
+assert.equal(clippedItem.truncated, true, "超长的那条要标成截断");
+assert(clippedItem.content.startsWith("前".repeat(RAW_MESSAGE_MAX_CHARS)), "保留的是开头，不是结尾");
+assert.match(clippedItem.content, /后面还有 \d+ 字未展开/, "省略要说明还有多少，模型才不会以为话说完了");
+assert(
+  clippedItem.content.length < longPaste.length,
+  "截断后的长度必须真的变短，否则预算照旧被吃光",
+);
+// token 反映的是**进提示词的那份**，不是原文 —— 否则预算判断会失真。
+assert.equal(clippedItem.tokens, estimateTokens(clippedItem.content));
+assert(clipped.usedTokens < RAW_MESSAGE_TOKEN_BUDGET_DEFAULT, "单条截断后不该一个预算就被吃光");
+
+const shortLine = selectRawMessagesForPrompt("前天我们干什么了", rawLines, { now, timeZone: TZ });
+assert.equal(shortLine.items[0]?.truncated, false, "没超长的原文原样给出，不加省略号");
+assert.equal(shortLine.items[0]?.content, "前天下午我们去银滩游泳了");
+
 // ── 时间线：忆泡要能按「还在记 / 已收口」区分 ────────────────
 const timeline = toMemoryTimelineDtos({
   messages: [],
@@ -202,4 +228,4 @@ assert(
   "「主人」是角色词，不算交集 —— 同主语的不同事件不能被吞掉。",
 );
 
-console.log("忆泡测试通过：相对/绝对日期、时段收窄、周起点、空区间、关键词回退、预算保底、幂等键、按天窗口、日期键与小时键、原文兜底、时间线状态、近义去重。");
+console.log("忆泡测试通过：相对/绝对日期、时段收窄、周起点、空区间、关键词回退、预算保底、幂等键、按天窗口、日期键与小时键、原文兜底与单条截断、时间线状态、近义去重。");

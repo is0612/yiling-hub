@@ -94,10 +94,19 @@ const alerts = computed(() => {
   const data = overview.value;
   if (!data) return [] as string[];
   const list: string[] = [];
+  // 停滞检测排在最前：它说的是「任务根本没被排 / 没被认领 / 没人回收」，
+  // 比后面的「有任务失败」「归档逾期」更接近原因。最多列三条，剩下的合并成一句。
+  const findings = data.watchdog?.findings ?? [];
+  for (const finding of findings.slice(0, 3)) {
+    list.push(`${finding.characterName}：${finding.message}`);
+  }
+  if (findings.length > 3) list.push(`另有 ${findings.length - 3} 项停滞`);
   if (data.tasks.failed > 0) list.push(`${data.tasks.failed} 个后台任务失败或等待重试`);
   const unconfigured = data.characters.filter((item) => !item.chatApiKeyConfigured).length;
   if (unconfigured > 0) list.push(`${unconfigured} 个角色未配置模型，归档任务会留在队列里不执行`);
-  const missed = data.characters.filter((item) => item.cycle?.missed).length;
+  // 已经由停滞检测点名过的角色不再重复说「归档已逾期」：那是一句话的因果两头，说两遍只是变长。
+  const flagged = new Set(findings.map((finding) => finding.characterId));
+  const missed = data.characters.filter((item) => item.cycle?.missed && !flagged.has(item.id)).length;
   if (missed > 0) list.push(`${missed} 个角色的归档已逾期`);
   const disconnected = data.characters.filter((item) => item.status === "未连接").length;
   if (disconnected > 0) list.push(`${disconnected} 个角色没有可用渠道`);
