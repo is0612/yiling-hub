@@ -333,6 +333,8 @@ try {
               relation: "shared_topic",
               topicAnchorMessageId: "a1",
               replyToMessageId: "m2",
+              // 点名可以指向背景里的人（这一轮没再说话），号池是「本轮 ∪ 背景」。
+              atMessageId: "h1",
               evidenceMessageIds: ["m2", "invented"],
             },
           }),
@@ -378,6 +380,7 @@ try {
   assert.equal(grouped.groupDecision?.relation, "shared_topic");
   assert.equal(grouped.groupDecision?.topicAnchorMessageId, "a1", "锚点必须来自本次提供的 groupAnchors。");
   assert.equal(grouped.groupDecision?.replyToMessageId, "m2", "引用目标必须是本轮 transcript 的 id。");
+  assert.equal(grouped.groupDecision?.atMessageId, "h1", "点名可以指向背景里的人物，不必是这一轮的。");
   assert.deepEqual(grouped.groupDecision?.evidenceMessageIds, ["m2"], "编造的证据 id 要被过滤掉。");
 
   // 非法 relation / 不存在锚点：整段决策丢掉，但回复照常返回。
@@ -408,13 +411,13 @@ try {
   assert.equal(badDecision.reply, "嗯", "决策字段非法不能连累正常回复。");
   assert.equal(badDecision.groupDecision, undefined, "非法 relation 要整段丢弃。");
 
-  // 合法 relation 但 replyTo 编造：回复和关系都保留，只有引用目标被丢掉。
+  // 合法 relation 但 replyTo / at 编造：回复和关系都保留，只有这两个目标被丢掉。
   globalThis.fetch = async (): Promise<Response> => new Response(JSON.stringify({
     choices: [{ message: { content: JSON.stringify({
       reply: "来了",
       usedMemoryIds: [],
       usedSnapshotIds: [],
-      groupDecision: { relation: "direct", replyToMessageId: "ghost-id", evidenceMessageIds: [] },
+      groupDecision: { relation: "direct", replyToMessageId: "ghost-id", atMessageId: "ghost-at", evidenceMessageIds: [] },
     }) } }],
     usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 },
   }), { status: 200, headers: { "content-type": "application/json" } });
@@ -434,6 +437,7 @@ try {
   });
   assert.equal(badReplyTo.groupDecision?.relation, "direct", "relation 合法时决策要保留。");
   assert.equal(badReplyTo.groupDecision?.replyToMessageId, undefined, "编造的引用目标要被丢掉。");
+  assert.equal(badReplyTo.groupDecision?.atMessageId, undefined, "编造的点名对象也要被丢掉 —— 否则会 @ 一个不存在的人。");
 
   // 被 @ 时必须回：模型返回 silent 也不能被当成「这轮不插嘴」。
   globalThis.fetch = async (): Promise<Response> => new Response(JSON.stringify({

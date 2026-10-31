@@ -50,6 +50,14 @@ export type ChannelReplyOptions = {
   /** 引用回复的消息 id（本平台原始 id）。群聊里让她锚定「接的是哪一句」。 */
   replyToMessageId?: string;
   /**
+   * 要点名的人 —— 填他说过的那条消息 id，渠道 @ 这条消息的作者。
+   *
+   * 与 `replyToMessageId` 分开传，因为两件事的目的不同：引用说明「接哪一句」，
+   * @ 是**去叫人**（对方客户端会亮提醒）。混成一个字段就变成「凡引用必 @"，
+   * 群里每条都弹提醒。渠道不支持 @ 就忽略这个字段。
+   */
+  atMessageId?: string;
+  /**
    * 这一条用语音发。渠道自己决定能不能真发（要合成、要转 silk），
    * 发不出来就退回发文字 —— 语音是锦上添花，不能成为整轮沉默的原因。
    */
@@ -206,6 +214,22 @@ function readStoredVoiceFlag(metadata: unknown): boolean {
     ? metadata as Record<string, unknown>
     : {};
   return record.voice === true;
+}
+
+/**
+ * 要引用哪一句。指向最新一条就当作「没引用」。
+ *
+ * 一边要求「回上一条别引用、别 @」，一边指望模型每次都判断对「哪条是上一条」，
+ * 是不现实的：一忙起来它会把 id 填成本轮第一条。所以这层判断放在代码里 ——
+ * 模型只管说「我在接哪句」，要不要显示成引用由这里定。
+ */
+export function pickQuoteTarget(
+  replyToMessageId: string | undefined,
+  newestMessageId: string | undefined,
+): string | undefined {
+  if (!replyToMessageId) return undefined;
+  if (newestMessageId && replyToMessageId === newestMessageId) return undefined;
+  return replyToMessageId;
 }
 
 /**
@@ -866,7 +890,17 @@ async function runChannelTurn(input: {
   });
 
   if (generated.action === "reply") {
-    const replyOptions = replyFaces.length || replySticker || replyVoice || generated.groupDecision?.replyToMessageId
+    /**
+     * 引用哪一句。
+     *
+     * 模型给的 `replyToMessageId` 指向「最新那条」时直接丢掉：回上一条不需要引用，
+     * 引用块只会把对话挤成两倍长。这是**代码判定**而不是提示词请求 —— 「哪条是最新」
+     * 是事实，模型经常答在本轮第一条上，让它自己判断只会时对时错。
+     * 真正需要引用的是「中间夹了别人的话」那种，模型给哪条就是哪条。
+     */
+    const quoteTarget = pickQuoteTarget(generated.groupDecision?.replyToMessageId, messages.at(-1)?.externalMessageId);
+    const atTarget = generated.groupDecision?.atMessageId;
+    const replyOptions = replyFaces.length || replySticker || replyVoice || quoteTarget || atTarget
       ? {
           ...(replyFaces.length ? { faces: replyFaces } : {}),
           ...(replySticker
@@ -879,7 +913,8 @@ async function runChannelTurn(input: {
               }
             : {}),
           ...(replyVoice && voiceSettings ? { voice: true, voiceSettings } : {}),
-          ...(generated.groupDecision?.replyToMessageId ? { replyToMessageId: generated.groupDecision.replyToMessageId } : {}),
+          ...(quoteTarget ? { replyToMessageId: quoteTarget } : {}),
+          ...(atTarget ? { atMessageId: atTarget } : {}),
         }
       : undefined;
     await input.sendReply(generated.reply, replyOptions);

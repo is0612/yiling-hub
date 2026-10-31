@@ -531,13 +531,15 @@ function createReplySender(
     };
 
     /**
-     * 该 @ 谁。两个条件缺一不可：在群里说话、且引用了某条具体的消息。
-     * 引的是她自己发的（`resolveAtQq` 返回自己的号）就不 @ —— 自己叫自己名字很傻。
+     * 该 @ 谁：只在模型明确「点名」时（`options.atMessageId` 指向某人的一句话）。
+     *
+     * 不再跟着引用走 —— 「凡引用必 @」是上一版的写法，群里每条回复都弹一次提醒，
+     * 用户的原话是「经常 @ 也不好」。引的是她自己发的也不 @（自己叫自己名字很傻）。
      */
     const atQq = (): string | null => {
-      const replyTo = options?.replyToMessageId;
-      if (!replyTo || target.messageType !== "group" || !quote?.resolveAtQq) return null;
-      const qq = quote.resolveAtQq(replyTo);
+      const atMessage = options?.atMessageId;
+      if (!atMessage || target.messageType !== "group" || !quote?.resolveAtQq) return null;
+      const qq = quote.resolveAtQq(atMessage);
       if (!qq || qq === quote.selfQq) return null;
       return qq;
     };

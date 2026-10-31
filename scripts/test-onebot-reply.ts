@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { buildOnebotReplyMessage } from "../server/utils/channel-adapter/onebot/serve";
+import { pickQuoteTarget } from "../server/utils/channel-adapter/pipeline";
 
 // 纯文本：无引用目标时原样返回字符串。
 assert.equal(buildOnebotReplyMessage("几点啊就起床"), "几点啊就起床");
@@ -34,5 +35,20 @@ assert.deepEqual(
   ["reply", "text"],
   "非数字的 qq 不许变成坏段。",
 );
+
+// 只点名、不引用：主动叫某个人时就是这样，不带引用块。
+assert.deepEqual(
+  buildOnebotReplyMessage("你倒是说话啊", undefined, "2243049685").map((segment) => segment.type),
+  ["at", "text"],
+);
+
+/**
+ * 引用目标是「最新一条」时不算引用 —— 回上一条不需要引用块，
+ * 引用块只会把对话挤成两倍长。这条判断放代码里，不指望模型每次数对。
+ */
+assert.equal(pickQuoteTarget("m3", "m3"), undefined, "指向最新一条：当作没引用。");
+assert.equal(pickQuoteTarget("m2", "m3"), "m2", "中间夹了别人的话：引用。");
+assert.equal(pickQuoteTarget("m2", undefined), "m2", "拿不到最新消息时不猜，照模型给的走。");
+assert.equal(pickQuoteTarget(undefined, "m3"), undefined);
 
 console.log("onebot reply 段构造：全部通过");

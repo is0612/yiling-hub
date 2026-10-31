@@ -507,26 +507,53 @@ try {
   record.bindings[0]!.groupChatModes = {};
   record.bindings[0]!.groupChat = { ...ambientSettings, mode: "all" };
 
-  // 9.8 引用回复必须带 @：QQ 的引用块只是把原文贴出来，被回的人收不到提醒，
-  // 只有 at 段才会在他的客户端亮红点。少了这一段的表现就是「引用了，但没 @ 人」。
-  await emitToGroup(1008, 80, "CI_QUOTE_REPLY 你刚说的那句什么意思", 555, false);
-  await waitFor(async () => (await assistantCount(1008)) >= 1);
-  const quotedSends = (await readSent()).filter(
-    (item) => item.action === "send_group_msg" && Number(item.body.group_id) === 1008,
+  /**
+   * 9.8 引用与 @ 分开管：
+   *   - 回「中间夹了别人话」的那句 → 引用，但**不** @（用户原话：经常 @ 也不好）；
+   *   - 回的就是最新一条 → 连引用都不要，纯文本；
+   *   - 主动点名某人 → 只 @，不引用。
+   */
+  const groupSends = async (groupId: number) => (await readSent()).filter(
+    (item) => item.action === "send_group_msg" && Number(item.body.group_id) === groupId,
   );
-  // 表情是紧跟其后的**另一条**消息，所以这里要按内容挑出带引用的那条，不能取最后一条。
-  const quotedSegments = quotedSends
+  const findSegments = (sends: Array<{ body: Record<string, unknown> }>, type: string) => sends
     .map((item) => item.body.message as unknown)
     .find((message): message is Array<{ type: string; data: Record<string, unknown> }> =>
-      Array.isArray(message) && message.some((segment) => segment.type === "reply"));
-  assert.ok(quotedSegments, "必须有一条带引用的回复；纯文本发不出 reply/at 段。");
+      Array.isArray(message) && message.some((segment) => segment.type === type));
+
+  // 同一批里两条：CI_QUOTE_REPLY 那条不是最新，所以该引用；最新那条不需要引用。
+  await emitToGroup(1008, 80, "CI_QUOTE_REPLY 你刚说的那句什么意思", 555, false);
+  await emitToGroup(1008, 81, "对了我明天请假", 556, false);
+  await waitFor(async () => (await assistantCount(1008)) >= 1);
+  const quotedSegments = findSegments(await groupSends(1008), "reply");
+  assert.ok(quotedSegments, "接的不是最新一条时必须引用，否则认不出接的是哪句。");
   assert.deepEqual(
     quotedSegments.map((segment) => segment.type),
-    ["reply", "at", "text"],
-    "顺序必须是 reply → at → text。",
+    ["reply", "text"],
+    "只引用、不 @：引用已经指明接哪句，再 @ 一次就是多余提醒。",
   );
   assert.equal(String(quotedSegments[0]!.data.id), "80", "引用的是她决定接的那条消息。");
-  assert.equal(String(quotedSegments[1]!.data.qq), "555", "@ 的必须是发那条消息的人。");
+
+  // 回的就是最新一条：模型照惯例给了 replyToMessageId，代码要把它丢掉。
+  await emitToGroup(1009, 90, "CI_QUOTE_REPLY 在吗", 557, false);
+  await waitFor(async () => (await assistantCount(1009)) >= 1);
+  const adjacentSends = (await groupSends(1009)).map((item) => item.body.message as unknown);
+  const hasQuoteOrAt = (message: unknown) => Array.isArray(message)
+    && message.some((segment) => segment.type === "reply" || segment.type === "at");
+  assert.ok(adjacentSends.some((message) => typeof message === "string"), "回上一条时正文要按纯文本发。");
+  assert.ok(adjacentSends.every((message) => !hasQuoteOrAt(message)), "回上一条不该带引用块，也不该带 @。");
+
+  // 主动点名：只 @ 那个人，不引用。
+  await emitToGroup(1010, 95, "CI_AT_REPLY 你们都在干嘛", 558, false);
+  await waitFor(async () => (await assistantCount(1010)) >= 1);
+  const atSegments = findSegments(await groupSends(1010), "at");
+  assert.ok(atSegments, "主动点名必须发 at 段 —— 这是唯一会给对方亮提醒的方式。");
+  assert.deepEqual(
+    atSegments.map((segment) => segment.type),
+    ["at", "text"],
+    "点名不需要引用：引用回答「接哪句」，这里是在叫人。",
+  );
+  assert.equal(String(atSegments[0]!.data.qq), "558", "@ 的必须是那条消息的作者。");
 
   // 10. 群聊 B站 指令只认主人：群友触发被忽略，主人触发才得到回执/提示。
   record.groupBiliRunEnabled = true;
@@ -547,7 +574,7 @@ try {
 
   closeGateway();
 
-  console.log("OneBot 渠道端到端测试通过：WS token 鉴权与单次握手、事件接入、CQ 码解析、凭据解密、角色绑定路由、记忆检索、模型回复、表情段发送与表情额度、消息持久化、外部身份 upsert、回发平台与幂等去重、群公告草稿与确认发布、普通成员越权拦截、按群滚动 10 分钟回复上限、群聊统一攒批（mention 档只在被叫到时进管道）、自然接话闸门、按群覆盖群聊模式、引用回复带 @ 原文作者、B站 指令主人专属。");
+  console.log("OneBot 渠道端到端测试通过：WS token 鉴权与单次握手、事件接入、CQ 码解析、凭据解密、角色绑定路由、记忆检索、模型回复、表情段发送与表情额度、消息持久化、外部身份 upsert、回发平台与幂等去重、群公告草稿与确认发布、普通成员越权拦截、按群滚动 10 分钟回复上限、群聊统一攒批（mention 档只在被叫到时进管道）、自然接话闸门、按群覆盖群聊模式、引用与 @ 的分工（回上一条不加、接旧句才引用、点名才 @）、B站 指令主人专属。");
 } finally {
   for (const child of children) child.kill();
   await prisma.onebotGroupAnnouncement.deleteMany({ where: { connectionId } }).catch(() => undefined);

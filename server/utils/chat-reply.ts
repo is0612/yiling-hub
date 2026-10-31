@@ -32,8 +32,19 @@ export type ConversationGroupDecision = {
   /**
    * 模型要引用回复的消息 id（本轮 transcript 里的一条）。渠道把它转成「引用回复」段，
    * 让她的回复锚定「接的是哪一句」—— 群里多条鱼并存时，没有引用的回复容易显得认错人。
+   *
+   * 指向**最新一条**时渠道会自动忽略它（见 `pipeline.ts` 的 `pickQuoteTarget`）：
+   * 回上一条不需要引用，那是噪声。
    */
   replyToMessageId?: string;
+  /**
+   * 要点名 @ 的人 —— 填他说过的那一句话的 id，渠道会 @ 这条消息的作者。
+   *
+   * 与 `replyToMessageId` 是两件事，不要互相顶替：引用回答「接的是哪一句」，
+   * @ 回答「我在跟谁说话」并且会在对方客户端亮提醒。只有**主动叫人**（催、夸、
+   * 回一个没在问她的人）才值得用；回谁的话就 @ 谁，会变成每条消息都弹提醒。
+   */
+  atMessageId?: string;
 };
 
 export type ConversationReplyInput = {
@@ -156,8 +167,10 @@ export type ConversationReplyResult = {
  *     speaker/isOwner，并写明「role USER 在群里不是一个人，不许把两个人的话揉成一个人」。
  *     v7 及以前群聊里没有主人身份、历史消息没有发言人，模型只能猜：对谁都喊主人、
  *     把 A 说的安到 B 头上。
+ * v9：群聊多了「点名」字段 atMessageId，并把引用/点名分工写清楚（引用=接哪一句，
+ *     @=叫某个人）。v8 的回复里几乎每条都带引用、而引用又总跟着 @，群里太吵。
  */
-const PROMPT_TEMPLATE_VERSION = "conversation-retrieval-v8";
+const PROMPT_TEMPLATE_VERSION = "conversation-retrieval-v9";
 
 export const STYLE_EXAMPLES_HEADING = "## 对话示例（只学语气，不要照抄）";
 
@@ -277,8 +290,13 @@ function systemPrompt(flags: {
   if (withGroupChat) {
     lines.push(
       'Return only a valid JSON object with: action ("reply" or "silent"), reply (string, empty when action is "silent"), usedMemoryIds, usedSnapshotIds, and an optional groupDecision.',
-      'groupDecision = { relation: "direct" | "followup" | "shared_topic" | "ambient" | "unrelated", topicAnchorMessageId (optional, must be one of groupAnchors[].id), replyToMessageId (optional, the transcript id of the exact line you are answering), evidenceMessageIds (array of transcript ids that support the judgment) }.',
-      'When you reply, set replyToMessageId to the transcript id of the line you are actually answering so your reply is shown as a reply to that message. If you are not answering any specific line, omit it.',
+      'groupDecision = { relation: "direct" | "followup" | "shared_topic" | "ambient" | "unrelated", topicAnchorMessageId (optional, must be one of groupAnchors[].id), replyToMessageId (optional, the transcript id of the line you are answering), atMessageId (optional, the transcript id of the transcript line), evidenceMessageIds (array of transcript ids that support the judgment) }.',
+      // 引用与 @ 是两件事，而模型很容易把它们当成「回复时的两个必填项」——
+      // 结果是每条回复都顶着引用块、还顺手把对方 @ 一遍，群里看着像机器人播报。
+      "Quoting and @-ing answer different questions. replyToMessageId says which line you are answering; atMessageId says which person you are talking to, and it is the only one that notifies them.",
+      "Set replyToMessageId only when the line you are answering is no longer the last one in the room. Answering the newest message needs neither a quote nor an @ — everyone can already see who you are talking to.",
+      "Set atMessageId only when you genuinely want someone's attention: calling a member out, answering someone who was not the one who just spoke, urging or teasing a particular person. Never set it merely because you are replying to them, and never on several messages in a row.",
+      "Both may appear together when you are picking up an older line and also calling that person out. Neither is decoration: a plain reply with no quote and no @ is the normal, most common case.",
       'Default to action "silent" when in doubt. A wrong line in a group is worse than saying nothing.',
     );
   } else {
@@ -355,11 +373,15 @@ const GROUP_RELATIONS: readonly ConversationGroupRelation[] = [
  * 群聊决策只做白名单过滤：关系必须是枚举，锚点必须来自本次提供的 groupAnchors，
  * 证据必须是本轮 transcript 的 id，引用目标必须是本轮 transcript 的 id。
  * 任何一项不合法就只丢掉这个字段，不影响回复本身。
+ *
+ * 点名（`atMessageId`）的号池比引用宽一点：她可以 @ 一个这一轮没再说话、
+ * 但还在背景窗口里的人（主人隔了几分钟回来问一句，正是最该点名的时候）。
  */
 function readGroupDecision(
   value: unknown,
   validAnchorIds: Set<string>,
   validEvidenceIds: Set<string>,
+  validAtIds: Set<string>,
 ): ConversationGroupDecision | undefined {
   const record = asRecord(value);
   if (!record) return undefined;
@@ -374,10 +396,14 @@ function readGroupDecision(
   const replyTo = typeof record.replyToMessageId === "string" && validEvidenceIds.has(record.replyToMessageId)
     ? record.replyToMessageId
     : undefined;
+  const at = typeof record.atMessageId === "string" && validAtIds.has(record.atMessageId)
+    ? record.atMessageId
+    : undefined;
   return {
     relation,
     ...(anchor ? { topicAnchorMessageId: anchor } : {}),
     ...(replyTo ? { replyToMessageId: replyTo } : {}),
+    ...(at ? { atMessageId: at } : {}),
     evidenceMessageIds: readIdList(record.evidenceMessageIds, validEvidenceIds, 5),
   };
 }
@@ -585,8 +611,13 @@ export async function generateConversationReply(input: ConversationReplyInput): 
     const validCatchphraseIds = new Set(catchphrases.map((item) => item.id));
     const validAnchorIds = new Set((input.groupAnchors ?? []).map((anchor) => anchor.id));
     const validEvidenceIds = new Set((input.transcript ?? []).map((entry) => entry.id).filter((id): id is string => Boolean(id)));
+    // @ 可以指向背景里的人（这一轮没再说话、但还在窗口内），所以号池是「本轮 ∪ 背景」。
+    const validAtIds = new Set([
+      ...validEvidenceIds,
+      ...(input.groupBackground ?? []).map((line) => line.id).filter((id): id is string => Boolean(id)),
+    ]);
     const groupDecision = withGroupChat
-      ? readGroupDecision(parsed.groupDecision, validAnchorIds, validEvidenceIds)
+      ? readGroupDecision(parsed.groupDecision, validAnchorIds, validEvidenceIds, validAtIds)
       : undefined;
     const responseModel = typeof payload?.model === "string" ? payload.model : model;
     const base = {
