@@ -376,7 +376,7 @@ function systemPrompt(): string {
     "偏好或事实发生变化时，优先 UPDATE 已提供的相关 active memory；明确不再成立时使用 INVALIDATE；确实新增时使用 ADD。",
     "UPDATE/INVALIDATE 的 relatedMemoryId 必须来自输入的 activeMemories。每条 memoryChanges 必须至少引用一个输入中的 evidenceMessageIds，且来源必须真正支持该结论。",
     "另外把这一周期里**能落到某一天**的事写进 events：occurredAt 用消息里的时间（ISO 8601，换算成 UTC 带 Z；只知道哪一天就写当天 00:00:00Z），title 一句话，detail 写清经过，participants 写涉及的人（用消息里的称呼），place 知道才写，keywords 写 3-5 个同义或相关词。寒暄、没有日期的泛泛而谈、群友之间与她无关的闲聊都不要写。每条 events 同样必须引用真实的 evidenceMessageIds。",
-    "existingEvents 是这一天**已经记录过**的事件：不要重复记录，同一件事换个说法也算重复（例如「发布群公告」和「起草并发布公告」是同一件）。只写确实不同的事。",
+    "existingEvents 是这一天**已经记录过**的事件：不要重复记录，同一件事换个说法也算重复（例如「发布群公告」和「起草并发布公告」是同一件）。只写确实不同的事。但**不要因为它非空就整体返回空数组** —— 它只用来避免重复，这一段里只要还有没记过的事，就必须照常写出来。",
     "群聊里可能同时有好几个 bot 在活动，别人 (@数字) 或直接说的话**不一定是冲她说的**。写 event 前必须先确认对象：只有 role=assistant 的消息（她自己说的）、明确叫她名字的话、@ 指向她的消息，才算「关于她」。如果一条评价/抱怨 @ 的是另一个号码、或者上下文显示在说别人的 bot，就不能写成「群友说她/嫌她/夸她」这类事——那件事的主体不是她。判断不出来时宁可不写，也别记成她的事。",
     "只输出 JSON，不要 Markdown 代码围栏。所有列表字段必须存在，即使为空。",
     "JSON 格式：",
@@ -441,12 +441,12 @@ export async function analyzeMemoryPeriod(input: MemoryAiInput): Promise<{
   }
 
   // 记忆提炼的输入比单轮对话大得多（一个周期上百条消息 + 现有记忆），思考型模型
-  // 在 60 秒默认值下会超时 —— 2026-10-31 实测：加大 token 预算后立刻变成 abort。
-  // 默认给它 120 秒，仍然允许用 LLM_TIMEOUT_MS 覆盖（上限 180 秒）。
-  const timeoutRaw = Number(process.env.LLM_TIMEOUT_MS ?? 120_000);
+  // 在 60 秒默认值下会超时；分块抽取后每块一百多条、又要顺序跑好几次，120 秒也踩过线
+  // （2026-11-01 第 5 块超时，前 4 块白跑）。后台任务优先正确性，默认给满 180 秒。
+  const timeoutRaw = Number(process.env.LLM_TIMEOUT_MS ?? 180_000);
   const timeoutMs = Number.isInteger(timeoutRaw) && timeoutRaw >= 5_000 && timeoutRaw <= 180_000
     ? timeoutRaw
-    : 120_000;
+    : 180_000;
   // Keep connection settings out of the user prompt. Project fields explicitly so
   // extra runtime properties on nested objects cannot accidentally be serialized.
   const promptInput = {

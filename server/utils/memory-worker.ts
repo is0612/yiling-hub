@@ -21,6 +21,15 @@ const LEASE_MS = 5 * 60 * 1000;
 const MAX_SCOPE_CONVERSATIONS = 12;
 const MAX_SOURCE_MEMORIES = 250;
 const MAX_AI_MESSAGES = 120;
+/**
+ * 忆泡按天抽取的分块：每块多少条消息、一次任务最多跑几块。
+ *
+ * 不沿用 `MAX_AI_MESSAGES`（那是给「一次调用看一个周期」的快照用的）：按天抽取
+ * 一晚上就有几百条，只喂 120 条会把中间整段丢掉。8 块 ≈ 960 条/次，超出时按
+ * 时间均匀分块（而不是只留最近的），保证整天的内容都有一份代表。
+ */
+const EVENT_AI_CHUNK_SIZE = 120;
+const MAX_EVENT_CHUNKS = 8;
 const MAX_AI_MEMORIES = 80;
 const MIN_MEMORY_CONFIDENCE = 0.65;
 
@@ -73,12 +82,14 @@ async function loadPeriodSourceMessages(
   conversations: Array<{ id: string; externalConversationId: string | null }>,
   periodStart: Date,
   periodEnd: Date,
+  options: { perConversation?: number; budget?: number } = {},
 ): Promise<PeriodSourceMessage[]> {
+  const perConversationWindow = Math.max(1, Math.trunc(options.perConversation ?? PER_CONVERSATION_SOURCE_WINDOW));
   const batches = await Promise.all(conversations.map(async (conversation) => {
     const rows = await prisma.message.findMany({
       where: { conversationId: conversation.id, occurredAt: { gte: periodStart, lt: periodEnd } },
       orderBy: [{ occurredAt: "desc" }, { id: "desc" }],
-      take: PER_CONVERSATION_SOURCE_WINDOW,
+      take: perConversationWindow,
       select: { id: true, role: true, eventType: true, content: true, occurredAt: true, metadata: true },
     });
     const origin = conversationOriginLabel(conversation);
@@ -90,7 +101,10 @@ async function loadPeriodSourceMessages(
       mentionTargets: readMentionTargets(row.metadata),
     }));
   }));
-  return selectPeriodSourceMessages(batches.flat());
+  return selectPeriodSourceMessages(batches.flat(), {
+    ...(options.perConversation ? { perConversation: options.perConversation } : {}),
+    ...(options.budget ? { budget: options.budget } : {}),
+  });
 }
 
 /** 这条消息 @ 了谁（self / other / all）。没标就是非群聊或没 @ 任何人。 */
@@ -115,7 +129,12 @@ function selectAiMessages(messages: PeriodSourceMessage[]): MemoryAiMessage[] {
     const edge = Math.floor(MAX_AI_MESSAGES / 2);
     selected = [...messages.slice(0, edge), ...messages.slice(-edge)];
   }
-  return selected.map((message) => ({
+  return selected.map(toAiMessage);
+}
+
+/** 单条消息转成模型输入。分块抽取也用它，保证两条路径的字段完全一致。 */
+function toAiMessage(message: PeriodSourceMessage): MemoryAiMessage {
+  return {
     id: message.id,
     role: message.role,
     eventType: message.eventType,
@@ -124,11 +143,28 @@ function selectAiMessages(messages: PeriodSourceMessage[]): MemoryAiMessage[] {
     origin: message.origin,
     isOwner: message.isOwner,
     ...(message.mentionTargets?.length ? { mentionTargets: message.mentionTargets } : {}),
-  }));
+  };
 }
 
 function validConfidence(change: MemoryChange): boolean {
   return change.confidence >= MIN_MEMORY_CONFIDENCE;
+}
+
+/**
+ * 把一天的消息按时间顺序切成若干块。
+ *
+ * 块数取 `ceil(总数 / size)`，但封顶 `maxChunks`：条数远超上限时按「均匀分段」而不是
+ * 「只留最近的」，否则一天的早段永远抽不到。顺序必须保持，模型靠它理解前因后果。
+ */
+function splitForEventExtraction<T>(messages: T[], size: number, maxChunks: number): T[][] {
+  if (messages.length <= size) return [messages];
+  const groups = Math.min(Math.ceil(messages.length / size), maxChunks);
+  const perGroup = Math.ceil(messages.length / groups);
+  const chunks: T[][] = [];
+  for (let index = 0; index < messages.length; index += perGroup) {
+    chunks.push(messages.slice(index, index + perGroup));
+  }
+  return chunks;
 }
 
 /**
@@ -213,7 +249,16 @@ async function runDailyEventJob(
     },
     select: { id: true, externalConversationId: true },
   });
-  const messages = await loadPeriodSourceMessages(prisma, conversations, deltaStart, job.periodEnd);
+  /**
+   * 忆泡按天抽取要的是**覆盖**，不是「每会话公平取样」：
+   * 快照那套配额（每会话 80 / 全天 250）在一天几百条时会直接把中间整段丢掉
+   * （2026-10-31 实测：一晚上 368 条，只喂进 80 条）。这里放宽到「块数 × 每块条数」，
+   * 再由下面的分块把它拆成多次模型调用。
+   */
+  const messages = await loadPeriodSourceMessages(prisma, conversations, deltaStart, job.periodEnd, {
+    perConversation: EVENT_AI_CHUNK_SIZE * MAX_EVENT_CHUNKS,
+    budget: EVENT_AI_CHUNK_SIZE * MAX_EVENT_CHUNKS,
+  });
   if (messages.length === 0) {
     // 没有新消息也要把这一天标成已扫过：收口任务照样要落 FINAL。
     if (finalize) {
@@ -226,7 +271,6 @@ async function runDailyEventJob(
     return finish("SKIPPED", "这一段没有新的对话。");
   }
 
-  let aiResult: Awaited<ReturnType<typeof analyzeMemoryPeriod>>;
   // 这一天已经记过的事件：进提示词让模型自己避开，重跑不会把同一件事换个说法再写一遍。
   const existingEvents = await prisma.memoryEvent.findMany({
     where: { memoryScopeId: job.memoryScopeId, dayKey, status: "ACTIVE" },
@@ -234,26 +278,83 @@ async function runDailyEventJob(
     take: 40,
     select: { occurredAt: true, title: true },
   });
+  /**
+   * 分块抽取。
+   *
+   * 以前这里只喂 `selectAiMessages` 的 120 条（最早 60 + 最新 60），一整晚 368 条时
+   * 中间两百多条**根本没进模型**（2026-10-31 实测：一个晚上只出 5 条忆泡）。
+   * 现在按时间顺序切块，每块各调一次模型，事件合并后统一落库：
+   * 调用次数变多（几分钱），换来的是不再丢中间那一大段。
+   */
+  const chunks = splitForEventExtraction(messages, EVENT_AI_CHUNK_SIZE, MAX_EVENT_CHUNKS);
+  const messagesById = new Map(messages.map((message) => [message.id, message]));
+  const knownEvents = existingEvents.map((event) => ({
+    occurredAt: event.occurredAt.toISOString(),
+    title: event.title,
+  }));
+  let appliedCount = 0;
+  let skippedCount = 0;
   try {
-    aiResult = await analyzeMemoryPeriod({
-      apiKey,
-      apiBaseUrl: chatSettings.apiBaseUrl,
-      model: chatSettings.model,
-      periodStart: job.periodStart.toISOString(),
-      periodEnd: job.periodEnd.toISOString(),
-      timezone: scope.character.memorySetting?.timezone ?? "Asia/Shanghai",
-      scopeType: scope.scopeType,
-      characterName: scope.character.name,
-      messages: selectAiMessages(messages),
-      totalMessageCount: messages.length,
-      omittedMessageCount: Math.max(0, messages.length - Math.min(messages.length, MAX_AI_MESSAGES)),
-      // 这一趟只要事件：不用长期记忆做 UPDATE 对照，省一半输入。
-      activeMemories: [],
-      previousSnapshotSummary: null,
-      ...(existingEvents.length
-        ? { existingEvents: existingEvents.map((event) => ({ occurredAt: event.occurredAt.toISOString(), title: event.title })) }
-        : {}),
-    });
+    for (const [index, chunk] of chunks.entries()) {
+      const aiResult = await analyzeMemoryPeriod({
+        apiKey,
+        apiBaseUrl: chatSettings.apiBaseUrl,
+        model: chatSettings.model,
+        periodStart: job.periodStart.toISOString(),
+        periodEnd: job.periodEnd.toISOString(),
+        timezone: scope.character.memorySetting?.timezone ?? "Asia/Shanghai",
+        scopeType: scope.scopeType,
+        characterName: scope.character.name,
+        messages: chunk.map(toAiMessage),
+        totalMessageCount: messages.length,
+        omittedMessageCount: Math.max(0, messages.length - chunk.length),
+        // 这一趟只要事件：不用长期记忆做 UPDATE 对照，省一半输入。
+        activeMemories: [],
+        previousSnapshotSummary: null,
+        // 已经记过的 + 本次前面几块刚提到的事件，一起让它避开。
+        ...(knownEvents.length ? { existingEvents: knownEvents } : {}),
+      });
+      await recordModelUsage({
+        // 单独记成 events：忆泡整理和 8 天快照是两条开销，混在 snapshot 里就分不清
+        // 「这天花了多少是整理忆泡花的」。
+        kind: "events",
+        model: chatSettings.model,
+        usage: toUsageTokens(aiResult.usage),
+        characterId: scope.characterId,
+      });
+      /**
+       * 每块立刻落库，而不是攒到最后一起写。
+       *
+       * 六块顺序调用，任何一块超时都会让整个任务进重试 —— 如果事件只在最后统一写入，
+       * 前面已经抽出来的那几块全白费（2026-11-01 实测：4 块出 12 条，第 5 块超时 → 0 条落库）。
+       * 现在按块提交，重试时靠 dedupeKey / 近义守卫跳过已写入的部分。
+       */
+      const result = await prisma.$transaction((tx) => applyMemoryEvents(
+        tx,
+        {
+          memoryScopeId: job.memoryScopeId,
+          characterId: scope.characterId,
+          snapshotId: null,
+          timeZone,
+          state: finalize ? "FINAL" : "DRAFT",
+        },
+        aiResult.analysis.events,
+        messagesById,
+      ));
+      appliedCount += result.applied.length;
+      skippedCount += result.skipped;
+      knownEvents.push(...aiResult.analysis.events.map((draft) => ({
+        occurredAt: draft.occurredAt,
+        title: draft.title,
+      })));
+      // 一行可观测性日志：跑完能看出「这一块喂了多少、模型给了几条、落了几条」，
+      // 少了事件时不用猜是没进模型还是模型没写。
+      console.log(
+        `[events] ${dayKey} 第 ${index + 1}/${chunks.length} 块：`
+        + `输入 ${chunk.length} 条（全天 ${messages.length} 条），`
+        + `模型给 ${aiResult.analysis.events.length} 条，落库 ${result.applied.length} 条`,
+      );
+    }
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     await prisma.memoryJob.update({
@@ -270,52 +371,27 @@ async function runDailyEventJob(
     return { processed: true, jobId: job.id, status: "RETRY_WAIT", message: detail.slice(0, 300) };
   }
 
-  await recordModelUsage({
-    // 单独记成 events：忆泡整理和 8 天快照是两条开销，混在 snapshot 里就分不清
-    // 「这天花了多少是整理忆泡花的」。
-    kind: "events",
-    model: chatSettings.model,
-    usage: toUsageTokens(aiResult.usage),
-    characterId: scope.characterId,
-  });
-
-  const messagesById = new Map(messages.map((message) => [message.id, message]));
-  const applied = await prisma.$transaction(async (tx) => {
-    const result = await applyMemoryEvents(
-      tx,
-      {
-        memoryScopeId: job.memoryScopeId,
-        characterId: scope.characterId,
-        snapshotId: null,
-        timeZone,
-        state: finalize ? "FINAL" : "DRAFT",
-      },
-      aiResult.analysis.events,
-      messagesById,
-    );
-    // 进度行：记下「抽到哪」，下一次只处理增量；收口任务顺便把状态落成 FINAL。
-    await tx.memoryEventDay.upsert({
-      where: { memoryScopeId_dayKey: { memoryScopeId: job.memoryScopeId, dayKey } },
-      create: {
-        memoryScopeId: job.memoryScopeId,
-        dayKey,
-        state: finalize ? "FINAL" : "DRAFT",
-        eventCount: result.applied.length,
-        extractedAt: now,
-      },
-      update: {
-        state: finalize ? "FINAL" : "DRAFT",
-        eventCount: { increment: result.applied.length },
-        extractedAt: now,
-      },
-    });
-    return result;
+  // 进度行：记下「抽到哪」，下一次只处理增量；收口任务顺便把状态落成 FINAL。
+  await prisma.memoryEventDay.upsert({
+    where: { memoryScopeId_dayKey: { memoryScopeId: job.memoryScopeId, dayKey } },
+    create: {
+      memoryScopeId: job.memoryScopeId,
+      dayKey,
+      state: finalize ? "FINAL" : "DRAFT",
+      eventCount: appliedCount,
+      extractedAt: now,
+    },
+    update: {
+      state: finalize ? "FINAL" : "DRAFT",
+      eventCount: { increment: appliedCount },
+      extractedAt: now,
+    },
   });
 
   return finish(
     "SUCCEEDED",
-    applied.applied.length > 0
-      ? `整理了 ${applied.applied.length} 条忆泡，跳过 ${applied.skipped} 条重复或不合格的。`
+    appliedCount > 0
+      ? `整理了 ${appliedCount} 条忆泡（${chunks.length} 块），跳过 ${skippedCount} 条重复或不合格的。`
       : "这一段没有可以落成忆泡的事件。",
   );
 }
