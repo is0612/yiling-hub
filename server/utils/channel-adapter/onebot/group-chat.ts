@@ -173,6 +173,13 @@ export type GroupChatGateInput = {
   spokenToday: number;
   /** 0-1，由调用方注入，方便测试抽签边界。 */
   random: number;
+  /**
+   * 这一批里有人 @ 的是**别的群成员**，而不是她。
+   *
+   * 和 `direct` 不冲突：@ 她并顺带 @ 别人仍算 direct。只有「@ 了别人、没 @ 她、
+   * 也没叫到她的名字」才为真 —— 那是在找人办事，不是在跟她说话。
+   */
+  addressedToOthers?: boolean;
 };
 
 export type GroupChatGateResult = {
@@ -192,8 +199,16 @@ export type GroupChatGateResult = {
 export function evaluateGroupChatGate(input: GroupChatGateInput): GroupChatGateResult {
   const { settings, now, direct } = input;
 
-  // 「全都回」是用户显式选的，保持老行为，不再叠任何门槛。
-  if (settings.mode === "all") return { allowed: true, reason: "all_messages", mustReply: true };
+  // 「全都回」是用户显式选的，保持老行为，不再叠任何门槛 —— 只有一条例外：
+  // 有人明确 @ 了**别的成员**（没 @ 她、也没叫她的名字）。那是在找人办事，
+  // 不是跟她说话；「全都回」的意思是「群里说什么都愿意搭一句」，不是「别人私事也插嘴」。
+  // 实测 2026-10-31 14:03「@何处归千人 你那边迁移是怎么做的」她照样接了。
+  if (settings.mode === "all") {
+    if (input.addressedToOthers && !direct && !input.named) {
+      return { allowed: false, reason: "addressed_to_others", mustReply: false };
+    }
+    return { allowed: true, reason: "all_messages", mustReply: true };
+  }
   if (settings.mode === "mention" && !direct && !input.named && !input.topicCandidate) {
     return { allowed: false, reason: "not_cued", mustReply: false };
   }

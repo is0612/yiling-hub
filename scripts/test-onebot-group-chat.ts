@@ -101,6 +101,29 @@ assert.equal(
   "「全都回」是用户显式选的，不叠安静时段和上限。",
 );
 
+// all 档唯一的例外：有人 @ 的是**别的成员**、没 @ 她也没叫她的名字。
+// 「全都回」= 群里说什么都愿意搭一句，不是「别人的私事也插嘴」。
+assert.deepEqual(
+  gate({ settings: { ...GROUP_CHAT_DEFAULTS, mode: "all" }, addressedToOthers: true }),
+  { allowed: false, reason: "addressed_to_others", mustReply: false },
+  "@ 别人的私事不接。",
+);
+assert.equal(
+  gate({ settings: { ...GROUP_CHAT_DEFAULTS, mode: "all" }, addressedToOthers: true, direct: true }).allowed,
+  true,
+  "@ 她的同时也 @ 了别人：那是 direct，照旧要回。",
+);
+assert.equal(
+  gate({ settings: { ...GROUP_CHAT_DEFAULTS, mode: "all" }, addressedToOthers: true, named: true }).allowed,
+  true,
+  "@ 别人但正文叫到她的名字：可以回。",
+);
+assert.equal(
+  gate({ settings: { ...GROUP_CHAT_DEFAULTS, mode: "ambient" }, addressedToOthers: true }).allowed,
+  false,
+  "自然接话档本来就不回无关消息，这个字段对它没有副作用。",
+);
+
 const night = new Date("2026-10-29T23:45:00+08:00");
 assert.equal(gate({ now: night }).reason, "quiet_hours", "安静时段不主动接话。");
 assert.equal(gate({ now: night, direct: true }).reason, "direct", "被 @ 时安静时段也要回。");
@@ -241,4 +264,4 @@ const manyGroups = Object.fromEntries(
 );
 assert.equal(Object.keys(readGroupChatModeOverrides(manyGroups)).length, 50);
 
-console.log("群聊自然接话测试通过：配置解析与夹取、别名识别、闸门顺序（模式/安静时段/上限/间隔/direct/名字弱线索/话题候选/抽签）、mustReply 边界、攒批窗口与合并上限、东八区日界、按群覆盖模式。");
+console.log("群聊自然接话测试通过：配置解析与夹取、别名识别、闸门顺序（模式/安静时段/上限/间隔/direct/名字弱线索/话题候选/抽签）、@ 的是别人时「全都回」也不抢话、mustReply 边界、攒批窗口与合并上限、东八区日界、按群覆盖模式。");

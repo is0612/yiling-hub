@@ -664,6 +664,16 @@ export function createOnebotMessageHandler(record: OnebotConnectionRecord) {
     const named = items.some((item) => item.named);
     const facts = items.map((item) => factsOf(item.event, item.at));
     const topicCandidate = groupContext.topicCandidate(contextKey, facts);
+    /**
+     * 这一批有没有「@ 的是别人」。
+     *
+     * @all 不算：那是冲着所有人说的，她也是其中之一。只有一条 @ 她都没沾上的
+     * 才叫「别人的私事」—— 判据必须来自 at 段本身，不能靠正文里的称呼去猜。
+     */
+    const mentionsSelfOrAll = facts.some((fact) =>
+      fact.mentionTargets.includes("self") || fact.mentionTargets.includes("all"));
+    const addressedToOthers = !mentionsSelfOrAll
+      && facts.some((fact) => fact.mentionTargets.includes("other"));
 
     const prisma = getPrisma();
     // 群聊消息不再逐条写库，但「这个连接最近还有事件」仍要更新，否则页面会显示成掉线。
@@ -699,6 +709,7 @@ export function createOnebotMessageHandler(record: OnebotConnectionRecord) {
       direct,
       named,
       topicCandidate,
+      addressedToOthers,
       lastSpokeAt,
       spokenToday,
       random: Math.random(),
@@ -706,7 +717,7 @@ export function createOnebotMessageHandler(record: OnebotConnectionRecord) {
     if (!gate.allowed) {
       // direct / named 一定要一起打：早退时少了这两个，事后分不清是「@ 没认出来」
       // 还是「认出来了但被别的闸拦了」—— 前者换协议端，后者调参数，处理方式完全不同。
-      logGroupRound(groupEvent.groupId, { reason: gate.reason, messages: items.length, direct, named });
+      logGroupRound(groupEvent.groupId, { reason: gate.reason, messages: items.length, direct, named, addressedToOthers });
       return;
     }
     // 群规限流仍然生效：闸门管「该不该接」，这里管「这个群十分钟能说几句」。

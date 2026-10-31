@@ -68,6 +68,20 @@ const connectionId = randomUUID();
 let conversationId = "";
 let bindingId = "";
 
+/**
+ * 闸门早退只留一行 `[onebot] 群聊 {...}`，既没有消息落库也没有回执可查。
+ * 所以把这一行接住 —— 否则「被闸门拦了」和「事件压根没进来」在断言层面长得一模一样。
+ */
+const roundLogs: string[] = [];
+const originalConsoleLog = console.log;
+console.log = (...args: unknown[]) => {
+  roundLogs.push(args.map((value) => String(value)).join(" "));
+  originalConsoleLog(...args);
+};
+const sawGroupRoundLog = (groupId: number, reason: string) => roundLogs.some(
+  (line) => line.includes("[onebot] 群聊") && line.includes(`"groupId":"${groupId}"`) && line.includes(`"reason":"${reason}"`),
+);
+
 const children: ChildProcess[] = [];
 try {
   children.push(await spawnServer("scripts/mock-llm-server.mjs", { LLM_MOCK_PORT: "4010", LLM_MOCK_API_KEY: "ci-only" }, "mock-llm-ready"));
@@ -387,12 +401,13 @@ try {
   record.bindings[0]!.replyWindowMinutes = 10;
   record.bindings[0]!.replyLimitPerWindow = 2;
 
+  /** `mention` 传 `true` = @ 她本人，传数字 = @ 那个 QQ，传 `"all"` = @ 全体。 */
   const emitToGroup = (
     groupId: number,
     messageId: number,
     text: string,
     userId = 444,
-    mention = false,
+    mention: boolean | number | "all" = false,
   ) => fetch("http://127.0.0.1:4031/__mock/emit", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -405,9 +420,12 @@ try {
         user_id: userId,
         group_id: groupId,
         sender: { user_id: userId, nickname: userId === 222 ? "主人" : "群友", role: "member" },
-        message: mention
-          ? [{ type: "at", data: { qq: 123456789 } }, { type: "text", data: { text } }]
-          : [{ type: "text", data: { text } }],
+        message: mention === false
+          ? [{ type: "text", data: { text } }]
+          : [
+            { type: "at", data: { qq: mention === true ? 123456789 : mention } },
+            { type: "text", data: { text } },
+          ],
       },
     }),
   });
@@ -555,6 +573,29 @@ try {
   );
   assert.equal(String(atSegments[0]!.data.qq), "558", "@ 的必须是那条消息的作者。");
 
+  /**
+   * 9.9 别人 @ 别人，不是 @ 她：「全都回」档也不该抢话。
+   *
+   * 「全都回」的原意是「每一轮都接」，不是「连别人的私事也插一嘴」。
+   * 判据只认 at 段：@all 里有她，算叫她；只 @ 了第三个人，才算「这轮不是找她的」。
+   */
+  record.bindings[0]!.groupChat = { ...ambientSettings, mode: "all" };
+  await emitToGroup(1011, 96, "你那边迁移是怎么做的，我需要适配一下", 555, 666);
+  await sleep(5000);
+  assert.equal(await assistantCount(1011), 0, "别人 @ 别人时不能抢话，哪怕这个群设的是「全都回」。");
+  assert.equal((await groupSends(1011)).length, 0, "被闸门挡下的一轮不该有任何 send_group_msg。");
+  assert.ok(sawGroupRoundLog(1011, "addressed_to_others"), "日志要写明是被「@ 的是别人」挡下的，否则事后无法区分是没收到还是被拦了。");
+
+  // 对照：同一个群、同一个说话人，只要 @ 的是她，就照常回 —— 证明上面挡下来的原因是 at 段指向，不是群本身哑了。
+  await emitToGroup(1011, 97, "那你说说看", 555, true);
+  await waitFor(async () => (await assistantCount(1011)) >= 1);
+  assert.equal(await assistantCount(1011), 1, "@ 她本人时照常回，说明差别只在 at 段指向谁。");
+
+  // @all 是冲着所有人说的，她也是其中之一，不能被当成「别人的私事」挡掉。
+  await emitToGroup(1012, 98, "全体注意一下", 555, "all");
+  await waitFor(async () => (await assistantCount(1012)) >= 1);
+  assert.equal(await assistantCount(1012), 1, "@all 不能算「@ 的是别人」，否则群里喊话她永远不接。");
+
   // 10. 群聊 B站 指令只认主人：群友触发被忽略，主人触发才得到回执/提示。
   record.groupBiliRunEnabled = true;
   record.bindings[0]!.groupBiliRunEnabled = true;
@@ -574,7 +615,7 @@ try {
 
   closeGateway();
 
-  console.log("OneBot 渠道端到端测试通过：WS token 鉴权与单次握手、事件接入、CQ 码解析、凭据解密、角色绑定路由、记忆检索、模型回复、表情段发送与表情额度、消息持久化、外部身份 upsert、回发平台与幂等去重、群公告草稿与确认发布、普通成员越权拦截、按群滚动 10 分钟回复上限、群聊统一攒批（mention 档只在被叫到时进管道）、自然接话闸门、按群覆盖群聊模式、引用与 @ 的分工（回上一条不加、接旧句才引用、点名才 @）、B站 指令主人专属。");
+  console.log("OneBot 渠道端到端测试通过：WS token 鉴权与单次握手、事件接入、CQ 码解析、凭据解密、角色绑定路由、记忆检索、模型回复、表情段发送与表情额度、消息持久化、外部身份 upsert、回发平台与幂等去重、群公告草稿与确认发布、普通成员越权拦截、按群滚动 10 分钟回复上限、群聊统一攒批（mention 档只在被叫到时进管道）、自然接话闸门、按群覆盖群聊模式、引用与 @ 的分工（回上一条不加、接旧句才引用、点名才 @）、别人 @ 别人时不抢话（@all 例外）、B站 指令主人专属。");
 } finally {
   for (const child of children) child.kill();
   await prisma.onebotGroupAnnouncement.deleteMany({ where: { connectionId } }).catch(() => undefined);
