@@ -348,15 +348,13 @@ try {
     select: { details: true, characterId: true },
   });
   assert.equal(cleanupAudit.characterId, characterId, "Cleanup audit should retain the owning character context.");
-  assert.deepEqual(
-    cleanupAudit.details,
-    {
-      cutoff: "2026-09-24T12:00:00.000Z",
-      deletedMessages: 1,
-      jobId: cleanupJob.id,
-    },
-    "Cleanup audit must record the exact cutoff, deletion count, and originating task.",
-  );
+  // 审计里现在还会带上下文分层的两个字段（contextCutoff / contextMessages），
+  // 所以只校验这几项，不再整对象 deepEqual —— 否则每次加一个诊断字段都要改测试。
+  const cleanupDetails = cleanupAudit.details as Record<string, unknown>;
+  assert.equal(cleanupDetails.cutoff, "2026-09-24T12:00:00.000Z", "Cleanup audit must record the exact cutoff.");
+  assert.equal(cleanupDetails.deletedMessages, 1, "Cleanup audit must record how many messages were deleted.");
+  assert.equal(cleanupDetails.jobId, cleanupJob.id, "Cleanup audit must record the originating task.");
+  assert.equal(typeof cleanupDetails.contextCutoff, "string", "Cleanup audit must record the context cutoff.");
 
   // A repeated scheduler pass on the same day must not enqueue duplicate cleanup work.
   await enqueueDueMemorySnapshots(prisma, { now });
@@ -418,7 +416,10 @@ try {
     where: { action: "message.retention_cleanup", entityType: "MemoryScope", entityId: retentionScopeId, details: { path: ["jobId"], equals: zeroDeleteJob.id } },
     select: { details: true },
   });
-  assert.deepEqual(zeroDeleteAudit.details, { cutoff: "2026-09-24T12:00:00.000Z", deletedMessages: 0, jobId: zeroDeleteJob.id }, "A zero-delete run must not be confused with a missing audit result.");
+  const zeroDeleteDetails = zeroDeleteAudit.details as Record<string, unknown>;
+  assert.equal(zeroDeleteDetails.cutoff, "2026-09-24T12:00:00.000Z", "A zero-delete run must still record the cutoff.");
+  assert.equal(zeroDeleteDetails.deletedMessages, 0, "A zero-delete run must record zero deleted messages.");
+  assert.equal(zeroDeleteDetails.jobId, zeroDeleteJob.id, "A zero-delete run must record the originating task.");
   // A queued 30-day cleanup must be cancelled if the owner widens retention to 90 days.
   await prisma.memoryScope.create({
     data: {

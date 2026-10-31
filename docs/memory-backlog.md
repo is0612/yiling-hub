@@ -36,7 +36,11 @@
 
 **为什么排在 P0 后**：现在一天只抽到 5–6 条，先把「记全」做对，再谈「记准到人」。
 
-## P1 · 按原因分层保留
+## P1 · 按原因分层保留（已落地，2026-11-01）
+
+清理任务现在分两档：`storedReason = "silent"`（她看过但没开口的纯上下文行）保留 **7 天**；`replied` / `mentioned`（证据类）按角色设置的保留天数走。取 `min(7, 角色设置)`，用户数字更小时以用户为准。审计新增 `contextCutoff` / `contextMessages`。
+
+**仍可做**：设置页还没把这条规则写进文案；`contextMessages` 还没有对应的页面展示。
 
 `storedReason` 已经落库（`replied` / `silent` / `mentioned`），但清理仍只有「按天数」一刀切。
 

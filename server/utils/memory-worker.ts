@@ -22,6 +22,14 @@ const MAX_SCOPE_CONVERSATIONS = 12;
 const MAX_SOURCE_MEMORIES = 250;
 const MAX_AI_MESSAGES = 120;
 /**
+ * 纯上下文行（`storedReason = "silent"`）的保留天数。
+ *
+ * 这类消息她看过但没开口，作用只是「理解当时在聊什么」，一周后回顾价值很低；
+ * 证据类（回了话 / 被点名）按角色设置的保留天数走。取 `min(7, 角色设置)`，
+ * 用户的数字更小时以用户为准。
+ */
+const CONTEXT_RETENTION_DAYS = 7;
+/**
  * 忆泡按天抽取的分块：每块多少条消息、一次任务最多跑几块。
  *
  * 不沿用 `MAX_AI_MESSAGES`（那是给「一次调用看一个周期」的快照用的）：按天抽取
@@ -574,6 +582,23 @@ export async function processNextMemoryJob(
           throw new Error("CLEANUP_POLICY_CHANGED");
         }
 
+        /**
+         * 分层清理：纯上下文行（`storedReason = "silent"`，她看过但没开口的那一轮）
+         * 只保留 7 天，证据类（她回了话 / 被点名）按角色设置的保留天数走。
+         *
+         * 上下文行的作用是「让她理解当时在聊什么」，一周之后回顾价值已经很低；
+         * 真正需要留证的是她参与过的那部分。两个窗口都受同一个清理开关约束。
+         */
+        const contextRetentionDays = Math.min(CONTEXT_RETENTION_DAYS, latestRetentionDays ?? CONTEXT_RETENTION_DAYS);
+        const contextCutoff = new Date(now.getTime() - contextRetentionDays * 24 * 60 * 60 * 1000);
+        const removedContext = await tx.message.deleteMany({
+          where: {
+            conversation: { is: { memoryScopeId: candidate.memoryScopeId } },
+            occurredAt: { lt: contextCutoff },
+            metadata: { path: ["storedReason"], equals: "silent" },
+          },
+        });
+
         const deleted = await tx.message.deleteMany({
           where: {
             conversation: { is: { memoryScopeId: candidate.memoryScopeId } },
@@ -591,7 +616,7 @@ export async function processNextMemoryJob(
             action: "message.retention_cleanup",
             entityType: "MemoryScope",
             entityId: candidate.memoryScopeId,
-            details: { cutoff: candidate.periodEnd!.toISOString(), deletedMessages: deleted.count, jobId: candidate.id },
+            details: { cutoff: candidate.periodEnd!.toISOString(), deletedMessages: deleted.count, contextMessages: removedContext.count, contextCutoff: contextCutoff.toISOString(), jobId: candidate.id },
           },
         });
         return deleted.count;
