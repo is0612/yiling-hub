@@ -1342,7 +1342,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [day, events, messages]
+                required: [day, events, messageGroups]
                 properties:
                   day:
                     type: object
@@ -1367,17 +1367,30 @@ paths:
                         detail: { type: string }
                         state: { type: string, enum: [DRAFT, FINAL] }
                         confidence: { type: number, nullable: true }
+                        sourceMessageIds:
+                          type: array
+                          description: 这条忆泡的全部证据消息 id（按时间升序）；`sourceMessageId` 只是第一条
+                          items: { type: string }
                         scope: { type: string, enum: [character, private] }
-                  messages:
+                  messageGroups:
                     type: array
+                    description: 当天原文，按会话分组（群聊标题为「QQ群 <群号>」）
                     items:
                       type: object
-                      required: [id, role, content, occurredAt]
+                      required: [id, title, messages]
                       properties:
                         id: { type: string }
-                        role: { type: string }
-                        content: { type: string }
-                        occurredAt: { type: string, format: date-time }
+                        title: { type: string }
+                        messages:
+                          type: array
+                          items:
+                            type: object
+                            required: [id, role, content, occurredAt]
+                            properties:
+                              id: { type: string }
+                              role: { type: string }
+                              content: { type: string }
+                              occurredAt: { type: string, format: date-time }
         '400':
           description: dayKey 不是 YYYY-MM-DD
         '401':

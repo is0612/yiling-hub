@@ -303,6 +303,8 @@ export async function applyMemoryEvents(
           participants: draft.participants,
           confidence: draft.confidence,
           sourceMessageId: evidence[0]!.id,
+          // 全部证据消息：只存第一条会让「这条忆泡是从哪几句话来的」查不全。
+          sourceMessageIds: evidence.map((message) => message.id),
           sourceSnapshotId: ctx.snapshotId,
           dedupeKey,
           status: "ACTIVE",

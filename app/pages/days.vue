@@ -31,6 +31,7 @@ type DayEvent = {
   scope: "character" | "private";
 };
 type DayMessage = { id: string; role: string; content: string; occurredAt: string };
+type DayMessageGroup = { id: string; title: string; messages: DayMessage[] };
 
 const characters = useCharacterList();
 const currentCharacter = computed<Character | null>(
@@ -41,7 +42,9 @@ const days = ref<DayRow[]>([]);
 const today = ref("");
 const loading = ref(false);
 const selected = ref("");
-const detail = ref<{ day: DayRow | null; events: DayEvent[]; messages: DayMessage[] } | null>(null);
+const detail = ref<{ day: DayRow | null; events: DayEvent[]; messageGroups: DayMessageGroup[] } | null>(null);
+/** 原文总数：按会话分组后要自己加总。 */
+const totalMessages = computed(() => (detail.value?.messageGroups ?? []).reduce((sum, group) => sum + group.messages.length, 0));
 const detailLoading = ref(false);
 const showMessages = ref(false);
 
@@ -178,7 +181,7 @@ async function loadDetail(dayKey: string) {
   try {
     // URL 先落成 string 再传：模板字面量的字面类型会让 Nuxt 的路由类型推导爆栈（TS2321）。
     const url: string = `/api/characters/${encodeURIComponent(id.value)}/days/${encodeURIComponent(dayKey)}`;
-    detail.value = await $fetch<{ day: DayRow | null; events: DayEvent[]; messages: DayMessage[] }>(url);
+    detail.value = await $fetch<{ day: DayRow | null; events: DayEvent[]; messageGroups: DayMessageGroup[] }>(url);
     showMessages.value = false;
   } catch {
     detail.value = null;
@@ -352,20 +355,28 @@ await loadDays();
               class="btn"
               @click="showMessages = !showMessages"
             >
-              {{ showMessages ? "收起原文" : `查看当天原文（${detail.messages.length} 条）` }}
+              {{ showMessages ? "收起原文" : `查看当天原文（${totalMessages} 条）` }}
             </button>
             <div
               v-if="showMessages"
               class="original-list"
             >
-              <p
-                v-for="message in detail.messages"
-                :key="message.id"
-                class="original-line"
+              <template
+                v-for="group in detail.messageGroups"
+                :key="group.id"
               >
-                <span class="original-role">{{ message.role === "USER" ? "对方" : message.role === "ASSISTANT" ? "她" : "系统" }}</span>
-                <span class="original-text">{{ message.content }}</span>
-              </p>
+                <p class="original-group">
+                  {{ group.title }}<span class="original-group-n">{{ group.messages.length }} 条</span>
+                </p>
+                <p
+                  v-for="message in group.messages"
+                  :key="message.id"
+                  class="original-line"
+                >
+                  <span class="original-role">{{ message.role === "USER" ? "对方" : message.role === "ASSISTANT" ? "她" : "系统" }}</span>
+                  <span class="original-text">{{ message.content }}</span>
+                </p>
+              </template>
             </div>
           </div>
         </template>
@@ -458,6 +469,8 @@ await loadDays();
 .archived-title { font-size: 13px; color: var(--faint); }
 .day-originals { margin-top: 16px; border-top: 1px dashed var(--line); padding-top: 14px; }
 .original-list { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+.original-group { display: flex; align-items: baseline; gap: 8px; margin-top: 6px; font-size: 12px; font-weight: 600; color: var(--text-2); }
+.original-group-n { font-weight: 400; color: var(--faint); font-size: 12px; }
 .original-line { display: flex; gap: 8px; font-size: 13px; line-height: 1.7; }
 .original-role { flex: 0 0 auto; color: var(--faint); font-size: 12px; }
 .original-text { color: var(--dim); }

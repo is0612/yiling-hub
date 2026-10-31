@@ -91,6 +91,11 @@ const lateEvent = await prisma.memoryEvent.findFirst({ where: { memoryScopeId: s
 const earlyEvent = await prisma.memoryEvent.findFirst({ where: { memoryScopeId: scope.id, title: "凌晨吃了夜宵" } });
 check("23:30 那条归到 10-30", lateEvent?.dayKey === "2026-10-30", lateEvent?.dayKey);
 check("00:30 那条归到 10-31（跨零点不串天）", earlyEvent?.dayKey === "2026-10-31", earlyEvent?.dayKey);
+check(
+  "全部证据消息都回写（不只第一条）",
+  (lateEvent?.sourceMessageIds ?? []).includes(messageLate.id) && (lateEvent?.sourceMessageIds ?? []).length === 1,
+  lateEvent?.sourceMessageIds,
+);
 
 console.log("\n[2] 精确去重（同标题重跑）");
 const repeat = await prisma.$transaction((tx) => applyMemoryEvents(

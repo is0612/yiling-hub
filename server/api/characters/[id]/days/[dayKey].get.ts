@@ -46,6 +46,7 @@ export default defineEventHandler(async (event) => {
       state: true,
       status: true,
       confidence: true,
+      sourceMessageIds: true,
       memoryScope: { select: { scopeType: true } },
     },
   });
@@ -58,8 +59,38 @@ export default defineEventHandler(async (event) => {
     },
     orderBy: [{ occurredAt: "asc" }, { id: "asc" }],
     take: 300,
-    select: { id: true, role: true, content: true, occurredAt: true },
+    select: {
+      id: true,
+      role: true,
+      content: true,
+      occurredAt: true,
+      conversation: { select: { id: true, title: true, externalConversationId: true } },
+    },
   });
+
+  /**
+   * 原文按会话分组：同一天可能同时在几个群里说话，混成一条流水线后很难对齐
+   * ——「这句是群里说的还是私聊说的」全靠猜。群聊标题写「QQ群 <群号>」，私聊是会话标题。
+   */
+  const groups = new Map<string, { id: string; title: string; messages: Array<{ id: string; role: string; content: string; occurredAt: string }> }>();
+  for (const message of messages) {
+    const key = message.conversation.id;
+    const group = groups.get(key) ?? {
+      id: key,
+      title: message.conversation.title
+        || (message.conversation.externalConversationId?.startsWith("g:")
+          ? `QQ群 ${message.conversation.externalConversationId.slice(2)}`
+          : "私聊"),
+      messages: [],
+    };
+    group.messages.push({
+      id: message.id,
+      role: message.role,
+      content: message.content.slice(0, 500),
+      occurredAt: message.occurredAt.toISOString(),
+    });
+    groups.set(key, group);
+  }
 
   return {
     day: day
@@ -81,13 +112,9 @@ export default defineEventHandler(async (event) => {
       state: entry.state,
       status: entry.status,
       confidence: entry.confidence,
+      sourceMessageIds: entry.sourceMessageIds,
       scope: entry.memoryScope.scopeType === "USER_PRIVATE" ? "private" : "character",
     })),
-    messages: messages.map((message) => ({
-      id: message.id,
-      role: message.role,
-      content: message.content.slice(0, 500),
-      occurredAt: message.occurredAt.toISOString(),
-    })),
+    messageGroups: [...groups.values()],
   };
 });

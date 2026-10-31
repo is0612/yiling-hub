@@ -270,6 +270,15 @@ model MemoryScope {
   scopeKey           String            @unique @db.VarChar(500)
   userId             String?           @db.Uuid
   externalIdentityId String?           @db.Uuid
+  /// 以下三个字段只对 EXTERNAL_IDENTITY 范围有意义：这张表同时承担「某角色认识的某个人」
+  /// 这条关系 —— `scopeKey` 里带了 characterId，同一个 QQ 号跟两个角色聊过就是两条关系，
+  /// 各自记各自的次数和时间，不用再为「朋友」建一张要同步的新表。
+  ///
+  /// 私聊一进来就 +1；群聊只在她真的回了谁时 +1，不回不算认识。
+  lastInteractedAt   DateTime?         @db.Timestamptz(6)
+  interactionCount   Int               @default(0)
+  /// PRIVATE / GROUP：第一次是怎么认识的。群聊里认识的人后来私聊，这个值不改。
+  firstSource        String?           @db.VarChar(20)
   createdAt          DateTime          @default(now()) @db.Timestamptz(6)
   updatedAt          DateTime          @updatedAt @db.Timestamptz(6)
   character          Character         @relation(fields: [characterId], references: [id], onDelete: Restrict)
@@ -283,6 +292,7 @@ model MemoryScope {
   jobs               MemoryJob[]
 
   @@index([characterId, scopeType])
+  @@index([characterId, interactionCount])
   @@index([userId])
   @@index([externalIdentityId])
   @@map("memory_scopes")
@@ -731,39 +741,39 @@ model ModelUsage {
 /// 图片本体存本地磁盘（.data/stickers/<角色 id>/），库里只放清单与文件名 ——
 /// 二进制不该进数据库，迁移时按目录拷走即可；删角色时整目录一起删。
 model CharacterSticker {
-  id          String    @id @default(uuid()) @db.Uuid
-  characterId String    @db.Uuid
+  id            String    @id @default(uuid()) @db.Uuid
+  characterId   String    @db.Uuid
   /// 表情包的名字。**模型看到的就是它**，别写太长也别写编号。
-  name        String    @db.VarChar(60)
+  name          String    @db.VarChar(60)
   /// 什么时候用这张：一句话场景说明，进提示词帮她在十来张里挑对。
-  usage       String    @default("") @db.Text
+  usage         String    @default("") @db.Text
   /// 磁盘文件名（相对 .data/stickers/<characterId>/）。由服务端生成，
   /// 绝不取客户端传来的路径 —— 否则一个 `../` 就能写出目录之外。
-  fileName    String    @db.VarChar(120)
-  mimeType    String    @db.VarChar(60)
-  sizeBytes   Int
+  fileName      String    @db.VarChar(120)
+  mimeType      String    @db.VarChar(60)
+  sizeBytes     Int
   /// 关掉 = 暂时不让她用，但图留着。
-  enabled     Boolean   @default(true)
-  useCount    Int       @default(0)
-  lastUsedAt  DateTime? @db.Timestamptz(6)
+  enabled       Boolean   @default(true)
+  useCount      Int       @default(0)
+  lastUsedAt    DateTime? @db.Timestamptz(6)
   /// 图片内容的 SHA-256，用来给「自动收图」去重：群里同一张图被转发 N 次只收一次。
-  contentHash String?   @db.VarChar(64)
+  contentHash   String?   @db.VarChar(64)
   /// 来源：manual（手动上传）/ collected（群里自动收的）/ qq（从 QQ 收藏夹同步下来的）。
-  source      String    @default("manual") @db.VarChar(20)
+  source        String    @default("manual") @db.VarChar(20)
   /// QQ 收藏表情的 emoji_id（形如 `<QQ号>_0_0_0_<md5>_0_0`）。
   /// 有值 = 这一行和 QQ 收藏夹里那张是同一张：改名要回写备注、删除要连 QQ 一起删。
   /// 空 = 只在本地（还没推上去，或者推失败了）。
-  qqEmojiId   String?   @db.VarChar(120)
+  qqEmojiId     String?   @db.VarChar(120)
   /// QQ 图标的 md5（从 emoji_id 里拆出来的那段）。用它认「emoji_id 变了但还是同一张图」——
   /// 在 QQ 里删了又加同一张图，emoji_id 会换，md5 不变。
-  qqMd5       String?   @db.VarChar(64)
+  qqMd5         String?   @db.VarChar(64)
   /// 回收站：非空即已删。软删而不是直接删，是因为 QQ 那边一删本地就没了，标签全白打。
   deletedAt     DateTime? @db.Timestamptz(6)
   /// 谁删的：local（在本地删的，要同步去删 QQ）/ qq（QQ 那边没了，本地跟着进回收站）。
   deletedReason String?   @db.VarChar(20)
-  createdAt   DateTime  @default(now()) @db.Timestamptz(6)
-  updatedAt   DateTime  @updatedAt @db.Timestamptz(6)
-  character   Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  createdAt     DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt     DateTime  @updatedAt @db.Timestamptz(6)
+  character     Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
 
   @@unique([characterId, qqEmojiId])
   @@index([characterId, enabled])
@@ -820,34 +830,36 @@ model CharacterCatchphrase {
 /// 跨平台身份要经过验证绑定才能合并，这一层留到接入别名表时再做。查询侧只把它当
 /// 关键词降级路径，不当成「同一个人」的判据。
 model MemoryEvent {
-  id               String             @id @default(uuid()) @db.Uuid
-  memoryScopeId    String             @db.Uuid
+  id               String            @id @default(uuid()) @db.Uuid
+  memoryScopeId    String            @db.Uuid
   /// 事件发生的当地日期（角色时区）：2026-10-31。「今天/昨天」按它分组。
-  dayKey           String             @db.VarChar(10)
-  state            MemoryEventState   @default(DRAFT)
+  dayKey           String            @db.VarChar(10)
+  state            MemoryEventState  @default(DRAFT)
   /// 事件**发生**时间（不是入库时间）。周期快照里的时区换算以此为基准。
-  occurredAt       DateTime           @db.Timestamptz(6)
+  occurredAt       DateTime          @db.Timestamptz(6)
   /// 模糊时段：上午 / 中午 / 下午 / 傍晚 / 晚上 / 深夜。null = 只知道日期。
-  timeOfDay        String?            @db.VarChar(20)
+  timeOfDay        String?           @db.VarChar(20)
   /// 时间精度：exact / part_of_day / day。别把「下午」伪造成 14:00。
-  precision        String             @default("day") @db.VarChar(20)
-  place            String?            @db.VarChar(200)
+  precision        String            @default("day") @db.VarChar(20)
+  place            String?           @db.VarChar(200)
   /// 一句话事件，如「和小关在北海银滩游泳」。
-  title            String             @db.VarChar(200)
-  detail           String             @db.Text
+  title            String            @db.VarChar(200)
+  detail           String            @db.Text
   /// 同义/相关词，给词法检索扩展用（不上向量库时的便宜替代）。
-  keywords         String[]           @default([])
-  participants     String[]           @default([])
+  keywords         String[]          @default([])
+  participants     String[]          @default([])
   confidence       Float?
-  sourceMessageId  String?            @db.Uuid
-  sourceSnapshotId String?            @db.Uuid
+  sourceMessageId  String?           @db.Uuid
+  /// 全部证据消息 id（按时间升序）。`sourceMessageId` 只是第一条，留着兼容旧数据与单条反查。
+  sourceMessageIds String[]          @default([])
+  sourceSnapshotId String?           @db.Uuid
   /// 幂等键：同一范围同一天同一件事重复提炼时不再插一条。
-  dedupeKey        String             @db.VarChar(255)
-  status           MemoryEventStatus  @default(ACTIVE)
-  createdAt        DateTime           @default(now()) @db.Timestamptz(6)
-  memoryScope      MemoryScope        @relation(fields: [memoryScopeId], references: [id], onDelete: Cascade)
-  sourceMessage    Message?           @relation("MemoryEventSourceMessage", fields: [sourceMessageId], references: [id], onDelete: SetNull)
-  sourceSnapshot   MemorySnapshot?    @relation("MemoryEventSourceSnapshot", fields: [sourceSnapshotId], references: [id], onDelete: SetNull)
+  dedupeKey        String            @db.VarChar(255)
+  status           MemoryEventStatus @default(ACTIVE)
+  createdAt        DateTime          @default(now()) @db.Timestamptz(6)
+  memoryScope      MemoryScope       @relation(fields: [memoryScopeId], references: [id], onDelete: Cascade)
+  sourceMessage    Message?          @relation("MemoryEventSourceMessage", fields: [sourceMessageId], references: [id], onDelete: SetNull)
+  sourceSnapshot   MemorySnapshot?   @relation("MemoryEventSourceSnapshot", fields: [sourceSnapshotId], references: [id], onDelete: SetNull)
 
   @@unique([memoryScopeId, dedupeKey])
   @@index([memoryScopeId, occurredAt])
