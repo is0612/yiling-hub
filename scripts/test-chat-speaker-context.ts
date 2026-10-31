@@ -25,7 +25,7 @@ try {
     speaker: { displayName: "群友", isOwner: false, ownerDisplayName: "烟火清凉" },
   });
 
-  assert.equal(result.promptTemplateVersion, "conversation-retrieval-v17");
+  assert.equal(result.promptTemplateVersion, "conversation-retrieval-v18");
   const body = JSON.parse(capturedBody) as { messages: Array<{ role: string; content: string }> };
   const system = body.messages.find((item) => item.role === "system")?.content ?? "";
   const user = body.messages.find((item) => item.role === "user")?.content ?? "";
@@ -69,7 +69,7 @@ try {
     // 历史消息也要带发言人：群聊里 role USER 不代表同一个人。
     recentMessages: [
       { role: "USER", content: "今天好热", occurredAt: new Date().toISOString(), speaker: "何处归千人", isOwner: false },
-      { role: "ASSISTANT", content: "热就少穿点", occurredAt: new Date().toISOString() },
+      { role: "ASSISTANT", content: "热就少穿点", occurredAt: new Date().toISOString(), hadSticker: true },
     ],
     memories: [],
     snapshots: [],
@@ -96,11 +96,16 @@ try {
   // 「@self 不等于在说她」那条是另一面：@你 也可能是「你帮我跟她说一下」。
   assert(system3.includes("belongs to the two of them"), "群聊系统提示必须说明「有人在教另一个 bot」这段对话不属于她。");
   assert(system3.includes("Being @self does not make the sentence about you"), "群聊系统提示必须写明：被 @ 也可能是拿她当传话筒，主语是第三人。");
+  // 她自己发的表情包下一轮不可见：图只在 metadata，recentMessages 只有文字。
+  // hadSticker 把它标出来，她才认得出「那张图是我贴的」。
+  assert(system3.includes("hadSticker"), "群聊系统提示必须解释 hadSticker 是「自己那条带过图」。");
+  assert(system3.includes("own it"), "群聊系统提示必须写明：带过图的就认领。");
 
   // 历史消息：USER 行不能只剩 role + content，否则 20 条历史分不清谁是谁。
   const recentSection = body3.messages.length ? user3.slice(user3.indexOf("\"recentMessages\"")) : "";
   assert(recentSection.includes("\"speaker\":\"何处归千人\""), "历史 USER 行必须带发言人。");
   assert(!recentSection.includes("\"speaker\":\"小鲸鱼\""), "她自己说的话不该被当成 USER 带发言人。");
+  assert(recentSection.includes("\"hadSticker\":true"), "带过表情包的 ASSISTANT 历史行必须标 hadSticker:true，否则她认不出自己发的图。");
   assert(!system3.includes("groupMembers says who belongs"), "没带归属表时不许提这个字段，否则模型会凭空认亲戚。");
 
   /**

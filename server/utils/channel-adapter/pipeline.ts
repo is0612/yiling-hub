@@ -267,6 +267,23 @@ function readStoredVoiceFlag(metadata: unknown): boolean {
 }
 
 /**
+ * 这一条回复带没带图（表情包 / 表情段）。
+ *
+ * 她贴的图落库时 `content` 只有文字，图只记在 metadata 的 `stickerId`（表情包）
+ * 或 `faceIds`（内置表情）里。下一轮模型只看得到 content，于是「她发过图」这件事
+ * 凭空消失 —— 有人问「这图是你发的吗」，她能回「图又不是本宝发的」。
+ * 把这个痕迹读出来，recentMessages 里才带得上 `hadSticker`。
+ */
+function readStoredStickerFlag(metadata: unknown): boolean {
+  const record = metadata && typeof metadata === "object" && !Array.isArray(metadata)
+    ? metadata as Record<string, unknown>
+    : {};
+  if (typeof record.stickerId === "string" && record.stickerId) return true;
+  if (Array.isArray(record.faceIds) && record.faceIds.length) return true;
+  return false;
+}
+
+/**
  * 要引用哪一句。指向最新一条就当作「没引用」。
  *
  * 一边要求「回上一条别引用、别 @」，一边指望模型每次都判断对「哪条是上一条」，
@@ -728,6 +745,8 @@ async function runChannelTurn(input: {
       occurredAt: item.occurredAt.toISOString(),
       // 只有她自己的话不需要发言人；USER 的话一律带上，否则群里几条历史分不清是谁说的。
       ...(item.role === "USER" ? readStoredSpeaker(item.metadata) : {}),
+      // 她自己发过图的回复：标出来，让她认得「那张图是我贴的」。
+      ...(item.role === "ASSISTANT" && readStoredStickerFlag(item.metadata) ? { hadSticker: true } : {}),
     }));
 
   const modelText = (message: ChannelTurnMessage) => message.promptContent ?? message.content;

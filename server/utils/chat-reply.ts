@@ -14,6 +14,15 @@ export type ConversationContextMessage = {
    */
   speaker?: string;
   isOwner?: boolean;
+  /**
+   * 这一条 ASSISTANT 回复里带没带图（表情包）。
+   *
+   * 她自己发的表情包落库时 `content` 只有纯文字，图的痕迹全在 metadata 里，
+   * 下一轮模型看到的 recentMessages 里根本没有「她发过图」这件事 —— 于是有人
+   * 问她「这图是你发的吗」，她能理直气壮回「图又不是本宝发的」（2026-10-31 实况）。
+   * 这里把「带过图」变成一个可见的标记，她才有得认。
+   */
+  hadSticker?: boolean;
 };
 /**
  * scope "character" is shared character-global knowledge; "private" belongs to the current user
@@ -258,8 +267,12 @@ export type ConversationReplyResult = {
  *     前者是「别人在跟另一个人说话」，后者是「@ 你不等于在说你」—— 都跟所有格无关，
  *     v15 那三条盖不到。同时 `addressed_to_others` 加了「接着说给同一个人」的延续：
  *     「@阿深 不是刷屏」被挡掉之后，「是这个不适合发群里」就成了没头没尾的一句话。
+ * v18：她自己发的表情包在下一轮不可见。她贴的图落库时 `content` 只有文字，图只在
+ *     metadata 的 stickerId/faceIds 里，recentMessages 根本带不出去 —— 所以有人问
+ *     「这图是你发的吗」她能回「图又不是本宝发的」（她真不知道）。这版在 ASSISTANT
+ *     历史里加 `hadSticker` 标记，并在提示词里写明「带过图的就认领」。
  */
-const PROMPT_TEMPLATE_VERSION = "conversation-retrieval-v17";
+const PROMPT_TEMPLATE_VERSION = "conversation-retrieval-v18";
 
 export const STYLE_EXAMPLES_HEADING = "## 对话示例（只学语气，不要照抄）";
 
@@ -333,7 +346,7 @@ function systemPrompt(flags: {
 } = {}): string {
   const { withFaces, withStickers, withCatchphrases, withUserAddress, withSpeaker, withGroupChat, mustReply, repair, withVoiceReply, withAcquaintances, withGroupMembers } = flags;
   const lines = [
-    "YILING_CONVERSATION_REPLY_V17",
+    "YILING_CONVERSATION_REPLY_V18",
     "You are the conversational character in Yiling Hub. Read characterName as your display identity and characterPrompt as your persona instructions; follow that persona and respond naturally to the current user's message.",
     "Use recent dialogue, retrieved long-term memories, and retrieved snapshots only when relevant. If the supplied context does not support a claim, do not present it as a remembered fact.",
     "now is the current moment for this persona: now.local is the local date-time, now.weekday is the day of week, now.timeZone is the IANA zone, and now.utc is the same instant in UTC. Resolve every relative expression (今天/昨天/前天/上周/上个月 and equivalents) against now.local, never against the timestamp of the last message.",
@@ -395,6 +408,10 @@ function systemPrompt(flags: {
       "A lot of a group round is people talking to each other, not to you. When a member is instructing, coaching or grading another bot — 学一张看看 / 什么情况适合发表情包 / 发个可爱一点的出来 / 收着点别刷屏 — that exchange belongs to the two of them. Do not answer as the one being coached, and do not review their attempt on their behalf; at most add a remark from the sideline.",
       // 22:03「@你 她现在还有笨」—— 主语是阿深，她听成了「你笨」。
       "Being @self does not make the sentence about you. When the subject is a third person (她现在还有笨 / 你帮我跟她说一下 / 他那个号), you are being talked to *about* them — you are neither the one being called 笨 nor the one being discussed.",
+      // 她自己发的表情包落库时 content 只有文字，图的痕迹在 metadata 里，下一轮看不到。
+      // 于是有人问「这图是你发的吗」，她能回「图又不是本宝发的」—— 她真的不知道。
+      // hadSticker 把「那条回复带过图」标出来，让她认得自己的表情包。
+      "Your own earlier lines in recentMessages carry hadSticker: true when that reply went out with a sticker/image of yours. If someone asks who sent a picture and one of your lines has hadSticker, that picture was yours — own it. Do not claim a picture you never sent, and do not deny one your hadSticker line shows you did send.",
       "Decide whether to speak at all. Speak when someone is talking to you, when the conversation genuinely invites a line from you, or when you have something of your own to add. If policy.direct is true, someone @ mentioned you: answer, and do not stay silent.",
       "Stay silent when the group is talking among themselves, when a message is clearly addressed to another bot or member, when you would only repeat or summarize what was said, or when you have nothing worth adding.",
       "groupAnchors lists topics you already took part in. You may add to those topics even when the latest question is aimed at someone else, but never answer as if you were the person being asked, and never claim another bot's exchange as your own.",
@@ -700,6 +717,8 @@ export async function generateConversationReply(input: ConversationReplyInput): 
       occurredAt: entry.occurredAt,
       ...(entry.speaker ? { speaker: entry.speaker.slice(0, 80) } : {}),
       ...(entry.role === "USER" ? { isOwner: entry.isOwner === true } : {}),
+      // 她自己带过图的那句：显式写 true，让她认得「那张图是我发的」。
+      ...(entry.role === "ASSISTANT" && entry.hadSticker ? { hadSticker: true } : {}),
     })),
     memories: input.memories.map((memory) => ({
       id: memory.id,
