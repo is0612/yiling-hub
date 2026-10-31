@@ -77,6 +77,11 @@
 
 ## 工程债
 
+- **P0 · `test:memory-scheduler-db` 的测试隔离**（2026-11-01 记录）：它直接连开发库、且不清理自己造的 scope / job / conversation，重复跑会在
+  「Worker should mark a replay as successful when its snapshot already exists」（第 153 行）偶发失败（`CANCELLED` vs `SUCCEEDED`），
+  与当次改动无关 —— `git stash` 掉改动连跑同样偶发。修法方向：每次运行用独立的 schema/库，或在结束时按 suffix 清理自己创建的行；
+  在此之前 CI 上这条会时不时红一次，看到时先连跑两遍确认是不是环境污染。
+- 忆泡「分层保留」的行为目前只有审计字段（`contextCutoff` / `contextMessages`）间接覆盖，没有「10 天前 silent 行被删」的直接断言 —— 建议在测试隔离修好后补上。
 - README / CLAUDE.md 功能清单未同步忆泡相关能力（README 已补忆泡一节）；
 - CI 覆盖不全（`verify:local` 35 个脚本，CI 约 23 个）；
 - 成本观测：**部分完成**（2026-10-31）——忆泡整理改用 `kind=events` 单独记账，忆泡日历的日详情会显示「整理 N 次 · X tokens」；金额仍看总览页，不在这里重复算价。历史行没有区分标记，所以只有新任务会计入。
