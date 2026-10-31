@@ -596,6 +596,19 @@ try {
   await waitFor(async () => (await assistantCount(1012)) >= 1);
   assert.equal(await assistantCount(1012), 1, "@all 不能算「@ 的是别人」，否则群里喊话她永远不接。");
 
+  /**
+   * 9.10 模型把 JSON 套在 ```json 围栏里回来 —— 必须照常回，不能整轮丢掉。
+   *
+   * 这条以前是「该说的时候她没说话」的一大来源：内容完全正确，只是我们自己的
+   * `JSON.parse` 解不动。假模型用 `plainCompletion` 原样吐围栏文本，走完整条管道。
+   */
+  await emitToGroup(1013, 99, "CI_FENCED_JSON 这条你要回我", 559, false);
+  // 等不到就交给下面的断言报错：`waitFor` 超时只会说「等待条件超时」，看不出是哪种失败。
+  await waitFor(async () => (await assistantCount(1013)) >= 1).catch(() => undefined);
+  assert.equal(await assistantCount(1013), 1, "围栏里的 JSON 要解开并发出正文，不能当模型失败把整轮丢掉。");
+  const fencedReply = (await groupSends(1013)).map((item) => String(item.body.message)).join(" ");
+  assert(fencedReply.includes("CI 围栏里的模型回复"), "发出去的必须是从围栏里解出来的正文。");
+
   // 10. 群聊 B站 指令只认主人：群友触发被忽略，主人触发才得到回执/提示。
   record.groupBiliRunEnabled = true;
   record.bindings[0]!.groupBiliRunEnabled = true;
@@ -615,7 +628,7 @@ try {
 
   closeGateway();
 
-  console.log("OneBot 渠道端到端测试通过：WS token 鉴权与单次握手、事件接入、CQ 码解析、凭据解密、角色绑定路由、记忆检索、模型回复、表情段发送与表情额度、消息持久化、外部身份 upsert、回发平台与幂等去重、群公告草稿与确认发布、普通成员越权拦截、按群滚动 10 分钟回复上限、群聊统一攒批（mention 档只在被叫到时进管道）、自然接话闸门、按群覆盖群聊模式、引用与 @ 的分工（回上一条不加、接旧句才引用、点名才 @）、别人 @ 别人时不抢话（@all 例外）、B站 指令主人专属。");
+  console.log("OneBot 渠道端到端测试通过：WS token 鉴权与单次握手、事件接入、CQ 码解析、凭据解密、角色绑定路由、记忆检索、模型回复、表情段发送与表情额度、消息持久化、外部身份 upsert、回发平台与幂等去重、群公告草稿与确认发布、普通成员越权拦截、按群滚动 10 分钟回复上限、群聊统一攒批（mention 档只在被叫到时进管道）、自然接话闸门、按群覆盖群聊模式、引用与 @ 的分工（回上一条不加、接旧句才引用、点名才 @）、别人 @ 别人时不抢话（@all 例外）、围栏 JSON 照常回、B站 指令主人专属。");
 } finally {
   for (const child of children) child.kill();
   await prisma.onebotGroupAnnouncement.deleteMany({ where: { connectionId } }).catch(() => undefined);

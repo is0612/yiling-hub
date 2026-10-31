@@ -121,6 +121,22 @@ const server = http.createServer(async (request, response) => {
       );
       const quoteLine = lineWith("CI_QUOTE_REPLY");
       const atLine = lineWith("CI_AT_REPLY");
+      /**
+       * 模型答对了，只是套了层 ```json 围栏。
+       *
+       * 这是 `response_format: json_object` 下最常见的坏输出，也是最容易被我们自己判死的：
+       * 内容完全正确，只是 `JSON.parse` 解不动。走 `plainCompletion` 才能原样吐围栏文本
+       * （`chatCompletion` 会替我们 stringify，那就永远构造不出这个场景）。
+       */
+      const fencedLine = lineWith("CI_FENCED_JSON");
+      if (fencedLine) {
+        sendJson(response, 200, plainCompletion(body, "```json\n" + JSON.stringify({
+          reply: "CI 围栏里的模型回复",
+          usedMemoryIds: firstMemory ? [firstMemory] : [],
+          usedSnapshotIds: firstSnapshot ? [firstSnapshot] : [],
+        }) + "\n```"));
+        return;
+      }
       const groupDecision = quoteLine || atLine
         ? {
             relation: "direct",

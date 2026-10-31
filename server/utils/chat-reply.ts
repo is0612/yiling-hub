@@ -1,4 +1,5 @@
 import { buildChatCompletionsEndpoint } from "./chat-model-config";
+import { parseJsonLoose } from "./loose-json";
 import { readModelUsage, type ModelUsageTokens } from "./model-usage";
 export type ConversationContextMessage = {
   role: "USER" | "ASSISTANT";
@@ -636,13 +637,35 @@ export async function generateConversationReply(input: ConversationReplyInput): 
     const firstChoice = asRecord(choices[0]);
     const assistantMessage = asRecord(firstChoice?.message);
     const responseText = typeof assistantMessage?.content === "string" ? assistantMessage.content : "";
-    let parsed: Record<string, unknown> | null = null;
-    try {
-      parsed = asRecord(JSON.parse(responseText));
-    } catch {
-      parsed = null;
+    const finishReason = typeof firstChoice?.finish_reason === "string" ? firstChoice.finish_reason : "";
+    /**
+     * 宽松解析，不是 `JSON.parse`。
+     *
+     * `response_format: json_object` 只是「请求」，不是保证：实测这条路径上最常见的两种
+     * 坏输出是套一层 ```json 围栏、前面先写一句「好的，这是结果：」。以前这里直接
+     * `JSON.parse`，这两种都当场判失败 —— 整轮重试一次、再失败就记
+     * `ignored:LLM_INVALID_RESPONSE`，表现是「该说的时候她没说话」，而模型其实答对了。
+     *
+     * 同样的坑别的调用点早踩过（`proactive.ts`、B 站卡片、粗筛都用 `parseJsonLoose`），
+     * 只有这条**最常走**的路径没上 —— 这才是这类失败真正的原因。
+     * 宽容解析在这里是安全的：解出来的东西马上要过 id 白名单，多余字段一律不认。
+     */
+    const parsed = asRecord(parseJsonLoose(responseText, { expect: "object" }));
+    if (!parsed) {
+      /**
+       * 剩下这两类救不回来，但必须能在日志里一眼分清：
+       *  - `finish_reason=length`：被 max_tokens 截断，JSON 根本没写完。真遇到要调预算，
+       *    不是调提示词 —— 所以把它写进错误里，别让人再去猜。
+       *  - content 为空：推理模型把预算全花在思维链上，或者服务端只回了空壳。
+       * 顺带带上开头 30 字：出问题时有原文可比对，比只有一句「不是 JSON」强得多。
+       */
+      const head = responseText.trim().replace(/\s+/g, " ").slice(0, 30);
+      const detail = [
+        head ? `开头是「${head}」` : "content 是空的",
+        finishReason === "length" ? "finish_reason=length，输出被 max_tokens 截断" : "",
+      ].filter(Boolean).join("；");
+      throw new Error(`LLM_INVALID_RESPONSE: 模型没有返回符合约定的 JSON 对象（${detail}）。`);
     }
-    if (!parsed) throw new Error("LLM_INVALID_RESPONSE: 模型没有返回符合约定的 JSON 对象。");
 
     const reply = typeof parsed.reply === "string" ? parsed.reply.trim().slice(0, 12_000) : "";
     const validMemoryIds = new Set(input.memories.map((memory) => memory.id));

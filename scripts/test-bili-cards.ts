@@ -121,6 +121,18 @@ async function main() {
   assert.deepEqual(parseJsonLoose('{"worth":true}'), { worth: true });
   assert.equal(parseJsonLoose("没有 JSON"), null);
   assert.equal(parseJsonLoose(""), null);
+  // 要对象时括号顺序要跟着变：默认「数组优先」会在这种带废话的文本里切出 faces 那个数组，
+  // 解出来是 `[3]`，调用方 `asRecord` 一过就变成 null —— 明明能救回来的对象反而判死。
+  assert.deepEqual(
+    parseJsonLoose('好的，这是结果：{"reply":"嗯","faces":[3]}', { expect: "object" }),
+    { reply: "嗯", faces: [3] },
+    "expect: object 要切整个对象，不能被正文里的数组带偏",
+  );
+  assert.deepEqual(
+    parseJsonLoose('前言 ["BV1xx411c7mD"] 后话'),
+    ["BV1xx411c7mD"],
+    "不传 expect 时仍按数组优先，B 站那几处调用点行为不变",
+  );
   assert.deepEqual(extractBvids("看 BV1xx411c7mD 和 BV1yy411c7mD，还有 BV1xx411c7mD"), ["BV1xx411c7mD", "BV1yy411c7mD"]);
 
   // ---- 6. 错误结构 ----

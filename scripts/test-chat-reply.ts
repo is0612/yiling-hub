@@ -282,6 +282,85 @@ try {
   );
   assert.equal(calls, 2, "重试上限是一次。");
 
+  /**
+   * 下面两段是这一页最该有的测试：模型其实答对了，是我们自己解不动。
+   *
+   * `response_format: json_object` 只是请求，不是保证。这条路径上最常见的两种坏输出是
+   * 套 ```json 围栏、前面先写一句「好的，这是结果：」—— 以前这里直接 `JSON.parse`，
+   * 两种都当场判失败，重试一次仍失败就整轮丢掉，表现是「该说的时候她没说话」。
+   * 别的调用点（proactive / B 站卡片 / 粗筛）早就用 `parseJsonLoose` 了，只有这条没上。
+   */
+  calls = 0;
+  globalThis.fetch = async (): Promise<Response> => {
+    calls += 1;
+    return new Response(
+      replyOnce("```json\n" + JSON.stringify({ reply: "围栏里的正文", usedMemoryIds: [], usedSnapshotIds: [] }) + "\n```"),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  };
+  const fencedResult = await generateConversationReply({
+    characterName: "测试角色",
+    characterPrompt: "温柔地回复。",
+    model: "test-chat-model",
+    apiKey: secretApiKey,
+    apiBaseUrl: privateProviderUrl,
+    currentMessage: "在吗",
+    recentMessages: [],
+    memories: [],
+    snapshots: [],
+  });
+  assert.equal(fencedResult.reply, "围栏里的正文", "```json 围栏要能解开，这不算模型失败。");
+  assert.equal(calls, 1, "解得开就不该重试 —— 白花一次调用，还多等一轮。");
+
+  calls = 0;
+  globalThis.fetch = async (): Promise<Response> => {
+    calls += 1;
+    return new Response(
+      replyOnce('好的，这是结果：{"reply":"别被数组带偏","faces":[],"usedMemoryIds":[],"usedSnapshotIds":[]}'),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  };
+  const noisyResult = await generateConversationReply({
+    characterName: "测试角色",
+    characterPrompt: "温柔地回复。",
+    model: "test-chat-model",
+    apiKey: secretApiKey,
+    apiBaseUrl: privateProviderUrl,
+    currentMessage: "在吗",
+    recentMessages: [],
+    memories: [],
+    snapshots: [],
+  });
+  assert.equal(noisyResult.reply, "别被数组带偏", "前面带一句废话也要能救回来。");
+  assert.equal(calls, 1, "同上，不该重试。");
+
+  // 被 max_tokens 截断是另一回事：JSON 压根没写完，救不回来，但错误里必须说清楚，
+  // 否则看到「不是 JSON」的人会去调提示词，而真正该调的是预算。
+  calls = 0;
+  globalThis.fetch = async (): Promise<Response> => {
+    calls += 1;
+    return new Response(JSON.stringify({
+      choices: [{ message: { content: '{"reply":"说到一半就没了' }, finish_reason: "length" }],
+      usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+    }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  await assert.rejects(
+    generateConversationReply({
+      characterName: "测试角色",
+      characterPrompt: "温柔地回复。",
+      model: "test-chat-model",
+      apiKey: secretApiKey,
+      apiBaseUrl: privateProviderUrl,
+      currentMessage: "在吗",
+      recentMessages: [],
+      memories: [],
+      snapshots: [],
+    }),
+    /finish_reason=length/,
+    "截断要写进错误里：那是调 max_tokens 的事，不是调提示词。",
+  );
+  assert.equal(calls, 2, "截断也照旧重试一次 —— 换个说法可能就装得下。");
+
   // 群聊：允许她说「这轮不插嘴」。silent 不是错误，reply 为空是合法的。
   let silentBody = "";
   globalThis.fetch = async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
