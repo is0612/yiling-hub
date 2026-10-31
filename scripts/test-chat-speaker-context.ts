@@ -25,7 +25,7 @@ try {
     speaker: { displayName: "群友", isOwner: false, ownerDisplayName: "烟火清凉" },
   });
 
-  assert.equal(result.promptTemplateVersion, "conversation-retrieval-v14");
+  assert.equal(result.promptTemplateVersion, "conversation-retrieval-v15");
   const body = JSON.parse(capturedBody) as { messages: Array<{ role: string; content: string }> };
   const system = body.messages.find((item) => item.role === "system")?.content ?? "";
   const user = body.messages.find((item) => item.role === "user")?.content ?? "";
@@ -86,6 +86,11 @@ try {
   // 主人 @ 她「没说你呢」递台阶，她反问一句踢回去。两件事都要有明文规矩。
   assert(system3.includes("Referents are not you by default"), "群聊系统提示必须说明指代默认不是她。");
   assert(system3.includes("没说你"), "群聊系统提示必须把「澄清」和「挑衅」分开。");
+  // 21:00「我的鱼也是成气候了」说的是他自己那条鱼，她接「谁是你的鱼了」。
+  // 所有格是比「这鱼」更硬的误认来源：认领它等于抢身份。
+  assert(system3.includes("Possessives are not you either"), "群聊系统提示必须说明「我的X」指的是说话人自己的 bot。");
+  assert(system3.includes("the message is not about you"), "群聊系统提示必须写明：没有 @、没有名字的话不是在说她。");
+  assert(system3.includes("A line starting with /"), "群聊系统提示必须说明斜杠命令是发给别的 bot 的，不是骂她。");
 
   // 历史消息：USER 行不能只剩 role + content，否则 20 条历史分不清谁是谁。
   const recentSection = body3.messages.length ? user3.slice(user3.indexOf("\"recentMessages\"")) : "";

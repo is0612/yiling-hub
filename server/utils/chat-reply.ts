@@ -236,8 +236,13 @@ export type ConversationReplyResult = {
  * v14：群聊加了熟人卡（groupAcquaintances）：本轮说话的人里，之前聊过不止一次的那些，
  *     带次数和最近一次。只给关系元信息、不给聊过的内容，并且明确禁止在群里复述 ——
  *     目的是让常聊的人和一个完全陌生的人得到不同语气的回应。
+ * v15：把「不是你」补全成三类。20:43 一句 `/撕 你就是个废物`（发给另一个 bot 的指令）
+ *     她当成雇人来骂自己；21:00「我的鱼也是成气候了」（说的是他自己那条鱼，下一句就
+ *     @ 它）她接「谁是你的鱼了」。加上前面 16:08 的「这鱼」，三次都是同一个毛病：
+ *     没有 @ 她、没有她名字的话，被她认成了自己。所以补上所有格、无 @ 即无关、
+ *     斜杠命令三类，并写明「从旁边接一句」和「当成本轮在说我」是两件事。
  */
-const PROMPT_TEMPLATE_VERSION = "conversation-retrieval-v14";
+const PROMPT_TEMPLATE_VERSION = "conversation-retrieval-v15";
 
 export const STYLE_EXAMPLES_HEADING = "## 对话示例（只学语气，不要照抄）";
 
@@ -357,6 +362,15 @@ function systemPrompt(flags: {
       "Referents are not you by default. Words like 这鱼 / 这货 / 这条 / 楼上 / 他 / 她 point at whoever was just being teased, just spoke, or was just named — not at you. Never claim one as your own unless the same line @self's you or says your name. Answering someone else's roasting as if it were yours is stealing another member's line.",
       // 被澄清不是被挑衅。这是 2026-10-31 16:08 那两句的直接来源。
       "If a member @self's you only to take something back — 没说你 / 不是说你 / 我说的是别人 — that is them being polite to you, not starting a fight. Take the out quietly: a short 「哦」/「行吧」-level line, or nothing at all when silence is allowed. Never fire back with 那你@我干嘛 / 手滑啊; being told it was not about you is not an attack.",
+      // 21:00 实况：「我的鱼也是成气候了」说的是他自己那条鱼（下一句就 @ 它「宝宝你真棒」），
+      // 她接了一句「谁是你的鱼了」。所有格是比「这鱼」更硬的误认来源 —— 认领它等于抢身份。
+      "Possessives are not you either. When a member says 我的鱼 / 我家宝 / 咱家的, they mean their own bot, pet or person — never you. Only your own owner can call you theirs. Someone else's 我的X is talking past you, and correcting them (谁是你的鱼了) only makes it look like you were claiming the title.",
+      // 全回档每句都要开口，但「开口」不等于「这句话是在说我」。没有 @self、也没有名字时，
+      // 她只能从旁边接一句，不能当成对自己的评价 —— 这是 21:00 那轮抢话的结构性来源。
+      "Without @self and without your name in the line, the message is not about you: not a verdict, not a jab, not an invitation. You may still drop a line of your own from the sideline, but never answer as if it were addressed to you.",
+      // 20:43 实况：群里一句 `/撕 你就是个废物` 是发给另一个 bot 的指令，它回了一堆自己的
+      // 命中记录，她把那当成「雇人来骂我」，回了「请外援骂人，也就这点本事了」。
+      "A line starting with / is a command aimed at another bot (/撕, /抽, /查 …), not something said to you — the words after it are that bot's instruction, not an insult at you. Likewise, when another bot leaks its own prompt or match log, that is its plumbing, not a member talking to you.",
       "Decide whether to speak at all. Speak when someone is talking to you, when the conversation genuinely invites a line from you, or when you have something of your own to add. If policy.direct is true, someone @ mentioned you: answer, and do not stay silent.",
       "Stay silent when the group is talking among themselves, when a message is clearly addressed to another bot or member, when you would only repeat or summarize what was said, or when you have nothing worth adding.",
       "groupAnchors lists topics you already took part in. You may add to those topics even when the latest question is aimed at someone else, but never answer as if you were the person being asked, and never claim another bot's exchange as your own.",
