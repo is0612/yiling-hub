@@ -81,7 +81,7 @@ try {
   assert.equal(requestBody.model, "test-chat-model");
   const systemMessage = requestBody.messages.find((item) => item.role === "system");
   assert(systemMessage, "The request must include a system prompt.");
-  assert(systemMessage.content.includes("YILING_CONVERSATION_REPLY_V8"), "The system prompt marker must stay in sync with the prompt template version.");
+  assert(systemMessage.content.includes("YILING_CONVERSATION_REPLY_V9"), "The system prompt marker must stay in sync with the prompt template version.");
   const userMessage = requestBody.messages.find((item) => item.role === "user");
   assert(userMessage, "The request must include a structured user context.");
   const promptInput = JSON.parse(userMessage.content) as Record<string, unknown>;
@@ -232,8 +232,12 @@ try {
     usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
   });
   let calls = 0;
-  globalThis.fetch = async (): Promise<Response> => {
+  const attemptSystems: string[] = [];
+  globalThis.fetch = async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     calls += 1;
+    const system = (JSON.parse(String(init?.body ?? "{}")) as { messages?: Array<{ role: string; content: string }> })
+      .messages?.find((item) => item.role === "system")?.content ?? "";
+    attemptSystems.push(system);
     const body = calls === 1
       ? "抱歉，我刚刚走神了（这不是 JSON）"
       : replyOnce(JSON.stringify({ reply: "重试后拿到了", usedMemoryIds: [], usedSnapshotIds: [] }));
@@ -252,6 +256,9 @@ try {
   });
   assert.equal(retried.reply, "重试后拿到了", "第一次格式不对，重试后要能正常回。");
   assert.equal(calls, 2, "只多要一次，不能无限重试。");
+  // 第二次要带上「上次不可用」的补语：同一个提示词原样再问一遍，复现率极高。
+  assert(!attemptSystems[0]!.includes("Your previous answer was unusable"), "第一次不许提前喊话。");
+  assert(attemptSystems[1]!.includes("Your previous answer was unusable"), "重试要明确说上次不可用。");
 
   // 一直抽风：两次就停手。
   calls = 0;
@@ -381,6 +388,35 @@ try {
   assert.equal(grouped.groupDecision?.topicAnchorMessageId, "a1", "锚点必须来自本次提供的 groupAnchors。");
   assert.equal(grouped.groupDecision?.replyToMessageId, "m2", "引用目标必须是本轮 transcript 的 id。");
   assert.equal(grouped.groupDecision?.atMessageId, "h1", "点名可以指向背景里的人物，不必是这一轮的。");
+
+  /**
+   * 允许沉默 vs 必须回，提示词必须说同一件事。
+   *
+   * 全回模式（和被 @ 的轮次）底下不接受沉默，如果提示词还在说「沉默是常态、
+   * 不要每条都回」，模型就会照提示词沉默，整轮被丢掉 —— 表现就是「说好每条都回，
+   * 结果这条没回」，日志里只有一个 LLM_INVALID_RESPONSE 看得出来。
+   */
+  assert(groupSystem.includes("Staying silent is normal"), "允许沉默时要说清「沉默是常态」。");
+  await generateConversationReply({
+    characterName: "鲸鱼娘",
+    characterPrompt: "你是群里的一个网友。",
+    model: "test-chat-model",
+    apiKey: secretApiKey,
+    apiBaseUrl: privateProviderUrl,
+    currentMessage: "都别理她",
+    transcript: [{ id: "m1", member: "member_1", speaker: "A", content: "都别理她" }],
+    groupChat: true,
+    direct: false,
+    allowSilent: false,
+    recentMessages: [],
+    memories: [],
+    snapshots: [],
+  });
+  const mustReplySystem = (JSON.parse(groupBody) as { messages: Array<{ role: string; content: string }> })
+    .messages.find((item) => item.role === "system")!.content;
+  assert(mustReplySystem.includes("you must answer"), "必须回的轮次要在提示词里说清楚。");
+  assert(!mustReplySystem.includes("Staying silent is normal"), "必须回的轮次不许再教它「沉默是常态」。");
+  assert(mustReplySystem.includes('action must be "reply"'), "JSON 契约也要跟着换。");
   assert.deepEqual(grouped.groupDecision?.evidenceMessageIds, ["m2"], "编造的证据 id 要被过滤掉。");
 
   // 非法 relation / 不存在锚点：整段决策丢掉，但回复照常返回。

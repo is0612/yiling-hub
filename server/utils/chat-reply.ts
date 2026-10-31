@@ -231,12 +231,16 @@ function systemPrompt(flags: {
   withUserAddress?: boolean;
   withSpeaker?: boolean;
   withGroupChat?: boolean;
+  /** 这一轮**必须**给出正文（全回模式、被 @、私聊）。此时不能再教它「沉默是常态」。 */
+  mustReply?: boolean;
+  /** 上一次的答案没有可用正文，这一轮补一句硬要求。 */
+  repair?: boolean;
   /** 这一条会被念成语音条发给对方。 */
   withVoiceReply?: boolean;
 } = {}): string {
-  const { withFaces, withStickers, withCatchphrases, withUserAddress, withSpeaker, withGroupChat, withVoiceReply } = flags;
+  const { withFaces, withStickers, withCatchphrases, withUserAddress, withSpeaker, withGroupChat, mustReply, repair, withVoiceReply } = flags;
   const lines = [
-    "YILING_CONVERSATION_REPLY_V8",
+    "YILING_CONVERSATION_REPLY_V9",
     "You are the conversational character in Yiling Hub. Read characterName as your display identity and characterPrompt as your persona instructions; follow that persona and respond naturally to the current user's message.",
     "Use recent dialogue, retrieved long-term memories, and retrieved snapshots only when relevant. If the supplied context does not support a claim, do not present it as a remembered fact.",
     "Every retrieved memory and snapshot carries a scope field. scope \"character\" is shared character-global knowledge. scope \"private\" belongs to the current user only: use it for this user, never attribute it to someone else, and never present another person's private context as if it were shared knowledge.",
@@ -277,7 +281,26 @@ function systemPrompt(flags: {
       "Decide whether to speak at all. Speak when someone is talking to you, when the conversation genuinely invites a line from you, or when you have something of your own to add. If policy.direct is true, someone @ mentioned you: answer, and do not stay silent.",
       "Stay silent when the group is talking among themselves, when a message is clearly addressed to another bot or member, when you would only repeat or summarize what was said, or when you have nothing worth adding.",
       "groupAnchors lists topics you already took part in. You may add to those topics even when the latest question is aimed at someone else, but never answer as if you were the person being asked, and never claim another bot's exchange as your own.",
-      "Staying silent is normal: in a real group most rounds end without you saying anything. Never answer every message, never greet people, and never narrate what others just said.",
+    );
+    if (mustReply) {
+      /**
+       * 全回模式 / 被 @ —— 这一轮**不允许**沉默。
+       *
+       * 这两句是一对的反面：上面那段「沉默是常态、不要每条都回」在允许沉默时是对的，
+       * 但全回模式下它会把模型逼成「照提示词沉默，底下又不接受沉默」，于是整轮被丢掉，
+       * 表现就是用户看到的「说好每条都回，结果这条没回」。判定在下面（`!reply` 抛错），
+       * 提示词必须说同一件事。
+       */
+      lines.push(
+        "This round you must answer: action is \"reply\" and reply must be a non-empty line. Silence is not available here.",
+        "Keep it short and natural anyway — a reaction, a jab, a one-line answer. Do not announce that you are answering, and do not narrate what others said.",
+      );
+    } else {
+      lines.push(
+        "Staying silent is normal: in a real group most rounds end without you saying anything. Never answer every message, never greet people, and never narrate what others just said.",
+      );
+    }
+    lines.push(
       "When you do speak, drop in one short line the way a person would in a group chat. Do not @ people unless you actually need their attention.",
     );
   }
@@ -297,7 +320,9 @@ function systemPrompt(flags: {
       "Set replyToMessageId only when the line you are answering is no longer the last one in the room. Answering the newest message needs neither a quote nor an @ — everyone can already see who you are talking to.",
       "Set atMessageId only when you genuinely want someone's attention: calling a member out, answering someone who was not the one who just spoke, urging or teasing a particular person. Never set it merely because you are replying to them, and never on several messages in a row.",
       "Both may appear together when you are picking up an older line and also calling that person out. Neither is decoration: a plain reply with no quote and no @ is the normal, most common case.",
-      'Default to action "silent" when in doubt. A wrong line in a group is worse than saying nothing.',
+      mustReply
+        ? 'action must be "reply" this round and reply must be a non-empty string. Leave groupDecision out only if there is nothing worth marking.'
+        : 'Default to action "silent" when in doubt. A wrong line in a group is worse than saying nothing.',
     );
   } else {
     lines.push(
@@ -360,6 +385,17 @@ function systemPrompt(flags: {
       "Use at most one per reply. If several fit, take the one closest to the current topic. Never chain two of them to get through the list.",
       "Entries marked justSaid are ones you used very recently. Skip them unless nothing else fits at all — repeating the same line twice in a short span is the one thing that gives the trick away.",
       "Add usedCatchphraseIds to your JSON object: the ids of the catchphrases you actually said, usually 0 or 1 entries, empty when you used none.",
+    );
+  }
+  if (repair) {
+    /**
+     * 第二次请求才加的补丁。上一版是原样再问一遍 —— 同一个提示词、同一个毛病，
+     * 复现率极高；而这一轮如果是「必须回」的场合，失败就意味着她整条消息不回。
+     * 只要求「给出可用正文 + 合格式的 JSON」，不透露第一次错在哪（没必要，也容易跑题）。
+     */
+    lines.push(
+      "Your previous answer was unusable: it had no usable reply text or was not valid JSON.",
+      "Answer again, now, with a single valid JSON object and a non-empty reply. No markdown, no code fence, no explanation.",
     );
   }
   return lines.join("\n");
@@ -543,7 +579,7 @@ export async function generateConversationReply(input: ConversationReplyInput): 
    * 发一次请求并把结果解析出来。外面那层只重试「解析不出约定 JSON」这一种瞬时抽风。
    * 重试时降温：温度越高越容易在格式上跑偏，第二次用 0.3 把形状收住。
    */
-  const requestReply = async (useTemperature: number): Promise<ConversationReplyResult> => {
+  const requestReply = async (useTemperature: number, repair = false): Promise<ConversationReplyResult> => {
     let response: Response;
     try {
       response = await fetch(endpoint, {
@@ -565,7 +601,12 @@ export async function generateConversationReply(input: ConversationReplyInput): 
                 withUserAddress: Boolean(userAddress),
                 withSpeaker: Boolean(speaker),
                 withGroupChat,
+                // 「这一轮必须说话」的场合（全回模式、被 @）：提示词里那套「沉默是常态」
+                // 就得换成「给一句」。不换的话模型照提示词沉默，而底下又不接受沉默。
+                mustReply: input.allowSilent !== true,
                 withVoiceReply: input.voiceReply === true,
+                // 第一次的答案没有可用正文时才补这句 —— 不是每次重试都喊，喊多了像责骂。
+                ...(repair ? { repair: true } : {}),
               }),
             },
             { role: "user", content: JSON.stringify(promptInput) },
@@ -673,7 +714,7 @@ export async function generateConversationReply(input: ConversationReplyInput): 
   let parseError: Error | null = null;
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
-      return await requestReply(attempt === 0 ? temperature : RETRY_TEMPERATURE);
+      return await requestReply(attempt === 0 ? temperature : RETRY_TEMPERATURE, attempt > 0);
     } catch (error) {
       const message = error instanceof Error ? error.message : "";
       if (!message.startsWith("LLM_INVALID_RESPONSE")) throw error;
