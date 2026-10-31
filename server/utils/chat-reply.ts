@@ -149,6 +149,14 @@ export type ConversationReplyInput = {
   /** 她参与过、还没过期的话题锚点，模型只能从里面选。 */
   groupAnchors?: Array<{ id: string; label: string }>;
   /**
+   * 本轮说话的人里，她之前就认识的那些。
+   *
+   * 只有关系元信息（认识多久、聊过几次、最近一次），**不含任何聊过的内容** ——
+   * 群里其他人都听着，私人记忆不能端到这里来。作用是让她对一个常聊的人和一个
+   * 第一次见的人，语气不一样。
+   */
+  groupAcquaintances?: Array<{ name: string; note?: string }>;
+  /**
    * 允许模型回 silent（这轮不插嘴）。只在群聊传 —— 私聊里「已读不回」比乱回更糟。
    */
   allowSilent?: boolean;
@@ -225,8 +233,11 @@ export type ConversationReplyResult = {
  *     她认成自己，回了「说谁嘴硬呢」抢了别人的台词；紧接着主人 @ 她「没说你呢」给她
  *     台阶，她又反问「没说我你@我干嘛，手滑啊」。两件事都不是判定错，是读错人 + 把
  *     澄清当挑衅，只能靠提示词说清。
+ * v14：群聊加了熟人卡（groupAcquaintances）：本轮说话的人里，之前聊过不止一次的那些，
+ *     带次数和最近一次。只给关系元信息、不给聊过的内容，并且明确禁止在群里复述 ——
+ *     目的是让常聊的人和一个完全陌生的人得到不同语气的回应。
  */
-const PROMPT_TEMPLATE_VERSION = "conversation-retrieval-v13";
+const PROMPT_TEMPLATE_VERSION = "conversation-retrieval-v14";
 
 export const STYLE_EXAMPLES_HEADING = "## 对话示例（只学语气，不要照抄）";
 
@@ -293,8 +304,10 @@ function systemPrompt(flags: {
   repair?: boolean;
   /** 这一条会被念成语音条发给对方。 */
   withVoiceReply?: boolean;
+  /** 本轮带了熟人卡（groupAcquaintances）。没带就别提这个字段，否则模型会自己编）。 */
+  withAcquaintances?: boolean;
 } = {}): string {
-  const { withFaces, withStickers, withCatchphrases, withUserAddress, withSpeaker, withGroupChat, mustReply, repair, withVoiceReply } = flags;
+  const { withFaces, withStickers, withCatchphrases, withUserAddress, withSpeaker, withGroupChat, mustReply, repair, withVoiceReply, withAcquaintances } = flags;
   const lines = [
     "YILING_CONVERSATION_REPLY_V12",
     "You are the conversational character in Yiling Hub. Read characterName as your display identity and characterPrompt as your persona instructions; follow that persona and respond naturally to the current user's message.",
@@ -348,6 +361,13 @@ function systemPrompt(flags: {
       "Stay silent when the group is talking among themselves, when a message is clearly addressed to another bot or member, when you would only repeat or summarize what was said, or when you have nothing worth adding.",
       "groupAnchors lists topics you already took part in. You may add to those topics even when the latest question is aimed at someone else, but never answer as if you were the person being asked, and never claim another bot's exchange as your own.",
     );
+    if (withAcquaintances) {
+      // 熟人卡：只给「认识多久、聊过几次」，不给聊过什么。写成「可以念出来」就会变成
+      // 在群里复述私聊内容 —— 那是把私下的话摊给一屋子人看。
+      lines.push(
+        "groupAcquaintances lists people in this round you have talked with before, with how many times and how recently. It is background about who they are to you, not a record of what was said: let it color your tone for a regular (warmer, or more teasing if that is how you two are), but never recite it, never list it, and never bring up anything private in front of the group.",
+      );
+    }
     if (mustReply) {
       /**
        * 全回模式 / 被 @ —— 这一轮**不允许**沉默。
@@ -594,6 +614,14 @@ export async function generateConversationReply(input: ConversationReplyInput): 
         }
       : {}),
     ...(input.groupAnchors?.length ? { groupAnchors: input.groupAnchors } : {}),
+    ...(withGroupChat && input.groupAcquaintances?.length
+      ? {
+          groupAcquaintances: input.groupAcquaintances.map((entry) => ({
+            name: entry.name.slice(0, 80),
+            ...(entry.note?.trim() ? { note: entry.note.trim().slice(0, 120) } : {}),
+          })),
+        }
+      : {}),
     ...(withGroupChat ? { policy: { direct: input.direct === true } } : {}),
     ...(!withStickers && emojiFaces.length ? { availableFaces: emojiFaces } : {}),
     ...(withStickers
@@ -699,6 +727,7 @@ export async function generateConversationReply(input: ConversationReplyInput): 
                 // 就得换成「给一句」。不换的话模型照提示词沉默，而底下又不接受沉默。
                 mustReply: input.allowSilent !== true,
                 withVoiceReply: input.voiceReply === true,
+                withAcquaintances: Boolean(input.groupAcquaintances?.length),
                 // 第一次的答案没有可用正文时才补这句 —— 不是每次重试都喊，喊多了像责骂。
                 ...(repair ? { repair: true } : {}),
               }),

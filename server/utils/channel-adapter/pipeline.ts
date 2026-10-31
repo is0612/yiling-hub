@@ -17,7 +17,7 @@ import {
   resolveImageUnderstandingSettings,
   type ChannelImageRef,
 } from "../image-understanding";
-import { ensureExternalIdentityScope } from "../identity-scope";
+import { recordFriendInteraction } from "../friends";
 import { isEmojiBudgetSpent, resolveEmojiFrequency } from "../emoji-frequency";
 import { ensureOwnerPrivateScope } from "../memory-scope-access";
 import { isSystemBroadcast, looksLikeSystemMessage } from "../system-message";
@@ -505,14 +505,11 @@ async function runChannelTurn(input: {
   }
 
   /**
-   * 外部身份只记「一对一找过她的人」，群聊一律不建。
+   * 私聊：一进来就记一次「她认识这个人」，并把会话要落的身份范围准备好。
    *
-   * 群会话本来就挂在角色全局 scope 下（见下面 `conversationScopeId` 的群聊分支），身份
-   * scope 建出来没有任何地方读它 —— 而身份表的定位是「谁来找过她」，一个群里几十号人
-   * 全被记进去，这张表就废了：真正的私聊来访者被群友淹掉，管理员绑定时也找不到人。
-   *
-   * 群友说过的话照常入库（挂在群会话上），只是不变成一条外部身份、不开私人记忆范围。
-   * 他哪天真来私聊，第一句就会补上这行身份。
+   * 群聊不在这里记。谁在群里冒一句就建一条身份，一个活跃群几天就能攒出几百个没跟她
+   * 说过话的「朋友」—— 那不是朋友，是群成员名单。群聊等她**真的回了谁**再记，
+   * 见下面回复发出的那段（`isGroup` 分支）。
    */
   let primaryIdentityScopeId: string | null = null;
   const identityScopeByAuthor = new Map<string, string | null>();
@@ -520,26 +517,15 @@ async function runChannelTurn(input: {
     for (const message of messages) {
       const platformUid = (message.authorPlatformUid || message.authorOpenId || "").trim();
       if (!platformUid || identityScopeByAuthor.has(platformUid)) continue;
-      const identity = await prisma.externalIdentity.upsert({
-        where: { platform_platformUid: { platform: input.platform, platformUid } },
-        create: {
-          platform: input.platform,
-          platformUid,
-          displayName: message.authorDisplayName?.slice(0, 255) || null,
-          status: "UNVERIFIED",
-        },
-        update: {
-          ...(message.authorDisplayName ? { displayName: message.authorDisplayName.slice(0, 255) } : {}),
-        },
-        select: { id: true },
-      });
-      // Establish the identity's dedicated memory scope so its private memory can be
-      // isolated per platform (and later linked via admin verification). Best-effort:
-      // a scope that already exists is reused; failure must not block the message.
-      const scope = await ensureExternalIdentityScope(
-        input.characterId, input.platform, platformUid, identity.id,
-      ).catch(() => null);
-      identityScopeByAuthor.set(platformUid, scope?.scopeId ?? null);
+      const touch = await recordFriendInteraction({
+        characterId: input.characterId,
+        platform: input.platform,
+        platformUid,
+        displayName: message.authorDisplayName,
+        source: "PRIVATE",
+        at: message.occurredAt,
+      }).catch(() => null);
+      identityScopeByAuthor.set(platformUid, touch?.scopeId ?? null);
     }
   }
   {
@@ -875,6 +861,46 @@ async function runChannelTurn(input: {
   );
   const backgroundLines = (input.group?.background ?? []).filter((line) => !storedMessageIds.has(line.id));
 
+  /**
+   * 熟人卡：本轮说话的人里，之前跟她聊过不止一次的那些。
+   *
+   * 只取关系（次数 / 最近一次），**不碰任何消息内容** —— 这份东西要进群聊提示词，
+   * 群里所有人都听得见，私人记忆不能端上来。同一个人本轮说两句只算一张卡。
+   * 聊过一次的不算熟人：那是「见过」，给每个人都套熟人语气等于没区别。
+   */
+  let groupAcquaintances: Array<{ name: string; note: string }> | undefined;
+  if (isGroup) {
+    const speakerUids = [...new Set(
+      messages
+        .map((message) => (message.authorPlatformUid || message.authorOpenId || "").trim())
+        .filter(Boolean),
+    )];
+    if (speakerUids.length) {
+      const known = await prisma.externalIdentity.findMany({
+        where: { platform: input.platform, platformUid: { in: speakerUids } },
+        select: {
+          platformUid: true,
+          displayName: true,
+          memoryScopes: {
+            where: { characterId: input.characterId },
+            select: { interactionCount: true, lastInteractedAt: true },
+          },
+        },
+      }).catch(() => null);
+      const cards = (known ?? []).flatMap((identity) => {
+        const relation = identity.memoryScopes[0];
+        if (!relation || relation.interactionCount < 2) return [];
+        const last = relation.lastInteractedAt;
+        const when = last ? `${last.getMonth() + 1}-${last.getDate()}` : "";
+        return [{
+          name: identity.displayName?.trim() || identity.platformUid,
+          note: `之前跟你聊过 ${relation.interactionCount} 次${when ? `，最近一次 ${when}` : ""}`,
+        }];
+      });
+      if (cards.length) groupAcquaintances = cards;
+    }
+  }
+
   let generated;
   try {
     generated = await generateConversationReply({
@@ -924,6 +950,7 @@ async function runChannelTurn(input: {
           }
         : {}),
       ...(allowSilent ? { allowSilent } : {}),
+      ...(groupAcquaintances?.length ? { groupAcquaintances } : {}),
       recentMessages,
       memories,
       snapshots,
@@ -1060,6 +1087,39 @@ async function runChannelTurn(input: {
         }
       : undefined;
     await input.sendReply(generated.reply, replyOptions);
+    /**
+     * 群聊里「跟谁互动过」＝她真的回了谁。
+     *
+     * 对象从三处取：她引用的那条、她 @ 的那条、两样都没有就是这轮最新的一句（她接的
+     * 就是这句话）。`silent` 走不到这个分支，所以没被搭理的发言不会变成朋友 —— 这正
+     * 是「她回过的人才算」的落地位置。
+     *
+     * 放在发完之后：朋友簿晚半秒无所谓，不能让记账拖住已经生成的那句话。
+     */
+    if (isGroup) {
+      const targetedMessageIds = new Set(
+        [quoteTarget, atTarget].filter((id): id is string => Boolean(id)),
+      );
+      const latest = messages.at(-1);
+      if (!targetedMessageIds.size && latest?.externalMessageId) {
+        targetedMessageIds.add(latest.externalMessageId);
+      }
+      const recordedAuthors = new Set<string>();
+      for (const message of messages) {
+        if (!message.externalMessageId || !targetedMessageIds.has(message.externalMessageId)) continue;
+        const platformUid = (message.authorPlatformUid || message.authorOpenId || "").trim();
+        if (!platformUid || recordedAuthors.has(platformUid)) continue;
+        recordedAuthors.add(platformUid);
+        await recordFriendInteraction({
+          characterId: input.characterId,
+          platform: input.platform,
+          platformUid,
+          displayName: message.authorDisplayName,
+          source: "GROUP",
+          at: message.occurredAt,
+        }).catch(() => undefined);
+      }
+    }
     // 记一次使用：页面要能看出「哪几张她根本没用过」。写失败不影响已经发出去的回复。
     if (replySticker) {
       await prisma.characterSticker.update({

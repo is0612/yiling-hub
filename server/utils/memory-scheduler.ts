@@ -1,5 +1,6 @@
 import type { PrismaClient } from "../../src/generated/prisma/client";
 import { localDayHour, resolveDailyEventWindow, resolveDayWindow } from "./memory-event-time";
+import { listFriendScopesWithActivity } from "./friends";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_MAX_PERIODS_PER_SETTING = 24;
@@ -364,6 +365,38 @@ export async function enqueueDueMemorySnapshots(
         }));
         const ownerResult = await prisma.memoryJob.createMany({ data: ownerPeriods, skipDuplicates: true });
         report.jobsQueued += ownerResult.count;
+      }
+
+      /**
+       * 朋友范围跟着同一个周期补排快照。
+       *
+       * 以前这里只有「全局」和「主人私人」两种范围，`EXTERNAL_IDENTITY` 从不入队 ——
+       * 结果是身份行建了一堆，记忆条数是 0，绑过去也读不到任何东西。补上这一环，
+       * 「跟某个人聊过的细节」才第一次真的存在。
+       *
+       * 只排本周期有会话的（见 `listFriendScopesWithActivity`），并且有数量上限。
+       */
+      if (result.advanced && result.periods.length) {
+        const first = result.periods[0]!;
+        const last = result.periods[result.periods.length - 1]!;
+        const friendScopeIds = await listFriendScopesWithActivity({
+          characterId: setting.characterId,
+          since: first.periodStart,
+          until: last.periodEnd,
+        }).catch(() => []);
+        if (friendScopeIds.length) {
+          const friendPeriods = friendScopeIds.flatMap((scopeId) => result.periods.map((period) => ({
+            memoryScopeId: scopeId,
+            type: "GENERATE_SNAPSHOT" as const,
+            idempotencyKey: `auto-snapshot:${scopeId}:${period.periodStart.toISOString()}:${period.periodEnd.toISOString()}`,
+            periodStart: period.periodStart,
+            periodEnd: period.periodEnd,
+            status: "QUEUED" as const,
+            runAt: now,
+          })));
+          const friendResult = await prisma.memoryJob.createMany({ data: friendPeriods, skipDuplicates: true });
+          report.jobsQueued += friendResult.count;
+        }
       }
     } catch (error) {
       if (error instanceof Error && error.message === "MEMORY_SCHEDULER_RACE") continue;
