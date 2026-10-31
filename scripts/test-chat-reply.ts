@@ -361,6 +361,33 @@ try {
   );
   assert.equal(calls, 2, "截断也照旧重试一次 —— 换个说法可能就装得下。");
 
+  // 真的空 content（不是截断、不是围栏）：错误里必须带 finish_reason。
+  // 线上已经出现过两次「content 是空的」而没有 finish_reason，三种可能
+  // （正常收尾 / 被内容安全过滤 / 服务端空壳）在日志里长得一模一样，只能靠猜。
+  calls = 0;
+  globalThis.fetch = async (): Promise<Response> => {
+    calls += 1;
+    return new Response(JSON.stringify({
+      choices: [{ message: { content: "" }, finish_reason: "stop" }],
+      usage: { prompt_tokens: 10, completion_tokens: 0, total_tokens: 10 },
+    }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  await assert.rejects(
+    generateConversationReply({
+      characterName: "测试角色",
+      characterPrompt: "温柔地回复。",
+      model: "test-chat-model",
+      apiKey: secretApiKey,
+      apiBaseUrl: privateProviderUrl,
+      currentMessage: "在吗",
+      recentMessages: [],
+      memories: [],
+      snapshots: [],
+    }),
+    /content 是空的；finish_reason=stop/,
+    "空 content 要连 finish_reason 一起报，否则分不清是收尾正常还是被过滤。",
+  );
+
   // 群聊：允许她说「这轮不插嘴」。silent 不是错误，reply 为空是合法的。
   let silentBody = "";
   globalThis.fetch = async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {

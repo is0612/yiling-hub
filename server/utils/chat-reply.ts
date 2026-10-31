@@ -658,12 +658,16 @@ export async function generateConversationReply(input: ConversationReplyInput): 
        *    不是调提示词 —— 所以把它写进错误里，别让人再去猜。
        *  - content 为空：推理模型把预算全花在思维链上，或者服务端只回了空壳。
        * 顺带带上开头 30 字：出问题时有原文可比对，比只有一句「不是 JSON」强得多。
+       *
+       * `finish_reason` **无论是什么都打**。之前只在 length 时打，结果线上真出现空 content
+       * 时，日志里只剩一句「content 是空的」，看不出模型是正常收尾（stop）、被过滤（content_filter）
+       * 还是压根没给结束原因 —— 而这三种的处理方式完全不同：改提示词 / 查内容安全 / 换供应商。
        */
       const head = responseText.trim().replace(/\s+/g, " ").slice(0, 30);
       const detail = [
         head ? `开头是「${head}」` : "content 是空的",
-        finishReason === "length" ? "finish_reason=length，输出被 max_tokens 截断" : "",
-      ].filter(Boolean).join("；");
+        finishReason ? `finish_reason=${finishReason}${finishReason === "length" ? "，输出被 max_tokens 截断" : ""}` : "没有 finish_reason",
+      ].join("；");
       throw new Error(`LLM_INVALID_RESPONSE: 模型没有返回符合约定的 JSON 对象（${detail}）。`);
     }
 
