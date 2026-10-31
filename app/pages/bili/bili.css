@@ -527,6 +527,8 @@
 .bd-kpi .bar { height: 5px; margin-top: 9px; border-radius: 3px; background: var(--bd-surface-3); overflow: hidden; }
 /* 纯色，不用渐变：浅底上的渐变显廉价 */
 .bd-kpi .bar i { display: block; height: 100%; border-radius: 3px; background: var(--bd-brand); }
+/* 没有进度条的指标也占这一条：四格的 .foot 才会落在同一条基线上 */
+.bd-kpi .bar.is-blank { background: none; }
 .bd-kpi .foot { margin-top: 7px; color: var(--bd-dim); font-size: 12px; line-height: 1.55; }
 
 /* ── 概览：左栏 / 右栏 ────────────────────────────────── */
@@ -536,6 +538,13 @@
   gap: 22px;
   align-items: start;
 }
+/* 首屏两栏的第一块必须一样高：没数据时左边是空态（约 146）、右边是四条常用（166 + 12），
+   差 32px 就把第二组标题（今日报告 / 最近运行）顶开了。给两边同一个下限
+   —— 166 = 40×4（行高）+ 2×3（行缝），正好是四条常用的高度。
+   有数据时各自长高，不强求对齐：内容量本来就不同，硬拉齐只有一边留白。
+   只挂在概览的两栏里，命令台的 .bd-qlist（升级自检三条）不吃这条。 */
+.bd-home-cols .bd-empty-mini,
+.bd-home-cols .bd-qlist { min-height: 166px; }
 
 /* 她今天看了什么。行即砖：无分隔线，圆角 + 行间 4px 缝 */
 .bd-wrow {
@@ -659,8 +668,10 @@
 .bd-qirow .qn { flex: 1; color: var(--bd-text-2); font-size: 14px; line-height: 1.35; }
 .bd-qdesc { display: block; margin-top: 3px; color: var(--bd-dim); font-size: 12px; font-style: normal; line-height: 1.4; }
 .bd-qirow .qc { color: var(--bd-dim); font-family: Consolas, monospace; font-size: 12px; }
-.bd-qirow .el-icon.arw { flex: none; color: #cbd1db; font-size: 12px; opacity: 0; transition: opacity .13s var(--bd-ease); }
-.bd-qirow:hover .el-icon.arw { opacity: 1; }
+/* 箭头常显（和 .bd-wrow 一致）：透明度隐藏时它照样占着 12px + 10px 间距，
+   命令行就被顶得离右内边距差 22px，看着像右边多留了一截空白 */
+.bd-qirow .el-icon.arw { flex: none; color: #cbd1db; font-size: 12px; transition: color .13s var(--bd-ease); }
+.bd-qirow:hover .el-icon.arw { color: var(--bd-brand); }
 
 /* 最近运行 */
 .bd-rrow {
@@ -694,6 +705,7 @@
   display: flex;
   flex-direction: column;
   align-items: center;
+  justify-content: center;
   gap: 4px;
   padding: 30px 16px;
   color: var(--bd-dim);
@@ -703,6 +715,16 @@
 }
 .bd-empty-mini .el-icon { color: #cdd3dc; font-size: 22px; }
 .bd-empty-mini span:first-of-type { color: var(--bd-text-2); font-size: 14px; font-weight: 600; }
+/* 空态里的文字按钮（如「恢复默认 4 条」）：和侧栏空态同一套，无底无框只给下划线 */
+.bd-empty-mini .lnk {
+  border: 0;
+  background: none;
+  padding: 0;
+  color: var(--bd-brand-strong);
+  font-size: 12px;
+  text-decoration: underline;
+  cursor: pointer;
+}
 
 /* 账号与角色 */
 .bd-accounts { padding: 0; }

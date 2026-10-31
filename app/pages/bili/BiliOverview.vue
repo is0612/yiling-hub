@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import {
   ArrowRight, Camera, ChatLineRound, Clock, Close, DataLine, Operation, Plus,
-  Refresh, Setting, TopRight, User, VideoPlay, View,
+  Refresh, Setting, Star, TopRight, User, VideoPlay, View,
 } from "@element-plus/icons-vue";
 import { useBiliDesk } from "./useBiliDesk";
 import { useBiliDashboard } from "./useBiliDashboard";
@@ -19,7 +19,7 @@ import {
  * 换视图再回来不会丢数据，也不会重复请求。
  */
 const {
-  goWorkbench, selectItem, pins, pinLabel, pinIcon, refreshStatus,
+  goWorkbench, selectItem, pins, pinLabel, pinIcon, restorePins, refreshStatus,
 } = useBiliDesk();
 
 const {
@@ -88,10 +88,11 @@ const { runLog } = useBiliRunner();
       >
         <el-icon><Camera /></el-icon>登录 B站
       </button>
-      <!-- 已登录时扫码入口不消失：换号不用先登出 -->
+      <!-- 已登录时扫码入口不消失：换号不用先登出。和「刷新状态」同级，
+           所以走同一档按钮尺寸（36px / 14px），别用 is-sm 缩成 12px -->
       <button
         v-if="meProfile"
-        class="bd-btn is-sm"
+        class="bd-btn"
         type="button"
         title="重新扫码，换一个 B站 账号"
         @click="loginVisible = true"
@@ -189,6 +190,12 @@ const { runLog } = useBiliRunner();
         <div class="v">
           {{ skippedSeen }}<small>条</small>
         </div>
+        <!-- 进度位占位：只有第一格有进度条，其余三格留同样高的一条空位，
+             否则四个卡片的说明文字会差一行，横着看不齐 -->
+        <div
+          class="bar is-blank"
+          aria-hidden="true"
+        />
         <div class="foot">
           {{ totalSeenToday ? `重复率 ${skipPct}% · 今天看过 ${totalSeenToday} 条` : "今天还没看过视频" }}
         </div>
@@ -201,6 +208,10 @@ const { runLog } = useBiliRunner();
         <div class="v">
           {{ totalRounds }}<small>轮</small>
         </div>
+        <div
+          class="bar is-blank"
+          aria-hidden="true"
+        />
         <div class="foot">
           {{ latestRoundLabel }}
         </div>
@@ -219,6 +230,10 @@ const { runLog } = useBiliRunner();
             {{ lastRun.v }}<small>{{ lastRun.u }}</small>
           </template>
         </div>
+        <div
+          class="bar is-blank"
+          aria-hidden="true"
+        />
         <div class="foot">
           {{ lastHint }}
         </div>
@@ -376,6 +391,23 @@ const { runLog } = useBiliRunner();
                 <ArrowRight />
               </el-icon>
             </button>
+            <!-- 常用被清空时别留一块空白砖（这张卡有最小高度，空着会很难看），
+                 和侧栏「常用栏空了 / 恢复默认 4 条」一个路数 -->
+            <div
+              v-if="!pins.length"
+              class="bd-empty-mini"
+            >
+              <el-icon><Star /></el-icon>
+              <span>常用还是空的</span>
+              <span>侧栏「常用」里的命令会出现在这里</span>
+              <button
+                class="lnk"
+                type="button"
+                @click="restorePins"
+              >
+                恢复默认 4 条
+              </button>
+            </div>
           </div>
         </div>
 
