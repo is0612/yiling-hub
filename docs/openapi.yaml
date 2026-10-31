@@ -805,6 +805,37 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /characters/import:
+    post:
+      tags: [Characters]
+      operationId: importCharacterCard
+      summary: 导入角色卡
+      description: "总是新建角色：同名只在名称后加「副本」后缀，不合并、不覆盖已有角色。包被当作不可信输入逐字段校验（数量、长度、枚举），模型参数只接受白名单字段，任何密钥字段都不会写入数据库。记忆与忆泡的来源消息指针一律置空 —— 会话原文不随包走。导入后角色的 API Key 需要重新填写，表情包需要重新同步。成功写入 `character.imported` 审计。"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CharacterCard' }
+      responses:
+        '201':
+          description: 导入成功，返回新角色与导入条数
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [character, counts]
+                properties:
+                  character: { $ref: '#/components/schemas/Character' }
+                  counts: { $ref: '#/components/schemas/CharacterCardCounts' }
+        '400':
+          description: 不是角色卡、格式版本过高或字段非法（`statusMessage` 给出具体是哪一条）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '413':
+          description: 文件超过 24MB
   /characters/{characterId}:
     parameters:
       - $ref: '#/components/parameters/CharacterId'
@@ -858,6 +889,24 @@ paths:
       responses:
         '204':
           description: 删除或归档完成
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /characters/{characterId}/export:
+    parameters:
+      - $ref: '#/components/parameters/CharacterId'
+    get:
+      tags: [Characters]
+      operationId: exportCharacterCard
+      summary: 导出角色卡
+      description: "导出人设、少量模型参数、角色全局记忆、**导出者自己的**私人记忆、忆泡、当前版本阶段总结与梗。不包含会话原文、他人（其他用户 / QQ 群友）的私人记忆、渠道绑定、任务队列、用量审计、API Key 与表情包图片 —— 表情包换机器后从 QQ 收藏夹重新同步，API Key 重新填写。响应同时写入 `character.exported` 审计。"
+      responses:
+        '200':
+          description: 角色卡 JSON，`Content-Disposition` 为附件
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CharacterCard' }
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
@@ -1351,7 +1400,6 @@ paths:
                     properties:
                       calls: { type: integer }
                       tokens: { type: integer }
-                properties:
                   day:
                     type: object
                     required: [dayKey, eventCount]
@@ -3567,6 +3615,115 @@ components:
           type: object
           additionalProperties: true
         status: { type: string, enum: [active, paused, archived] }
+    CharacterCard:
+      type: object
+      description: 角色卡。只包含可以跨机器带走的内容；API Key、表情包图片、会话原文与渠道绑定都不在其中。
+      required: [format, formatVersion, character]
+      properties:
+        format: { type: string, enum: [yiling-hub.character] }
+        formatVersion: { type: integer, minimum: 1, maximum: 1 }
+        exportedAt: { type: string, format: date-time }
+        exportedBy: { type: string, enum: [yiling-hub] }
+        character:
+          type: object
+          required: [name]
+          properties:
+            name: { type: string, maxLength: 100 }
+            alias: { type: string, maxLength: 100 }
+            description: { type: string, maxLength: 2000 }
+            avatarTone: { type: string, enum: [purple, peach, mint, blue] }
+            basePrompt: { type: string, maxLength: 12000 }
+            styleExamples: { type: string, maxLength: 8000 }
+            userAddress: { type: string, maxLength: 40 }
+        modelConfig:
+          type: object
+          additionalProperties: false
+          description: 模型参数白名单。导出时已剥离全部密钥字段，导入时也只读取这些字段；行为开关（表情 / 语音 / 主动搭话）不随包走。
+          properties:
+            chatModel: { type: string }
+            chatTemperature: { type: number, minimum: 0, maximum: 2 }
+            chatMaxTokens: { type: integer }
+            chatApiBaseUrl: { type: string }
+            memoryTokenBudget: { type: integer }
+            snapshotTokenBudget: { type: integer }
+            recentMessageLimit: { type: integer }
+        memorySetting:
+          type: object
+          properties:
+            snapshotIntervalDays: { type: integer, minimum: 1, maximum: 365, default: 8 }
+            timezone: { type: string, default: Asia/Shanghai }
+            autoSnapshotEnabled: { type: boolean, default: false }
+        memories:
+          type: array
+          maxItems: 4000
+          items:
+            type: object
+            required: [content]
+            properties:
+              scope: { type: string, enum: [character, private], default: character }
+              category: { type: string, enum: [FACT, PREFERENCE, RELATIONSHIP, COMMITMENT, GOAL, EVENT, SUMMARY, OTHER] }
+              content: { type: string, maxLength: 12000 }
+              confidence: { type: number, minimum: 0, maximum: 1, nullable: true }
+              importance: { type: number, minimum: 0, maximum: 1, default: 0.5 }
+              validFrom: { type: string, format: date-time, nullable: true }
+              validTo: { type: string, format: date-time, nullable: true }
+              dedupeKey: { type: string, nullable: true }
+        events:
+          type: array
+          maxItems: 4000
+          items:
+            type: object
+            required: [title, occurredAt, dayKey]
+            properties:
+              scope: { type: string, enum: [character, private], default: character }
+              dayKey: { type: string, pattern: '^\d{4}-\d{2}-\d{2}$' }
+              state: { type: string, enum: [DRAFT, FINAL] }
+              occurredAt: { type: string, format: date-time }
+              timeOfDay: { type: string, nullable: true }
+              precision: { type: string, enum: [exact, part_of_day, day] }
+              place: { type: string, nullable: true }
+              title: { type: string, maxLength: 200 }
+              detail: { type: string, maxLength: 12000 }
+              keywords: { type: array, maxItems: 20, items: { type: string } }
+              participants: { type: array, maxItems: 20, items: { type: string } }
+              confidence: { type: number, minimum: 0, maximum: 1, nullable: true }
+        snapshots:
+          type: array
+          maxItems: 600
+          description: 只包含 CURRENT 版本；导入时统一记为第 1 版，且不重建来源条目（原文不随包走）。
+          items:
+            type: object
+            required: [periodStart, periodEnd, summary]
+            properties:
+              scope: { type: string, enum: [character, private], default: character }
+              kind: { type: string, enum: [AUTOMATIC, MANUAL] }
+              periodStart: { type: string, format: date-time }
+              periodEnd: { type: string, format: date-time }
+              summary: { type: string, maxLength: 20000 }
+              structuredContent: { type: object, additionalProperties: true }
+              generatedAt: { type: string, format: date-time, nullable: true }
+              createdAt: { type: string, format: date-time }
+        catchphrases:
+          type: array
+          maxItems: 400
+          items:
+            type: object
+            required: [phrase]
+            properties:
+              phrase: { type: string, maxLength: 200 }
+              usage: { type: string, maxLength: 2000 }
+              enabled: { type: boolean, default: true }
+              source: { type: string, maxLength: 20 }
+        counts: { $ref: '#/components/schemas/CharacterCardCounts' }
+    CharacterCardCounts:
+      type: object
+      required: [memories, privateMemories, events, snapshots, catchphrases]
+      properties:
+        memories: { type: integer }
+        privateMemories: { type: integer, description: 其中属于导出者本人的私人记忆条数；导入后成为导入者的私人记忆 }
+        events: { type: integer }
+        snapshots: { type: integer }
+        catchphrases: { type: integer }
     CharacterPatch:
       type: object
       description: 更新角色时的部分字段；所有字段均为可选。API Key 仅可写入，服务端会加密保存且不会回传。

@@ -11,12 +11,14 @@ import {
   Cpu,
   Delete,
   Document,
+  Download,
   Edit,
   Key,
   Odometer,
   Picture,
   Plus,
   Timer,
+  Upload,
   User,
   VideoPause,
   VideoPlay,
@@ -66,6 +68,10 @@ function resetDraft() {
 
 const profileOpen = ref(false);
 const profileTarget = ref<Character | null>(null);
+/** 导入角色卡：文件解析与预检都在弹窗里，这里只负责开合和回写结果 */
+const importOpen = ref(false);
+/** 正在导出的角色 id：导出要打包几百条记忆，连点会重复下载同一个文件 */
+const exportingId = ref("");
 
 async function reload() {
   await loadCharacters();
@@ -233,11 +239,65 @@ async function deleteCharacter(character: Character) {
   }
 }
 
+/**
+ * 导出角色卡：浏览器直接下载一个 .json。
+ *
+ * 这里用原生 fetch 而不是 `$fetch`：要的是原始文件流和 `Content-Disposition` 头，
+ * 而 `$fetch` 会把响应按 JSON 解析（Nuxt 还会按路由反推类型）。
+ * 下载失败（401 / 404）时也能读到服务端给的中文原因，而不是白页。
+ */
+async function exportCharacter(character: Character) {
+  if (exportingId.value) return;
+  exportingId.value = character.id;
+  try {
+    const response = await fetch(`/api/characters/${character.id}/export`, {
+      credentials: "same-origin",
+      headers: { accept: "application/json" },
+    });
+    if (!response.ok) {
+      const detail = await response.json().catch(() => null) as { statusMessage?: string; message?: string } | null;
+      throw new Error(detail?.statusMessage || detail?.message || "导出失败，请稍后重试。");
+    }
+    const blob = await response.blob();
+    const disposition = response.headers.get("content-disposition") ?? "";
+    const encoded = /filename\*=UTF-8''([^;]+)/.exec(disposition)?.[1];
+    const fileName = encoded ? decodeURIComponent(encoded) : `yiling-character-${character.name}.json`;
+    downloadBlob(blob, fileName);
+    ElMessage.success("角色卡已下载：人设、记忆、忆泡、梗与阶段总结。表情包和 API Key 不在包内。");
+  } catch (error) {
+    ElMessage.error(
+      error instanceof Error && error.message ? error.message : "导出失败，请稍后重试。",
+    );
+  } finally {
+    exportingId.value = "";
+  }
+}
+
+function downloadBlob(blob: Blob, fileName: string) {
+  if (!import.meta.client) return;
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = fileName;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  // 立刻 revoke 在部分浏览器上会打断下载，等一帧再释放
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+/** 导入完成：插到列表最前并选中它，人不用回列表里再找一遍 */
+function onImported(character: Character) {
+  characters.value.unshift(character);
+  selectedId.value = character.id;
+}
+
 /** 档案头部的「更多」：只放低频和破坏性操作，改资料和跳转都摆在明面上 */
 function runCharacterCommand(command: string) {
   const character = selected.value;
   if (!character) return;
-  if (command === "duplicate") void duplicateCharacter(character);
+  if (command === "export") void exportCharacter(character);
+  else if (command === "duplicate") void duplicateCharacter(character);
   else if (command === "toggle") void toggleCharacterStatus(character);
   else if (command === "delete") void deleteCharacter(character);
 }
@@ -249,7 +309,17 @@ function runCharacterCommand(command: string) {
       eyebrow="工作空间 / 角色管理"
       title="你的 AI 角色"
       description="集中管理不同的人设、模型配置与记忆周期。每个角色都拥有独立的经历和记忆。"
-    />
+    >
+      <template #actions>
+        <button
+          type="button"
+          class="btn"
+          @click="importOpen = true"
+        >
+          <el-icon><Upload /></el-icon>导入角色
+        </button>
+      </template>
+    </PageHeader>
 
     <div
       v-if="loading && !characters.length"
@@ -433,6 +503,9 @@ function runCharacterCommand(command: string) {
               </el-button>
               <template #dropdown>
                 <el-dropdown-menu>
+                  <el-dropdown-item command="export">
+                    <el-icon><Download /></el-icon>导出角色
+                  </el-dropdown-item>
                   <el-dropdown-item command="duplicate">
                     <el-icon><CopyDocument /></el-icon>复制角色
                   </el-dropdown-item>
@@ -635,6 +708,11 @@ function runCharacterCommand(command: string) {
       v-model="profileOpen"
       :character="profileTarget"
       @saved="onProfileSaved"
+    />
+
+    <CharacterImportDialog
+      v-model="importOpen"
+      @imported="onImported"
     />
   </div>
 </template>
