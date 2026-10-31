@@ -145,6 +145,13 @@ type PendingGroupMessage = {
   named: boolean;
   /** 这一条是主人发的。群聊里也要认得主人，落库和提炼时标「主人」。 */
   isOwner: boolean;
+  /**
+   * 入队时解析好的事实（@ 目标、原始 QQ、引用 id）。
+   *
+   * CQ 码只在入队时解析一次：以前 `remember`、mention 档早退、flush 各解析一遍，
+   * 同一条消息三遍。存下来之后 flush 直接用，背景/归属/续话判断看到的也是同一份。
+   */
+  facts: GroupMessageFacts;
 };
 
 /** 群里怎么叫她：角色名 + 手填的昵称。@ 由 isSelfMentioned 单独判。 */
@@ -647,6 +654,40 @@ export function createOnebotMessageHandler(record: OnebotConnectionRecord) {
    */
   const groupActivity = createGroupActivityRecorder();
 
+  /**
+   * 连接活性：事件一到就更新 `lastEventAt`，而不是等它走到 flush。
+   *
+   * 以前只在 `flushGroupRound` 和私聊分支里更新，于是 mention 档的早退
+   * （`not_mentioned`）根本不经过那两处 —— 群里没人 @ 她时消息一直在进，
+   * 连接页却显示掉线。这里按事件入口更新，60 秒节流，避免每条消息都写一次库。
+   */
+  let lastEventAtWrittenAt = 0;
+  const touchLastEventAt = (): void => {
+    const now = Date.now();
+    if (now - lastEventAtWrittenAt < 60_000) return;
+    lastEventAtWrittenAt = now;
+    void getPrisma().platformConnection
+      .update({ where: { id: record.id }, data: { lastEventAt: new Date() } })
+      .catch(() => undefined);
+  };
+
+  /**
+   * 这条群消息是不是「指令」（公告确认/拟稿、B站 跑任务）—— 需要排队的那种。
+   *
+   * 普通群消息不需要排队：`remember` + `buffer.push` 都是同步的，真正要串行的是
+   * flush（查库、调模型），它在 `onFlush` 里已经自己排队。指令要改公告草稿、
+   * 跑 B站 任务，得和私聊/其他指令保持串行，所以走外层队列。
+   */
+  const isGroupCommandMessage = (event: OnebotResolvedEvent, binding: OnebotBindingRecord): boolean => {
+    if (event.messageType !== "group" || !event.groupId) return false;
+    const canManageAnnouncement = record.groupAnnouncementEnabled && event.senderRole !== "member";
+    if (canManageAnnouncement) {
+      if (isAnnouncementConfirm(event.content)) return true;
+      if (parseAnnouncementRequest(event.content)) return true;
+    }
+    return binding.groupBiliRunEnabled && isBiliRunCommand(event.content);
+  };
+
   const factsOf = (event: OnebotResolvedEvent, at: number): GroupMessageFacts => ({
     messageId: event.messageId,
     at,
@@ -734,7 +775,8 @@ export function createOnebotMessageHandler(record: OnebotConnectionRecord) {
     const named = items.some((item) => item.named);
     // 这一轮是不是被「戳一戳」叫醒的。只在为真时打，避免每行日志多一个 false。
     const poked = items.some((item) => item.event.poke !== undefined);
-    const facts = items.map((item) => factsOf(item.event, item.at));
+    // 入队时已解析好，直接用，不再重复解 CQ 码。
+    const facts = items.map((item) => item.facts);
     const topicCandidate = groupContext.topicCandidate(contextKey, facts);
     /**
      * 这一批有没有「@ 的是别人」。
@@ -772,10 +814,7 @@ export function createOnebotMessageHandler(record: OnebotConnectionRecord) {
         .every((item) => item.event.poke === undefined && isClarificationMessage(item.event.content));
 
     const prisma = getPrisma();
-    // 群聊消息不再逐条写库，但「这个连接最近还有事件」仍要更新，否则页面会显示成掉线。
-    void prisma.platformConnection
-      .update({ where: { id: record.id }, data: { lastEventAt: new Date() } })
-      .catch(() => undefined);
+    // lastEventAt 已挪到事件入口统一更新（含 mention 档早退），这里不再重复写。
     const conversation = await prisma.conversation.findFirst({
       where: { channelBindingId: binding.id, externalConversationId: groupEvent.conversationKey },
       select: { id: true },
@@ -941,9 +980,13 @@ export function createOnebotMessageHandler(record: OnebotConnectionRecord) {
     const named = isGroupMessage && mentionsCharacterName(event.content, cueNames(binding));
     const contextKey = `${binding.id}:${event.conversationKey}`;
 
+    // facts 只解析一次（P3）：remember、mention 档早退、攒批入队用的是同一份。
+    // 对群消息总是解析（哪怕正文为空），remember 仍只记有正文的。
+    const receivedAt = Date.now();
+    const facts = isGroupMessage ? factsOf(event, receivedAt) : null;
     // 先进短期上下文：哪怕这条后面被闸门丢掉，它也是下一轮的背景。
-    if (isGroupMessage && event.content) {
-      groupContext.remember(contextKey, factsOf(event, Date.now()));
+    if (isGroupMessage && event.content && facts) {
+      groupContext.remember(contextKey, facts);
       /**
        * 同时记进群活跃度。放在这里（而不是 `flushGroupRound`）是因为 mention 档下
        * 没被叫到的消息根本进不了攒批 —— 那些消息恰恰是「群里在聊、只是没叫她」的证据，
@@ -954,7 +997,7 @@ export function createOnebotMessageHandler(record: OnebotConnectionRecord) {
         characterId: binding.characterId,
         conversationId: event.conversationKey,
         groupId: event.groupId,
-        at: Date.now(),
+        at: receivedAt,
         speaker: event.displayName,
         text: event.content,
       });
@@ -963,8 +1006,7 @@ export function createOnebotMessageHandler(record: OnebotConnectionRecord) {
     // 「仅 @ 时回复」是对整个群聊的开关，指令类消息也受它约束（保持老行为）。
     // 名字命中与已参与话题算「可以看一眼」，交给后面的闸门与模型判断。
     if (isGroupMessage && groupChatMode === "mention") {
-      const facts = [factsOf(event, Date.now())];
-      if (!direct && !named && !groupContext.topicCandidate(contextKey, facts)) {
+      if (!direct && !named && !groupContext.topicCandidate(contextKey, facts ? [facts] : [])) {
         return { status: "ignored", reason: "not_mentioned" };
       }
     }
@@ -990,18 +1032,15 @@ export function createOnebotMessageHandler(record: OnebotConnectionRecord) {
     if (isGroupMessage) {
       groupChatBuffer.push(
         contextKey,
-        { event, binding, at: Date.now(), direct, named, isOwner: Boolean(record.ownerQq) && event.userId === record.ownerQq },
+        // 群消息到这里 facts 必已解析（上面 isGroupMessage 分支统一构造）。
+        { event, binding, at: receivedAt, direct, named, isOwner: Boolean(record.ownerQq) && event.userId === record.ownerQq, facts: facts! },
         groupChatWindowMs(groupChat, direct || named),
       );
       // 带上 poke 标记：日志里「为什么这一轮是 direct」要能看出是被人戳醒的，不是被 @ 的。
       return { status: "buffered", ...(event.poke ? { poke: true } : {}) };
     }
 
-    // 私聊：单条直接回，行为不变。
-    await getPrisma()
-      .platformConnection.update({ where: { id: record.id }, data: { lastEventAt: new Date() } })
-      .catch(() => undefined);
-
+    // 私聊：单条直接回，行为不变。lastEventAt 已在事件入口更新，这里不重复写。
     const ownerDisplayName = await resolveOwnerDisplayName(record, event);
     const speaker = record.ownerQq
       ? {
@@ -1035,8 +1074,24 @@ export function createOnebotMessageHandler(record: OnebotConnectionRecord) {
   };
 
   return async (event: OnebotResolvedEvent): Promise<OnebotHandleOutcome> => {
+    // 事件一到就更新活性：mention 档早退、没有绑定，都算「这个连接还活着」。
+    touchLastEventAt();
     const binding = routeOnebotEventToBinding(record.bindings, event);
     if (!binding) return { status: "ignored", reason: "no_binding" };
+    /**
+     * 普通群聊消息走快速通道：直接登记，不排队。
+     *
+     * 以前所有事件都排进下面这个队列，而队列前面可能是一个正在等模型的 flush
+     * （几十秒）。群消息排到队时早已超过 `QUEUE_STALE_MS`，被整条丢掉 ——
+     * 连 `remember()` 都没执行，它既不进攒批，也不进短期上下文，等于这段时间
+     * 群里说的话她完全看不见；@ 她的那句也一样丢。模型越慢，丢得越多。
+     *
+     * 登记（remember + push）是同步的，不需要排队；需要串行的是「处理」，
+     * flush 在 `onFlush` 里自己排队。指令（公告/B站）仍走队列，保持串行。
+     */
+    if (event.messageType === "group" && event.groupId && !isGroupCommandMessage(event, binding)) {
+      return handleRoutedEvent(event, binding);
+    }
     const queuedAt = Date.now();
     return enqueueConversation(`${binding.id}:${event.conversationKey}`, async () => {
       // 排队等太久说明前一条还在跑（或者群里已经刷过去了），回过去也是对着空气说话。

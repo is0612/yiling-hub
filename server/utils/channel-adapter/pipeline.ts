@@ -495,10 +495,17 @@ async function runChannelTurn(input: {
 
   // Idempotency: a QQ message id is unique for the application, so a re-delivered event is dropped
   // regardless of whether its conversation has been created yet. 群聊一轮里有几条，全查一遍。
-  const seen = await prisma.message.findMany({
-    where: { externalMessageId: { in: messages.map((message) => message.externalMessageId) } },
-    select: { externalMessageId: true },
-  });
+  // 会话查找与幂等检查互不依赖，一起发，省一个 RTT（P3）。
+  const [seen, existingConversation] = await Promise.all([
+    prisma.message.findMany({
+      where: { externalMessageId: { in: messages.map((message) => message.externalMessageId) } },
+      select: { externalMessageId: true },
+    }),
+    prisma.conversation.findFirst({
+      where: { channelBindingId: input.bindingId, externalConversationId: input.externalConversationId },
+      select: { id: true, title: true },
+    }),
+  ]);
   if (seen.length) {
     const seenIds = new Set(seen.map((row) => row.externalMessageId));
     const fresh = messages.filter((message) => !seenIds.has(message.externalMessageId));
@@ -605,19 +612,28 @@ async function runChannelTurn(input: {
     }
   }
 
-  const existingConversation = await prisma.conversation.findFirst({
-    where: { channelBindingId: input.bindingId, externalConversationId: input.externalConversationId },
-    select: { id: true, title: true },
-  });
-
-  const recentStoredMessages = existingConversation
-    ? await prisma.message.findMany({
-        where: { conversationId: existingConversation.id },
-        orderBy: [{ occurredAt: "desc" }, { id: "desc" }],
-        take: resolveRecentMessageLimit(character.modelConfig),
-        select: { id: true, role: true, content: true, occurredAt: true, metadata: true, externalMessageId: true },
-      })
-    : [];
+  // 最近对话窗口与表情额度历史都依赖同一个会话，一起查（P3）。emojiFrequency 提前到这里。
+  const emojiFrequency = resolveEmojiFrequency(character.modelConfig);
+  const [recentStoredMessages, emojiHistory] = await Promise.all([
+    existingConversation
+      ? prisma.message.findMany({
+          where: { conversationId: existingConversation.id },
+          orderBy: [{ occurredAt: "desc" }, { id: "desc" }],
+          take: resolveRecentMessageLimit(character.modelConfig),
+          select: { id: true, role: true, content: true, occurredAt: true, metadata: true, externalMessageId: true },
+        })
+      : Promise.resolve([]),
+    existingConversation
+      ? prisma.message.findMany({
+          where: {
+            conversationId: existingConversation.id,
+            role: "ASSISTANT",
+            occurredAt: { gte: new Date(Date.now() - emojiFrequency.windowMinutes * 60_000) },
+          },
+          select: { occurredAt: true, metadata: true },
+        })
+      : Promise.resolve([]),
+  ]);
 
   // 表情要看三件事：渠道收不收（清单）、角色开没开开关、这个会话的额度用没用完。
   // 只看前两个的话，一个爱发表情的角色会在每句后面都挂一张。
@@ -663,18 +679,8 @@ async function runChannelTurn(input: {
    *
    * 只取窗口内的助手消息，不看全部：`recentStoredMessages` 只是最近对话窗口（默认 40 条），
    * 热聊时几十条可能还没覆盖十分钟，用它数会少算。
+   * `emojiFrequency` 与 `emojiHistory` 已和最近窗口一起并行查好（见上）。
    */
-  const emojiFrequency = resolveEmojiFrequency(character.modelConfig);
-  const emojiHistory = existingConversation
-    ? await prisma.message.findMany({
-        where: {
-          conversationId: existingConversation.id,
-          role: "ASSISTANT",
-          occurredAt: { gte: new Date(Date.now() - emojiFrequency.windowMinutes * 60_000) },
-        },
-        select: { occurredAt: true, metadata: true },
-      })
-    : [];
   const emojiBudgetSpent = isEmojiBudgetSpent(emojiHistory, new Date(), emojiFrequency);
   // 表情包优先于内置表情：有素材库就只给素材库（并剔除上一张，避免她一直贴同一张）。
   // 这一条要走语音时一律不给：语音条后面再挂一张图，等于把两种表达叠在一起说同一件事。
@@ -743,15 +749,50 @@ async function runChannelTurn(input: {
       ? [globalScope.id, ownerPrivateScopeId]
       : (primaryIdentityScopeId ? [globalScope.id, primaryIdentityScopeId] : [globalScope.id]));
 
-  const memoryCandidates = await prisma.memoryItem.findMany({
-    where: { memoryScopeId: { in: readableScopeIds }, status: "ACTIVE", deletedAt: null },
-    orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
-    take: 300,
-    select: {
-      id: true, category: true, content: true, confidence: true, updatedAt: true, createdAt: true,
-      validFrom: true, memoryScopeId: true, importance: true, lastRecalledAt: true, recallCount: true,
-    },
-  });
+  // 熟人卡要用的说话人 id 也算在这里，好和记忆检索一起并行（P3）。
+  const speakerUids = isGroup
+    ? [...new Set(messages.map((message) => (message.authorPlatformUid || message.authorOpenId || "").trim()).filter(Boolean))]
+    : [];
+  // 记忆、阶段总结、忆泡、熟人卡四类检索互不依赖，并行查，省三个 RTT。排序与筛选仍在各自原处。
+  const [memoryCandidates, snapshotCandidates, eventCandidates, knownIdentities] = await Promise.all([
+    prisma.memoryItem.findMany({
+      where: { memoryScopeId: { in: readableScopeIds }, status: "ACTIVE", deletedAt: null },
+      orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+      take: 300,
+      select: {
+        id: true, category: true, content: true, confidence: true, updatedAt: true, createdAt: true,
+        validFrom: true, memoryScopeId: true, importance: true, lastRecalledAt: true, recallCount: true,
+      },
+    }),
+    prisma.memorySnapshot.findMany({
+      where: { memoryScopeId: { in: readableScopeIds }, status: "CURRENT" },
+      orderBy: [{ createdAt: "desc" }, { version: "desc" }],
+      take: 80,
+      select: { id: true, summary: true, periodStart: true, periodEnd: true, version: true, createdAt: true, memoryScopeId: true },
+    }),
+    prisma.memoryEvent.findMany({
+      where: { memoryScopeId: { in: readableScopeIds }, status: "ACTIVE" },
+      orderBy: [{ occurredAt: "desc" }, { id: "desc" }],
+      take: 200,
+      select: {
+        id: true, occurredAt: true, timeOfDay: true, place: true, participants: true,
+        keywords: true, title: true, detail: true, memoryScopeId: true,
+      },
+    }),
+    speakerUids.length
+      ? prisma.externalIdentity.findMany({
+          where: { platform: input.platform, platformUid: { in: speakerUids } },
+          select: {
+            platformUid: true,
+            displayName: true,
+            memoryScopes: {
+              where: { characterId: input.characterId },
+              select: { interactionCount: true, lastInteractedAt: true },
+            },
+          },
+        }).catch(() => null)
+      : Promise.resolve(null),
+  ]);
   const memoryRank = rankMemoriesWithBudget(retrievalQuery, memoryCandidates, {
     limit: resolveMemoryItemLimit(character.modelConfig),
     tokenBudget: resolveMemoryTokenBudget(character.modelConfig),
@@ -767,12 +808,6 @@ async function runChannelTurn(input: {
     occurredAt: (memory.validFrom ?? memory.createdAt).toISOString(),
   }));
 
-  const snapshotCandidates = await prisma.memorySnapshot.findMany({
-    where: { memoryScopeId: { in: readableScopeIds }, status: "CURRENT" },
-    orderBy: [{ createdAt: "desc" }, { version: "desc" }],
-    take: 80,
-    select: { id: true, summary: true, periodStart: true, periodEnd: true, version: true, createdAt: true, memoryScopeId: true },
-  });
   const snapshotRank = rankSnapshotsWithBudget(retrievalQuery, snapshotCandidates, {
     limit: 4,
     tokenBudget: resolveSnapshotTokenBudget(character.modelConfig),
@@ -788,15 +823,6 @@ async function runChannelTurn(input: {
   }));
 
   // 忆泡和网页对话走同一套选择逻辑：先按日期框住，框不住才退化成关键词。
-  const eventCandidates = await prisma.memoryEvent.findMany({
-    where: { memoryScopeId: { in: readableScopeIds }, status: "ACTIVE" },
-    orderBy: [{ occurredAt: "desc" }, { id: "desc" }],
-    take: 200,
-    select: {
-      id: true, occurredAt: true, timeOfDay: true, place: true, participants: true,
-      keywords: true, title: true, detail: true, memoryScopeId: true,
-    },
-  });
   const eventSelection = selectEventsForPrompt(retrievalQuery, eventCandidates, {
     timeZone: resolveChatTimeZone(character.memorySetting?.timezone),
     tokenBudget: resolveEventTokenBudget(character.modelConfig),
@@ -872,35 +898,18 @@ async function runChannelTurn(input: {
    */
   let groupAcquaintances: Array<{ name: string; note: string }> | undefined;
   if (isGroup) {
-    const speakerUids = [...new Set(
-      messages
-        .map((message) => (message.authorPlatformUid || message.authorOpenId || "").trim())
-        .filter(Boolean),
-    )];
-    if (speakerUids.length) {
-      const known = await prisma.externalIdentity.findMany({
-        where: { platform: input.platform, platformUid: { in: speakerUids } },
-        select: {
-          platformUid: true,
-          displayName: true,
-          memoryScopes: {
-            where: { characterId: input.characterId },
-            select: { interactionCount: true, lastInteractedAt: true },
-          },
-        },
-      }).catch(() => null);
-      const cards = (known ?? []).flatMap((identity) => {
-        const relation = identity.memoryScopes[0];
-        if (!relation || relation.interactionCount < 2) return [];
-        const last = relation.lastInteractedAt;
-        const when = last ? `${last.getMonth() + 1}-${last.getDate()}` : "";
-        return [{
-          name: identity.displayName?.trim() || identity.platformUid,
-          note: `之前跟你聊过 ${relation.interactionCount} 次${when ? `，最近一次 ${when}` : ""}`,
-        }];
-      });
-      if (cards.length) groupAcquaintances = cards;
-    }
+    // speakerUids 与 knownIdentities 已和记忆检索一起并行查好（见上）。
+    const cards = (knownIdentities ?? []).flatMap((identity) => {
+      const relation = identity.memoryScopes[0];
+      if (!relation || relation.interactionCount < 2) return [];
+      const last = relation.lastInteractedAt;
+      const when = last ? `${last.getMonth() + 1}-${last.getDate()}` : "";
+      return [{
+        name: identity.displayName?.trim() || identity.platformUid,
+        note: `之前跟你聊过 ${relation.interactionCount} 次${when ? `，最近一次 ${when}` : ""}`,
+      }];
+    });
+    if (cards.length) groupAcquaintances = cards;
   }
 
   let generated;
@@ -1010,24 +1019,23 @@ async function runChannelTurn(input: {
       },
       select: { id: true, title: true },
     });
-    for (const [index, message] of messages.entries()) {
-      await tx.message.create({
-        data: {
-          conversationId: conversation.id,
-          externalMessageId: message.externalMessageId,
-          role: "USER",
-          content: message.content,
-          // 一条一轮时保持原来的「处理时刻」，多条时用各自的收到时刻，别让并发把顺序搅乱。
-          occurredAt: messages.length === 1 ? now : (message.occurredAt ?? new Date(now.getTime() - (messages.length - index))),
-          metadata: buildStoredMessageMetadata({
-            platform: input.platform,
-            storedReason: generated.action === "reply" ? "replied" : "silent",
-            message,
-          }),
-        },
-        select: { id: true },
-      });
-    }
+    // 一轮 N 条一次写入（P3）：逐条 create 是 N 次往返。去重前面已做，
+    // 撞唯一约束仍整个事务回滚，行为与逐条一致。
+    await tx.message.createMany({
+      data: messages.map((message, index) => ({
+        conversationId: conversation.id,
+        externalMessageId: message.externalMessageId,
+        role: "USER" as const,
+        content: message.content,
+        // 一条一轮时保持原来的「处理时刻」，多条时用各自的收到时刻，别让并发把顺序搅乱。
+        occurredAt: messages.length === 1 ? now : (message.occurredAt ?? new Date(now.getTime() - (messages.length - index))),
+        metadata: buildStoredMessageMetadata({
+          platform: input.platform,
+          storedReason: generated.action === "reply" ? "replied" : "silent",
+          message,
+        }),
+      })),
+    });
     if (generated.action === "reply") {
       await tx.message.create({
         data: {
