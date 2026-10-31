@@ -5,7 +5,7 @@
 
 import assert from "node:assert/strict";
 import { createGroupContext, type GroupMessageFacts } from "../server/utils/channel-adapter/onebot/group-context";
-import { readOnebotMentionTargets, readOnebotReplyToId } from "../server/utils/channel-adapter/onebot/types";
+import { readOnebotMentionQqs, readOnebotMentionTargets, readOnebotReplyToId } from "../server/utils/channel-adapter/onebot/types";
 
 const SELF = "999";
 let now = 1_000_000;
@@ -200,4 +200,80 @@ ambiguous.remember("g:a", facts({
 ambiguous.remember("g:a", facts({ messageId: "a4", senderQq: "514", displayName: "丁", text: "主人", mentionQqs: [SELF] }));
 assert.deepEqual(ambiguous.members("g:a"), [], "@ 了两个别人或 @ 了她自己时都不记归属。");
 
-console.log("群聊上下文测试通过：成员代号、@ 代号化、背景预算、话题建立/候选/过期/续期上限、并行话题淘汰、@ 与引用解析、群内归属（自述优先于群名片、查不到人就不上表）。");
+// ── 9. 原始 @ QQ：判断「@ 的是别人」不能只靠代号化后的方向 ──────
+// mentionTargets 只有 self/other/all 三个方向，两个不同的「别人」分不开；
+// 学归属、判「刚才在跟谁讲话」都需要原始 QQ。
+assert.deepEqual(
+  readOnebotMentionQqs({ message: "[CQ:at,qq=111] 你好" }),
+  ["111"],
+  "字符串消息里的 CQ 码要能取出被 @ 的 QQ。",
+);
+assert.deepEqual(
+  readOnebotMentionQqs({ message: [{ type: "at", data: { qq: "111" } }, { type: "at", data: { qq: "222" } }] }),
+  ["111", "222"],
+  "数组消息里的 at 段要按顺序取出。",
+);
+assert.deepEqual(readOnebotMentionQqs({ message: "[CQ:at,qq=all] 开会" }), ["all"], "@全体原样保留。");
+assert.deepEqual(
+  readOnebotMentionQqs({ message: "[CQ:at,qq=111][CQ:at,qq=111] 你好" }),
+  ["111"],
+  "同一个人 @ 两次只算一次，否则「恰好 @ 一个」的判断会失效。",
+);
+assert.deepEqual(readOnebotMentionQqs({ message: "没有 at" }), [], "没有 @ 就是空数组。");
+assert.deepEqual(readOnebotMentionQqs({}), [], "缺字段不许抛错。");
+
+// ── 10. 「刚 @ 过别人」的延续：一句话拆两条发时，第二条别当成冲她说 ──
+// 2026-10-31 22:02 主人：「@阿深 不是刷屏」「是这个不适合发群里」。
+// 第一条 @ 了阿深被挡在门外、不落库；第二条没有 @，成了孤立单句，
+// 她于是接「不适合你还发，本宝都看见了」。所以「刚 @ 过别人」要留一会儿。
+const followed = createGroupContext({ selfQq: SELF, now: () => now });
+now += minutes(1);
+followed.remember("g:f", facts({
+  messageId: "f1",
+  senderQq: "111",
+  text: "不是刷屏",
+  mentionQqs: ["222"],
+  mentionTargets: ["other"],
+}));
+assert.equal(
+  followed.addressedOtherWithin("g:f", "111", now + 30_000, minutes(2)),
+  true,
+  "30 秒后的跟进句仍算在跟那个人讲。",
+);
+assert.equal(
+  followed.addressedOtherWithin("g:f", "111", now + minutes(2) + 1, minutes(2)),
+  false,
+  "超过两分钟就不该再算，否则上午 @ 过别人、下午说什么都被当成续话。",
+);
+assert.equal(
+  followed.addressedOtherWithin("g:f", "222", now + 30_000, minutes(2)),
+  false,
+  "只对这个发言人生效，别人说的不算。",
+);
+assert.equal(
+  followed.addressedOtherWithin("g:f", "111", now - 1_000, minutes(2)),
+  false,
+  "比记录还早的时刻不可能「在之后」。",
+);
+
+// @ 她自己、@全体都不算「在跟别人讲」：那两种本来就是冲她/冲大家。
+const selfMention = createGroupContext({ selfQq: SELF, now: () => now });
+selfMention.remember("g:s", facts({ messageId: "s1", senderQq: "111", text: "在吗", mentionQqs: [SELF] }));
+assert.equal(
+  selfMention.addressedOtherWithin("g:s", "111", now + 10_000, minutes(2)),
+  false,
+  "@ 了她自己不是「在跟别人讲」。",
+);
+selfMention.remember("g:s", facts({ messageId: "s2", senderQq: "111", text: "开会了", mentionQqs: ["all"] }));
+assert.equal(
+  selfMention.addressedOtherWithin("g:s", "111", now + 10_000, minutes(2)),
+  false,
+  "@全体是对所有人说的，不该被归到某个别人身上。",
+);
+assert.equal(
+  followed.addressedOtherWithin("g:none", "111", now, minutes(2)),
+  false,
+  "没说过话的人查不到，不许误判。",
+);
+
+console.log("群聊上下文测试通过：成员代号、@ 代号化、背景预算、话题建立/候选/过期/续期上限、并行话题淘汰、@ 与引用解析、原始 @ QQ、群内归属（自述优先于群名片、查不到人就不上表）、@ 别人之后的续话窗口。");

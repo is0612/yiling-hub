@@ -25,7 +25,7 @@ try {
     speaker: { displayName: "群友", isOwner: false, ownerDisplayName: "烟火清凉" },
   });
 
-  assert.equal(result.promptTemplateVersion, "conversation-retrieval-v16");
+  assert.equal(result.promptTemplateVersion, "conversation-retrieval-v17");
   const body = JSON.parse(capturedBody) as { messages: Array<{ role: string; content: string }> };
   const system = body.messages.find((item) => item.role === "system")?.content ?? "";
   const user = body.messages.find((item) => item.role === "user")?.content ?? "";
@@ -91,6 +91,11 @@ try {
   assert(system3.includes("Possessives are not you either"), "群聊系统提示必须说明「我的X」指的是说话人自己的 bot。");
   assert(system3.includes("the message is not about you"), "群聊系统提示必须写明：没有 @、没有名字的话不是在说她。");
   assert(system3.includes("A line starting with /"), "群聊系统提示必须说明斜杠命令是发给别的 bot 的，不是骂她。");
+  // 22:01「@阿深 你在群里也可以学习一下她们的表情包」是主人在教阿深，
+  // 她把自己当成被教的那个，回了「学得像不像啊」「这张算及格」。
+  // 「@self 不等于在说她」那条是另一面：@你 也可能是「你帮我跟她说一下」。
+  assert(system3.includes("belongs to the two of them"), "群聊系统提示必须说明「有人在教另一个 bot」这段对话不属于她。");
+  assert(system3.includes("Being @self does not make the sentence about you"), "群聊系统提示必须写明：被 @ 也可能是拿她当传话筒，主语是第三人。");
 
   // 历史消息：USER 行不能只剩 role + content，否则 20 条历史分不清谁是谁。
   const recentSection = body3.messages.length ? user3.slice(user3.indexOf("\"recentMessages\"")) : "";

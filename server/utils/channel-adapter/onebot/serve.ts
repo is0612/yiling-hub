@@ -127,6 +127,14 @@ const conversationChains = new Map<string, Promise<unknown>>();
 /** 排到队时已经过了这么久 = 这句话在群里早过去了，补一句只会更怪。 */
 const QUEUE_STALE_MS = 20_000;
 
+/**
+ * 「他刚 @ 过别人」这条线索留多久。
+ *
+ * 真人「@ 他一句 + 连发三条解释」基本在两分钟内说完；再长就该重新判听者了，
+ * 不然一个人上午 @ 过别人，下午说什么都会被当成「还在跟那个人讲」。
+ */
+const CONTINUED_TO_OTHER_MS = 120_000;
+
 type PendingGroupMessage = {
   event: OnebotResolvedEvent;
   binding: OnebotBindingRecord;
@@ -736,8 +744,21 @@ export function createOnebotMessageHandler(record: OnebotConnectionRecord) {
      */
     const mentionsSelfOrAll = facts.some((fact) =>
       fact.mentionTargets.includes("self") || fact.mentionTargets.includes("all"));
+    /**
+     * 接着说给同一个人的那几句。
+     *
+     * 群里的话常拆两条发：`@阿深 不是刷屏` + `是这个不适合发群里`。第一条被上面那条
+     * 判据挡掉、连库都不落；第二条没有 @，就成了一颗孤零零的「对所有人说」的话，
+     * 她会当成在说自己（2026-10-31 22:02「不适合你还发」、22:02「登本宝的号？」）。
+     * 挡得越干净，孤立的展开句越像在跟她说话 —— 所以这里要把「刚 @ 过别人」接着算。
+     *
+     * 两分钟：真人「@他一句 + 连发三条解释」基本在这个尺度内；再长就该重新判了。
+     */
+    const continuedToOther = !mentionsSelfOrAll && facts.some((fact) =>
+      fact.mentionTargets.length === 0
+      && groupContext.addressedOtherWithin(contextKey, fact.senderQq, fact.at, CONTINUED_TO_OTHER_MS));
     const addressedToOthers = !mentionsSelfOrAll
-      && facts.some((fact) => fact.mentionTargets.includes("other"));
+      && (facts.some((fact) => fact.mentionTargets.includes("other")) || continuedToOther);
     /**
      * 这一轮 @ 她的话，是不是**全都在把话收回来**。
      *

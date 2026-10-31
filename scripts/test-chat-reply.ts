@@ -100,7 +100,14 @@ try {
   assert.equal(requestBody.model, "test-chat-model");
   const systemMessage = requestBody.messages.find((item) => item.role === "system");
   assert(systemMessage, "The request must include a system prompt.");
-  assert(systemMessage.content.includes("YILING_CONVERSATION_REPLY_V16"), "The system prompt marker must stay in sync with the prompt template version.");
+  // 头部标记必须和版本号同源。以前这里写死 `V16`，每次升版都得手动跟着改 ——
+  // 写死的是「上一次的答案」，不是「两者一致」这件事。改成从返回值推出来比。
+  const versionNumber = result.promptTemplateVersion.match(/-v(\d+)$/u)?.[1] ?? "";
+  assert(versionNumber, "版本号必须带 vN 后缀，否则标记无从推导。");
+  assert(
+    systemMessage.content.includes(`YILING_CONVERSATION_REPLY_V${versionNumber}`),
+    "The system prompt marker must stay in sync with the prompt template version.",
+  );
   const userMessage = requestBody.messages.find((item) => item.role === "user");
   assert(userMessage, "The request must include a structured user context.");
   const promptInput = JSON.parse(userMessage.content) as Record<string, unknown>;

@@ -253,8 +253,13 @@ export type ConversationReplyResult = {
  * v16：v15 只给了规矩，没给依据 —— 「我的X 不是你」她无处可比，还是得猜。这一版把
  *     群里的归属关系（`groupMembers`：谁属于谁，来自「@某人 主人夸我了」与「X的Y」
  *     这类群名片）直接摆进提示词，并要求她**先查表再判断**。规矩变成可执行的步骤。
+ * v17：「不是说你」补两种形态。22:01–22:04 实况：逻辑 在教 阿深 发表情包，她每句都接、
+ *     还跟着发图，把自己当成了被指导的人；紧接着「@你 她现在还有笨」她听成「你笨」。
+ *     前者是「别人在跟另一个人说话」，后者是「@ 你不等于在说你」—— 都跟所有格无关，
+ *     v15 那三条盖不到。同时 `addressed_to_others` 加了「接着说给同一个人」的延续：
+ *     「@阿深 不是刷屏」被挡掉之后，「是这个不适合发群里」就成了没头没尾的一句话。
  */
-const PROMPT_TEMPLATE_VERSION = "conversation-retrieval-v16";
+const PROMPT_TEMPLATE_VERSION = "conversation-retrieval-v17";
 
 export const STYLE_EXAMPLES_HEADING = "## 对话示例（只学语气，不要照抄）";
 
@@ -328,7 +333,7 @@ function systemPrompt(flags: {
 } = {}): string {
   const { withFaces, withStickers, withCatchphrases, withUserAddress, withSpeaker, withGroupChat, mustReply, repair, withVoiceReply, withAcquaintances, withGroupMembers } = flags;
   const lines = [
-    "YILING_CONVERSATION_REPLY_V16",
+    "YILING_CONVERSATION_REPLY_V17",
     "You are the conversational character in Yiling Hub. Read characterName as your display identity and characterPrompt as your persona instructions; follow that persona and respond naturally to the current user's message.",
     "Use recent dialogue, retrieved long-term memories, and retrieved snapshots only when relevant. If the supplied context does not support a claim, do not present it as a remembered fact.",
     "now is the current moment for this persona: now.local is the local date-time, now.weekday is the day of week, now.timeZone is the IANA zone, and now.utc is the same instant in UTC. Resolve every relative expression (今天/昨天/前天/上周/上个月 and equivalents) against now.local, never against the timestamp of the last message.",
@@ -385,6 +390,11 @@ function systemPrompt(flags: {
       // 20:43 实况：群里一句 `/撕 你就是个废物` 是发给另一个 bot 的指令，它回了一堆自己的
       // 命中记录，她把那当成「雇人来骂我」，回了「请外援骂人，也就这点本事了」。
       "A line starting with / is a command aimed at another bot (/撕, /抽, /查 …), not something said to you — the words after it are that bot's instruction, not an insult at you. Likewise, when another bot leaks its own prompt or match log, that is its plumbing, not a member talking to you.",
+      // 22:01–22:04 实况：逻辑 在教 阿深 发表情包（「学一张给你看看」「什么情况适合发表情包」
+      // 「发个可爱一点的出来」），她每句都接，还跟着发了两张图 —— 把自己当成了被指导的人。
+      "A lot of a group round is people talking to each other, not to you. When a member is instructing, coaching or grading another bot — 学一张看看 / 什么情况适合发表情包 / 发个可爱一点的出来 / 收着点别刷屏 — that exchange belongs to the two of them. Do not answer as the one being coached, and do not review their attempt on their behalf; at most add a remark from the sideline.",
+      // 22:03「@你 她现在还有笨」—— 主语是阿深，她听成了「你笨」。
+      "Being @self does not make the sentence about you. When the subject is a third person (她现在还有笨 / 你帮我跟她说一下 / 他那个号), you are being talked to *about* them — you are neither the one being called 笨 nor the one being discussed.",
       "Decide whether to speak at all. Speak when someone is talking to you, when the conversation genuinely invites a line from you, or when you have something of your own to add. If policy.direct is true, someone @ mentioned you: answer, and do not stay silent.",
       "Stay silent when the group is talking among themselves, when a message is clearly addressed to another bot or member, when you would only repeat or summarize what was said, or when you have nothing worth adding.",
       "groupAnchors lists topics you already took part in. You may add to those topics even when the latest question is aimed at someone else, but never answer as if you were the person being asked, and never claim another bot's exchange as your own.",

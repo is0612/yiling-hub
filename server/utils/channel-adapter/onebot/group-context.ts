@@ -79,6 +79,8 @@ type ConversationState = {
   nextMember: number;
   /** senderQq → ownerQq：从群里自述学来的归属（「@某人 主人夸我了」）。 */
   owners: Map<string, string>;
+  /** senderQq → 最近一次「@ 了别人」的收到时刻：判断后面那几句还在跟谁讲。 */
+  lastOtherMention: Map<string, number>;
 };
 
 export type GroupContextOptions = {
@@ -142,7 +144,29 @@ export class GroupContext {
     if (state.messages.some((item) => item.messageId === message.messageId)) return;
     state.messages.push({ ...message });
     this.learnOwnership(state, message);
+    // 这条 @ 的是别人：记下来，他后面那几句多半还是在跟那个人讲。
+    const mentionsOther = (message.mentionQqs ?? []).some(
+      (qq) => qq && qq !== "all" && qq !== this.selfQq,
+    ) || message.mentionTargets.includes("other");
+    if (mentionsOther) state.lastOtherMention.set(message.senderQq, message.at);
     this.prune(state);
+  }
+
+  /**
+   * 这个人刚才是不是在跟**别人**说话。
+   *
+   * 群里的话常拆两条发：「@阿深 不是刷屏」+「是这个不适合发群里」。第一条 @ 了别人，
+   * 在「全都回」档会被 `addressed_to_others` 挡掉、不落库；第二条没有 @，就成了一颗
+   * 孤零零的「对所有人说」的话 —— 她于是当成在说自己（2026-10-31 22:02
+   * 「不适合你还发，本宝都看见了」）。所以「刚 @ 过别人」这件事要留一会儿：
+   * 同一个人紧接着多说的那几句，仍然是在跟那个人讲。
+   *
+   * 只算「@ 了别人」：@ 她、@all 不算 —— 那两种本来就是冲她/冲大家说的。
+   */
+  addressedOtherWithin(key: string, senderQq: string, at: number, withinMs: number): boolean {
+    const since = this.state(key).lastOtherMention.get(senderQq);
+    if (since === undefined) return false;
+    return at >= since && at - since <= withinMs;
   }
 
   /**
@@ -372,7 +396,7 @@ export class GroupContext {
   private state(key: string): ConversationState {
     let state = this.states.get(key);
     if (!state) {
-      state = { messages: [], topics: [], memberCodes: new Map(), nextMember: 0, owners: new Map() };
+      state = { messages: [], topics: [], memberCodes: new Map(), nextMember: 0, owners: new Map(), lastOtherMention: new Map() };
       this.states.set(key, state);
     }
     return state;
