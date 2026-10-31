@@ -37,6 +37,9 @@
     "bili:import": "tsx scripts/import-bili-desk.ts",
     "test:memory-retrieval": "tsx scripts/test-memory-retrieval.ts",
     "test:memory-budget": "tsx scripts/test-memory-budget.ts",
+    "test:memory-events": "tsx scripts/test-memory-events.ts",
+    "test:memory-events-db": "tsx scripts/test-memory-events-db.ts",
+    "test:channel-message-metadata": "tsx scripts/test-channel-message-metadata.ts",
     "test:memory-source-selection": "tsx scripts/test-memory-source-selection.ts",
     "test:model-usage": "tsx scripts/test-model-usage.ts",
     "test:model-pricing": "tsx scripts/test-model-pricing.ts",
@@ -58,6 +61,7 @@
     "test:qq-sticker-sync": "tsx scripts/test-qq-sticker-sync.ts",
     "test:qq-sticker-sync-db": "tsx scripts/test-qq-sticker-sync-db.ts",
     "stickers:normalize": "tsx scripts/normalize-sticker-images.ts",
+    "backfill:mention": "tsx scripts/backfill-mention.ts",
     "test:catchphrases": "tsx scripts/test-catchphrases.ts",
     "test:system-message": "tsx scripts/test-system-message.ts",
     "catchphrases:import": "tsx scripts/import-catchphrases.ts",
@@ -85,8 +89,9 @@
     "test:bili-llm": "tsx scripts/test-bili-llm.ts",
     "test:bili-cards": "tsx scripts/test-bili-cards.ts",
     "test:identity": "tsx scripts/test-identity.ts",
-    "verify:local": "yarn run db:validate && yarn run db:generate && yarn nuxt prepare && yarn run check:sfc && yarn run typecheck && yarn run test:scheduler && yarn run test:scheduler-db && yarn run test:memory-ai && yarn run test:memory-ai-request && yarn run test:memory-retrieval && yarn run test:memory-budget && yarn run test:memory-source-selection && yarn run test:model-usage && yarn run test:model-pricing && yarn run test:chat-model-config && yarn run test:chat-reply && yarn run test:chat-private-memory && yarn run test:chat-speaker-context && yarn run test:chat-private-memory-db && yarn run test:chat-request-idempotency-db && yarn run test:chat-conversation-delete-db && yarn run test:auth && yarn run test:auth-db && yarn run test:identity && yarn run test:onebot && yarn run test:onebot-faces && yarn run test:stickers && yarn run test:sticker-collect && yarn run test:sticker-image && yarn run test:qq-sticker-sync && yarn run test:qq-sticker-sync-db && yarn run test:catchphrases && yarn run test:system-message && yarn run test:onebot-reply && yarn run test:image-understanding && yarn run test:voice && yarn run test:onebot-supervise && yarn run test:onebot-runner && yarn run test:onebot-announcement && yarn run test:onebot-bili-run && yarn run test:onebot-group-chat && yarn run test:onebot-group-context && yarn run test:onebot-panel && yarn run test:qq-chain && yarn run test:proactive && yarn run test:proactive-db && yarn run test:group-initiative && yarn run test:group-initiative-db && yarn run test:bili-cards && yarn run test:bili-llm && yarn run test:bili-duty && yarn run test:bili-runner && yarn run test:bili-schema && yarn run test:bili-db && yarn run lint && yarn run build",
-    "probe:custom-face": "tsx scripts/probe-custom-face.ts"
+    "verify:local": "yarn run db:validate && yarn run db:generate && yarn nuxt prepare && yarn run check:sfc && yarn run typecheck && yarn run test:scheduler && yarn run test:scheduler-db && yarn run test:memory-ai && yarn run test:memory-ai-request && yarn run test:memory-retrieval && yarn run test:memory-budget && yarn run test:memory-events && yarn run test:memory-events-db && yarn run test:memory-source-selection && yarn run test:model-usage && yarn run test:model-pricing && yarn run test:chat-model-config && yarn run test:chat-reply && yarn run test:chat-private-memory && yarn run test:chat-speaker-context && yarn run test:chat-private-memory-db && yarn run test:chat-request-idempotency-db && yarn run test:chat-conversation-delete-db && yarn run test:auth && yarn run test:auth-db && yarn run test:identity && yarn run test:onebot && yarn run test:channel-message-metadata && yarn run test:onebot-faces && yarn run test:stickers && yarn run test:sticker-collect && yarn run test:sticker-image && yarn run test:qq-sticker-sync && yarn run test:qq-sticker-sync-db && yarn run test:catchphrases && yarn run test:system-message && yarn run test:onebot-reply && yarn run test:image-understanding && yarn run test:voice && yarn run test:onebot-supervise && yarn run test:onebot-runner && yarn run test:onebot-announcement && yarn run test:onebot-bili-run && yarn run test:onebot-group-chat && yarn run test:onebot-group-context && yarn run test:onebot-panel && yarn run test:qq-chain && yarn run test:proactive && yarn run test:proactive-db && yarn run test:group-initiative && yarn run test:group-initiative-db && yarn run test:bili-cards && yarn run test:bili-llm && yarn run test:bili-duty && yarn run test:bili-runner && yarn run test:bili-schema && yarn run test:bili-db && yarn run lint && yarn run build",
+    "probe:custom-face": "tsx scripts/probe-custom-face.ts",
+    "clean:identity-orphans": "tsx scripts/cleanup-identity-orphans.ts"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",

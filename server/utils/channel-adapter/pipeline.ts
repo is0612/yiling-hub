@@ -1,4 +1,8 @@
+import type { Prisma } from "../../../src/generated/prisma/client";
 import { generateConversationReply, type ConversationContextMessage, type ConversationGroupDecision } from "../chat-reply";
+import { resolveChatTimeZone } from "../chat-time-context";
+import { resolveEventItemLimit, resolveEventTokenBudget, selectEventsForPrompt } from "../memory-event-retrieval";
+import { resolveRawMessageLimit, resolveRawMessageTokenBudget, selectRawMessagesForPrompt } from "../message-retrieval";
 import { isEmojiEnabled, resolveChatModelSettings } from "../chat-model-config";
 import { resolveCharacterApiKey, resolveCharacterVoiceApiKey } from "../credential-encryption";
 import {
@@ -100,6 +104,8 @@ export type ChannelTurnMessage = {
   /** Optional author display name for identity metadata. */
   authorDisplayName?: string;
   content: string;
+  /** 这条消息 @ 的是谁（self / other / all）。落库给忆泡提炼判断对象用。 */
+  mentionTargets?: string[];
   /** 给模型看的正文（@ 已代号化）；不传就等于 content。落库仍用 content。 */
   promptContent?: string;
   /** 群聊里的成员代号；只有群聊会传。 */
@@ -139,6 +145,14 @@ export type ChannelMessageInput = {
     ownerDisplayName?: string;
   };
   content: string;
+  /**
+   * 这条消息 @ 的是谁：`self` = 她本人，`other` = 别的群成员/别的 bot，`all` = @全体。
+   *
+   * 落库原因：群聊里同时跑着好几个 bot，别人 @ 另一个号说的话，提炼时很容易被记成
+   * 「群友说她」。闸门早就算过这份信息（`readOnebotMentionTargets`），但以前只用来
+   * 放行/丢弃，没有存下来，模型只能靠猜。
+   */
+  mentionTargets?: string[];
   /** 这条消息带的图。渠道不传就等于「这个渠道没有图」，不影响其他行为。 */
   images?: ChannelImageRef[];
   /** 这条消息带的语音。渠道不传就等于「这个渠道没有语音」。 */
@@ -161,8 +175,46 @@ export type ChannelMessageInput = {
   sendReply: ChannelReplySender;
 };
 
-/** 群聊这一轮的上下文：本轮是否 @ 她、之前几句、她参与过的话题。 */
-export type ChannelGroupTurnContext = {
+/**
+ * 渠道消息落库时的 metadata。
+ *
+ * 抽成纯函数是为了能单独测：这些字段直接决定「忆泡能不能判断这句话是不是冲她说的」。
+ * 靠 e2e 断言代价太高 —— 那个文件是按群号串起来的时序测试，插一条会调模型的消息
+ * 会打乱后面所有场景（试过两次，都让别的断言红了）。
+ */
+export function buildStoredMessageMetadata(input: {
+  platform: string;
+  storedReason: "replied" | "silent" | "mentioned";
+  message: {
+    authorOpenId: string;
+    authorDisplayName?: string;
+    member?: string;
+    mentionTargets?: string[];
+    speaker?: { isOwner?: boolean };
+    voices?: unknown[];
+    content: string;
+  };
+}): Prisma.InputJsonObject {
+  const { message } = input;
+  return {
+    source: "channel",
+    platform: input.platform,
+    storedReason: input.storedReason,
+    // 谁被 @ 了：提炼忆泡时用来判断「这句话是不是冲她说的」。
+    ...(message.mentionTargets?.length ? { mentionTargets: message.mentionTargets } : {}),
+    authorOpenId: message.authorOpenId,
+    ...(message.authorDisplayName ? { authorDisplayName: message.authorDisplayName } : {}),
+    // 群聊的成员代号（member_n）：昵称可能缺失或被改，代号在同一个群里稳定。
+    ...(message.member ? { member: message.member } : {}),
+    // 主人发的消息：群聊提炼时也要认得出「这是主人」，不能跟群友混。
+    ...(message.speaker?.isOwner ? { isOwner: true } : {}),
+    // 这条原本是语音条；落库的 content 是转写后的文字（没配 ASR 就还是 `[语音]`）。
+    ...(message.voices?.length ? { hasVoice: true } : {}),
+    ...(isSystemBroadcast(message.content) ? { systemBroadcast: true } : {}),
+  };
+}
+
+/** 群聊这一轮的上下文：本轮是否 @ 她、之前几句、她参与过的话题。 */export type ChannelGroupTurnContext = {
   direct: boolean;
   background: Array<{ id: string; at: number; member: string; speaker: string; text: string }>;
   anchors: Array<{ id: string; label: string }>;
@@ -430,6 +482,7 @@ async function runChannelTurn(input: {
       styleExamples: true,
       status: true,
       modelConfig: true,
+      memorySetting: { select: { timezone: true } },
       memoryScopes: { where: { scopeType: "CHARACTER_GLOBAL" }, select: { id: true } },
     },
   });
@@ -451,33 +504,43 @@ async function runChannelTurn(input: {
     messages = fresh;
   }
 
-  // Upsert the external identities for the people in this turn. 群聊一轮里可能有好几个人，
-  // 每个人各自一行；同一轮里同一个人说两句就只 upsert 一次。
+  /**
+   * 外部身份只记「一对一找过她的人」，群聊一律不建。
+   *
+   * 群会话本来就挂在角色全局 scope 下（见下面 `conversationScopeId` 的群聊分支），身份
+   * scope 建出来没有任何地方读它 —— 而身份表的定位是「谁来找过她」，一个群里几十号人
+   * 全被记进去，这张表就废了：真正的私聊来访者被群友淹掉，管理员绑定时也找不到人。
+   *
+   * 群友说过的话照常入库（挂在群会话上），只是不变成一条外部身份、不开私人记忆范围。
+   * 他哪天真来私聊，第一句就会补上这行身份。
+   */
   let primaryIdentityScopeId: string | null = null;
   const identityScopeByAuthor = new Map<string, string | null>();
-  for (const message of messages) {
-    const platformUid = (message.authorPlatformUid || message.authorOpenId || "").trim();
-    if (!platformUid || identityScopeByAuthor.has(platformUid)) continue;
-    const identity = await prisma.externalIdentity.upsert({
-      where: { platform_platformUid: { platform: input.platform, platformUid } },
-      create: {
-        platform: input.platform,
-        platformUid,
-        displayName: message.authorDisplayName?.slice(0, 255) || null,
-        status: "UNVERIFIED",
-      },
-      update: {
-        ...(message.authorDisplayName ? { displayName: message.authorDisplayName.slice(0, 255) } : {}),
-      },
-      select: { id: true },
-    });
-    // Establish the identity's dedicated memory scope so its private memory can be
-    // isolated per platform (and later linked via admin verification). Best-effort:
-    // a scope that already exists is reused; failure must not block the message.
-    const scope = await ensureExternalIdentityScope(
-      input.characterId, input.platform, platformUid, identity.id,
-    ).catch(() => null);
-    identityScopeByAuthor.set(platformUid, scope?.scopeId ?? null);
+  if (!isGroup) {
+    for (const message of messages) {
+      const platformUid = (message.authorPlatformUid || message.authorOpenId || "").trim();
+      if (!platformUid || identityScopeByAuthor.has(platformUid)) continue;
+      const identity = await prisma.externalIdentity.upsert({
+        where: { platform_platformUid: { platform: input.platform, platformUid } },
+        create: {
+          platform: input.platform,
+          platformUid,
+          displayName: message.authorDisplayName?.slice(0, 255) || null,
+          status: "UNVERIFIED",
+        },
+        update: {
+          ...(message.authorDisplayName ? { displayName: message.authorDisplayName.slice(0, 255) } : {}),
+        },
+        select: { id: true },
+      });
+      // Establish the identity's dedicated memory scope so its private memory can be
+      // isolated per platform (and later linked via admin verification). Best-effort:
+      // a scope that already exists is reused; failure must not block the message.
+      const scope = await ensureExternalIdentityScope(
+        input.characterId, input.platform, platformUid, identity.id,
+      ).catch(() => null);
+      identityScopeByAuthor.set(platformUid, scope?.scopeId ?? null);
+    }
   }
   {
     const first = messages[0]!;
@@ -564,7 +627,7 @@ async function runChannelTurn(input: {
         where: { conversationId: existingConversation.id },
         orderBy: [{ occurredAt: "desc" }, { id: "desc" }],
         take: resolveRecentMessageLimit(character.modelConfig),
-        select: { role: true, content: true, occurredAt: true, metadata: true, externalMessageId: true },
+        select: { id: true, role: true, content: true, occurredAt: true, metadata: true, externalMessageId: true },
       })
     : [];
 
@@ -698,7 +761,7 @@ async function runChannelTurn(input: {
     take: 300,
     select: {
       id: true, category: true, content: true, confidence: true, updatedAt: true, createdAt: true,
-      memoryScopeId: true, importance: true, lastRecalledAt: true, recallCount: true,
+      validFrom: true, memoryScopeId: true, importance: true, lastRecalledAt: true, recallCount: true,
     },
   });
   const memoryRank = rankMemoriesWithBudget(retrievalQuery, memoryCandidates, {
@@ -712,6 +775,8 @@ async function runChannelTurn(input: {
     confidence: memory.confidence,
     relevanceScore: memory.relevanceScore,
     scope: memory.memoryScopeId === globalScope.id ? ("character" as const) : ("private" as const),
+    // 和网页对话一致：有 validFrom 用它，否则退回入库时间。
+    occurredAt: (memory.validFrom ?? memory.createdAt).toISOString(),
   }));
 
   const snapshotCandidates = await prisma.memorySnapshot.findMany({
@@ -733,6 +798,68 @@ async function runChannelTurn(input: {
     relevanceScore: snapshot.relevanceScore,
     scope: snapshot.memoryScopeId === globalScope.id ? ("character" as const) : ("private" as const),
   }));
+
+  // 忆泡和网页对话走同一套选择逻辑：先按日期框住，框不住才退化成关键词。
+  const eventCandidates = await prisma.memoryEvent.findMany({
+    where: { memoryScopeId: { in: readableScopeIds }, status: "ACTIVE" },
+    orderBy: [{ occurredAt: "desc" }, { id: "desc" }],
+    take: 200,
+    select: {
+      id: true, occurredAt: true, timeOfDay: true, place: true, participants: true,
+      keywords: true, title: true, detail: true, memoryScopeId: true,
+    },
+  });
+  const eventSelection = selectEventsForPrompt(retrievalQuery, eventCandidates, {
+    timeZone: resolveChatTimeZone(character.memorySetting?.timezone),
+    tokenBudget: resolveEventTokenBudget(character.modelConfig),
+    limit: resolveEventItemLimit(character.modelConfig),
+  });
+  const events = eventSelection.items.map((event) => ({
+    id: event.id,
+    occurredAt: event.occurredAt.toISOString(),
+    ...(event.timeOfDay ? { timeOfDay: event.timeOfDay } : {}),
+    ...(event.place ? { place: event.place } : {}),
+    participants: event.participants,
+    title: event.title,
+    detail: event.detail.slice(0, 600),
+    scope: event.memoryScopeId === globalScope.id ? ("character" as const) : ("private" as const),
+  }));
+
+  // 忆泡还没覆盖到那一段时用原文兜底；只在问句指向某一天时才查。
+  let rawMessages: Array<{
+    id: string;
+    role: string;
+    content: string;
+    occurredAt: string;
+    scope: "character" | "private";
+  }> = [];
+  if (eventSelection.range) {
+    const rawCandidates = await prisma.message.findMany({
+      where: {
+        conversation: { memoryScopeId: { in: readableScopeIds } },
+        occurredAt: { gte: eventSelection.range.start, lt: eventSelection.range.end },
+      },
+      orderBy: [{ occurredAt: "asc" }, { id: "asc" }],
+      take: 200,
+      select: {
+        id: true, role: true, content: true, occurredAt: true,
+        conversation: { select: { memoryScopeId: true } },
+      },
+    });
+    const selected = selectRawMessagesForPrompt(retrievalQuery, rawCandidates, {
+      timeZone: resolveChatTimeZone(character.memorySetting?.timezone),
+      tokenBudget: resolveRawMessageTokenBudget(character.modelConfig),
+      limit: resolveRawMessageLimit(character.modelConfig),
+      excludeIds: new Set(recentStoredMessages.map((message) => message.id)),
+    });
+    rawMessages = selected.items.map((message) => ({
+      id: message.id,
+      role: message.role,
+      content: message.content.slice(0, 300),
+      occurredAt: message.occurredAt.toISOString(),
+      scope: message.conversation.memoryScopeId === globalScope.id ? ("character" as const) : ("private" as const),
+    }));
+  }
 
   // 群聊一轮是「几个人在聊」，不是「某个人在对我说话」：交给 transcript。
   // 进了群聊管道就一律用群聊语境 —— 被 @ 时虽然不允许沉默，但同样需要上下文。
@@ -761,6 +888,9 @@ async function runChannelTurn(input: {
       temperature: chatSettings.temperature,
       maxTokens: chatSettings.maxTokens,
       currentMessage,
+      timeZone: resolveChatTimeZone(character.memorySetting?.timezone),
+      events,
+      rawMessages,
       ...(useTranscript
         ? {
             transcript: messages.map((message) => ({
@@ -859,26 +989,11 @@ async function runChannelTurn(input: {
           content: message.content,
           // 一条一轮时保持原来的「处理时刻」，多条时用各自的收到时刻，别让并发把顺序搅乱。
           occurredAt: messages.length === 1 ? now : (message.occurredAt ?? new Date(now.getTime() - (messages.length - index))),
-          metadata: {
-            source: "channel",
+          metadata: buildStoredMessageMetadata({
             platform: input.platform,
-            authorOpenId: message.authorOpenId,
-            ...(message.authorDisplayName ? { authorDisplayName: message.authorDisplayName } : {}),
-            // 群聊的成员代号（member_n）：昵称可能缺失或被改，代号在同一个群里稳定。
-            ...(message.member ? { member: message.member } : {}),
-            // 主人发的消息：群聊提炼时也要认得出「这是主人」，不能跟群友混。
-            ...(message.speaker?.isOwner ? { isOwner: true } : {}),
-            // 这条原本是语音条；落库的 content 是转写后的文字（没配 ASR 就还是 `[语音]`）。
-            ...(message.voices?.length ? { hasVoice: true } : {}),
-            /**
-             * 别的机器人的命令回执 / 插件报错。
-             *
-             * 原文照存（群聊原文页还要能看），但打了标：后面做记忆提炼、来源筛选时
-             * 可以整批跳过，不必再靠文本猜。用**窄判据** —— 标错的代价是这条消息
-             * 以后再也进不了记忆，比漏标严重得多。
-             */
-            ...(isSystemBroadcast(message.content) ? { systemBroadcast: true } : {}),
-          },
+            storedReason: generated.action === "reply" ? "replied" : "silent",
+            message,
+          }),
         },
         select: { id: true },
       });

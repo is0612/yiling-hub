@@ -5,11 +5,18 @@ import {
   loadCatchphraseCatalog, markCatchphrasesUsed, pickCatchphraseCatalog, toCatchphrasePromptEntries,
 } from "../../../utils/catchphrases";
 import { resolveChatModelSettings } from "../../../utils/chat-model-config";
+import { resolveChatTimeZone } from "../../../utils/chat-time-context";
 import { resolveCharacterApiKey } from "../../../utils/credential-encryption";
 import {
   rankMemoriesWithBudget, rankSnapshotsWithBudget,
   resolveMemoryItemLimit, resolveMemoryTokenBudget, resolveRecentMessageLimit, resolveSnapshotTokenBudget,
 } from "../../../utils/memory-retrieval";
+import {
+  resolveEventItemLimit, resolveEventTokenBudget, selectEventsForPrompt,
+} from "../../../utils/memory-event-retrieval";
+import {
+  resolveRawMessageLimit, resolveRawMessageTokenBudget, selectRawMessagesForPrompt,
+} from "../../../utils/message-retrieval";
 import { recordModelUsage, readDailyQuota, toUsageTokens } from "../../../utils/model-usage";
 import { resolveChatMemoryScopes } from "../../../utils/memory-scope-access";
 import { requireActorUserId } from "../../../utils/auth";
@@ -52,6 +59,7 @@ export default defineEventHandler(async (event) => {
       userAddress: true,
       status: true,
       modelConfig: true,
+      memorySetting: { select: { timezone: true } },
       memoryScopes: {
         select: {
           id: true,
@@ -165,7 +173,7 @@ export default defineEventHandler(async (event) => {
         // 40 条约 20 轮问答，条数可在「模型设置」里按角色调整。
         // 20 条时她经常接不上十分钟前提过的事，用户会以为「记性差」，其实只是没被喂进去。
         take: resolveRecentMessageLimit(character.modelConfig),
-        select: { role: true, content: true, occurredAt: true },
+        select: { id: true, role: true, content: true, occurredAt: true },
       })
     : [];
   const recentMessages: ConversationContextMessage[] = recentStoredMessages
@@ -183,7 +191,7 @@ export default defineEventHandler(async (event) => {
     take: 300,
     select: {
       id: true, category: true, content: true, confidence: true, updatedAt: true, createdAt: true,
-      memoryScopeId: true, importance: true, lastRecalledAt: true, recallCount: true,
+      validFrom: true, memoryScopeId: true, importance: true, lastRecalledAt: true, recallCount: true,
     },
   });
   const retrievalQuery = [
@@ -201,6 +209,9 @@ export default defineEventHandler(async (event) => {
     confidence: memory.confidence,
     relevanceScore: memory.relevanceScore,
     scope: scopeOriginById.get(memory.memoryScopeId) ?? "character",
+    // 「这条记忆是什么时候的」：有 validFrom 就用它（那才是事实成立的时间），
+    // 否则退回入库时间。没有这行，模型答不出「什么时候」，只能含糊过去。
+    occurredAt: (memory.validFrom ?? memory.createdAt).toISOString(),
   }));
 
   const snapshotCandidates = await prisma.memorySnapshot.findMany({
@@ -222,6 +233,69 @@ export default defineEventHandler(async (event) => {
     relevanceScore: snapshot.relevanceScore,
     scope: scopeOriginById.get(snapshot.memoryScopeId) ?? "character",
   }));
+
+  // 忆泡：先按问句里的日期框住那一天，框不住才退化成关键词。
+  const eventCandidates = await prisma.memoryEvent.findMany({
+    where: { memoryScopeId: { in: readableScopeIds }, status: "ACTIVE" },
+    orderBy: [{ occurredAt: "desc" }, { id: "desc" }],
+    take: 200,
+    select: {
+      id: true, occurredAt: true, timeOfDay: true, place: true, participants: true,
+      keywords: true, title: true, detail: true, memoryScopeId: true,
+    },
+  });
+  const eventSelection = selectEventsForPrompt(retrievalQuery, eventCandidates, {
+    timeZone: resolveChatTimeZone(character.memorySetting?.timezone),
+    tokenBudget: resolveEventTokenBudget(character.modelConfig),
+    limit: resolveEventItemLimit(character.modelConfig),
+  });
+  const events = eventSelection.items.map((event) => ({
+    id: event.id,
+    occurredAt: event.occurredAt.toISOString(),
+    ...(event.timeOfDay ? { timeOfDay: event.timeOfDay } : {}),
+    ...(event.place ? { place: event.place } : {}),
+    participants: event.participants,
+    title: event.title,
+    detail: event.detail.slice(0, 600),
+    scope: scopeOriginById.get(event.memoryScopeId) ?? "character",
+  }));
+
+  // 忆泡还没覆盖到那一段时，用原始对话兜底 —— 原文一直在库里，只是以前没有检索入口。
+  // 只在问句确实指向某一天时才查，避免和最近对话窗口重复。
+  let rawMessages: Array<{
+    id: string;
+    role: string;
+    content: string;
+    occurredAt: string;
+    scope: "character" | "private";
+  }> = [];
+  if (eventSelection.range) {
+    const rawCandidates = await prisma.message.findMany({
+      where: {
+        conversation: { memoryScopeId: { in: readableScopeIds } },
+        occurredAt: { gte: eventSelection.range.start, lt: eventSelection.range.end },
+      },
+      orderBy: [{ occurredAt: "asc" }, { id: "asc" }],
+      take: 200,
+      select: {
+        id: true, role: true, content: true, occurredAt: true,
+        conversation: { select: { memoryScopeId: true } },
+      },
+    });
+    const selected = selectRawMessagesForPrompt(retrievalQuery, rawCandidates, {
+      timeZone: resolveChatTimeZone(character.memorySetting?.timezone),
+      tokenBudget: resolveRawMessageTokenBudget(character.modelConfig),
+      limit: resolveRawMessageLimit(character.modelConfig),
+      excludeIds: new Set(recentStoredMessages.map((message) => message.id)),
+    });
+    rawMessages = selected.items.map((message) => ({
+      id: message.id,
+      role: message.role,
+      content: message.content.slice(0, 300),
+      occurredAt: message.occurredAt.toISOString(),
+      scope: scopeOriginById.get(message.conversation.memoryScopeId) ?? "character",
+    }));
+  }
 
   /**
    * 梗语录：挑这一轮给她看的那几条。
@@ -250,6 +324,9 @@ export default defineEventHandler(async (event) => {
       recentMessages,
       memories,
       snapshots,
+      events,
+      rawMessages,
+      timeZone: resolveChatTimeZone(character.memorySetting?.timezone),
       ...(catchphrasePrompt.length ? { catchphrases: catchphrasePrompt } : {}),
     });
   } catch (error) {

@@ -1,4 +1,5 @@
 import { buildChatCompletionsEndpoint, isChatModelConfigured } from "./chat-model-config";
+import { parseJsonLoose } from "./loose-json";
 import { readModelUsage, type ModelUsageTokens } from "./model-usage";
 import { createHash } from "node:crypto";
 
@@ -26,6 +27,8 @@ export type MemoryAiMessage = {
   origin?: string;
   /** 这条是主人发的。主人私聊必真；群聊里主人发言也标出来，让提炼时认得主人。 */
   isOwner?: boolean;
+  /** 这条消息 @ 了谁：`self` 是她，`other` 是别人（群里另一个 bot / 别的成员）。 */
+  mentionTargets?: string[];
 };
 
 export type MemoryAiExistingItem = {
@@ -48,6 +51,27 @@ export type MemoryChange = {
   changeReason?: string;
 };
 
+/** 「上午 / 下午」这类模糊时段。只认这几个词，别的当没写。 */
+export const EVENT_TIME_OF_DAY = ["凌晨", "早上", "上午", "中午", "下午", "傍晚", "晚上", "深夜"] as const;
+export type EventTimeOfDay = (typeof EVENT_TIME_OF_DAY)[number];
+
+/**
+ * 一条待写入的忆泡。`occurredAt` 是**事件发生时间**，不是提炼时间 ——
+ * 「前天我做了什么」靠它才答得出来。
+ */
+export type MemoryEventDraft = {
+  occurredAt: string;
+  timeOfDay?: EventTimeOfDay;
+  precision: "exact" | "part_of_day" | "day";
+  place?: string;
+  title: string;
+  detail: string;
+  keywords: string[];
+  participants: string[];
+  confidence: number;
+  evidenceMessageIds: string[];
+};
+
 export type MemoryAiAnalysis = {
   summary: string;
   importantEvents: Array<{ title: string; detail: string; evidenceMessageIds: string[] }>;
@@ -57,6 +81,8 @@ export type MemoryAiAnalysis = {
   unresolvedTopics: Array<{ description: string; evidenceMessageIds: string[] }>;
   differencesFromPrevious: string[];
   memoryChanges: MemoryChange[];
+  /** 可定位到日期的具体事件。与 memoryChanges 分开：事件是事实，记忆是结论。 */
+  events: MemoryEventDraft[];
 };
 
 export type MemoryAiInput = {
@@ -73,6 +99,11 @@ export type MemoryAiInput = {
   omittedMessageCount: number;
   activeMemories: MemoryAiExistingItem[];
   previousSnapshotSummary: string | null;
+  /**
+   * 这一天已经记录过的忆泡（按天任务专用）。
+   * 不传时模型没有「哪些事已经记过」的概念，重跑同一天就会换句话再写一遍。
+   */
+  existingEvents?: Array<{ occurredAt: string; title: string }>;
 };
 
 const MAX_RESPONSE_BYTES = 1_000_000;
@@ -112,6 +143,125 @@ function evidenceList<T extends { evidenceMessageIds: string[] }>(
     if (mapped) result.push(mapped);
   }
   return result;
+}
+
+function readStringList(value: unknown, max: number, maxLength: number): string[] {
+  if (!Array.isArray(value)) return [];
+  const result: string[] = [];
+  for (const entry of value.slice(0, max)) {
+    if (typeof entry !== "string") continue;
+    const trimmed = entry.trim().slice(0, maxLength);
+    if (trimmed && !result.includes(trimmed)) result.push(trimmed);
+  }
+  return result;
+}
+
+/**
+ * 读忆泡草稿。
+ *
+ * 比记忆条目更严：没有可解析的发生时间、没有标题/详情、没有来源消息的，一律丢弃。
+ * 宁可少记一条，也不要造出一条「不知道哪天发生」的假事件 —— 那种东西既不能按时间查，
+ * 又会被模型当成事实说出来。
+ */
+function readEventDrafts(value: unknown, validIds: Set<string>): MemoryEventDraft[] {
+  if (!Array.isArray(value)) return [];
+  const drafts: MemoryEventDraft[] = [];
+  for (const raw of value.slice(0, 40)) {
+    const entry = asRecord(raw);
+    if (!entry) continue;
+    const title = asText(entry.title, 200);
+    const detail = asText(entry.detail, 2000);
+    const occurredAtRaw = asText(entry.occurredAt, 60);
+    const ids = evidenceIds(entry.evidenceMessageIds, validIds);
+    if (!title || !detail || !occurredAtRaw || ids.length === 0) continue;
+    const occurredAt = new Date(occurredAtRaw);
+    if (Number.isNaN(occurredAt.getTime())) continue;
+
+    const timeOfDayRaw = asText(entry.timeOfDay, 20);
+    const timeOfDay = (EVENT_TIME_OF_DAY as readonly string[]).includes(timeOfDayRaw)
+      ? (timeOfDayRaw as EventTimeOfDay)
+      : undefined;
+    const confidenceRaw = entry.confidence;
+    const confidence = typeof confidenceRaw === "number" && Number.isFinite(confidenceRaw)
+      ? Math.min(1, Math.max(0, confidenceRaw))
+      : 0.6;
+    // 只有日期没有时刻（当天 00:00）时，精度标成 day，别假装知道几点。
+    const precision: MemoryEventDraft["precision"] = timeOfDay
+      ? "part_of_day"
+      : occurredAtRaw.endsWith("T00:00:00.000Z") || occurredAtRaw.endsWith("T00:00:00Z")
+        ? "day"
+        : "exact";
+
+    drafts.push({
+      occurredAt: occurredAt.toISOString(),
+      ...(timeOfDay ? { timeOfDay } : {}),
+      precision,
+      ...(asText(entry.place, 200) ? { place: asText(entry.place, 200) } : {}),
+      title,
+      detail,
+      keywords: readStringList(entry.keywords, 8, 30),
+      participants: readStringList(entry.participants, 8, 40),
+      confidence,
+      evidenceMessageIds: ids,
+    });
+  }
+  return drafts;
+}
+
+/**
+ * 「同一件事换了个说法」的判定：先看标题重合，再看参与人。
+ *
+ * - 连续 6 字以上重合 → 直接判重（「发布群公告」这种关键片段不会巧合）；
+ * - 只有 3–5 字重合 → 多半只是人名/称呼撞上了，**必须参与人也有交集**才判重；
+ * - 参与人里的「主人 / 群友」是角色词，不算交集 —— 否则「主人问她会不会X」和
+ *   「主人问她要不要Y」这种同主语的不同事件会被吞掉。
+ */
+export function isNearDuplicateEvent(
+  left: { title: string; participants: readonly string[] },
+  right: { title: string; participants: readonly string[] },
+): boolean {
+  const shared = longestCommonSubstringLength(left.title, right.title);
+  if (shared >= 6) return true;
+  if (shared < 3) return false;
+  const generic = new Set(["主人", "群友", "大家", "对方", "自己", "我", "你", "她", "他"]);
+  return left.participants.some(
+    (person) => !generic.has(person) && right.participants.includes(person),
+  );
+}
+
+/** 忆泡幂等键：同一范围、同一天、同一件事只写一条。 */
+export function makeEventDedupeKey(occurredAt: Date, title: string): string {
+  const day = occurredAt.toISOString().slice(0, 10);
+  const normalized = title.normalize("NFKC").toLocaleLowerCase().replace(/[\s\p{P}\p{S}]+/gu, "");
+  return "ev:" + createHash("sha256").update(day + ":" + normalized).digest("hex").slice(0, 40);
+}
+
+/**
+ * 两个标题的最长公共子串长度（去掉标点与空白后）。
+ *
+ * 用来兜住「同一件事换了个说法」：精确 `dedupeKey` 只认完全相同的标题，
+ * 重跑同一天时模型很容易把「发布群公告」写成「为新群起草并发布公告」。
+ * 用公共子串而不是编辑距离：中文标题的关键信息往往是连续片段（人名、事件词）。
+ */
+export function longestCommonSubstringLength(left: string, right: string): number {
+  const normalize = (value: string) =>
+    value.normalize("NFKC").toLocaleLowerCase().replace(/[\s\p{P}\p{S}]+/gu, "");
+  const a = normalize(left);
+  const b = normalize(right);
+  if (!a || !b) return 0;
+  let previous = new Array<number>(b.length + 1).fill(0);
+  let best = 0;
+  for (let i = 1; i <= a.length; i += 1) {
+    const current = new Array<number>(b.length + 1).fill(0);
+    for (let j = 1; j <= b.length; j += 1) {
+      if (a[i - 1] === b[j - 1]) {
+        current[j] = (previous[j - 1] ?? 0) + 1;
+        if (current[j]! > best) best = current[j]!;
+      }
+    }
+    previous = current;
+  }
+  return best;
 }
 
 export function validateMemoryAiOutput(
@@ -163,6 +313,8 @@ export function validateMemoryAiOutput(
         .slice(0, 30)
     : [];
 
+  const events = readEventDrafts(root.events, validIds);
+
   const memoryChanges: MemoryChange[] = [];
   if (Array.isArray(root.memoryChanges)) {
     for (const rawChange of root.memoryChanges.slice(0, 80)) {
@@ -208,6 +360,7 @@ export function validateMemoryAiOutput(
     unresolvedTopics,
     differencesFromPrevious,
     memoryChanges,
+    events,
   };
 }
 
@@ -222,6 +375,9 @@ function systemPrompt(): string {
     "当你判断某个对话对象值得她长期记住时，写一条 category=RELATIONSHIP 的记忆，内容包含对方称呼、来源（哪个群或私聊）和这段关系的要点；不要为记不住的泛泛之交写关系记忆。",
     "偏好或事实发生变化时，优先 UPDATE 已提供的相关 active memory；明确不再成立时使用 INVALIDATE；确实新增时使用 ADD。",
     "UPDATE/INVALIDATE 的 relatedMemoryId 必须来自输入的 activeMemories。每条 memoryChanges 必须至少引用一个输入中的 evidenceMessageIds，且来源必须真正支持该结论。",
+    "另外把这一周期里**能落到某一天**的事写进 events：occurredAt 用消息里的时间（ISO 8601，换算成 UTC 带 Z；只知道哪一天就写当天 00:00:00Z），title 一句话，detail 写清经过，participants 写涉及的人（用消息里的称呼），place 知道才写，keywords 写 3-5 个同义或相关词。寒暄、没有日期的泛泛而谈、群友之间与她无关的闲聊都不要写。每条 events 同样必须引用真实的 evidenceMessageIds。",
+    "existingEvents 是这一天**已经记录过**的事件：不要重复记录，同一件事换个说法也算重复（例如「发布群公告」和「起草并发布公告」是同一件）。只写确实不同的事。",
+    "群聊里可能同时有好几个 bot 在活动，别人 (@数字) 或直接说的话**不一定是冲她说的**。写 event 前必须先确认对象：只有 role=assistant 的消息（她自己说的）、明确叫她名字的话、@ 指向她的消息，才算「关于她」。如果一条评价/抱怨 @ 的是另一个号码、或者上下文显示在说别人的 bot，就不能写成「群友说她/嫌她/夸她」这类事——那件事的主体不是她。判断不出来时宁可不写，也别记成她的事。",
     "只输出 JSON，不要 Markdown 代码围栏。所有列表字段必须存在，即使为空。",
     "JSON 格式：",
     JSON.stringify({
@@ -240,6 +396,18 @@ function systemPrompt(): string {
         evidenceMessageIds: ["原始消息ID"],
         relatedMemoryId: "UPDATE/INVALIDATE 必填，ADD 省略",
         changeReason: "变化依据"
+      }],
+      events: [{
+        occurredAt: "2026-10-25T06:00:00.000Z",
+        timeOfDay: "下午",
+        precision: "part_of_day",
+        place: "北海",
+        title: "和小关在北海银滩游泳",
+        detail: "小关下午约她去银滩游泳，一直玩到傍晚。",
+        keywords: ["游泳", "海边", "银滩"],
+        participants: ["小关"],
+        confidence: 0.9,
+        evidenceMessageIds: ["原始消息ID"]
       }]
     }, null, 2),
     "注意：JSON 示例中的原始消息ID只是占位符。只能返回输入中真实出现的 ID。",
@@ -272,10 +440,13 @@ export async function analyzeMemoryPeriod(input: MemoryAiInput): Promise<{
     throw new Error("LLM_INVALID_BASE_URL: " + (error instanceof Error ? error.message : String(error)));
   }
 
-  const timeoutRaw = Number(process.env.LLM_TIMEOUT_MS ?? 60_000);
+  // 记忆提炼的输入比单轮对话大得多（一个周期上百条消息 + 现有记忆），思考型模型
+  // 在 60 秒默认值下会超时 —— 2026-10-31 实测：加大 token 预算后立刻变成 abort。
+  // 默认给它 120 秒，仍然允许用 LLM_TIMEOUT_MS 覆盖（上限 180 秒）。
+  const timeoutRaw = Number(process.env.LLM_TIMEOUT_MS ?? 120_000);
   const timeoutMs = Number.isInteger(timeoutRaw) && timeoutRaw >= 5_000 && timeoutRaw <= 180_000
     ? timeoutRaw
-    : 60_000;
+    : 120_000;
   // Keep connection settings out of the user prompt. Project fields explicitly so
   // extra runtime properties on nested objects cannot accidentally be serialized.
   const promptInput = {
@@ -284,8 +455,16 @@ export async function analyzeMemoryPeriod(input: MemoryAiInput): Promise<{
     timezone: input.timezone,
     scopeType: input.scopeType,
     characterName: input.characterName,
-    messages: input.messages.map(({ id, role, eventType, occurredAt, content, origin, isOwner }) => ({
-      id, role, eventType, occurredAt, content, ...(origin ? { origin } : {}), ...(isOwner ? { isOwner } : {}),
+    messages: input.messages.map(({ id, role, eventType, occurredAt, content, origin, isOwner, mentionTargets }) => ({
+      id,
+      role,
+      eventType,
+      occurredAt,
+      content,
+      ...(origin ? { origin } : {}),
+      ...(isOwner ? { isOwner } : {}),
+      // 群聊里 @ 的是谁：`other` 表示这句话是冲别人说的，不能记成她的事。
+      ...(mentionTargets?.length ? { mentionTargets } : {}),
     })),
     totalMessageCount: input.totalMessageCount,
     omittedMessageCount: input.omittedMessageCount,
@@ -293,6 +472,16 @@ export async function analyzeMemoryPeriod(input: MemoryAiInput): Promise<{
       id, category, content, confidence, validFrom, validTo, createdAt,
     }) => ({ id, category, content, confidence, validFrom, validTo, createdAt })),
     previousSnapshotSummary: input.previousSnapshotSummary,
+    // 这一天已经记过的事件：让模型自己避开，别把同一件事换句话再写一遍。
+    // 只在按天任务里传（周期快照没有「当天已记录」这个概念）。
+    ...(input.existingEvents?.length
+      ? {
+          existingEvents: input.existingEvents.slice(0, 40).map((event) => ({
+            occurredAt: event.occurredAt,
+            title: event.title,
+          })),
+        }
+      : {}),
   };
 
   const response = await fetch(endpoint, {
@@ -305,7 +494,10 @@ export async function analyzeMemoryPeriod(input: MemoryAiInput): Promise<{
     body: JSON.stringify({
       model,
       temperature: 0.1,
-      max_tokens: 6000,
+      // 思考型模型会先花掉一部分预算在 reasoning 上：6000 在「一天 120 条消息 + 事件 + 变化」
+      // 这种输入下会把正文截断，表现是 JSON 解析失败（2026-10-31 实测重跑两次都挂在这）。
+      // 宁可多给预算，也别让一份内容正确的输出因为截断被整轮丢掉。
+      max_tokens: 16_000,
       response_format: { type: "json_object" },
       messages: [
         { role: "system", content: systemPrompt() },
@@ -337,8 +529,11 @@ export async function analyzeMemoryPeriod(input: MemoryAiInput): Promise<{
   let parsed: unknown;
   try {
     if (typeof content !== "string") throw new Error("content is not a string");
-    const cleaned = content.trim().replace(/^\x60{3}(?:json)?\s*/i, "").replace(/\s*\x60{3}$/, "");
-    parsed = JSON.parse(cleaned);
+    // `response_format: json_object` 只是请求，不是保证：实测最常见的坏输出是套一层
+    // json 围栏，或前面先写一句「好的，这是结果：」。内容和群聊那条一样走宽松解析，
+    // 裸 JSON.parse 会把这类**内容其实全对**的输出判成失败（2026-10-31 群聊整理就是这样挂的）。
+    parsed = parseJsonLoose(content, { expect: "object" });
+    if (!parsed) throw new Error("not an object");
   } catch {
     throw new Error("LLM_INVALID_JSON: 模型输出不是有效 JSON。");
   }

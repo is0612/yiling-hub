@@ -1,4 +1,5 @@
 import type { PrismaClient } from "../../src/generated/prisma/client";
+import { localDayHour, resolveDailyEventWindow, resolveDayWindow } from "./memory-event-time";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_MAX_PERIODS_PER_SETTING = 24;
@@ -100,6 +101,7 @@ export async function enqueueDueMemorySnapshots(
       anchorAt: true,
       nextSnapshotAt: true,
       autoSnapshotEnabled: true,
+      timezone: true,
       rawMessageRetentionDays: true,
       rawMessageCleanupEnabled: true,
       character: {
@@ -184,6 +186,67 @@ export async function enqueueDueMemorySnapshots(
     const ownerPrivateScopeId = setting.character.ownerId
       ? setting.character.memoryScopes.find((scope) => scope.scopeType === "USER_PRIVATE" && scope.userId === setting.character.ownerId)?.id
       : null;
+
+    // 忆泡按天整理：和 8 天快照周期解耦 —— 昨天的对话第二天就该查得到，
+    // 不能等下一个周期。幂等键带日期，一天只排一次；当天没有对话就不排。
+    const eventScopeIds = [globalScopeId, ownerPrivateScopeId].filter((id): id is string => Boolean(id));
+    // 自动记忆总开关关掉时，忆泡也不偷偷跑 —— 一次模型调用也是钱，不能绕过用户的选择。
+    if (setting.autoSnapshotEnabled && eventScopeIds.length > 0) {
+      const timeZone = setting.timezone || "Asia/Shanghai";
+      const { dayKey: todayKey, hour } = localDayHour(now, timeZone);
+      const todayWindow = resolveDayWindow(todayKey, timeZone);
+      const yesterdayWindow = resolveDailyEventWindow(now, timeZone);
+      const recentCutoff = new Date(now.getTime() - 60 * 60_000);
+
+      for (const scopeId of eventScopeIds) {
+        // 增量：最近一小时有新消息才排，幂等键带小时 —— 同一天可以长很多次。
+        const recent = await prisma.message.findFirst({
+          where: {
+            conversation: { is: { memoryScopeId: scopeId } },
+            occurredAt: { gte: recentCutoff, lt: now },
+          },
+          select: { id: true },
+        });
+        if (recent) {
+          const created = await prisma.memoryJob.createMany({
+            data: [{
+              memoryScopeId: scopeId,
+              type: "EXTRACT_EVENTS" as const,
+              idempotencyKey: `events-hour:${scopeId}:${todayKey}:${hour}`,
+              periodStart: todayWindow.start,
+              periodEnd: todayWindow.end,
+              status: "QUEUED" as const,
+              runAt: now,
+            }],
+            skipDuplicates: true,
+          });
+          report.jobsQueued += created.count;
+        }
+
+        // 收口：昨天整天跑完后标成 FINAL，之后不再追加。
+        const hasYesterday = await prisma.message.findFirst({
+          where: {
+            conversation: { is: { memoryScopeId: scopeId } },
+            occurredAt: { gte: yesterdayWindow.start, lt: yesterdayWindow.end },
+          },
+          select: { id: true },
+        });
+        if (!hasYesterday) continue;
+        const finalized = await prisma.memoryJob.createMany({
+          data: [{
+            memoryScopeId: scopeId,
+            type: "EXTRACT_EVENTS" as const,
+            idempotencyKey: `events-final:${scopeId}:${yesterdayWindow.dayKey}`,
+            periodStart: yesterdayWindow.start,
+            periodEnd: yesterdayWindow.end,
+            status: "QUEUED" as const,
+            runAt: now,
+          }],
+          skipDuplicates: true,
+        });
+        report.jobsQueued += finalized.count;
+      }
+    }
 
     try {
       const result = await prisma.$transaction(async (tx) => {

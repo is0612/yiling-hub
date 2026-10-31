@@ -639,6 +639,14 @@ button, input, textarea, select { font: inherit; }
 .muted-note { color: var(--faint); font-size: 12px; }
 
 .timeline { display: flex; flex-direction: column; gap: 0; }
+/* 按天分组的日期头：只在「这一天变了」时插一行，不打断条目的时间倒序 */
+.timeline-day { display: flex; align-items: center; gap: 8px; padding: 18px 0 8px; }
+.timeline-day:first-child { padding-top: 4px; }
+.timeline-day-label { color: var(--text-2); font-size: 12px; font-weight: 600; }
+.timeline-day-meta { color: var(--faint); font-size: 12px; }
+/* 今天还没有条目时的占位：告诉用户「不是坏了，是还没整理」 */
+.timeline-day-empty { opacity: .72; padding-bottom: 4px; }
+.timeline-day-draft { padding: 1px 7px; border-radius: 999px; background: #fef3c7; color: #92400e; font-size: 12px; }
 .timeline-item { display: flex; gap: 12px; border-bottom: 1px solid var(--line); padding: 14px 0; }
 .timeline-item:last-child { border-bottom: 0; }
 .timeline-marker {

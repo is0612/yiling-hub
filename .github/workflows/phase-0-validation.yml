@@ -107,6 +107,12 @@ jobs:
       - name: 对话记忆检索测试
         run: yarn run test:memory-retrieval
 
+      - name: 忆泡时间解析与去重逻辑测试
+        run: yarn run test:memory-events
+
+      - name: 忆泡落库、去重与软删除数据库集成测试
+        run: yarn run test:memory-events-db
+
       - name: 角色模型参数校验测试
         run: yarn run test:chat-model-config
 
@@ -133,6 +139,9 @@ jobs:
 
       - name: QQ 小号（OneBot）渠道端到端测试
         run: yarn run test:onebot
+
+      - name: 渠道消息落库 metadata 测试
+        run: yarn run test:channel-message-metadata
 
       - name: B站 命令目录与解析层测试
         run: yarn run test:bili-runner

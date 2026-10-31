@@ -2,7 +2,7 @@ import { toMemorySnapshotDtos, type MemorySnapshotDto } from "./memory-snapshot-
 
 export type MemoryTimelineEntryDto = {
   id: string;
-  type: "message" | "memory" | "snapshot" | "event";
+  type: "message" | "memory" | "snapshot" | "event" | "memoryEvent";
   title: string;
   summary: string;
   time: string;
@@ -10,6 +10,22 @@ export type MemoryTimelineEntryDto = {
   tag: string;
   tagTone: "green" | "purple" | "blue" | "amber" | "gray";
   source: string;
+};
+
+/**
+ * 一条忆泡。DRAFT = 今天还在长，FINAL = 已收口 —— 时间线上标出来，
+ * 用户才知道「今天这几条还会变」。
+ */
+type MemoryEventRecord = {
+  id: string;
+  occurredAt: Date;
+  timeOfDay: string | null;
+  place: string | null;
+  participants: string[];
+  title: string;
+  detail: string;
+  state: "DRAFT" | "FINAL";
+  memoryScope: { scopeType: string };
 };
 
 type MessageRecord = {
@@ -99,6 +115,7 @@ export function toMemoryTimelineDtos(input: {
   messages: MessageRecord[];
   memoryItems: MemoryRecord[];
   snapshots: SnapshotRecord[];
+  events?: MemoryEventRecord[];
 }, timeZone = "Asia/Shanghai", limit = 300): MemoryTimelineEntryDto[] {
   const records: TimedEntry[] = [];
 
@@ -157,6 +174,31 @@ export function toMemoryTimelineDtos(input: {
         tag: snapshot.status,
         tagTone: snapshot.statusTone,
         source: "总结版本 #" + snapshot.id.slice(0, 8),
+      },
+    });
+  }
+
+  for (const event of input.events ?? []) {
+    const isPrivate = event.memoryScope.scopeType === "USER_PRIVATE";
+    const parts = [
+      event.timeOfDay ?? "",
+      event.place ? "地点：" + event.place : "",
+      event.participants.length ? "相关：" + event.participants.join("、") : "",
+      event.detail,
+    ].filter(Boolean);
+    records.push({
+      timestamp: event.occurredAt.getTime(),
+      entry: {
+        id: "memoryEvent:" + event.id,
+        type: "memoryEvent",
+        title: event.title,
+        summary: summarize(parts.join(" · ")),
+        time: formatTime(event.occurredAt, timeZone),
+        channel: isPrivate ? "私人记忆" : "长期记忆",
+        // DRAFT 是「今天还在长」，标出来用户才知道这几条之后还会变。
+        tag: event.state === "DRAFT" ? "还在记" : "已收口",
+        tagTone: event.state === "DRAFT" ? "amber" : "purple",
+        source: "忆泡 #" + event.id.slice(0, 8),
       },
     });
   }

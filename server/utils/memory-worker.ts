@@ -9,11 +9,12 @@ import {
   type MemoryAiMessage,
   type MemoryChange,
 } from "./memory-ai";
-import { applyMemoryChange, normalizeMemoryText } from "./memory-change-apply";
+import { applyMemoryChange, applyMemoryEvents, normalizeMemoryText } from "./memory-change-apply";
 import {
   PER_CONVERSATION_SOURCE_WINDOW,
   selectPeriodSourceMessages,
 } from "./memory-source-selection";
+import { localDayKey } from "./memory-event-time";
 
 const LEASE_MS = 5 * 60 * 1000;
 /** 一个周期最多看几个会话：会话再多，也只给最近活跃的这几个分配来源配额。 */
@@ -48,6 +49,8 @@ type PeriodSourceMessage = {
   origin: string;
   /** 这条是主人发的。群聊里主人和群友混在一起，要靠它让提炼时认得出主人。 */
   isOwner: boolean;
+  /** 这条消息 @ 了谁（self / other / all）。用来判断「这句话是不是冲她说的」。 */
+  mentionTargets?: string[];
 };
 
 /** 会话在提示词里的来源标签。群聊必须带上群号，否则模型分不清是哪段关系在说话。 */
@@ -84,9 +87,19 @@ async function loadPeriodSourceMessages(
       conversationId: conversation.id,
       origin,
       isOwner: readIsOwnerFlag(row.metadata),
+      mentionTargets: readMentionTargets(row.metadata),
     }));
   }));
   return selectPeriodSourceMessages(batches.flat());
+}
+
+/** 这条消息 @ 了谁（self / other / all）。没标就是非群聊或没 @ 任何人。 */
+function readMentionTargets(metadata: unknown): string[] {
+  const record = metadata && typeof metadata === "object" && !Array.isArray(metadata)
+    ? metadata as Record<string, unknown>
+    : {};
+  const value = record.mentionTargets;
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
 function readIsOwnerFlag(metadata: unknown): boolean {
@@ -110,11 +123,199 @@ function selectAiMessages(messages: PeriodSourceMessage[]): MemoryAiMessage[] {
     content: message.content.slice(0, 1200),
     origin: message.origin,
     isOwner: message.isOwner,
+    ...(message.mentionTargets?.length ? { mentionTargets: message.mentionTargets } : {}),
   }));
 }
 
 function validConfidence(change: MemoryChange): boolean {
   return change.confidence >= MIN_MEMORY_CONFIDENCE;
+}
+
+/**
+ * 按天整理忆泡。
+ *
+ * 和快照任务的区别：不写快照、不碰长期记忆，只把「昨天」这一天里能落到具体时间的事
+ * 写进 `MemoryEvent`。同一条事件由 `dedupeKey`（范围 + 日期 + 标题）保证只写一次，
+ * 补跑或重试都不会重复。
+ */
+async function runDailyEventJob(
+  prisma: PrismaClient,
+  job: { id: string; memoryScopeId: string; periodStart: Date; periodEnd: Date; idempotencyKey: string },
+  now: Date,
+): Promise<MemoryWorkerResult> {
+  const finish = async (
+    status: "SUCCEEDED" | "SKIPPED" | "RETRY_WAIT" | "FAILED",
+    message: string,
+    extra: { runAt?: Date } = {},
+  ): Promise<MemoryWorkerResult> => {
+    await prisma.memoryJob.update({
+      where: { id: job.id },
+      data: {
+        status,
+        completedAt: status === "RETRY_WAIT" ? null : now,
+        lockedAt: null,
+        lockedBy: null,
+        lastError: status === "SUCCEEDED" || status === "SKIPPED" ? null : message,
+        ...(extra.runAt ? { runAt: extra.runAt } : {}),
+      },
+    });
+    return { processed: true, jobId: job.id, status, message };
+  };
+
+  const scope = await prisma.memoryScope.findUnique({
+    where: { id: job.memoryScopeId },
+    select: {
+      characterId: true,
+      scopeType: true,
+      character: {
+        select: {
+          name: true,
+          modelConfig: true,
+          memorySetting: { select: { timezone: true } },
+        },
+      },
+    },
+  });
+  if (!scope) return finish("FAILED", "找不到忆泡任务关联的记忆范围。");
+
+  const chatSettings = resolveChatModelSettings(scope.character.modelConfig);
+  let apiKey = "";
+  try {
+    apiKey = await resolveCharacterApiKey(scope.character.modelConfig, chatSettings.apiBaseUrl);
+  } catch {
+    // 解密失败按「还没配好」处理：留回队列，别让一天的事件就此丢掉。
+    return finish("RETRY_WAIT", "角色 API Key 无法解密，忆泡任务稍后重试。", { runAt: new Date(now.getTime() + 10 * 60_000) });
+  }
+  if (!apiKey || !chatSettings.model) {
+    return finish("RETRY_WAIT", "模型未配置，忆泡任务留在队列。", { runAt: new Date(now.getTime() + 10 * 60_000) });
+  }
+
+  // 「今天还在长」的核心：一天一行进度，只处理上次抽取之后的新消息。
+  const timeZone = scope.character.memorySetting?.timezone ?? "Asia/Shanghai";
+  const dayKey = localDayKey(job.periodStart, timeZone);
+  const finalize = job.idempotencyKey.startsWith("events-final:");
+  const day = await prisma.memoryEventDay.findUnique({
+    where: { memoryScopeId_dayKey: { memoryScopeId: job.memoryScopeId, dayKey } },
+    select: { state: true, extractedAt: true },
+  });
+  if (day?.state === "FINAL" && !finalize) {
+    return finish("SKIPPED", `${dayKey} 的忆泡已经收口。`);
+  }
+  // 增量起点：上次抽到哪就从哪继续；收口任务补最后一段。
+  const deltaStart = day?.extractedAt && day.extractedAt.getTime() > job.periodStart.getTime()
+    ? day.extractedAt
+    : job.periodStart;
+
+  const conversations = await prisma.conversation.findMany({
+    where: {
+      memoryScopeId: job.memoryScopeId,
+      messages: { some: { occurredAt: { gte: deltaStart, lt: job.periodEnd } } },
+    },
+    select: { id: true, externalConversationId: true },
+  });
+  const messages = await loadPeriodSourceMessages(prisma, conversations, deltaStart, job.periodEnd);
+  if (messages.length === 0) {
+    // 没有新消息也要把这一天标成已扫过：收口任务照样要落 FINAL。
+    if (finalize) {
+      await prisma.memoryEventDay.upsert({
+        where: { memoryScopeId_dayKey: { memoryScopeId: job.memoryScopeId, dayKey } },
+        create: { memoryScopeId: job.memoryScopeId, dayKey, state: "FINAL", extractedAt: now },
+        update: { state: "FINAL", extractedAt: now },
+      });
+    }
+    return finish("SKIPPED", "这一段没有新的对话。");
+  }
+
+  let aiResult: Awaited<ReturnType<typeof analyzeMemoryPeriod>>;
+  // 这一天已经记过的事件：进提示词让模型自己避开，重跑不会把同一件事换个说法再写一遍。
+  const existingEvents = await prisma.memoryEvent.findMany({
+    where: { memoryScopeId: job.memoryScopeId, dayKey, status: "ACTIVE" },
+    orderBy: { occurredAt: "asc" },
+    take: 40,
+    select: { occurredAt: true, title: true },
+  });
+  try {
+    aiResult = await analyzeMemoryPeriod({
+      apiKey,
+      apiBaseUrl: chatSettings.apiBaseUrl,
+      model: chatSettings.model,
+      periodStart: job.periodStart.toISOString(),
+      periodEnd: job.periodEnd.toISOString(),
+      timezone: scope.character.memorySetting?.timezone ?? "Asia/Shanghai",
+      scopeType: scope.scopeType,
+      characterName: scope.character.name,
+      messages: selectAiMessages(messages),
+      totalMessageCount: messages.length,
+      omittedMessageCount: Math.max(0, messages.length - Math.min(messages.length, MAX_AI_MESSAGES)),
+      // 这一趟只要事件：不用长期记忆做 UPDATE 对照，省一半输入。
+      activeMemories: [],
+      previousSnapshotSummary: null,
+      ...(existingEvents.length
+        ? { existingEvents: existingEvents.map((event) => ({ occurredAt: event.occurredAt.toISOString(), title: event.title })) }
+        : {}),
+    });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    await prisma.memoryJob.update({
+      where: { id: job.id },
+      data: {
+        status: "RETRY_WAIT",
+        completedAt: null,
+        lockedAt: null,
+        lockedBy: null,
+        lastError: detail.slice(0, 700),
+        runAt: new Date(now.getTime() + 5 * 60_000),
+      },
+    });
+    return { processed: true, jobId: job.id, status: "RETRY_WAIT", message: detail.slice(0, 300) };
+  }
+
+  await recordModelUsage({
+    kind: "snapshot",
+    model: chatSettings.model,
+    usage: toUsageTokens(aiResult.usage),
+    characterId: scope.characterId,
+  });
+
+  const messagesById = new Map(messages.map((message) => [message.id, message]));
+  const applied = await prisma.$transaction(async (tx) => {
+    const result = await applyMemoryEvents(
+      tx,
+      {
+        memoryScopeId: job.memoryScopeId,
+        characterId: scope.characterId,
+        snapshotId: null,
+        timeZone,
+        state: finalize ? "FINAL" : "DRAFT",
+      },
+      aiResult.analysis.events,
+      messagesById,
+    );
+    // 进度行：记下「抽到哪」，下一次只处理增量；收口任务顺便把状态落成 FINAL。
+    await tx.memoryEventDay.upsert({
+      where: { memoryScopeId_dayKey: { memoryScopeId: job.memoryScopeId, dayKey } },
+      create: {
+        memoryScopeId: job.memoryScopeId,
+        dayKey,
+        state: finalize ? "FINAL" : "DRAFT",
+        eventCount: result.applied.length,
+        extractedAt: now,
+      },
+      update: {
+        state: finalize ? "FINAL" : "DRAFT",
+        eventCount: { increment: result.applied.length },
+        extractedAt: now,
+      },
+    });
+    return result;
+  });
+
+  return finish(
+    "SUCCEEDED",
+    applied.applied.length > 0
+      ? `整理了 ${applied.applied.length} 条忆泡，跳过 ${applied.skipped} 条重复或不合格的。`
+      : "这一段没有可以落成忆泡的事件。",
+  );
 }
 
 export async function processNextMemoryJob(
@@ -352,7 +553,7 @@ export async function processNextMemoryJob(
 
   const staleJobs = await prisma.memoryJob.findMany({
     where: {
-      type: { in: ["GENERATE_SNAPSHOT", "REGENERATE_SNAPSHOT", "CLEAN_EXPIRED_MESSAGES"] },
+      type: { in: ["GENERATE_SNAPSHOT", "REGENERATE_SNAPSHOT", "CLEAN_EXPIRED_MESSAGES", "EXTRACT_EVENTS"] },
       status: "RUNNING",
       lockedAt: { lt: staleBefore },
       ...ownership,
@@ -377,7 +578,7 @@ export async function processNextMemoryJob(
 
   const candidates = await prisma.memoryJob.findMany({
     where: {
-      type: { in: ["GENERATE_SNAPSHOT", "REGENERATE_SNAPSHOT"] },
+      type: { in: ["GENERATE_SNAPSHOT", "REGENERATE_SNAPSHOT", "EXTRACT_EVENTS"] },
       status: { in: ["QUEUED", "RETRY_WAIT"] },
       runAt: { lte: now },
       ...ownership,
@@ -458,6 +659,17 @@ export async function processNextMemoryJob(
     }
     if (!job.periodStart || !job.periodEnd || job.periodStart >= job.periodEnd) {
       throw new Error("周期任务缺少有效的起止时间。");
+    }
+
+    // 忆泡按天整理：和 8 天快照无关，走单独分支，不碰快照与长期记忆。
+    if (job.type === "EXTRACT_EVENTS") {
+      return await runDailyEventJob(prisma, {
+        id: job.id,
+        memoryScopeId: job.memoryScopeId,
+        periodStart: job.periodStart,
+        periodEnd: job.periodEnd,
+        idempotencyKey: job.idempotencyKey,
+      }, now);
     }
 
     const isRegeneration = job.type === "REGENERATE_SNAPSHOT";
@@ -755,6 +967,23 @@ export async function processNextMemoryJob(
       // 模型提出但没通过校验的条数。没有这个数字，人分不清「模型没提」和「提了但不合格」。
       let rejectedChangeCount = 0;
 
+      // 忆泡和快照写在同一个事务里：事实和结论要么一起落库，要么一起回滚。
+      // 重新提炼（历史重放）不写忆泡 —— 已经发生过的事不该被重跑出来的版本改写。
+      const eventResult = isRegeneration
+        ? { applied: [] as Array<{ id: string; title: string; occurredAt: string }>, skipped: 0 }
+        : await applyMemoryEvents(
+            tx,
+            {
+              memoryScopeId: job.memoryScopeId,
+              characterId: scope.characterId,
+              snapshotId: snapshot.id,
+              timeZone: scope.character.memorySetting?.timezone ?? "Asia/Shanghai",
+              state: "FINAL",
+            },
+            aiResult.analysis.events,
+            messagesById,
+          );
+
       for (const change of aiResult.analysis.memoryChanges) {
         // 置信度门槛必须排在重新提炼分支之前：审核清单是最需要人看的一份数据，
         // 不能变成唯一一条绕过 MIN_MEMORY_CONFIDENCE 的路径。
@@ -815,6 +1044,8 @@ export async function processNextMemoryJob(
         ...structuredContent,
         memoryChangesApplied: appliedChanges,
         memoryChangesRejected: rejectedChangeCount,
+        eventsApplied: eventResult.applied,
+        eventsSkipped: eventResult.skipped,
       };
       await tx.memorySnapshot.update({
         where: { id: snapshot.id },

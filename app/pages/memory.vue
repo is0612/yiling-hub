@@ -80,7 +80,12 @@ const draftConversationTitle = ref("");
 const draftTranscript = ref("");
 const timelineEntries = ref<TimelineEntry[]>([]);
 /** 服务端直接数的全量条数（不受「只载最近 N 条」影响） */
-const timelineCounts = ref({ message: 0, event: 0, memory: 0, snapshot: 0 });
+const timelineCounts = ref({ message: 0, event: 0, memory: 0, snapshot: 0, memoryEvent: 0 });
+/** 每天的整理进度（按角色时区）：日期头显示「上次整理几点」、今天是否还在长。 */
+type TimelineDay = { dayKey: string; state: "DRAFT" | "FINAL"; eventCount: number; extractedAt: string | null };
+const timelineDays = ref<Record<string, TimelineDay>>({});
+/** 角色时区里的「今天」，由服务端给，前端不自己算。 */
+const todayKey = ref("");
 const timelineLoading = ref(false);
 const recycleBinOpen = ref(false);
 const recycleBinLoading = ref(false);
@@ -123,9 +128,11 @@ const selectedGroupChat = computed(() => groupChatGroups.value.find((group) => g
 const recordedMessageCount = computed(() => timelineCounts.value.message);
 const recordedEventCount = computed(() => timelineCounts.value.event);
 const commitmentCount = computed(() => timelineEntries.value.filter((entry) => entry.type === "memory" && entry.title === "承诺与约定" && entry.tag === "长期记忆").length);
-/** 记忆 + 总结的总量 vs 实际载入量：差值为「没载进来的更早记录」 */
+/** 记忆 + 忆泡 + 总结的总量 vs 实际载入量：差值为「没载进来的更早记录」 */
 const loadedTotal = computed(() => timelineEntries.value.length);
-const knownTotal = computed(() => timelineCounts.value.memory + timelineCounts.value.snapshot);
+const knownTotal = computed(
+  () => timelineCounts.value.memory + timelineCounts.value.snapshot + timelineCounts.value.memoryEvent,
+);
 const truncated = computed(() => knownTotal.value > loadedTotal.value);
 /**
  * 来源筛选，而不是「渠道」筛选：服务端 timeline 的 channel 里混了两个维度 ——
@@ -173,17 +180,34 @@ const query = ref("");
 const filterOptions = [
   { label: "全部记录", type: undefined },
   { label: "长期记忆", type: "memory" as TimelineType },
+  { label: "忆泡", type: "memoryEvent" as TimelineType },
   { label: "阶段总结", type: "snapshot" as TimelineType },
 ];
+/**
+ * 同一天内的排序：忆泡在前、记忆与总结在后。
+ *
+ * 忆泡是「那天发生了什么」的骨架，记忆是从里面提炼的结论 —— 先看骨架再看出处，
+ * 比按秒混排好读得多。跨天仍然是时间倒序，这样日期头才能连续。
+ */
+const TYPE_ORDER: Record<string, number> = { memoryEvent: 0, memory: 1, snapshot: 2, message: 3, event: 4 };
 const filteredEntries = computed(() => {
   const type = filterOptions.find((option) => option.label === activeFilter.value)?.type;
-  return timelineEntries.value.filter((entry) => {
+  const list = timelineEntries.value.filter((entry) => {
     const typeMatches = !type || entry.type === type;
     const sourceMatches = channelFilter.value === SOURCE_ALL
       || entry.channel === SOURCE_WILDCARD
       || entry.channel === channelFilter.value;
     const textMatches = !query.value || `${entry.title} ${entry.summary} ${entry.source}`.toLowerCase().includes(query.value.toLowerCase());
     return typeMatches && sourceMatches && textMatches;
+  });
+  return [...list].sort((left, right) => {
+    const dayLeft = dayKeyOf(left);
+    const dayRight = dayKeyOf(right);
+    if (dayLeft !== dayRight) return dayRight.localeCompare(dayLeft);
+    const rankLeft = TYPE_ORDER[left.type] ?? 9;
+    const rankRight = TYPE_ORDER[right.type] ?? 9;
+    if (rankLeft !== rankRight) return rankLeft - rankRight;
+    return right.time.localeCompare(left.time);
   });
 });
 
@@ -195,28 +219,128 @@ watch([activeFilter, channelFilter, query], () => {
   visibleCount.value = PAGE_SIZE;
 });
 
+/**
+ * 按天分组：条目按时间倒序，「同一天」一定是连续的，所以只需要判断这一天变了没有。
+ * 日期直接用服务端渲染好的 time 前缀（已经按角色时区格式化），前端不再重算时区。
+ */
+function dayKeyOf(entry: TimelineEntry) {
+  // 记忆条目用 zh-CN（2026/10/29），快照用 en-CA（2026-10-29）—— 不归一化会把同一天拆成两组。
+  return entry.time.slice(0, 10).replace(/\//g, "-");
+}
+const dayStats = computed(() => {
+  const map = new Map<string, { count: number; draft: number }>();
+  // 统计用「筛选后的全部条目」，不是当前这一页：一天被分页截断时，
+  // 日期头仍应显示这一天真实有几条，而不是本页看到的几条。
+  for (const entry of filteredEntries.value) {
+    const key = dayKeyOf(entry);
+    const row = map.get(key) ?? { count: 0, draft: 0 };
+    row.count += 1;
+    if (entry.type === "memoryEvent" && entry.tag === "还在记") row.draft += 1;
+    map.set(key, row);
+  }
+  return map;
+});
+function isDayStart(index: number) {
+  if (index === 0) return true;
+  const current = pagedEntries.value[index];
+  const previous = pagedEntries.value[index - 1];
+  return Boolean(current && previous) && dayKeyOf(current!) !== dayKeyOf(previous!);
+}
+/** 日期键加减天数（跨月/跨年都按 UTC 日历算，不碰时区）。 */
+function shiftDayKey(key: string, delta: number) {
+  const [year, month, day] = key.split("-").map(Number);
+  if (!year || !month || !day) return key;
+  const shifted = new Date(Date.UTC(year, month - 1, day + delta));
+  const y = shifted.getUTCFullYear();
+  const m = String(shifted.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(shifted.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+function dayLabelAt(index: number) {
+  const entry = pagedEntries.value[index];
+  if (!entry) return "";
+  const key = dayKeyOf(entry);
+  const stats = dayStats.value.get(key);
+  const suffix = stats ? ` · ${stats.count} 条` : "";
+  // 「今天 / 昨天」按服务端给的角色时区算，前端不自己猜。
+  if (todayKey.value && key === todayKey.value) return `今天${suffix}`;
+  if (todayKey.value && key === shiftDayKey(todayKey.value, -1)) return `昨天${suffix}`;
+  const [year, month, day] = key.split("-");
+  const label = year && month && day
+    ? `${year} 年 ${Number(month)} 月 ${Number(day)} 日`
+    : key;
+  return label + suffix;
+}
+function dayHasDraftAt(index: number) {
+  const entry = pagedEntries.value[index];
+  if (!entry) return false;
+  return (dayStats.value.get(dayKeyOf(entry))?.draft ?? 0) > 0;
+}
+/** 最近的整理时刻：让人知道「今天这几条」有多新。 */
+function formatClock(iso: string | null | undefined) {
+  if (!iso) return "";
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return "";
+  const hour = String(at.getHours()).padStart(2, "0");
+  const minute = String(at.getMinutes()).padStart(2, "0");
+  return `${hour}:${minute}`;
+}
+function dayExtractedAt(index: number) {
+  const entry = pagedEntries.value[index];
+  if (!entry) return "";
+  const clock = formatClock(timelineDays.value[dayKeyOf(entry)]?.extractedAt);
+  return clock ? `上次整理 ${clock}` : "";
+}
+
+/**
+ * 今天还没有任何条目时的占位行。
+ *
+ * 日期头是由条目驱动的：今天还没整理出忆泡，列表里就完全看不到「今天」，
+ * 用户会以为页面坏了。这里补一行「今天 · 0 条 · 还没整理」，并指向右上角那个按钮。
+ * 只在「全部记录 / 忆泡」两个筛选下出现 —— 看「长期记忆」时提忆泡是噪声。
+ */
+const showTodayPlaceholder = computed(() => {
+  if (!todayKey.value) return false;
+  if (activeFilter.value !== "全部记录" && activeFilter.value !== "忆泡") return false;
+  return !filteredEntries.value.some((entry) => dayKeyOf(entry) === todayKey.value);
+});
+const todayPlaceholderNote = computed(() => {
+  const clock = formatClock(timelineDays.value[todayKey.value]?.extractedAt);
+  return clock ? `上次整理 ${clock}` : "还没整理，点右上角「立即整理忆泡」";
+});
+
 /** 筛选 chip 后面跟随的条数：用服务端全量计数，不是「载入了多少条」 */
 function countFor(label: string) {
   const type = filterOptions.find((option) => option.label === label)?.type;
   if (type === "memory") return timelineCounts.value.memory;
   if (type === "snapshot") return timelineCounts.value.snapshot;
+  if (type === "memoryEvent") return timelineCounts.value.memoryEvent;
   return knownTotal.value;
 }
 
-type TimelineResponse = { entries: TimelineEntry[]; counts: { message: number; event: number; memory: number; snapshot: number } };
+type TimelineResponse = {
+  entries: TimelineEntry[];
+  counts: { message: number; event: number; memory: number; snapshot: number; memoryEvent: number };
+  days: TimelineDay[];
+  today: string;
+};
 
 async function loadTimeline() {
   timelineLoading.value = true;
   try {
-    // kinds 只取记忆与总结：额度全给记忆（400 条），消息不再抢窗口
+    // kinds 只取记忆、总结与忆泡：额度全给记忆（400 条），消息不再抢窗口
     const result = await $fetch<TimelineResponse>(
-      `/api/characters/${encodeURIComponent(id.value)}/timeline?kinds=memory,snapshot&limit=400`,
+      `/api/characters/${encodeURIComponent(id.value)}/timeline?kinds=memory,snapshot,memoryEvent&limit=400`,
     );
     timelineEntries.value = result.entries;
     timelineCounts.value = result.counts;
+    timelineDays.value = Object.fromEntries(result.days.map((day) => [day.dayKey, day]));
+    todayKey.value = result.today;
   } catch {
     timelineEntries.value = [];
-    timelineCounts.value = { message: 0, event: 0, memory: 0, snapshot: 0 };
+    timelineCounts.value = { message: 0, event: 0, memory: 0, snapshot: 0, memoryEvent: 0 };
+    timelineDays.value = {};
+    todayKey.value = "";
     ElMessage.error("记忆时间线读取失败，请检查本地开发服务器日志。");
   } finally {
     timelineLoading.value = false;
@@ -701,6 +825,42 @@ async function manualSnapshot() {
 }
 
 /**
+ * 立即整理忆泡：昨天收口 + 今天增量。
+ *
+ * 调度器每小时才跑一次，用户点按钮时不该等；服务端会把两段任务排进队列并当场执行。
+ * 模型没配好时任务会留在队列，这里把服务端的说明原样透出来，别自己编一个「成功」。
+ */
+const eventExtracting = ref(false);
+async function runEventExtraction() {
+  if (eventExtracting.value) return;
+  eventExtracting.value = true;
+  try {
+    const result = await $fetch<{
+      queued: string[];
+      processed: Array<{ status: string; message: string }>;
+    }>(`/api/characters/${encodeURIComponent(id.value)}/memory-events/extract`, { method: "POST" });
+    await loadTimeline();
+    const failed = result.processed.find((item) => item.status !== "SUCCEEDED" && item.status !== "SKIPPED");
+    if (result.queued.length === 0) {
+      ElMessage.info("昨天和今天都还没有对话，没什么可整理的。");
+    } else if (failed) {
+      ElMessage.warning(failed.message);
+    } else if (result.processed.length === 0) {
+      ElMessage.info("已排队，但当前没有可执行的 worker；启动 worker 后会继续处理。");
+    } else {
+      ElMessage.success(result.processed.map((item) => item.message).join("；"));
+    }
+  } catch (error) {
+    const message = error && typeof error === "object" && "statusMessage" in error
+      ? String(error.statusMessage)
+      : "整理忆泡失败，请检查本地开发服务器日志。";
+    ElMessage.error(message);
+  } finally {
+    eventExtracting.value = false;
+  }
+}
+
+/**
  * 群聊记录一次只取一个群的消息，切换群时重拉；不传 conversationId 时服务端回最近活跃的那个群。
  */
 async function loadGroupChats(conversationId?: string) {
@@ -776,6 +936,14 @@ watch(id, () => {
           @click="memoryDialogOpen = true"
         >
           新增长期记忆
+        </button>
+        <button
+          type="button"
+          class="btn"
+          :disabled="eventExtracting"
+          @click="runEventExtraction"
+        >
+          <el-icon><MagicStick /></el-icon>{{ eventExtracting ? "整理中…" : "立即整理忆泡" }}
         </button>
         <button
           type="button"
@@ -1003,11 +1171,34 @@ watch(id, () => {
                 正在加载已保存的时间线记录……
               </div>
               <template v-else>
-                <article
-                  v-for="entry in pagedEntries"
-                  :key="entry.id"
-                  class="timeline-item"
+                <div
+                  v-if="showTodayPlaceholder"
+                  class="timeline-day timeline-day-empty"
                 >
+                  <span class="timeline-day-label">今天 · 0 条</span>
+                  <span class="timeline-day-meta">{{ todayPlaceholderNote }}</span>
+                </div>
+                <template
+                  v-for="(entry, index) in pagedEntries"
+                  :key="entry.id"
+                >
+                  <div
+                    v-if="isDayStart(index)"
+                    class="timeline-day"
+                  >
+                    <span class="timeline-day-label">{{ dayLabelAt(index) }}</span>
+                    <span
+                      v-if="dayExtractedAt(index)"
+                      class="timeline-day-meta"
+                    >{{ dayExtractedAt(index) }}</span>
+                    <span
+                      v-if="dayHasDraftAt(index)"
+                      class="timeline-day-draft"
+                    >还在记</span>
+                  </div>
+                  <article
+                    class="timeline-item"
+                  >
                   <div
                     class="timeline-marker"
                     :class="toneFor(entry.tagTone)"
@@ -1081,6 +1272,7 @@ watch(id, () => {
                     </div>
                   </div>
                 </article>
+                </template>
                 <p
                   v-if="truncated"
                   class="tl-note"

@@ -1174,12 +1174,12 @@ paths:
       tags: [Memories]
       operationId: getCharacterMemoryTimeline
       summary: 获取角色的已保存记忆时间线
-      description: 本地开发过渡接口。返回数据库中已保存的消息、长期记忆和快照；本机可手动录入记忆与纯文本对话。外部渠道接入、事件自动提炼和模型总结尚未接入。默认返回全部种类，`kinds` 可按需裁剪（记忆页只取 memory,snapshot，把额度让给记忆）；`counts` 始终是数据库全量计数，与本次裁剪和条数上限无关。
+      description: 本地开发过渡接口。返回数据库中已保存的消息、长期记忆、快照与忆泡；本机可手动录入记忆与纯文本对话。默认返回全部种类，`kinds` 可按需裁剪（记忆页取 memory,snapshot,memoryEvent，把额度让给记忆）；`counts` 始终是数据库全量计数，与本次裁剪和条数上限无关。忆泡条目带状态（DRAFT 还在长 / FINAL 已收口），在时间线上分别标成「还在记」「已收口」。
       parameters:
         - name: kinds
           in: query
-          description: 逗号分隔的种类子集，可选值 message / memory / snapshot；留空或非法值按全部处理。
-          schema: { type: string, example: "memory,snapshot" }
+          description: 逗号分隔的种类子集，可选值 message / memory / snapshot / memoryEvent；留空或非法值按全部处理。
+          schema: { type: string, example: "memory,snapshot,memoryEvent" }
         - name: limit
           in: query
           description: 返回条数上限，默认 300，最大 500。
@@ -1191,8 +1191,23 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [entries, counts]
+                required: [entries, counts, days, today]
                 properties:
+                  days:
+                    type: array
+                    description: 每天的忆泡整理进度（最多 60 天）；页面据此显示「上次整理 14:20」与「还在记」。
+                    items:
+                      type: object
+                      required: [dayKey, state, eventCount, extractedAt]
+                      properties:
+                        dayKey: { type: string, example: "2026-10-31" }
+                        state: { type: string, enum: [DRAFT, FINAL] }
+                        eventCount: { type: integer }
+                        extractedAt: { type: string, nullable: true, format: date-time }
+                  today:
+                    type: string
+                    description: 角色时区里的今天，前端不要自己猜时区
+                    example: "2026-10-31"
                   entries:
                     type: array
                     items:
@@ -1200,7 +1215,7 @@ paths:
                       required: [id, type, title, summary, time, channel, tag, tagTone, source]
                       properties:
                         id: { type: string }
-                        type: { type: string, enum: [message, memory, snapshot, event] }
+                        type: { type: string, enum: [message, memory, snapshot, event, memoryEvent] }
                         title: { type: string }
                         summary: { type: string }
                         time: { type: string }
@@ -1210,16 +1225,210 @@ paths:
                         source: { type: string }
                   counts:
                     type: object
-                    required: [message, event, memory, snapshot]
+                    required: [message, event, memory, snapshot, memoryEvent]
                     properties:
                       message: { type: integer }
                       event: { type: integer }
                       memory: { type: integer }
                       snapshot: { type: integer }
+                      memoryEvent: { type: integer }
         '403':
           description: 该接口仅限本地开发环境
         '404':
           $ref: '#/components/responses/NotFound'
+  /characters/{characterId}/memory-events/{eventId}:
+    parameters:
+      - $ref: '#/components/parameters/CharacterId'
+      - name: eventId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      tags: [Memories]
+      operationId: patchCharacterMemoryEvent
+      summary: 编辑 / 隐藏 / 恢复一条忆泡
+      description: 只接受描述性字段（title / detail / place / participants / timeOfDay）与 status。**不允许改 `occurredAt` 与来源消息** —— 那等于伪造时间线。隐藏是软删除（status=ARCHIVED），时间线与对话检索都只读 ACTIVE；恢复即传 status=ACTIVE。每次操作写审计日志（memory.event_updated / event_archived / event_restored）。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title: { type: string, minLength: 1, maxLength: 200 }
+                detail: { type: string, minLength: 1, maxLength: 4000 }
+                place: { type: string, maxLength: 200, description: '空字符串表示清掉地点' }
+                participants:
+                  type: array
+                  maxItems: 8
+                  items: { type: string, maxLength: 40 }
+                timeOfDay: { type: string, enum: [凌晨, 早上, 上午, 中午, 下午, 傍晚, 晚上, 深夜] }
+                status: { type: string, enum: [ACTIVE, ARCHIVED] }
+      responses:
+        '200':
+          description: 更新后的忆泡
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, dayKey, occurredAt, title, detail, state, status, scope]
+                properties:
+                  id: { type: string }
+                  dayKey: { type: string }
+                  occurredAt: { type: string, format: date-time }
+                  timeOfDay: { type: string, nullable: true }
+                  place: { type: string, nullable: true }
+                  participants: { type: array, items: { type: string } }
+                  title: { type: string }
+                  detail: { type: string }
+                  state: { type: string, enum: [DRAFT, FINAL] }
+                  status: { type: string, enum: [ACTIVE, ARCHIVED] }
+                  scope: { type: string, enum: [character, private] }
+        '400':
+          description: 字段校验失败，或没有需要修改的字段
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /characters/{characterId}/days:
+    parameters:
+      - $ref: '#/components/parameters/CharacterId'
+    get:
+      tags: [Memories]
+      operationId: listCharacterMemoryDays
+      summary: 列出角色有忆泡的日子
+      description: 数据源是 `memory_event_days`（一天一行，带整理进度），不是从忆泡反推的 —— 「今天还没整理」的日子也会出现。按日期倒序，最多 90 天。
+      responses:
+        '200':
+          description: 日期列表与角色时区的今天
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [today, days]
+                properties:
+                  today: { type: string, example: "2026-10-31" }
+                  days:
+                    type: array
+                    items:
+                      type: object
+                      required: [dayKey, state, eventCount, extractedAt]
+                      properties:
+                        dayKey: { type: string }
+                        state: { type: string, nullable: true, enum: [DRAFT, FINAL] }
+                        eventCount: { type: integer }
+                        extractedAt: { type: string, nullable: true, format: date-time }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /characters/{characterId}/days/{dayKey}:
+    parameters:
+      - $ref: '#/components/parameters/CharacterId'
+      - name: dayKey
+        in: path
+        required: true
+        description: 当地日期，格式 YYYY-MM-DD
+        schema: { type: string, example: "2026-10-31" }
+    get:
+      tags: [Memories]
+      operationId: getCharacterMemoryDay
+      summary: 某一天的忆泡与当天原文
+      description: 忆泡是整理过的事件，原文是当时的对话；两者都受同一套范围隔离约束。原文最多 300 条、单条截断 500 字。
+      responses:
+        '200':
+          description: 当天忆泡与原文
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [day, events, messages]
+                properties:
+                  day:
+                    type: object
+                    required: [dayKey, eventCount]
+                    properties:
+                      dayKey: { type: string }
+                      state: { type: string, nullable: true, enum: [DRAFT, FINAL] }
+                      eventCount: { type: integer }
+                      extractedAt: { type: string, nullable: true, format: date-time }
+                  events:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, occurredAt, title, detail, state, scope]
+                      properties:
+                        id: { type: string }
+                        occurredAt: { type: string, format: date-time }
+                        timeOfDay: { type: string, nullable: true }
+                        place: { type: string, nullable: true }
+                        participants: { type: array, items: { type: string } }
+                        title: { type: string }
+                        detail: { type: string }
+                        state: { type: string, enum: [DRAFT, FINAL] }
+                        confidence: { type: number, nullable: true }
+                        scope: { type: string, enum: [character, private] }
+                  messages:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, role, content, occurredAt]
+                      properties:
+                        id: { type: string }
+                        role: { type: string }
+                        content: { type: string }
+                        occurredAt: { type: string, format: date-time }
+        '400':
+          description: dayKey 不是 YYYY-MM-DD
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /characters/{characterId}/memory-events/extract:
+    parameters:
+      - $ref: '#/components/parameters/CharacterId'
+    post:
+      tags: [Memories]
+      operationId: extractCharacterMemoryEvents
+      summary: 立即整理忆泡（昨天收口 + 今天增量）
+      description: 手动触发。把「昨天（FINAL 收口）」与「今天（DRAFT 增量）」两段写进任务队列，并当场尝试执行（最多两段）。与调度器共用幂等键 `events-final:{scopeId}:{dayKey}` / `events-hour:{scopeId}:{dayKey}:{hour}`，同一天不会因重复点击而被整理两遍。角色没有全局记忆范围时返回 409；模型未配置时任务留在队列，`processed` 会说明原因。
+      responses:
+        '200':
+          description: 排队与执行结果
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [queued, processed, windows]
+                properties:
+                  queued:
+                    type: array
+                    description: 本次真正新排进队列的段（例如「昨天收口」「今天增量」）
+                    items: { type: string }
+                  processed:
+                    type: array
+                    description: 当场执行的结果；为空表示没有可执行的 worker（任务仍在队列里）
+                    items:
+                      type: object
+                      required: [status, message]
+                      properties:
+                        status: { type: string, enum: [SUCCEEDED, SKIPPED, RETRY_WAIT, FAILED] }
+                        message: { type: string }
+                  windows:
+                    type: array
+                    items:
+                      type: object
+                      required: [label, start, end]
+                      properties:
+                        label: { type: string }
+                        start: { type: string, format: date-time }
+                        end: { type: string, format: date-time }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 角色还没有记忆范围
   /characters/{characterId}/group-chats:
     parameters:
       - $ref: '#/components/parameters/CharacterId'

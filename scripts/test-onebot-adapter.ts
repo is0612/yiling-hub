@@ -81,6 +81,21 @@ console.log = (...args: unknown[]) => {
 const sawGroupRoundLog = (groupId: number, reason: string) => roundLogs.some(
   (line) => line.includes("[onebot] 群聊") && line.includes(`"groupId":"${groupId}"`) && line.includes(`"reason":"${reason}"`),
 );
+/**
+ * 等一条闸门日志出现。
+ *
+ * 适配器是子进程，日志经 stdout 回传，有几十毫秒的缓冲。原来紧跟回复断言「必须按 direct 放行」，
+ * 等于和日志赛跑 —— CI 上偶发红过一次（2026-10-31 实测：同一份代码重跑就绿）。
+ * 断言本身的意图是「这一轮走了哪个闸门」，不是「日志什么时候到」，所以这里等到超时为止。
+ */
+const waitForGroupRoundLog = async (groupId: number, reason: string, timeoutMs = 8000): Promise<boolean> => {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (sawGroupRoundLog(groupId, reason)) return true;
+    await sleep(100);
+  }
+  return sawGroupRoundLog(groupId, reason);
+};
 
 const children: ChildProcess[] = [];
 try {
@@ -559,6 +574,55 @@ try {
   assert.equal(await assistantCount(1004), 1, "同一轮里的几条消息只该回一条，不能一句一答。");
   assert.equal(await userCount(1004), 2, "这一轮的每条用户消息都要落库，不能只留第一条。");
 
+  // 9.6.1 被闸门挡下、但确实是 @ 她的轮次：原文仍要落库（storedReason=mentioned）。
+  // 用「每日上限」挡：@ 能绕过安静时段和最短间隔，但绕不过 dailyMax，所以这是
+  // 唯一能稳定制造的「@ 了她、却没回」的场景。
+  {
+    const limitedConfig = {
+      groupChatMode: "mention",
+      batchWindowSeconds: 3,
+      mentionWindowSeconds: 1,
+      minGapSeconds: 0,
+      dailyMax: 1,
+      quietStart: "00:00",
+      quietEnd: "00:00",
+      ambientChance: 1,
+    };
+    await prisma.characterChannelBinding.update({ where: { id: bindingId }, data: { config: limitedConfig } });
+    record.bindings[0]!.groupChat = { ...ambientSettings, mode: "mention", dailyMax: 1 };
+    await emitToGroup(1009, 90, "先回我一句", 555, true);
+    await waitFor(async () => (await assistantCount(1009)) >= 1);
+    // 额度已用满：这一条仍然 @ 她，但闸门会以 daily_limit 挡下。
+    await emitToGroup(1009, 91, "再叫你一声", 555, true);
+    await sleep(4000);
+    assert.equal(await assistantCount(1009), 1, "额度用完后再 @ 也不该回。");
+    assert.equal(await userCount(1009), 2, "@ 她被额度挡下时，这一轮原文仍要落库。");
+    const mentioned = await prisma.message.findFirst({
+      where: {
+        conversation: { is: { channelBindingId: bindingId, externalConversationId: "g:1009" } },
+        metadata: { path: ["storedReason"], equals: "mentioned" },
+      },
+      select: { id: true },
+    });
+    assert(mentioned, "被挡下的点名轮次要标 storedReason=mentioned，方便按原因做保留策略。");
+    await prisma.characterChannelBinding.update({
+      where: { id: bindingId },
+      data: {
+        config: {
+          groupChatMode: "ambient",
+          batchWindowSeconds: 3,
+          mentionWindowSeconds: 1,
+          minGapSeconds: 0,
+          dailyMax: 0,
+          quietStart: "00:00",
+          quietEnd: "00:00",
+          ambientChance: 1,
+        },
+      },
+    });
+    record.bindings[0]!.groupChat = { ...ambientSettings };
+  }
+
   // 闸门不通过（抽中概率 0）时，整轮直接丢掉：不调模型、不落库、不发消息。
   record.bindings[0]!.groupChat.ambientChance = 0;
   await emitToGroup(1005, 60, "跟他完全无关的闲聊", 555, false);
@@ -639,7 +703,7 @@ try {
   await sleep(5000);
   assert.equal(await assistantCount(1011), 0, "别人 @ 别人时不能抢话，哪怕这个群设的是「全都回」。");
   assert.equal((await groupSends(1011)).length, 0, "被闸门挡下的一轮不该有任何 send_group_msg。");
-  assert.ok(sawGroupRoundLog(1011, "addressed_to_others"), "日志要写明是被「@ 的是别人」挡下的，否则事后无法区分是没收到还是被拦了。");
+  assert.ok(await waitForGroupRoundLog(1011, "addressed_to_others"), "日志要写明是被「@ 的是别人」挡下的，否则事后无法区分是没收到还是被拦了。");
 
   // 对照：同一个群、同一个说话人，只要 @ 的是她，就照常回 —— 证明上面挡下来的原因是 at 段指向，不是群本身哑了。
   await emitToGroup(1011, 97, "那你说说看", 555, true);
@@ -703,7 +767,7 @@ try {
   assert.equal(await userCount(1014), 1, "那次戳要落成一条可追溯的记录，不能只活在内存里。");
   const pokeSends = (await groupSends(1014)).map((item) => String(item.body.message)).join(" ");
   assert(pokeSends.includes(POKE_CONTENT), "戳这个动作本身要进到她看到的那一轮里。");
-  assert.ok(sawGroupRoundLog(1014, "direct"), "这一轮必须是按 direct 放行的。");
+  assert.ok(await waitForGroupRoundLog(1014, "direct"), "这一轮必须是按 direct 放行的。");
   assert(
     roundLogs.some((line) => line.includes(`"groupId":"1014"`) && line.includes('"poked":true')),
     "日志还要能看出是被戳醒的，而不是被 @ 的 —— 两者都能让 direct 为真。",
@@ -720,13 +784,13 @@ try {
   await sleep(5000);
   assert.equal(await assistantCount(1015), 0, "被澄清时允许沉默：假模型这轮选了 silent，就不该冒出一句反击。");
   assert.equal((await groupSends(1015)).length, 0, "沉默的一轮不能有任何 send_group_msg。");
-  assert.ok(sawGroupRoundLog(1015, "clarification"), "日志要能把「被澄清」和「被点名」分开，否则事后分不清她为什么没吭声。");
+  assert.ok(await waitForGroupRoundLog(1015, "clarification"), "日志要能把「被澄清」和「被点名」分开，否则事后分不清她为什么没吭声。");
 
   // 对照一：同样是 @ 她，但真的在跟她说话 —— 照旧不允许沉默。
   await emitToGroup(1015, 111, "那你说说看", 555, true);
   await waitFor(async () => (await assistantCount(1015)) >= 1);
   assert.equal(await assistantCount(1015), 1, "真的点名时不给沉默这条路。");
-  assert.ok(sawGroupRoundLog(1015, "direct"), "这一轮必须是按 direct 放行的。");
+  assert.ok(await waitForGroupRoundLog(1015, "direct"), "这一轮必须是按 direct 放行的。");
 
   // 对照二：长句里出现「没说你」后面还跟着正事 —— 仍然必须回，判据不能松成「见到词就放」。
   await emitToGroup(1015, 112, "没说你呢，你那边迁移是怎么做的，我这边要适配一下新协议", 555, true);

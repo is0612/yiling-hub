@@ -93,6 +93,22 @@ enum SnapshotKind {
   MANUAL
 }
 
+/// 忆泡的状态。忆泡是「发生过什么」的事实记录，只追加，不做状态机式替代；
+/// ARCHIVED 只表示被压缩归档（例如并进阶段总结），仍可回溯。
+enum MemoryEventStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+/// 忆泡「还在长」还是「已收口」。
+///
+/// DRAFT：当天还在累积，新消息会继续往里加；FINAL：昨天已收口，不再改动。
+/// 查询不区分两者 —— 「今天做了什么」查 DRAFT，「前天」查 FINAL，同一张表。
+enum MemoryEventState {
+  DRAFT
+  FINAL
+}
+
 enum SnapshotStatus {
   CURRENT
   SUPERSEDED
@@ -115,6 +131,8 @@ enum MemoryJobType {
   REGENERATE_SNAPSHOT
   UPDATE_LONG_TERM_MEMORY
   CLEAN_EXPIRED_MESSAGES
+  /// 按天整理忆泡：和 8 天周期无关，昨天的对话第二天就该查得到。
+  EXTRACT_EVENTS
 }
 
 enum MemoryJobStatus {
@@ -260,6 +278,8 @@ model MemoryScope {
   conversations      Conversation[]
   memoryItems        MemoryItem[]
   snapshots          MemorySnapshot[]
+  events             MemoryEvent[]
+  eventDays          MemoryEventDay[]
   jobs               MemoryJob[]
 
   @@index([characterId, scopeType])
@@ -304,6 +324,7 @@ model Message {
   conversation       Conversation           @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   snapshotSources    MemorySnapshotSource[]
   derivedMemoryItems MemoryItem[]           @relation("MemoryItemSourceMessage")
+  derivedEvents      MemoryEvent[]          @relation("MemoryEventSourceMessage")
 
   @@unique([conversationId, externalMessageId])
   @@index([conversationId, occurredAt])
@@ -381,6 +402,7 @@ model MemorySnapshot {
   memoryScope        MemoryScope            @relation(fields: [memoryScopeId], references: [id], onDelete: Cascade)
   sources            MemorySnapshotSource[]
   derivedMemoryItems MemoryItem[]           @relation("MemoryItemDerivedFromSnapshot")
+  derivedEvents      MemoryEvent[]          @relation("MemoryEventSourceSnapshot")
   reviews            MemoryReview[]
   jobs               MemoryJob[]
 
@@ -786,4 +808,71 @@ model CharacterCatchphrase {
   @@index([characterId, enabled])
   @@index([characterId, status])
   @@map("character_catchphrases")
+}
+
+/// 忆泡：一次「发生了什么」的最小完整记录。
+///
+/// 与 `MemoryItem` 的分工：忆泡是**事实**（只追加、不覆盖），长期记忆是从事实里提炼的
+/// **结论**（可以被新条目替代）。混成一条会同时坏掉两件事 —— 后续总结会把「第一次见面」
+/// 改掉，而按日期过滤又只能靠正则在正文里翻。
+///
+/// `participants` 目前存显示名（`member_1` 这类渠道代号也在内），**不是身份引用**：
+/// 跨平台身份要经过验证绑定才能合并，这一层留到接入别名表时再做。查询侧只把它当
+/// 关键词降级路径，不当成「同一个人」的判据。
+model MemoryEvent {
+  id               String             @id @default(uuid()) @db.Uuid
+  memoryScopeId    String             @db.Uuid
+  /// 事件发生的当地日期（角色时区）：2026-10-31。「今天/昨天」按它分组。
+  dayKey           String             @db.VarChar(10)
+  state            MemoryEventState   @default(DRAFT)
+  /// 事件**发生**时间（不是入库时间）。周期快照里的时区换算以此为基准。
+  occurredAt       DateTime           @db.Timestamptz(6)
+  /// 模糊时段：上午 / 中午 / 下午 / 傍晚 / 晚上 / 深夜。null = 只知道日期。
+  timeOfDay        String?            @db.VarChar(20)
+  /// 时间精度：exact / part_of_day / day。别把「下午」伪造成 14:00。
+  precision        String             @default("day") @db.VarChar(20)
+  place            String?            @db.VarChar(200)
+  /// 一句话事件，如「和小关在北海银滩游泳」。
+  title            String             @db.VarChar(200)
+  detail           String             @db.Text
+  /// 同义/相关词，给词法检索扩展用（不上向量库时的便宜替代）。
+  keywords         String[]           @default([])
+  participants     String[]           @default([])
+  confidence       Float?
+  sourceMessageId  String?            @db.Uuid
+  sourceSnapshotId String?            @db.Uuid
+  /// 幂等键：同一范围同一天同一件事重复提炼时不再插一条。
+  dedupeKey        String             @db.VarChar(255)
+  status           MemoryEventStatus  @default(ACTIVE)
+  createdAt        DateTime           @default(now()) @db.Timestamptz(6)
+  memoryScope      MemoryScope        @relation(fields: [memoryScopeId], references: [id], onDelete: Cascade)
+  sourceMessage    Message?           @relation("MemoryEventSourceMessage", fields: [sourceMessageId], references: [id], onDelete: SetNull)
+  sourceSnapshot   MemorySnapshot?    @relation("MemoryEventSourceSnapshot", fields: [sourceSnapshotId], references: [id], onDelete: SetNull)
+
+  @@unique([memoryScopeId, dedupeKey])
+  @@index([memoryScopeId, occurredAt])
+  @@index([memoryScopeId, status, occurredAt])
+  @@index([memoryScopeId, dayKey])
+  @@map("memory_events")
+}
+
+/// 某一天忆泡的整理进度。
+///
+/// 存在的理由有两个：① 幂等 —— 一天只做几次增量抽取，`extractedAt` 之后的消息才是新料；
+/// ② 状态 —— DRAFT 表示这一天还在长，FINAL 表示已经收口、不再追加。
+model MemoryEventDay {
+  id            String           @id @default(uuid()) @db.Uuid
+  memoryScopeId String           @db.Uuid
+  dayKey        String           @db.VarChar(10)
+  state         MemoryEventState @default(DRAFT)
+  eventCount    Int              @default(0)
+  /// 上次抽取到哪一刻；下一次只处理这之后的新消息，避免每小时都把一整天重跑一遍。
+  extractedAt   DateTime?        @db.Timestamptz(6)
+  createdAt     DateTime         @default(now()) @db.Timestamptz(6)
+  updatedAt     DateTime         @updatedAt @db.Timestamptz(6)
+  memoryScope   MemoryScope      @relation(fields: [memoryScopeId], references: [id], onDelete: Cascade)
+
+  @@unique([memoryScopeId, dayKey])
+  @@index([memoryScopeId, state])
+  @@map("memory_event_days")
 }

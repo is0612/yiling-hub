@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { generateConversationReply, STYLE_EXAMPLES_HEADING } from "../server/utils/chat-reply";
+import { buildChatTimeContext } from "../server/utils/chat-time-context";
 
 const originalFetch = globalThis.fetch;
 const secretApiKey = "sk-test-secret-must-not-appear-in-prompt";
@@ -56,6 +57,7 @@ try {
       confidence: 0.95,
       relevanceScore: 4,
       scope: "character",
+      occurredAt: "2026-10-24T10:00:00.000Z",
     }],
     snapshots: [{
       id: "snapshot-1",
@@ -64,6 +66,23 @@ try {
       periodEnd: "2026-10-09T00:00:00.000Z",
       version: 1,
       relevanceScore: 2,
+      scope: "character",
+    }],
+    events: [{
+      id: "event-1",
+      occurredAt: "2026-10-29T06:00:00.000Z",
+      timeOfDay: "下午",
+      place: "北海",
+      participants: ["小关"],
+      title: "和小关在北海银滩游泳",
+      detail: "下午去银滩游泳。",
+      scope: "character",
+    }],
+    rawMessages: [{
+      id: "raw-1",
+      role: "USER",
+      content: "前天下午我们去银滩游泳了",
+      occurredAt: "2026-10-29T06:00:00.000Z",
       scope: "character",
     }],
   });
@@ -81,26 +100,85 @@ try {
   assert.equal(requestBody.model, "test-chat-model");
   const systemMessage = requestBody.messages.find((item) => item.role === "system");
   assert(systemMessage, "The request must include a system prompt.");
-  assert(systemMessage.content.includes("YILING_CONVERSATION_REPLY_V9"), "The system prompt marker must stay in sync with the prompt template version.");
+  assert(systemMessage.content.includes("YILING_CONVERSATION_REPLY_V12"), "The system prompt marker must stay in sync with the prompt template version.");
   const userMessage = requestBody.messages.find((item) => item.role === "user");
   assert(userMessage, "The request must include a structured user context.");
   const promptInput = JSON.parse(userMessage.content) as Record<string, unknown>;
   assert.deepEqual(
     Object.keys(promptInput).sort(),
-    ["characterName", "characterPrompt", "currentMessage", "recentMessages", "memories", "snapshots"].sort(),
+    ["characterName", "characterPrompt", "now", "currentMessage", "recentMessages", "memories", "snapshots", "events", "rawMessages"].sort(),
     "Only explicit conversation-context fields should be serialized into the prompt.",
+  );
+  // 「现在」必须每轮都带：模型不会算日期，缺了它「前天」只能猜。
+  const promptNow = promptInput.now as Record<string, unknown>;
+  assert.equal(promptNow.timeZone, "Asia/Shanghai", "没传时区时回落默认时区。");
+  assert.match(String(promptNow.local), /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/, "当地日期时间要是可读格式。");
+  assert.match(String(promptNow.weekday), /^周[一二三四五六日]$/, "星期要写成中文，模型才读得顺。");
+  assert.ok(String(promptNow.utc).endsWith("Z"), "UTC 锚点要带时区标记。");
+  assert(
+    systemMessage.content.includes("now.local"),
+    "系统提示词要解释 now 的字段，否则模型不知道这堆时间是干什么的。",
+  );
+  assert(
+    systemMessage.content.includes("no record of it"),
+    "没有记录时要说清楚，不能编一个听起来合理的故事。",
   );
   assert.equal(result.reply, "我记得你的偏好。");
   const promptMemories = promptInput.memories as Array<Record<string, unknown>>;
   const promptSnapshots = promptInput.snapshots as Array<Record<string, unknown>>;
   assert.equal(promptMemories[0]?.scope, "character", "Character-global memory keeps its scope label.");
+  assert.equal(promptMemories[0]?.occurredAt, "2026-10-24T10:00:00.000Z", "记忆要带自己的时间，否则「什么时候」答不出来。");
   assert.equal(promptSnapshots[0]?.scope, "character", "Character-global snapshot keeps its scope label.");
+  const promptEvents = promptInput.events as Array<Record<string, unknown>>;
+  assert.equal(promptEvents[0]?.occurredAt, "2026-10-29T06:00:00.000Z", "忆泡必须带发生时间，「那天」靠它才答得出。");
+  assert.deepEqual(promptEvents[0]?.participants, ["小关"], "忆泡要带参与者，否则「和谁」答不出来。");
+  assert.equal(promptEvents[0]?.place, "北海", "知道地点就要带上。");
+  const promptRaw = promptInput.rawMessages as Array<Record<string, unknown>>;
+  assert.equal(promptRaw[0]?.occurredAt, "2026-10-29T06:00:00.000Z", "原文兜底也要带时间，否则又被当成「很久以前」。");
+  assert.equal(promptRaw[0]?.scope, "character", "原文同样要带范围标签。");
+  assert(
+    systemMessage.content.includes("rawMessages are the original lines"),
+    "提示词要说明原文是证据而不是结论，冲突时以事件为准。",
+  );
   assert(!capturedBody.includes("scopeType"), "Internal scope typing must not leak into the prompt.");
   assert.deepEqual(result.usedMemoryIds, ["memory-1"], "Invented source IDs must be filtered out.");
   assert.deepEqual(result.usedSnapshotIds, ["snapshot-1"]);
   assert.equal(result.usage?.totalTokens, 20);
   assert.equal(result.usage?.cacheHitTokens, 9, "缓存命中要跟着 usage 一起返回，否则记账只能按未命中价估。");
   assert.equal(result.usage?.cacheMissTokens, 3);
+
+  // ── 相对日期：同一个瞬间，按角色时区渲染成不同当地时间 ──
+  // 模型自己不会算「前天」，换算必须由服务端完成，且必须按角色时区而不是服务器时区。
+  const shanghai = buildChatTimeContext(new Date("2026-10-31T06:55:33Z"), "Asia/Shanghai");
+  assert.equal(shanghai.local, "2026-10-31 14:55:33", "东八区要换算成当地时间。");
+  assert.equal(shanghai.weekday, "周六", "2026-10-31 是周六。");
+  const newYork = buildChatTimeContext(new Date("2026-10-31T06:55:33Z"), "America/New_York");
+  assert.equal(newYork.local, "2026-10-31 02:55:33", "西五区要换算成当地时间，不能直接用服务器时区。");
+  const brokenZone = buildChatTimeContext(new Date("2026-10-31T06:55:33Z"), "Not/AZone");
+  assert.equal(brokenZone.timeZone, "Asia/Shanghai", "坏时区要回落默认，不能把整轮回复打成 500。");
+
+  capturedBody = "";
+  await generateConversationReply({
+    characterName: "鲸鱼娘",
+    characterPrompt: "你是「鲸鱼娘」。",
+    model: "test-chat-model",
+    apiKey: secretApiKey,
+    apiBaseUrl: privateProviderUrl,
+    currentMessage: "前天我做了什么？",
+    recentMessages: [],
+    memories: [],
+    snapshots: [],
+    // 注入固定时刻，断言才能稳定（生产不传 = 取服务器时间）。
+    now: new Date("2026-10-31T06:55:33Z"),
+    timeZone: "Asia/Shanghai",
+  });
+  const timedInput = JSON.parse(
+    (JSON.parse(capturedBody) as { messages: Array<{ role: string; content: string }> })
+      .messages.find((item) => item.role === "user")!.content,
+  ) as Record<string, unknown>;
+  const fixedNow = timedInput.now as Record<string, unknown>;
+  assert.equal(fixedNow.local, "2026-10-31 14:55:33", "提示词里的「现在」要按传入的时刻和时区渲染。");
+  assert.equal(fixedNow.timeZone, "Asia/Shanghai");
 
   // ── 语音条：必须在生成前就告诉模型「这一条会被念出来」──
   // 不说的话她会回「我只有打字和嘴硬」—— 内容说得通，但她根本不知道自己正在说话，
@@ -157,7 +235,7 @@ try {
   ) as Record<string, unknown>;
   assert.deepEqual(
     Object.keys(examplesInput).sort(),
-    Object.keys(promptInput).sort(),
+    ["characterName", "characterPrompt", "now", "currentMessage", "recentMessages", "memories", "snapshots"].sort(),
     "示例必须是 characterPrompt 的一部分，不能另起字段（否则模型输出格式会跑偏）",
   );
   const mergedPrompt = String(examplesInput.characterPrompt);

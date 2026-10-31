@@ -1,5 +1,9 @@
 import type { Prisma } from "../../src/generated/prisma/client";
-import { makeMemoryDedupeKey, type MemoryCategoryValue, type MemoryChange } from "./memory-ai";
+import {
+  isNearDuplicateEvent, makeEventDedupeKey, makeMemoryDedupeKey,
+  type MemoryCategoryValue, type MemoryChange, type MemoryEventDraft,
+} from "./memory-ai";
+import { localDayKey } from "./memory-event-time";
 
 /**
  * 单条长期记忆变更的落库逻辑。
@@ -37,8 +41,7 @@ export type MemoryApplyContext = {
 };
 
 export function normalizeMemoryText(value: string): string {
-  return value.normalize("NFKC").toLocaleLowerCase().replace(/[\s\p{P}\p{S}]+/gu, " ").trim();
-}
+  return value.normalize("NFKC").toLocaleLowerCase().replace(/[\s\p{P}\p{S}]+/gu, " ").trim();}
 
 type ApplyResult = Record<string, unknown>;
 
@@ -215,4 +218,122 @@ export async function applyMemoryChange(
   }
 
   return null;
+}
+
+/**
+ * 写入忆泡。
+ *
+ * 和长期记忆的两点不同：
+ * 1. **只追加**：同一件事已经在（同范围 + 同一天 + 同标题）写过就跳过，不更新旧记录 ——
+ *    事件一旦发生就不会变，后来的变化应该是一条新事件。
+ * 2. **不做人工复核**：忆泡是原始事实，不像长期记忆那样会「代表她现在的看法」，
+ *    所以自动写入 + 审计即可；重新提炼（历史重放）不重写忆泡。
+ */
+export async function applyMemoryEvents(
+  tx: MemoryApplyTx,
+  ctx: {
+    memoryScopeId: string;
+    characterId: string;
+    snapshotId: string | null;
+    /** 角色时区：dayKey 按它换算，跨零点的消息才不会归错天。 */
+    timeZone: string;
+    /** DRAFT = 今天还在长；FINAL = 昨天已收口。 */
+    state: "DRAFT" | "FINAL";
+  },
+  drafts: MemoryEventDraft[],
+  messagesById: Map<string, MemoryEvidenceMessage>,
+): Promise<{ applied: Array<{ id: string; title: string; occurredAt: string }>; skipped: number }> {
+  const applied: Array<{ id: string; title: string; occurredAt: string }> = [];
+  let skipped = 0;
+  // 按天缓存已有事件：一次任务里同一天会有多条草稿，别每条都回表查一遍。
+  const existingEventsByDay = new Map<string, Array<{ title: string; participants: string[] }>>();
+
+  for (const draft of drafts) {
+    const evidence = draft.evidenceMessageIds
+      .map((id) => messagesById.get(id))
+      .filter((message): message is MemoryEvidenceMessage => Boolean(message))
+      .sort((left, right) => left.occurredAt.getTime() - right.occurredAt.getTime());
+    const occurredAt = new Date(draft.occurredAt);
+    if (evidence.length === 0 || Number.isNaN(occurredAt.getTime())) {
+      skipped += 1;
+      continue;
+    }
+
+    const dedupeKey = makeEventDedupeKey(occurredAt, draft.title);
+    const existing = await tx.memoryEvent.findFirst({
+      where: { memoryScopeId: ctx.memoryScopeId, dedupeKey },
+      select: { id: true },
+    });
+    if (existing) {
+      skipped += 1;
+      continue;
+    }
+
+    // 近义重复：同一天里已有标题与它高度重合（连续 6 个字以上相同），当作同一件事。
+    // 精确 dedupeKey 只认完全相同的标题，而模型重跑时很爱换个说法。
+    const dayKey = localDayKey(occurredAt, ctx.timeZone);
+    let dayEvents = existingEventsByDay.get(dayKey);
+    if (!dayEvents) {
+      const rows = await tx.memoryEvent.findMany({
+        where: { memoryScopeId: ctx.memoryScopeId, dayKey },
+        select: { title: true, participants: true },
+      });
+      dayEvents = rows.map((row) => ({ title: row.title, participants: row.participants }));
+      existingEventsByDay.set(dayKey, dayEvents);
+    }
+    const duplicated = dayEvents.some((existing) => isNearDuplicateEvent(existing, draft));
+    if (duplicated) {
+      skipped += 1;
+      continue;
+    }
+
+    try {
+      const created = await tx.memoryEvent.create({
+        data: {
+          memoryScopeId: ctx.memoryScopeId,
+          dayKey: localDayKey(occurredAt, ctx.timeZone),
+          state: ctx.state,
+          occurredAt,
+          timeOfDay: draft.timeOfDay ?? null,
+          precision: draft.precision,
+          place: draft.place ?? null,
+          title: draft.title,
+          detail: draft.detail,
+          keywords: draft.keywords,
+          participants: draft.participants,
+          confidence: draft.confidence,
+          sourceMessageId: evidence[0]!.id,
+          sourceSnapshotId: ctx.snapshotId,
+          dedupeKey,
+          status: "ACTIVE",
+        },
+        select: { id: true },
+      });
+      applied.push({ id: created.id, title: draft.title, occurredAt: occurredAt.toISOString() });
+      // 同一批里后面几条也要跟新写的这条比，否则同批内的近义重复挡不住。
+      dayEvents.push({ title: draft.title, participants: draft.participants });
+      await tx.auditLog.create({
+        data: {
+          actorType: "WORKER",
+          characterId: ctx.characterId,
+          action: "memory.event_added",
+          entityType: "MemoryEvent",
+          entityId: created.id,
+          details: {
+            occurredAt: occurredAt.toISOString(),
+            title: draft.title,
+            participants: draft.participants,
+            confidence: draft.confidence,
+            evidenceMessageIds: draft.evidenceMessageIds,
+            snapshotId: ctx.snapshotId,
+          },
+        },
+      });
+    } catch {
+      // 唯一约束竞争：另一个任务刚写了同一件事。跳过即可，不算失败。
+      skipped += 1;
+    }
+  }
+
+  return { applied, skipped };
 }

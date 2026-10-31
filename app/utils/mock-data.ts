@@ -1,5 +1,5 @@
 export type CharacterStatus = "运行中" | "已暂停" | "未连接";
-export type TimelineType = "message" | "memory" | "snapshot" | "event";
+export type TimelineType = "message" | "memory" | "snapshot" | "event" | "memoryEvent";
 
 export type Character = {
   id: string;

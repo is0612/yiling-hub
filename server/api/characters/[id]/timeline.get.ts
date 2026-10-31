@@ -3,9 +3,10 @@ import { requireActorUserId } from "../../../utils/auth";
 import { requireUuid } from "../../../utils/local-api";
 import { getPrisma } from "../../../utils/prisma";
 import { toMemoryTimelineDtos } from "../../../utils/memory-timeline-dto";
+import { localDayKey } from "../../../utils/memory-event-time";
 
-/** 允许按需裁剪的种类。记忆页只要 memory + snapshot，消息/事件不进这条流。 */
-const ALL_KINDS = new Set(["message", "memory", "snapshot"]);
+/** 允许按需裁剪的种类。记忆页要 memory + snapshot + 忆泡，消息/平台事件不进这条流。 */
+const ALL_KINDS = new Set(["message", "memory", "snapshot", "memoryEvent"]);
 
 /**
  * 角色的时间线。
@@ -45,8 +46,9 @@ export default defineEventHandler(async (event) => {
   const conversationWhere = { conversation: { is: { characterId } } };
   const memoryWhere = { status: { not: "TRASHED" as const }, memoryScope: { is: { characterId } } };
   const snapshotWhere = { memoryScope: { is: { characterId } } };
+  const eventWhere = { status: "ACTIVE" as const, memoryScope: { is: { characterId } } };
 
-  const [messages, memoryItems, snapshots, messageCount, eventCount, memoryCount, snapshotCount] = await Promise.all([
+  const [messages, memoryItems, snapshots, events, messageCount, eventCount, memoryCount, snapshotCount, memoryEventCount] = await Promise.all([
     includeMessages
       ? prisma.message.findMany({
         where: conversationWhere,
@@ -91,25 +93,62 @@ export default defineEventHandler(async (event) => {
       take: 100,
       include: { sources: { select: { sourceType: true } } },
     }),
+    kinds.has("memoryEvent")
+      ? prisma.memoryEvent.findMany({
+        where: eventWhere,
+        orderBy: [{ occurredAt: "desc" }, { id: "desc" }],
+        take: 200,
+        select: {
+          id: true,
+          occurredAt: true,
+          timeOfDay: true,
+          place: true,
+          participants: true,
+          title: true,
+          detail: true,
+          state: true,
+          memoryScope: { select: { scopeType: true } },
+        },
+      })
+      : Promise.resolve([]),
     prisma.message.count({ where: conversationWhere }),
     prisma.message.count({ where: { ...conversationWhere, eventType: { not: "message" } } }),
     prisma.memoryItem.count({ where: memoryWhere }),
     prisma.memorySnapshot.count({ where: snapshotWhere }),
+    prisma.memoryEvent.count({ where: eventWhere }),
   ]);
 
+  const timeZone = character.memorySetting?.timezone || "Asia/Shanghai";
   const entries = toMemoryTimelineDtos(
-    { messages, memoryItems, snapshots },
-    character.memorySetting?.timezone || "Asia/Shanghai",
+    { messages, memoryItems, snapshots, events },
+    timeZone,
     limit,
   );
 
+  // 每天的整理进度：页面靠它显示「上次整理 14:20」，并区分「今天还在长」。
+  const days = await prisma.memoryEventDay.findMany({
+    where: { memoryScope: { is: { characterId } } },
+    orderBy: { dayKey: "desc" },
+    take: 60,
+    select: { dayKey: true, state: true, eventCount: true, extractedAt: true },
+  });
+
   return {
     entries,
+    days: days.map((day) => ({
+      dayKey: day.dayKey,
+      state: day.state,
+      eventCount: day.eventCount,
+      extractedAt: day.extractedAt?.toISOString() ?? null,
+    })),
+    // 「今天」按角色时区算，前端不用自己猜时区。
+    today: localDayKey(new Date(), timeZone),
     counts: {
       message: messageCount,
       event: eventCount,
       memory: memoryCount,
       snapshot: snapshotCount,
+      memoryEvent: memoryEventCount,
     },
   };
 });

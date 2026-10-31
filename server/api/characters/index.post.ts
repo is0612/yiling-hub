@@ -45,7 +45,9 @@ export default defineEventHandler(async (event) => {
           timezone: "Asia/Shanghai",
           anchorAt: new Date(),
           autoSnapshotEnabled: false,
-          rawMessageRetentionDays: null,
+          // 默认建议保留 30 天：群聊原文会随热闹程度快速堆积，靠它兜住体积。
+          // 清理开关仍默认关 —— 真删除必须由用户在记忆设置里明确确认，不能默认动数据。
+          rawMessageRetentionDays: 30,
           rawMessageCleanupEnabled: false,
         },
       },

@@ -655,6 +655,65 @@ export function createOnebotMessageHandler(record: OnebotConnectionRecord) {
    * 闸门放在这里而不是 push 的那一刻：push 时还不知道这一轮到底聊了什么，
    * 也不知道她上一次开口是什么时候 —— 这两样都要等这一轮安静下来才成立。
    */
+  /**
+   * 只落库、不调模型：把「被 @ / 被叫到名字、但这一轮没接」的消息写进会话。
+   *
+   * 为什么需要它：群聊记录原本只等于「她回过话的那几轮」，群里发生但没找她、
+   * 或找了但被闸门挡下的事，从来没进过库，自然也就永远成不了忆泡。
+   * 这里只补「冲她来的」那一部分，量小、也不改变任何回复行为。
+   *
+   * 落库标 `storedReason: "mentioned"`，和正常回复的 `replied` / 判断后沉默的
+   * `silent` 区分开，方便以后按原因做保留策略。
+   */
+  const persistMentionedRound = async (items: PendingGroupMessage[]): Promise<void> => {
+    const binding = items[0]!.binding;
+    const groupEvent = items[0]!.event;
+    const prisma = getPrisma();
+    const scope = await prisma.memoryScope.findFirst({
+      where: { characterId: binding.characterId, scopeType: "CHARACTER_GLOBAL" },
+      select: { id: true },
+    });
+    if (!scope) return;
+    const conversation = await prisma.conversation.upsert({
+      where: {
+        channelBindingId_externalConversationId: {
+          channelBindingId: binding.id,
+          externalConversationId: groupEvent.conversationKey,
+        },
+      },
+      create: {
+        characterId: binding.characterId,
+        memoryScopeId: scope.id,
+        channelBindingId: binding.id,
+        externalConversationId: groupEvent.conversationKey,
+        title: `QQ群 ${groupEvent.groupId}`,
+        status: "ACTIVE",
+        metadata: { platform: ONEBOT_PLATFORM, kind: "group", groupId: groupEvent.groupId },
+      },
+      update: {},
+      select: { id: true },
+    });
+    await prisma.message.createMany({
+      data: items.map((item) => ({
+        conversationId: conversation.id,
+        externalMessageId: item.event.messageId,
+        role: "USER" as const,
+        content: item.event.content,
+        occurredAt: new Date(item.at),
+        metadata: {
+          source: "channel",
+          platform: ONEBOT_PLATFORM,
+          storedReason: "mentioned",
+          authorOpenId: item.event.userId,
+          ...(item.event.displayName ? { authorDisplayName: item.event.displayName } : {}),
+          ...(item.event.poke !== undefined ? { poke: true } : {}),
+        },
+      })),
+      // 同一轮可能被重放（重连/重试），靠 (conversationId, externalMessageId) 唯一约束去重。
+      skipDuplicates: true,
+    });
+  };
+
   const flushGroupRound = async (items: PendingGroupMessage[]): Promise<void> => {
     const binding = items[0]!.binding;
     const groupEvent = items[0]!.event;
@@ -733,11 +792,23 @@ export function createOnebotMessageHandler(record: OnebotConnectionRecord) {
       // direct / named 一定要一起打：早退时少了这两个，事后分不清是「@ 没认出来」
       // 还是「认出来了但被别的闸拦了」—— 前者换协议端，后者调参数，处理方式完全不同。
       logGroupRound(groupEvent.groupId, { reason: gate.reason, messages: items.length, direct, named, addressedToOthers, ...(poked ? { poked } : {}) });
+      // 被闸门挡下、但确实是冲她来的（@ 或叫名字）：原文仍要落库。
+      // 她不接话不等于那件事没发生；不存的话「群里发生的事」永远进不了忆泡。
+      // 只写库、不调模型，所以「闸门不过就不花钱」这条约定没有被破坏。
+      if (direct || named) {
+        await persistMentionedRound(items).catch((error) => {
+          console.error("[onebot] 记录被挡下的点名轮次失败：", error instanceof Error ? error.message : String(error));
+        });
+      }
       return;
     }
     // 群规限流仍然生效：闸门管「该不该接」，这里管「这个群十分钟能说几句」。
     if (await isGroupReplyLimited(binding, groupEvent)) {
       logGroupRound(groupEvent.groupId, { reason: "group_reply_limit", messages: items.length, direct, named, ...(poked ? { poked } : {}) });
+      // 限流挡下的同样是「冲她来的」轮次，一样按 mentioned 落库。
+      if (direct || named) {
+        await persistMentionedRound(items).catch(() => undefined);
+      }
       return;
     }
 
@@ -748,12 +819,14 @@ export function createOnebotMessageHandler(record: OnebotConnectionRecord) {
       bindingId: binding.id,
       eventType: "GROUP_MESSAGE",
       externalConversationId: groupEvent.conversationKey,
-      messages: items.map((item) => ({
+      messages: items.map((item, index) => ({
         externalMessageId: item.event.messageId,
         authorOpenId: item.event.userId,
         authorPlatformUid: item.event.userId,
         ...(item.event.displayName ? { authorDisplayName: item.event.displayName } : {}),
         content: item.event.content,
+        // 谁被 @ 了：落库给提炼用 —— 「@ 的是别的 bot」这类事不能再记成她的事。
+        ...(facts[index]?.mentionTargets.length ? { mentionTargets: facts[index]!.mentionTargets } : {}),
         // 入模的正文把 @ 换成代号；落库仍是原样。
         promptContent: groupContext.formatText(contextKey, item.event.content),
         member: groupContext.memberCode(contextKey, item.event.userId),
