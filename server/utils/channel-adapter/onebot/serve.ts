@@ -402,20 +402,35 @@ async function resolveOwnerDisplayName(record: OnebotConnectionRecord, event: On
  * 表情必须单独一条 —— 拼进正文会卡在句子中间，而且它发失败也没必要让正文背锅。
  */
 /**
- * 把正文和可选的「引用回复」拼成出站消息。
+ * 把正文和可选的「引用回复」「@ 原文作者」拼成出站消息。
  *
  * 群聊里多条鱼并存时，引用让「我接的是哪一句」不再靠猜：模型给的 replyToMessageId
  * 是 transcript 里那条消息的 QQ 真实 message id，这里转成 OneBot reply 段拼在正文前。
  * id 必须是纯数字（QQ message id），否则退回纯文本 —— 宁可少引一次，也不发坏段。
+ *
+ * 引用之后还要 @ 原文作者：QQ 的引用块只是把原文贴出来，被回的人**收不到提醒**，
+ * 只有 `at` 段才会让他那边亮红点。少了这一段的表现正是「引用了，但没 @ 人」。
+ * 顺序固定 reply → at → text：QQ 客户端把 @ 显示在正文开头，先回引用再叫名字。
  */
-export function buildOnebotReplyMessage(reply: string, replyToMessageId?: string): OnebotOutgoingMessage {
+export function buildQuoteSegments(replyToMessageId?: string, atQq?: string | null): OnebotSegment[] {
+  const segments: OnebotSegment[] = [];
   if (replyToMessageId && /^\d+$/.test(replyToMessageId)) {
-    return [
-      { type: "reply", data: { id: replyToMessageId } },
-      { type: "text", data: { text: reply } },
-    ];
+    segments.push({ type: "reply", data: { id: replyToMessageId } });
   }
-  return reply;
+  if (atQq && /^\d+$/.test(atQq)) {
+    segments.push({ type: "at", data: { qq: atQq } });
+  }
+  return segments;
+}
+
+export function buildOnebotReplyMessage(
+  reply: string,
+  replyToMessageId?: string,
+  atQq?: string | null,
+): OnebotOutgoingMessage {
+  const prefix = buildQuoteSegments(replyToMessageId, atQq);
+  if (!prefix.length) return reply;
+  return [...prefix, { type: "text", data: { text: reply } }];
 }
 
 /**
@@ -497,6 +512,12 @@ function buildVoiceSegment(file: string): OnebotSegment[] {
 function createReplySender(
   config: OnebotConnectionConfig,
   target: Pick<OnebotResolvedEvent, "messageType" | "groupId" | "userId">,
+  /**
+   * 引用回复要 @ 原文作者，但模型手上只有 message id（提示词里不能出现真实账号），
+   * 所以真实 QQ 号由这里按 id 现查。`selfQq` 用来挡掉「引用自己发的」那种情况 ——
+   * 自己叫自己名字很傻。只有群聊会传，私聊没有 @ 这回事。
+   */
+  quote?: { resolveAtQq?: (messageId: string) => string | null; selfQq?: string },
 ): ChannelReplySender {
   return async (reply, options) => {
     const send = (message: OnebotOutgoingMessage): Promise<void> => {
@@ -509,15 +530,26 @@ function createReplySender(
       return Promise.resolve();
     };
 
+    /**
+     * 该 @ 谁。两个条件缺一不可：在群里说话、且引用了某条具体的消息。
+     * 引的是她自己发的（`resolveAtQq` 返回自己的号）就不 @ —— 自己叫自己名字很傻。
+     */
+    const atQq = (): string | null => {
+      const replyTo = options?.replyToMessageId;
+      if (!replyTo || target.messageType !== "group" || !quote?.resolveAtQq) return null;
+      const qq = quote.resolveAtQq(replyTo);
+      if (!qq || qq === quote.selfQq) return null;
+      return qq;
+    };
+
     // 语音条替代正文：发了语音就不再补一条文字，否则同一句话会被说两遍。
     // 合成失败则原样发文字 —— 语音失败绝不能变成「这轮她没说话」。
     if (options?.voice && options.voiceSettings) {
       const silk = await synthesizeSpeechSilk(reply, options.voiceSettings);
       if (silk?.length) {
+        // 语音条同样要带引用和 @：只发语音不带这两段，被回的人根本不知道是在跟他说话。
         const withQuote = (segments: OnebotSegment[]): OnebotSegment[] =>
-          options.replyToMessageId && /^\d+$/.test(options.replyToMessageId)
-            ? [{ type: "reply", data: { id: options.replyToMessageId } } as OnebotSegment, ...segments]
-            : segments;
+          [...buildQuoteSegments(options.replyToMessageId, atQq()), ...segments];
 
         /**
          * 先 `file://` 再 `base64://`。
@@ -547,7 +579,7 @@ function createReplySender(
       }
     }
 
-    await send(buildOnebotReplyMessage(reply, options?.replyToMessageId));
+    await send(buildOnebotReplyMessage(reply, options?.replyToMessageId, atQq()));
     /**
      * 表情单独一条消息跟上。三条路，从「最像她本人」到「一定能发出去」：
      *
@@ -715,7 +747,11 @@ export function createOnebotMessageHandler(record: OnebotConnectionRecord) {
         background: groupContext.background(contextKey, currentIds),
         anchors: groupContext.anchors(contextKey),
       },
-      sendReply: createReplySender(record.config, groupEvent),
+      sendReply: createReplySender(record.config, groupEvent, {
+        // 引用谁就 @ 谁：transcript 里只有 message id，真实 QQ 号留在进程内查。
+        resolveAtQq: (messageId) => groupContext.senderOf(contextKey, messageId),
+        selfQq: record.accountQq,
+      }),
     });
 
     if (result.status === "replied") {

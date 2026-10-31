@@ -113,11 +113,21 @@ const server = http.createServer(async (request, response) => {
       // 真实模型大多数时候会返回空数组，这里恒定挑第一张只是为了测试能断言。
       const availableFaces = Array.isArray(input.availableFaces) ? input.availableFaces : [];
       const pickedFace = availableFaces[0] && typeof availableFaces[0].id === "string" ? availableFaces[0].id : null;
+      // 「引用某一句」这条路径要能端到端验：带哨兵的那条消息就是她要接的话，
+      // 于是返回 groupDecision.replyToMessageId —— 与真实模型挑一行回填同一个字段。
+      const transcript = Array.isArray(input.transcript) ? input.transcript : [];
+      const quoteTarget = transcript.find(
+        (line) => line && typeof line.id === "string" && /CI_QUOTE_REPLY/.test(String(line.content ?? "")),
+      );
+      const groupDecision = quoteTarget
+        ? { relation: "direct", replyToMessageId: quoteTarget.id, evidenceMessageIds: [quoteTarget.id] }
+        : undefined;
       sendJson(response, 200, chatCompletion(body, {
         reply: "CI 模拟模型回复：" + String(input.currentMessage ?? "").slice(0, 150),
         usedMemoryIds: firstMemory ? [firstMemory] : [],
         usedSnapshotIds: firstSnapshot ? [firstSnapshot] : [],
         faces: pickedFace ? [pickedFace] : [],
+        ...(groupDecision ? { groupDecision } : {}),
       }));
       return;
     }

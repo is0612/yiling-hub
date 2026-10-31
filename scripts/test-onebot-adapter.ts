@@ -507,6 +507,27 @@ try {
   record.bindings[0]!.groupChatModes = {};
   record.bindings[0]!.groupChat = { ...ambientSettings, mode: "all" };
 
+  // 9.8 引用回复必须带 @：QQ 的引用块只是把原文贴出来，被回的人收不到提醒，
+  // 只有 at 段才会在他的客户端亮红点。少了这一段的表现就是「引用了，但没 @ 人」。
+  await emitToGroup(1008, 80, "CI_QUOTE_REPLY 你刚说的那句什么意思", 555, false);
+  await waitFor(async () => (await assistantCount(1008)) >= 1);
+  const quotedSends = (await readSent()).filter(
+    (item) => item.action === "send_group_msg" && Number(item.body.group_id) === 1008,
+  );
+  // 表情是紧跟其后的**另一条**消息，所以这里要按内容挑出带引用的那条，不能取最后一条。
+  const quotedSegments = quotedSends
+    .map((item) => item.body.message as unknown)
+    .find((message): message is Array<{ type: string; data: Record<string, unknown> }> =>
+      Array.isArray(message) && message.some((segment) => segment.type === "reply"));
+  assert.ok(quotedSegments, "必须有一条带引用的回复；纯文本发不出 reply/at 段。");
+  assert.deepEqual(
+    quotedSegments.map((segment) => segment.type),
+    ["reply", "at", "text"],
+    "顺序必须是 reply → at → text。",
+  );
+  assert.equal(String(quotedSegments[0]!.data.id), "80", "引用的是她决定接的那条消息。");
+  assert.equal(String(quotedSegments[1]!.data.qq), "555", "@ 的必须是发那条消息的人。");
+
   // 10. 群聊 B站 指令只认主人：群友触发被忽略，主人触发才得到回执/提示。
   record.groupBiliRunEnabled = true;
   record.bindings[0]!.groupBiliRunEnabled = true;
@@ -526,7 +547,7 @@ try {
 
   closeGateway();
 
-  console.log("OneBot 渠道端到端测试通过：WS token 鉴权与单次握手、事件接入、CQ 码解析、凭据解密、角色绑定路由、记忆检索、模型回复、表情段发送与表情额度、消息持久化、外部身份 upsert、回发平台与幂等去重、群公告草稿与确认发布、普通成员越权拦截、按群滚动 10 分钟回复上限、群聊统一攒批（mention 档只在被叫到时进管道）、自然接话闸门、按群覆盖群聊模式、B站 指令主人专属。");
+  console.log("OneBot 渠道端到端测试通过：WS token 鉴权与单次握手、事件接入、CQ 码解析、凭据解密、角色绑定路由、记忆检索、模型回复、表情段发送与表情额度、消息持久化、外部身份 upsert、回发平台与幂等去重、群公告草稿与确认发布、普通成员越权拦截、按群滚动 10 分钟回复上限、群聊统一攒批（mention 档只在被叫到时进管道）、自然接话闸门、按群覆盖群聊模式、引用回复带 @ 原文作者、B站 指令主人专属。");
 } finally {
   for (const child of children) child.kill();
   await prisma.onebotGroupAnnouncement.deleteMany({ where: { connectionId } }).catch(() => undefined);

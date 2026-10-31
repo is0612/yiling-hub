@@ -155,6 +155,21 @@ export class GroupContext {
     return code;
   }
 
+  /**
+   * 窗口内某条消息是谁发的（QQ 号）。
+   *
+   * 只给**出站**用：引用回复时要在消息里 @ 原文作者，而模型只拿得到 transcript 的
+   * message id（提示词里不能出现真实账号）。所以这层映射留在进程内，由发送侧查。
+   * 查不到（消息比窗口老、或这轮压根没经过这里）返回 null，调用方就别 @。
+   */
+  senderOf(key: string, messageId: string): string | null {
+    if (!messageId) return null;
+    const now = this.now();
+    const found = this.state(key).messages.find((message) =>
+      message.messageId === messageId && now - message.at <= this.windowMs);
+    return found?.senderQq || null;
+  }
+
   /** 本轮之外、仍在窗口内的背景，按时间正序；超预算时从最旧的开始丢。 */
   background(key: string, excludeIds: readonly string[]): GroupBackgroundLine[] {
     const state = this.state(key);

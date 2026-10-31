@@ -41,6 +41,14 @@ assert.equal(ctx.memberCode("g:1", "111"), "member_1", "改昵称不改代号。
 // 不同群各自编号，不串。
 assert.equal(ctx.memberCode("g:2", "111"), "member_1", "另一个群的代号从 member_1 重新开始。");
 
+// ── 1b. 引用回复要 @ 原文作者：message id → QQ ──────────────────
+// 提示词里只有代号，真实账号留在进程内，发送侧靠这张表把 @ 补上。
+assert.equal(ctx.senderOf("g:1", "m1"), "111", "引用 m1 就 @ 发 m1 的人。");
+assert.equal(ctx.senderOf("g:1", "m2"), "222");
+assert.equal(ctx.senderOf("g:2", "m1"), null, "别的群的消息 id 不能串到本群。");
+assert.equal(ctx.senderOf("g:1", "no-such-id"), null, "查不到就别 @。");
+assert.equal(ctx.senderOf("g:1", ""), null);
+
 // ── 2. 入模正文：@ 她自己 / 别人 / 全体 ────────────────────────
 assert.equal(ctx.formatText("g:1", `@${SELF} 你好`), "@self 你好");
 assert.equal(ctx.formatText("g:1", "@111 你好"), "@member_1 你好");
