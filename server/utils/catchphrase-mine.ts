@@ -3,6 +3,7 @@ import { resolveCharacterApiKey } from "./credential-encryption";
 import { readModelUsage, recordModelUsage, type ModelUsageTokens } from "./model-usage";
 import { CATCHPHRASE_STATUS, invalidateCatchphraseCache } from "./catchphrases";
 import { getPrisma } from "./prisma";
+import { looksLikeSystemMessage } from "./system-message";
 
 /**
  * 从群聊里「捡梗」：她注意到群里反复在用的某句话，候选交给用户点头后才算她的口头禅。
@@ -89,30 +90,10 @@ const NOISE_KEYS = new Set([
 ]);
 
 /**
- * 状态类 emoji 开头的多半是系统播报，不是人在说话。
- *
- * 实测踩到的例子：群里同时跑着几个机器人时，它们对同一条命令的回复
- * （「⏳ 系统服务重启中，消息已排队，恢复后自动处理。」）会被 onebot 当成普通群友消息收进来，
- * 而且因为**多个号各回一次**，「出现 33 次、20 个人说过」—— 完美满足「群体反复使用」的定义，
- * 直接成了最高频的「梗」。QQ 侧看不出谁是机器人，只能在文本特征上挡。
+ * 系统播报判定已抽到 `server/utils/system-message.ts`：落库侧和提示词侧共用一份判据。
+ * 这里转出一次，保持捡梗原有调用点和测试的 import 路径不变。
  */
-const STATUS_EMOJI_PREFIX = /^[\u23F0-\u23F3\u26A0\u2705\u274C\u2757\u2753\u2755\u{1F514}\u{1F4E2}\u{1F6AB}]/u;
-
-/**
- * 像不像一条系统播报，而不是人打的字。
- *
- * 判据只有一条，但很硬：**完整句子 + 句末句号 + 有一定长度**。
- * 人说梗几乎不打句号（「xxx 不烧心吗」），系统提示几乎句句带句号
- * （「管理命令仅管理员可用。」）。英文句号同理。
- *
- * 宁严勿宽：漏掉一条系统消息，只是白花一次模型判定（模型也会否掉它）；
- * 收错一条，她那句话会天天挂在嘴边。
- */
-export function looksLikeSystemMessage(text: string): boolean {
-  if (STATUS_EMOJI_PREFIX.test(text)) return true;
-  if (text.length >= 8 && /[。.]$/.test(text)) return true;
-  return false;
-}
+export { looksLikeSystemMessage };
 
 /**
  * 这句值不值得进候选池。

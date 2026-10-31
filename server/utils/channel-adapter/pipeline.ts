@@ -16,6 +16,7 @@ import {
 import { ensureExternalIdentityScope } from "../identity-scope";
 import { isEmojiBudgetSpent, resolveEmojiFrequency } from "../emoji-frequency";
 import { ensureOwnerPrivateScope } from "../memory-scope-access";
+import { isSystemBroadcast, looksLikeSystemMessage } from "../system-message";
 import { getPrisma } from "../prisma";
 import { pickStickerCatalog, type StickerCatalogEntry } from "../stickers";
 import {
@@ -655,9 +656,20 @@ async function runChannelTurn(input: {
     pickCatchphraseCatalog(await loadCatchphraseCatalog(character.id)),
   );
 
+  /**
+   * 别人的系统播报不进窗口。
+   *
+   * 群里同时跑几个机器人时，它们对同一条命令各回一次（实测「管理命令仅管理员可用。」
+   * 一天 34 条），onebot 会当普通群友消息收进来。这些行留在窗口里有两个坏处：
+   * 一是白白占掉 40 条里的一大截，二是模型会把它们当「群友在说话」跟着接。
+   *
+   * 这里用**宽判据**（`looksLikeSystemMessage`）：误判也只是这一行不进提示词，
+   * 原文还在库里，群聊原文页照常能看到。写入侧用的是窄判据，两件事别搞反。
+   */
   const recentMessages: ConversationContextMessage[] = recentStoredMessages
     .reverse()
     .filter((item) => item.role === "USER" || item.role === "ASSISTANT")
+    .filter((item) => !(item.role === "USER" && looksLikeSystemMessage(item.content)))
     .map((item) => ({
       role: item.role as "USER" | "ASSISTANT",
       content: item.content.slice(0, 1800),
@@ -863,6 +875,14 @@ async function runChannelTurn(input: {
             ...(message.speaker?.isOwner ? { isOwner: true } : {}),
             // 这条原本是语音条；落库的 content 是转写后的文字（没配 ASR 就还是 `[语音]`）。
             ...(message.voices?.length ? { hasVoice: true } : {}),
+            /**
+             * 别的机器人的命令回执 / 插件报错。
+             *
+             * 原文照存（群聊原文页还要能看），但打了标：后面做记忆提炼、来源筛选时
+             * 可以整批跳过，不必再靠文本猜。用**窄判据** —— 标错的代价是这条消息
+             * 以后再也进不了记忆，比漏标严重得多。
+             */
+            ...(isSystemBroadcast(message.content) ? { systemBroadcast: true } : {}),
           },
         },
         select: { id: true },
