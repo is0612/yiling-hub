@@ -1,13 +1,22 @@
 /**
- * SnowLuma 节点对齐的回归测试。
+ * SnowLuma 节点对齐与「挂 QQ 进程」的回归测试。
  *
  * 「一键启动后自动配节点」最容易错的地方不是登录，而是**该改哪个节点**：
  * 端口对不上时是改端口还是新建、令牌该不该覆盖、新建的节点会不会撞名。
  * 这些判断一旦错，面板里就会悄悄多出一个废弃节点，或者把别的客户端在用的令牌换掉。
  *
+ * 「挂 QQ 进程」同理：多开时挑错进程就是往别人的 QQ 里注入模块，比不回复严重得多。
+ *
  * 跑法：npx tsx scripts/test-onebot-panel.ts
  */
-import { alignNode, portFromUrl, type AdapterNode, type NodePlan } from "../server/utils/channel-adapter/onebot/panel";
+import {
+  alignNode,
+  pickQqProcess,
+  portFromUrl,
+  type AdapterNode,
+  type NodePlan,
+  type PanelQqProcess,
+} from "../server/utils/channel-adapter/onebot/panel";
 
 const TOKEN = "rMbhvhvf0GPFWSTVFz-mr6YD6X51Oppg8pV8J5qmlPA";
 
@@ -121,6 +130,37 @@ run("http 不带 role", () => {
   const warnings: string[] = [];
   const out = alignNode([], { kind: "http", port: 3002, token: TOKEN }, changes, warnings);
   equal("role" in out[0]!, false, "HTTP 节点没有 role 概念");
+});
+
+console.log("pickQqProcess：只认这个号，多开时别猜");
+
+function proc(over: Partial<PanelQqProcess> = {}): PanelQqProcess {
+  return { pid: 100, name: "QQ.exe", injected: false, connected: false, uin: "2243049685", status: "available", ...over };
+}
+
+run("认账号", () => {
+  const target = pickQqProcess([proc()], "2243049685");
+  equal(target?.pid, 100, "号对得上就该选它");
+});
+
+run("面板里没有这个号 → null", () => {
+  // 这一步关系到「会不会往别人的 QQ 里注入」：没有就必须什么都不做
+  equal(pickQqProcess([proc({ uin: "546280821" })], "2243049685"), null, "别的号不能拿来凑数");
+});
+
+run("连接里没填号 → null", () => {
+  equal(pickQqProcess([proc()], ""), null, "不知道要挂谁就不挂");
+  equal(pickQqProcess([proc()], "   "), null, "空白也算没填");
+});
+
+run("同一号多开 → 优先已经连上的那个", () => {
+  const list = [proc({ pid: 1, uin: "2243049685" }), proc({ pid: 2, uin: "2243049685", injected: true, connected: true })];
+  equal(pickQqProcess(list, "2243049685")?.pid, 2, "别往已经废弃的那个进程里再注入一遍");
+});
+
+run("多个号 → 只挑目标那个", () => {
+  const list = [proc({ pid: 7, uin: "546280821" }), proc({ pid: 8, uin: "2243049685" })];
+  equal(pickQqProcess(list, "2243049685")?.pid, 8, "多开时不能挑错");
 });
 
 console.log(`\nOneBot 节点对齐测试通过：${checks} 项断言。`);

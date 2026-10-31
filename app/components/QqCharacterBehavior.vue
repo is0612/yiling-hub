@@ -311,6 +311,27 @@ const needsAliases = computed(() =>
   bind.groupChatMode !== "all"
   || Object.values(modeOverrides.value).some((mode) => mode !== INHERIT && mode !== "all"));
 
+/**
+ * 「节奏与限制」折叠头的一句话摘要。
+ * 这批参数设一次就不管，所以收进折叠；摘要让人不展开也能看到当前值。
+ * 值只有这一份（摘要即外观、展开即编辑）—— 上一版折叠失败正是因为
+ * 外面摆一排只读数字、里面再编一遍，同一批值出现两次。
+ */
+const paceSummary = computed(() => {
+  const parts: string[] = [];
+  if (needsAmbientParams.value) {
+    parts.push(`至少隔 ${bind.minGapSeconds} 秒`);
+    parts.push(bind.dailyMax > 0 ? `每天最多 ${bind.dailyMax} 句` : "每天不限句数");
+    parts.push(`${bind.quietStart}–${bind.quietEnd} 安静`);
+    parts.push(`闲聊参与 ${bind.ambientChancePercent}%`);
+  }
+  parts.push(bind.replyLimitPerWindow > 0
+    ? `每 ${bind.replyWindowMinutes} 分钟最多 ${bind.replyLimitPerWindow} 条`
+    : "回复不限流");
+  if (bind.groupBiliRunEnabled) parts.push("B站口令开");
+  return parts.join(" · ");
+});
+
 // 父级保存后会重新拉列表，这里跟着把草稿同步成库里的值
 watch(() => props.emojiEnabled, (value) => {
   emoji.value = value;
@@ -734,8 +755,8 @@ async function tryGroupOnce() {
         {{ modeNote }}
       </p>
 
-      <!-- 参数直接摊在组里：以前先摆四个只读数字、再折一层「节奏与限流」，
-           同一批值出现两次，折叠头还跟分组标题长得一样。 -->
+      <!-- 明面上只留天天调的：群号 / 按群 / 别名。节奏、安静、限流这批设一次就不管的
+           收进后面的「节奏与限制」折叠，折叠头直接显示当前值，不展开也知道现在是什么。 -->
       <div class="beh-grid is-bind">
         <div class="beh-field">
           <span class="beh-label">群号（可留空）</span>
@@ -780,7 +801,7 @@ async function tryGroupOnce() {
               </el-select>
             </div>
           </div>
-          <em>只改这一个群的档位；节奏、安静时段、参与概率这些参数仍按下面那套（所有群共用）。</em>
+          <em>只改这一个群的档位；节奏、安静、限流仍在下面「节奏与限制」里（所有群共用）。</em>
         </div>
 
         <!-- 群号表空着 = 收所有群，按群设置没有群号可展示。存过的条目留着不动，
@@ -805,105 +826,121 @@ async function tryGroupOnce() {
           />
           <em>逗号分隔。没 @ 但叫到这些名字，她会看一眼再决定：群里同名的鱼可能不止一条。</em>
         </div>
-
-        <div
-          v-if="needsAmbientParams"
-          class="beh-field"
-        >
-          <span class="beh-label">说话节奏</span>
-          <div class="beh-limit">
-            <span>两条之间至少隔</span>
-            <el-input-number
-              v-model="bind.minGapSeconds"
-              :min="0"
-              :max="3600"
-              :step="30"
-            />
-            <span>秒，每天最多</span>
-            <el-input-number
-              v-model="bind.dailyMax"
-              :min="0"
-              :max="1000"
-              :step="10"
-            />
-            <span>句</span>
-          </div>
-          <em>0 句 = 不限。觉得她太吵就先调小「每天最多」。</em>
-        </div>
-
-        <div
-          v-if="needsAmbientParams"
-          class="beh-field"
-        >
-          <span class="beh-label">安静时段</span>
-          <div class="beh-quiet">
-            <el-time-select
-              v-model="bind.quietStart"
-              start="00:00"
-              step="00:30"
-              end="23:30"
-              placeholder="23:30"
-            />
-            <span class="beh-quiet-sep">到</span>
-            <el-time-select
-              v-model="bind.quietEnd"
-              start="00:00"
-              step="00:30"
-              end="23:30"
-              placeholder="07:30"
-            />
-          </div>
-          <em>这段时间里，除了有人 @ 她，都不主动接话。允许跨午夜。</em>
-        </div>
-
-        <div
-          v-if="needsAmbientParams"
-          class="beh-field"
-        >
-          <span class="beh-label">无关闲聊的参与概率</span>
-          <div class="beh-limit">
-            <el-input-number
-              v-model="bind.ambientChancePercent"
-              :min="0"
-              :max="100"
-              :step="5"
-            />
-            <span>%</span>
-          </div>
-          <em>跟她完全没关系的聊天，按这个比例放进去看一眼再说。调高更活跃，也更费 token。</em>
-        </div>
-
-        <div class="beh-field">
-          <span class="beh-label">群聊发言限流</span>
-          <div class="beh-limit">
-            <span>每</span>
-            <el-input-number
-              v-model="bind.replyWindowMinutes"
-              :min="1"
-              :max="1440"
-              :step="5"
-            />
-            <span>分钟最多回复</span>
-            <el-input-number
-              v-model="bind.replyLimitPerWindow"
-              :min="0"
-              :max="100"
-              :step="1"
-            />
-            <span>条</span>
-          </div>
-          <em>0 条 = 不限。按群分别计数，只统计她自己的回复。</em>
-        </div>
       </div>
 
-      <!-- 绑定级开关：只在这个号/群生效，所以留在第一组 -->
-      <div class="toggle">
-        <span class="toggle-copy">
-          <b>主人的 B站 口令</b>
-          <span>主人在群里说口令时跑一轮 B站 值班；主人 QQ 在连接设置里填</span>
-        </span>
-        <el-switch v-model="bind.groupBiliRunEnabled" />
-      </div>
+      <!-- 设一次就不管的参数全在这条折叠里；头上的摘要就是当前值 -->
+      <details class="more is-toggle">
+        <summary>
+          <span class="more-sum">节奏与限制</span>
+          <span class="more-sub">{{ paceSummary }}</span>
+          <span class="grow" />
+          <el-icon class="more-caret">
+            <ArrowRight />
+          </el-icon>
+        </summary>
+
+        <div class="more-body">
+          <div class="beh-grid">
+            <div
+              v-if="needsAmbientParams"
+              class="beh-field"
+            >
+              <span class="beh-label">说话节奏</span>
+              <div class="beh-limit">
+                <span>两条之间至少隔</span>
+                <el-input-number
+                  v-model="bind.minGapSeconds"
+                  :min="0"
+                  :max="3600"
+                  :step="30"
+                />
+                <span>秒，每天最多</span>
+                <el-input-number
+                  v-model="bind.dailyMax"
+                  :min="0"
+                  :max="1000"
+                  :step="10"
+                />
+                <span>句</span>
+              </div>
+              <em>0 句 = 不限。觉得她太吵就先调小「每天最多」。</em>
+            </div>
+
+            <div
+              v-if="needsAmbientParams"
+              class="beh-field"
+            >
+              <span class="beh-label">安静时段</span>
+              <div class="beh-quiet">
+                <el-time-select
+                  v-model="bind.quietStart"
+                  start="00:00"
+                  step="00:30"
+                  end="23:30"
+                  placeholder="23:30"
+                />
+                <span class="beh-quiet-sep">到</span>
+                <el-time-select
+                  v-model="bind.quietEnd"
+                  start="00:00"
+                  step="00:30"
+                  end="23:30"
+                  placeholder="07:30"
+                />
+              </div>
+              <em>这段时间里，除了有人 @ 她，都不主动接话。允许跨午夜。</em>
+            </div>
+
+            <div
+              v-if="needsAmbientParams"
+              class="beh-field"
+            >
+              <span class="beh-label">无关闲聊的参与概率</span>
+              <div class="beh-limit">
+                <el-input-number
+                  v-model="bind.ambientChancePercent"
+                  :min="0"
+                  :max="100"
+                  :step="5"
+                />
+                <span>%</span>
+              </div>
+              <em>跟她完全没关系的聊天，按这个比例放进去看一眼再说。调高更活跃，也更费 token。</em>
+            </div>
+
+            <div class="beh-field">
+              <span class="beh-label">群聊发言限流</span>
+              <div class="beh-limit">
+                <span>每</span>
+                <el-input-number
+                  v-model="bind.replyWindowMinutes"
+                  :min="1"
+                  :max="1440"
+                  :step="5"
+                />
+                <span>分钟最多回复</span>
+                <el-input-number
+                  v-model="bind.replyLimitPerWindow"
+                  :min="0"
+                  :max="100"
+                  :step="1"
+                />
+                <span>条</span>
+              </div>
+              <em>0 条 = 不限。按群分别计数，只统计她自己的回复。</em>
+            </div>
+          </div>
+
+          <!-- 绑定级开关：只在这个号/群生效，所以留在第一组 -->
+          <div class="toggle">
+            <span class="toggle-copy">
+              <b>主人的 B站 口令</b>
+              <span>主人在群里说口令时跑一轮 B站 值班；主人 QQ 在连接设置里填</span>
+            </span>
+            <el-switch v-model="bind.groupBiliRunEnabled" />
+          </div>
+        </div>
+      </details>
     </section>
 
     <!-- 二组：这个角色。角色级开关改一次影响所有绑定，所以单独成组、标题写明 -->
@@ -916,7 +953,7 @@ async function tryGroupOnce() {
       <div class="toggle">
         <span class="toggle-copy">
           <b>发表情</b>
-          <span>回复时偶尔单独跟一张表情。只影响 QQ，网页对话与 B站 不受影响。</span>
+          <span>回复时偶尔单独跟一张表情；只影响 QQ。</span>
         </span>
         <el-switch
           v-model="emoji"
@@ -952,13 +989,13 @@ async function tryGroupOnce() {
           />
           <span>张</span>
         </div>
-        <em>贴图和内置表情共用这一个额度，按每个群 / 每个私聊分别算：A 群贴满了不影响 B 群。想更活跃就调大张数或缩小分钟数。</em>
+        <em>贴图和内置表情共用这一个额度，按每个群 / 每个私聊分别算：A 群贴满了不影响 B 群。</em>
       </div>
 
       <div class="toggle">
         <span class="toggle-copy">
           <b>看群里的图</b>
-          <span>群友发图时先让视觉模型读成几句描述，她回的就是图里的内容；不开只看到「[图片]」。每张图多一次模型调用，一轮最多读 3 张，读失败不影响回复。</span>
+          <span>群友发图先读成几句文字再回，一轮最多读 3 张；不开只看到「[图片]」。</span>
         </span>
         <el-switch
           v-model="imageUnderstanding"
@@ -970,7 +1007,7 @@ async function tryGroupOnce() {
       <div class="toggle">
         <span class="toggle-copy">
           <b>偷表情包</b>
-          <span>看到群里发来的图，自动存进她的表情库并让视觉模型起名、写使用场景（一轮最多收 1 张、同一张只收一次）。她自己的图不偷。</span>
+          <span>自动把群里的图存进她的表情库并起名（一轮最多 1 张）；她自己的图不偷。</span>
         </span>
         <el-switch
           v-model="stickerAutoCollect"
@@ -982,13 +1019,23 @@ async function tryGroupOnce() {
       <div class="toggle">
         <span class="toggle-copy">
           <b>捡群里的梗</b>
-          <span>群聊之后顺手扫一遍最近两周的消息，把被反复用到的说法挑出来（至少出现 3 次、2 个人说过）。捡到的<b>不会直接用</b>，先躺在梗语录页等你点头。</span>
+          <span>把群里反复出现的说法收进梗语录页，等你点头她才会用。</span>
         </span>
         <el-switch
           v-model="catchphraseAutoMine"
           :loading="savingCatchphraseAutoMine"
           @change="onCatchphraseAutoMineChange"
         />
+      </div>
+    </section>
+
+    <!-- 三组：更多能力。语音 / 主动找话 / 群里找话题都是「她主动做的、带一整套参数」，
+         既不是纯绑定级开关也不是纯角色级开关，单独成组，别再塞回「这个角色」里
+         —— 那会让整张面板变成一条分不清层级的长列表。 -->
+    <section class="grp grp-caps">
+      <div class="grp-h">
+        <b>更多能力</b>
+        <span class="grp-tag">她主动开口 / 发语音，各自带一套参数</span>
       </div>
 
       <!-- 语音：说话与听懂是两个开关，但同属一件事；带概率参数，所以是可展开行 -->
@@ -1471,12 +1518,15 @@ async function tryGroupOnce() {
 .beh-grid.is-bind { margin-top: var(--sp-4); align-items: start; }
 /* 跨两列：按群设置是一整块列表，挤在半列里群号和档位都会换行 */
 .beh-grid.is-bind .is-wide { grid-column: 1 / -1; }
-/* 绑定级开关跟在参数后面，靠一条分隔线说明它仍属于这一组 */
-.beh-grid.is-bind + .toggle {
-  margin-top: var(--sp-4);
-  border-top: 1px solid var(--line);
-  /* 上下留一样的 12：以前上 12 下 7，文字看着比开关高半格 */
-  padding: var(--sp-3) 0;
+
+/* 「节奏与限制」折叠头里的当前值摘要：一长串，超出就省略，不换行 */
+.more-sub {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--dim);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ── 折叠块：改参数的人才展开 ───────────────────────── */
@@ -1512,6 +1562,9 @@ async function tryGroupOnce() {
 .toggle + .toggle,
 .more + .toggle,
 .more.is-toggle { border-top: 1px solid var(--line); }
+/* 「更多能力」单独成组后，组里第一个折叠块不再紧跟前一组，顶部的分隔线由 .grp + .grp 给，
+   它自己再画一条就成双线了 */
+.grp-caps .more.is-toggle:first-of-type { border-top: 0; }
 .toggle-copy { min-width: 0; flex: 1; }
 .toggle-copy b { display: block; color: var(--text); font-size: 14px; font-weight: 600; }
 .toggle-copy span { color: var(--dim); font-size: 12px; line-height: 1.65; }

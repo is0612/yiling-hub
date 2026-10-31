@@ -97,6 +97,7 @@ Get-NetTCPConnection -LocalPort 3002 -State Listen
 | OneBot HTTP API 地址 | `http://127.0.0.1:3002` |
 | WS Token | SnowLuma「WS 服务端」节点的授权 Token；没设就留空 |
 | HTTP Token | SnowLuma「HTTP API」节点的授权 Token（**与 WS 那个不同**） |
+| 面板密码 | SnowLuma 面板（`127.0.0.1:5099`）的登录密码。填了才能「一键」：自动对齐节点 + 自动把这个号挂上面板 |
 | 群聊中仅在被 @ 时才回复 | 建议勾选（群聊只在被 @ 时说话，更像真人、更安全） |
 | 显示名 | 例如「我的 QQ 小号」 |
 
@@ -132,6 +133,22 @@ yarn onebot:run
 
 > SnowLuma 那个命令行窗口**不能关**（关了 QQ 就掉线）；`onebot:run` 这个进程也要保持运行。
 > 两个都是普通前台进程，**重启电脑、注销或关掉承载它的终端就没了** —— 重新按 1.2 和这一节各起一次。
+
+### 面板在跑，3001 却没人听？（QQ 没挂上面板）
+
+面板端口 5099 在听，不等于 3001/3002 在听：那两个 OneBot 节点要等**这个 QQ 号的会话**建立之后才会 listen，
+而会话来自注入进 QQ 客户端的 hook。所以下面这个顺序必然卡住 —— 先开 QQ 客户端，再点「启动 SnowLuma」：
+
+- 面板只有 WebUI（日志里只有 4 行 `[App]` / `[WebUI]`，没有 `[Hook] login detected`、没有 `[OneBot] session started`）；
+- 3001/3002 一个都不 listen；
+- 适配器每 30 秒刷一次 `onebot-disconnected ... code=1006`；
+- 页面链路带上写「节点没开」，但进面板一看节点明明配着。
+
+现在不需要人进面板手点「加载」：面板密码存在连接凭据里，页面的**启动 SnowLuma / 重连**、
+以及打开 QQ 渠道页时的自动补起，都会用同一个密码登录面板 → `GET /api/processes` 找到这个号的进程 →
+`POST /api/processes/:pid/load` 注入 hook → 等 3001 起来 → 再挂适配器。
+挂不上时会把原因原样说出来，三种常见情况：没填面板密码、密码不对（面板按 IP 锁 5 次，所以只试一次）、
+面板里没有这个号的进程（说明 QQ 客户端没登这个号）。
 
 ## 4.1 群公告（可选）
 

@@ -2,7 +2,11 @@
 /**
  * QQ 渠道（OneBot 小号）。
  *
- * 内容排序：① 号通不通（连接卡）② 怎么接进来（教程，只在第一次读）③ 凭据细节。
+ * 四块结构，视觉权重从上到下递减：
+ * ① 状态条（链路带：全通时压成一行，断了才展开并带修复动作）
+ * ② 绑定清单（主工作区，一行一条角色×群，日常调参都在这）
+ * ③ 连接管理（地址/进程/设置入口，一张紧凑卡片，设好就不用看）
+ * ④ 接入教程（默认收起，一个号都没有时才自动展开）
  * 页面只有两个视觉层：画布 --bg 上铺白砖，砖内用 --surface-2/3 分块，异常才上色。
  * 一个主操作（添加 QQ 小号），卡片上的按钮一律降成文字按钮。
  */
@@ -482,6 +486,42 @@ async function provisionPanel(quiet = false) {
   }
 }
 
+type HookResponse = {
+  ok: boolean;
+  /** already=本来就在听；attached=这次挂上了；failed=没挂上 */
+  action: "already" | "attached" | "failed";
+  message: string;
+  uin?: string;
+  wsPort?: number | null;
+  reachable?: boolean;
+};
+
+/**
+ * 把 QQ 号挂到面板上（注入 hook）。
+ *
+ * 「面板在跑」和「节点在听」是两件事：面板的 OneBot 节点只在这个号的会话建立之后才 listen，
+ * 会话来自注入进 QQ 客户端的 hook。QQ 客户端比面板后启动、或者 QQ 重登过，
+ * 这个 hook 就不会自己挂回来 —— 表现是适配器一直刷 `code=1006`，而面板里节点明明配着。
+ * 密码已经存在连接凭据里，所以这一步也用同一个密码自动做（面板的 `/api/processes` + `load`）。
+ *
+ * `quiet` 用在「启动协议端 / 接通链路」里顺带挂的那次：那条流程失败时已经有自己的话要说，
+ * 这里再弹一句只会让人不知道先看哪条。
+ */
+async function attachHook(quiet = false): Promise<boolean> {
+  try {
+    const result = await $fetch<HookResponse>("/api/admin/channels/onebot/runtime/hook", { method: "POST" });
+    if (result.ok) {
+      if (result.action === "attached" && !quiet) ElMessage.success(result.message);
+      return true;
+    }
+    if (!quiet) ElMessage.warning(result.message);
+    return false;
+  } catch (error) {
+    if (!quiet) ElMessage.warning(readErrorMessage(error, "把 QQ 挂上面板没成功，可以去面板里手动挂一次。"));
+    return false;
+  }
+}
+
 async function startSnowluma() {
   if (snowlumaStarting.value || snowluma.value?.running) return;
   snowlumaStarting.value = true;
@@ -497,12 +537,16 @@ async function startSnowluma() {
     }
     // 面板一起来就把节点对齐：这一步以前要人肉登录面板做，而密码忘了就彻底卡住。
     await provisionPanel();
+    // 对齐完还得把这个号挂上去 —— 节点只在会话建立后才 listen。QQ 客户端先于面板启动时，
+    // hook 不会自己挂，不补这一步就会出现「节点明明配着、3001 却没人听」。
+    await attachHook();
   } catch (error) {
     if (readStatus(error) === 409) {
       ElMessage.info(readErrorMessage(error, "SnowLuma 已经在运行。"));
       await loadRuntime();
       // 已经在跑也算「一键」的结果：节点没配对的话适配器照样连不上。
       await provisionPanel(true);
+      await attachHook(true);
     } else {
       ElMessage.error(readErrorMessage(error, "启动失败，请手动双击 start.bat。"));
     }
@@ -573,10 +617,14 @@ function onChainAction(kind: ChainActionKind) {
   }
 }
 
-/** 「没找到程序 / 小号掉线」没有一键解法，滚到第 2 步让人照着做 */
+/** 「没找到程序 / 小号掉线 / 排查指南」没有一键解法，展开教程并滚过去让人照着做 */
 function scrollToSteps() {
   if (import.meta.server) return;
-  document.getElementById("qq-steps")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  const el = document.getElementById("qq-steps");
+  if (!el) return;
+  // 教程有号之后默认收着：不先展开就滚，人到了也只看得到一行标题
+  if (el instanceof HTMLDetailsElement) el.open = true;
+  el.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 /**
@@ -818,7 +866,18 @@ async function reconnectConnection(connection: QqConnection) {
     connectStep.value = "对齐协议端节点…";
     await provisionPanel(true);
 
-    // ③ 适配器：没在跑就启动（新进程会自己读最新配置）；已经在跑就让它重连一次。
+    // ③ QQ 会话：节点配好 ≠ 端口在听。QQ 客户端后启动 / 重登过时 hook 没挂上，
+    //    面板只有 WebUI、3001 一个都不 listen —— 这正是「适配器一直在重试 code=1006」的样子。
+    await loadRuntime();
+    if (!gateway.value?.reachable) {
+      connectStep.value = "把 QQ 挂到协议端…";
+      if (!(await attachHook(true))) {
+        ElMessage.error("QQ 没挂上面板：3001 上不会有节点。确认这个号正在 QQ 客户端里登录，再去面板手动挂一次。");
+        return;
+      }
+    }
+
+    // ④ 适配器：没在跑就启动（新进程会自己读最新配置）；已经在跑就让它重连一次。
     if (!adapterStatus.value?.running) {
       connectStep.value = "适配器没在跑，正在启动…";
       const launched = await launchAdapter();
@@ -1297,6 +1356,66 @@ function copyInstallGuide() {
           </div>
         </article>
       </div>
+
+      <!-- 第 3 块：连接管理。地址、进程、设置入口收进一张紧凑卡片 ——
+           设好之后几个月不用看，所以压在清单下面；但要用时不该进教程里翻。 -->
+      <section
+        v-if="primaryConnection"
+        class="admin"
+        aria-label="连接管理"
+      >
+        <div class="admin-h">
+          <h2>连接管理</h2>
+          <span class="admin-sub">地址和进程都在这，设好之后这里基本不用动</span>
+        </div>
+        <div class="admin-chips">
+          <span class="chip">QQ <b class="is-mono">{{ primaryConnection.appId || "未填" }}</b></span>
+          <span
+            v-if="gateway"
+            class="chip"
+          >网关 <b class="is-mono">{{ gateway.host }}:{{ gateway.port }}</b></span>
+          <a
+            class="chip is-link"
+            :href="PROXY.panel"
+            target="_blank"
+            rel="noopener noreferrer"
+          >面板 <b class="is-mono">{{ PROXY.panel.replace("http://", "") }}</b></a>
+        </div>
+        <div class="admin-acts">
+          <button
+            v-if="snowluma?.installed && !snowluma.running"
+            type="button"
+            class="btn"
+            :disabled="snowlumaStarting"
+            @click="startSnowluma"
+          >
+            <el-icon><VideoPlay /></el-icon>{{ snowlumaStarting ? "正在打开…" : "启动 SnowLuma" }}
+          </button>
+          <button
+            v-if="!adapterStatus?.running"
+            type="button"
+            class="btn"
+            :disabled="adapterStarting"
+            @click="startAdapter"
+          >
+            <el-icon><VideoPlay /></el-icon>{{ adapterStarting ? "正在打开…" : "启动适配器" }}
+          </button>
+          <button
+            type="button"
+            class="btn quiet"
+            @click="void openEdit(primaryConnection)"
+          >
+            连接设置
+          </button>
+          <button
+            type="button"
+            class="btn quiet"
+            @click="scrollToSteps"
+          >
+            排查指南
+          </button>
+        </div>
+      </section>
     </template>
 
     <div
@@ -1908,7 +2027,7 @@ function copyInstallGuide() {
 
 <style scoped>
 /* ══════════════════════════════════════════════════════════════
-   按「绑定」组织：链路带（通没通）→ 绑定清单（一行一个角色×群）→ 折叠的接入教程。
+   按「绑定」组织：链路带（通没通）→ 绑定清单（一行一个角色×群）→ 连接管理 → 折叠的接入教程。
    层次只靠明度差和间距：底色 --bg、卡片 --surface、组内分块才用 --surface-2/3。
    全部规则挂在 .qq-a 下，既锁住作用域，也压过 main.css 的 .card/.btn (0,1,0)。
    ══════════════════════════════════════════════════════════════ */
@@ -2094,6 +2213,38 @@ function copyInstallGuide() {
 
 .row-blank { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; }
 .row-blank p { flex: 1 1 320px; margin: 0; color: var(--text-2); font-size: 14px; line-height: 1.7; }
+
+/* ── 连接管理：清单下面的一张紧凑卡片 ─────────────────
+    chips 摆「是什么」（号、地址），按钮摆「怎么办」（启动、设置、排查）。
+   启动按钮只在那个进程没跑时出现 —— 全通时只剩两个安静的文字按钮。 */
+.admin {
+  margin-top: var(--sp-3);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: var(--sp-3) var(--sp-4);
+}
+.admin-h { display: flex; align-items: baseline; gap: var(--sp-2); }
+.admin-h h2 { margin: 0; color: var(--text); font-size: 16px; font-weight: 700; }
+.admin-sub { color: var(--dim); font-size: 12px; }
+.admin-chips { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-top: var(--sp-3); }
+.chip {
+  display: inline-flex;
+  height: 28px;
+  align-items: center;
+  gap: 6px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  padding: 0 10px;
+  color: var(--dim);
+  font-size: 12px;
+}
+.chip b { color: var(--text); font-weight: 600; }
+.chip b.is-mono { font-family: var(--mono); font-weight: 500; }
+a.chip.is-link { text-decoration: none; }
+a.chip.is-link:hover { background: var(--surface-3); }
+a.chip.is-link:hover b { color: var(--brand-strong); }
+.admin-acts { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-top: var(--sp-3); }
+.admin-acts .btn { height: 32px; }
 
 /* 骨架：只占位，不描形状 */
 .row.is-skeleton {

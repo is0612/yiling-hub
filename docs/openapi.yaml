@@ -477,6 +477,39 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           description: 仅管理员可访问
+  /admin/channels/onebot/runtime/hook:
+    post:
+      tags: [Auth]
+      summary: 把这个 QQ 号挂到 SnowLuma 面板上（仅管理员）
+      description: |
+        面板在跑 ≠ 3001/3002 在听：两个 OneBot 节点只在这个号的会话建立后才 listen，而会话来自
+        注入进 QQ 客户端的 hook。这里用存下的面板密码登录，`GET /api/processes` 里按 `account.uin`
+        精确挑出这个号的进程，再 `POST /api/processes/:pid/load` 注入（已注入但会话掉了则 refresh），
+        等 WS 端口起来后返回。挑不到这个号就失败，不会往别的 QQ 里注入。
+        没填密码 / 密码不对 / 号不在线都返回 200 + ok=false，不重试（面板按 IP 锁 5 次）。
+      responses:
+        '200':
+          description: 挂载结果
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  action: { type: string, enum: [already, attached, failed] }
+                  message: { type: string }
+                  uin: { type: string }
+                  panelPort: { type: integer }
+                  wsPort: { type: integer, nullable: true }
+                  reachable: { type: boolean }
+        '400':
+          description: 没找到 SnowLuma / 没有连接 / 连接里没填 QQ 号
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: 仅管理员可访问
+        '409':
+          description: 面板还没应答
   /admin/channels/onebot/runtime/adapter:
     post:
       tags: [Auth]

@@ -1,10 +1,11 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { loadOnebotConnections } from "./configure";
-import { portFromUrl, provisionOnebotNodes } from "./panel";
+import { panelListProcesses, panelLoadHook, panelLogin, panelRefreshHook, pickQqProcess, portFromUrl, provisionOnebotNodes } from "./panel";
 import {
   launchOnebotAdapter,
   launchSnowluma,
+  parseWsEndpoint,
   probeTcp,
   readOnebotAdapterStatus,
   readSnowlumaStatus,
@@ -129,6 +130,93 @@ async function waitForPanel(port: number, timeoutMs: number): Promise<boolean> {
   return false;
 }
 
+// ── 把 QQ 挂上面板（hook）────────────────────────────────
+/**
+ * 「面板起来了」和「节点在听」是两件事。
+ *
+ * 面板的 OneBot 节点只在**这个号的会话建立之后**才开始 listen，而会话来自注入进 QQ 客户端的 hook。
+ * 所以下面这个顺序会让人彻底卡住：先开 QQ → 再点「启动 SnowLuma」（此刻 hook 没注入）→
+ * 面板只有 WebUI、3001 没人听 → 适配器每 30 秒刷一次 `code=1006`，
+ * 页面上写的是「节点没开」，去面板里看节点却明明配着 —— 2026-10-31 就是这么被卡住的。
+ *
+ * 面板留了两个接口正好补这一步：`GET /api/processes` 列出发现到的 QQ 进程，
+ * `POST /api/processes/:pid/load` 把 hook 注入进去。用同一个面板密码就能调，不用人进面板点。
+ */
+export type AttachResult = {
+  ok: boolean;
+  /** already=本来就在听；attached=这次挂上了；failed=没挂上 */
+  action: "already" | "attached" | "failed";
+  message: string;
+};
+
+export async function attachQqSession(options: {
+  password: string;
+  accountQq: string;
+  panelPort: number;
+  wsUrl: string;
+  /** 挂上之后等端口起来的时间：注入通常 1~3 秒，留点余量给刚登录的平均号 */
+  waitMs?: number;
+}): Promise<AttachResult> {
+  const endpoint = parseWsEndpoint(options.wsUrl);
+  if (!endpoint) {
+    return { ok: false, action: "failed", message: `连接里的 WS 地址「${options.wsUrl}」解析不出端口。` };
+  }
+  // 端口已经在听 = 会话早就建立好了，不用为它再登录一次面板（面板按 IP 计失败次数）
+  if (await probeTcp(endpoint.host, endpoint.port)) {
+    return { ok: true, action: "already", message: `${endpoint.port} 已经在听。` };
+  }
+
+  const login = await panelLogin(options.panelPort, options.password);
+  if (!login.ok) return { ok: false, action: "failed", message: login.message };
+
+  try {
+    const processes = await panelListProcesses(login.session);
+    const target = pickQqProcess(processes, options.accountQq);
+    if (!target) {
+      const seen = processes.map((item) => item.uin || "未知号").join("、");
+      return {
+        ok: false,
+        action: "failed",
+        message: processes.length
+          ? `面板只看到 QQ ${seen}，没有 ${options.accountQq} —— 先确认这个号在 QQ 客户端里登着。`
+          : "面板一个 QQ 进程都没发现，先把 QQ 客户端登上去。",
+      };
+    }
+
+    if (!target.injected) {
+      const loaded = await panelLoadHook(login.session, target.pid);
+      if (!loaded.ok) return { ok: false, action: "failed", message: loaded.message };
+    } else if (!target.connected) {
+      // 注入过但会话掉了（QQ 重登过）：再 load 会被当成重复挂载，该 refresh
+      const refreshed = await panelRefreshHook(login.session, target.pid);
+      if (!refreshed.ok) return { ok: false, action: "failed", message: refreshed.message };
+    }
+
+    const deadline = Date.now() + (options.waitMs ?? 20_000);
+    while (Date.now() < deadline) {
+      if (await probeTcp(endpoint.host, endpoint.port, 600)) {
+        return {
+          ok: true,
+          action: "attached",
+          message: `已把 QQ ${options.accountQq} 挂上面板，${endpoint.port} 起来了。`,
+        };
+      }
+      await new Promise((resolve) => setTimeout(resolve, 800));
+    }
+    return {
+      ok: false,
+      action: "failed",
+      message: `QQ ${options.accountQq} 挂上了，但 ${endpoint.port} 20 秒内没起来 —— 去面板看一眼这个号的节点是不是被关掉了。`,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      action: "failed",
+      message: `挂 QQ 上去失败：${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+}
+
 /**
  * 补齐整条链路，顺序和页面上的「重连」一致：协议端 → 节点 → 适配器。
  *
@@ -166,8 +254,15 @@ async function runEnsure(): Promise<EnsureResult> {
     readSnowlumaStatus(),
     readOnebotAdapterStatus(),
   ]);
+  const wsEndpoint = parseWsEndpoint(primary.config.wsUrl);
+  const gatewayBefore = wsEndpoint ? await probeTcp(wsEndpoint.host, wsEndpoint.port) : false;
 
-  if (snowlumaBefore.running && adapterBefore.running) {
+  /*
+   * 「两个进程都在」不等于「链路通了」—— 这是 2026-10-31 那次卡住的真正原因。
+   * SnowLuma 起来了但 QQ 没挂上时只有 WebUI，适配器在跑但其实一直在刷 code=1006；
+   * 只看两个 pid 就判 already-running，等于把「中间没接上」当成「已经好了」。
+   */
+  if (snowlumaBefore.running && adapterBefore.running && gatewayBefore) {
     return { action: "already-running", steps, message: "链路本来就在跑。" };
   }
 
@@ -221,7 +316,28 @@ async function runEnsure(): Promise<EnsureResult> {
     }
   }
 
-  // ③ 适配器
+  /*
+   * ③ QQ 会话（hook）。
+   *
+   * 顺序不能反：节点要**在这个号的会话建立之前**写进配置，面板建会话时才会按它 listen。
+   * 而这一步又必须是「端口没在听」才做 —— 已经在听说明会话好好的，再注入一次等于白白断一下。
+   */
+  const wsNow = parseWsEndpoint(primary.config.wsUrl);
+  if (snowlumaNow.running && wsNow && !(await probeTcp(wsNow.host, wsNow.port))) {
+    steps.push("把 QQ 挂上面板");
+    const attached = await attachQqSession({
+      password: primary.snowlumaPassword,
+      accountQq: primary.accountQq,
+      panelPort: snowlumaNow.panelPort,
+      wsUrl: primary.config.wsUrl,
+    });
+    if (!attached.ok) {
+      return { action: "partial", reason: "hook-failed", steps, message: attached.message };
+    }
+    if (attached.action === "attached") steps.push(attached.message);
+  }
+
+  // ④ 适配器
   const adapterNow = await readOnebotAdapterStatus();
   if (!adapterNow.running) {
     steps.push("启动适配器");

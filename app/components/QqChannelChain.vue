@@ -150,6 +150,22 @@ const verdict = computed(() => {
 });
 
 /**
+ * 四段全通时整条带子压成一行：健康不是新闻，不该占三行高度。
+ * 只有断了才展开成四段轨道，让人看清断在哪、怎么修。
+ */
+const allGood = computed(() => props.ready && Boolean(props.connection) && rootIndex.value === -1);
+
+/** 压缩态那一行的事实：号、面板、网关、适配器各一段，谁缺了就不写谁 */
+const compactFacts = computed(() => {
+  const facts: string[] = [];
+  if (props.connection?.appId) facts.push(`QQ ${props.connection.appId}`);
+  if (props.snowluma?.running) facts.push(`面板 ${props.snowluma.panelPort}`);
+  if (props.gateway) facts.push(`网关 ${props.gateway.port}`);
+  if (props.adapter?.running) facts.push(props.adapter.pid ? `适配器 PID ${props.adapter.pid}` : "适配器运行中");
+  return facts.join(" · ");
+});
+
+/**
  * 断点那一行：说清「哪坏了、为什么、点一下怎么修」。
  * 只给一个动作 —— 这一屏的用途是指路，不是把所有按钮都摆出来。
  */
@@ -179,9 +195,16 @@ const fix = computed(() => {
         action: { kind: "start-gateway" as ChainActionKind, label: "启动 SnowLuma" },
       };
     }
+    /*
+     * 这里以前写的是「到面板里新建一个 WebSocket 服务端」—— 2026-10-31 证明那句话会把人带偏：
+     * 节点往往早就配好了，缺的是「把这个号挂上面板」（注入 hook）这一步。
+     * 没有会话，面板只有 WebUI，配置里的节点一个都不会 listen。
+     * 现在这条链自己能修（用存下的面板密码挂），所以主按钮是「自动挂上」而不是「打开面板」。
+     */
     return {
       title: `面板在跑，但 ${props.gateway.port} 上没开节点`,
-      detail: "到面板里新建一个 WebSocket 服务端，端口填这个号要连的那个。",
+      detail: "节点多半已经配好了，缺的是把这个号挂上面板（注入 hook）—— 没有会话，节点就不会 listen。点「自动挂上」会用存下的面板密码把它挂好。",
+      action: { kind: "reconnect" as ChainActionKind, label: "自动挂上" },
       href: props.panelUrl,
       actionLabel: "打开面板",
     };
@@ -214,9 +237,26 @@ const fix = computed(() => {
 <template>
   <section
     class="linkbar"
+    :class="{ 'is-compact': allGood }"
     aria-label="QQ 渠道链路状态"
   >
-    <ol class="link">
+    <!-- 全通时一行说完：通了就没什么好展开的；断点条（fixbar）在下面照常出现 -->
+    <div
+      v-if="allGood"
+      class="c-line"
+    >
+      <span
+        class="c-dot"
+        aria-hidden="true"
+      />
+      <b class="c-title">四段全通</b>
+      <span class="c-facts">{{ compactFacts }}</span>
+    </div>
+
+    <ol
+      v-else
+      class="link"
+    >
       <li
         v-for="hop in hops"
         :key="hop.key"
@@ -237,7 +277,9 @@ const fix = computed(() => {
     </ol>
 
     <div class="link-end">
+      <!-- 压缩态里 c-title 已经说了「四段全通」，徽标再出现就是同句话说两遍 -->
       <span
+        v-if="!allGood"
         class="verdict"
         :class="`is-${verdict.tone}`"
       >{{ verdict.text }}</span>
@@ -277,21 +319,22 @@ const fix = computed(() => {
   >
     <b>{{ fix.title }}</b>
     <p>{{ fix.detail }}</p>
-    <a
-      v-if="fix.href"
-      class="fix-act"
-      :href="fix.href"
-      target="_blank"
-      rel="noopener noreferrer"
-    >{{ fix.actionLabel }}</a>
     <button
-      v-else-if="fix.action"
+      v-if="fix.action"
       type="button"
       class="fix-act"
       @click="emit('action', fix.action.kind)"
     >
       {{ fix.action.label }}
     </button>
+    <!-- 自动挂上失败时（号没登、密码错）还得留一条手动路：面板里那个「加载」按钮就在进程列表上 -->
+    <a
+      v-if="fix.href"
+      class="fix-act is-quiet"
+      :href="fix.href"
+      target="_blank"
+      rel="noopener noreferrer"
+    >{{ fix.actionLabel }}</a>
   </div>
 </template>
 
@@ -368,6 +411,20 @@ const fix = computed(() => {
 
 .link-end { display: flex; flex: none; align-items: center; gap: var(--sp-2); }
 
+/* ── 压缩态：健康时整条带子就是一行 ─────────────────
+   只换内容不换壳（同一张 --surface 砖），按钮保留在右端原位。 */
+.c-line { display: flex; min-width: 0; align-items: center; gap: var(--sp-2); }
+.c-dot { width: 8px; height: 8px; flex: none; border-radius: 999px; background: var(--green); }
+.c-title { flex: none; color: var(--green); font-size: 14px; font-weight: 700; }
+.c-facts {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--dim);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .verdict {
   display: inline-flex;
   height: 26px;
@@ -437,6 +494,9 @@ const fix = computed(() => {
 }
 .fix-act:hover { background: var(--red); color: #fff; }
 .fix-act:focus-visible { outline: 2px solid var(--red); outline-offset: 2px; }
+/* 「打开面板」是自动挂不上时的退路，不该和「自动挂上」抢同一档视觉重量 */
+.fix-act.is-quiet { background: transparent; color: var(--dim); }
+.fix-act.is-quiet:hover { background: var(--surface-3); color: var(--red); }
 
 /* ── 窄屏：转纵向，但每个跳点只占一行 ───────────────
    四段各写三行会把带子撑到 300px 高，比它要回答的「通没通」还显眼；

@@ -1,15 +1,21 @@
 /**
- * SnowLuma 面板客户端：登录一次，然后读写 OneBot 节点配置。
+ * SnowLuma 面板客户端：登录一次，然后读写 OneBot 节点配置、把 QQ 客户端挂上 hook。
  *
  * 为什么需要它：面板里的 WS/HTTP 节点和连接里填的地址、Token 是两套东西，
  * 对不上适配器就连不上。以前这一步全靠人去面板里肉眼核对 —— 而进面板要先输密码，
  * 密码忘了就彻底卡住（面板只存 hash+salt，反推不回来）。
  * 现在把密码存在连接凭据里，启动后自动登录、把两个节点对齐。
  *
+ * 2026-10-31 补：**节点配好了不等于端口在听**。面板只有 WebUI 的时候（QQ 客户端后启动、
+ * hook 没挂上），3001/3002 一个都不 listen，适配器只能一直刷 `code=1006`。
+ * 所以除了节点，这里还负责「找到这个号对应的 QQ 进程 → 把 hook 挂进去」。
+ *
  * 接口来自 SnowLuma v2.2.1 的 index.mjs（未混淆，可直接读）：
  *   POST /api/login        { password }                → { success, token, mustChangePassword }
  *   GET  /api/config/:uin                              → { config }
  *   POST /api/config/:uin  <整个 config>                → { success, saved, applied }
+ *   GET  /api/processes                                → { list: [{ pid, injected, connected, account }] }
+ *   POST /api/processes/:pid/load                      → { success, process }
  * 鉴权头：`x-snowluma-token: <token>`（或 `Authorization: Bearer`），除 login 外全部要带。
  */
 
@@ -36,7 +42,7 @@ type Json = Record<string, unknown>;
 async function panelFetch(
   port: number,
   path: string,
-  init: { method?: string; body?: unknown; token?: string } = {},
+  init: { method?: string; body?: unknown; token?: string; timeoutMs?: number } = {},
 ): Promise<{ status: number; json: Json | null }> {
   const headers: Record<string, string> = {};
   if (init.body !== undefined) headers["Content-Type"] = "application/json";
@@ -45,7 +51,7 @@ async function panelFetch(
     method: init.method ?? "GET",
     headers,
     ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
-    signal: AbortSignal.timeout(PANEL_TIMEOUT_MS),
+    signal: AbortSignal.timeout(init.timeoutMs ?? PANEL_TIMEOUT_MS),
   });
   const json = await response.json().catch(() => null) as Json | null;
   return { status: response.status, json };
@@ -339,3 +345,124 @@ export async function provisionOnebotNodes(options: {
     };
   }
 }
+
+// ── QQ 进程与 hook ───────────────────────────────────────
+/**
+ * 面板眼里的一个 QQ 客户端进程。
+ *
+ * `account.uin` 是**客户端自己登着的号** —— 没挂 hook 时它也有值（客户端知道自己是哪个号），
+ * 所以「该往哪个进程注入」靠它判断，不能靠 `uin`（那个字段在注入前是 "0"）。
+ */
+export type PanelQqProcess = {
+  pid: number;
+  name: string;
+  /** hook 有没有注入进去；注入后才有 OneBot 会话 */
+  injected: boolean;
+  connected: boolean;
+  uin: string;
+  status: string;
+};
+
+function readProcesses(json: Json | null): PanelQqProcess[] {
+  const list = json?.list;
+  if (!Array.isArray(list)) return [];
+  const out: PanelQqProcess[] = [];
+  for (const raw of list) {
+    const item = (raw ?? {}) as Record<string, unknown>;
+    const pid = Number(item.pid);
+    if (!Number.isInteger(pid) || pid <= 0) continue;
+    const account = (item.account ?? {}) as Record<string, unknown>;
+    const accountUin = typeof account.uin === "string" ? account.uin : "";
+    const sessionUin = typeof item.uin === "string" ? item.uin : "";
+    const uin = accountUin && accountUin !== "0" ? accountUin : sessionUin === "0" ? "" : sessionUin;
+    out.push({
+      pid,
+      name: typeof item.name === "string" ? item.name : "QQ.exe",
+      injected: item.injected === true,
+      connected: item.connected === true,
+      uin,
+      status: typeof item.status === "string" ? item.status : "",
+    });
+  }
+  return out;
+}
+
+/** 面板发现的所有 QQ 客户端进程（含没挂 hook 的）。 */
+export async function panelListProcesses(session: PanelSession): Promise<PanelQqProcess[]> {
+  const response = await panelFetch(session.port, "/api/processes", { token: session.token });
+  if (response.status === 401) throw new PanelRequestError("面板会话已失效。");
+  if (response.status !== 200) {
+    throw new PanelRequestError(`读不到 QQ 进程列表（面板返回 ${response.status}）。`);
+  }
+  return readProcesses(response.json);
+}
+
+/**
+ * 挑出「就是这个号」的进程。
+ *
+ * 挑不到就返回 null，**不许退化成「随便挑一个」** —— 往别人的 QQ 里注入模块，
+ * 比这条鱼一时不说话严重得多；多开时（用户自己还有个小号在跑）尤其不能猜。
+ */
+export function pickQqProcess(list: PanelQqProcess[], uin: string): PanelQqProcess | null {
+  const target = uin.trim();
+  if (!target) return null;
+  const matched = list.filter((item) => item.uin === target);
+  if (!matched.length) return null;
+  // 同一个号开了两次客户端时优先已经连上的那个，免得往一个已经废弃的进程里再注入一遍
+  return matched.find((item) => item.connected) ?? matched[0]!;
+}
+
+/**
+ * 把 hook 注入这个 QQ 进程 —— 注入成功之后面板才会建 OneBot 会话，3001/3002 才开始 listen。
+ *
+ * 注入本身要往目标进程里加载模块，面板那边可能要几秒；给它 20 秒，别用默认的 8 秒
+ * 把「成功但慢」报成失败（真失败时面板也是立刻回 success:false）。
+ */
+export async function panelLoadHook(
+  session: PanelSession,
+  pid: number,
+): Promise<{ ok: boolean; message: string }> {
+  if (!Number.isInteger(pid) || pid <= 0) return { ok: false, message: "进程号无效。" };
+  const response = await panelFetch(session.port, `/api/processes/${pid}/load`, {
+    method: "POST",
+    token: session.token,
+    timeoutMs: 20_000,
+  });
+  if (response.status === 401) return { ok: false, message: "面板会话已失效。" };
+  if (response.json?.success === true) return { ok: true, message: "已挂上面板。" };
+  const detail = response.json?.message;
+  return {
+    ok: false,
+    message: typeof detail === "string" && detail
+      ? `面板拒绝挂载：${detail}`
+      : `挂载失败（面板返回 ${response.status}）。`,
+  };
+}
+
+/**
+ * 让面板重连这个已经注入过的进程。
+ *
+ * 「注入了」和「会话连着」是两件事：hook 加载成功但 QQ 那边会话掉了（重登、网络断一下）时，
+ * 再 `load` 一遍会被面板当成重复挂载拒掉 —— 这种情况该 refresh。
+ */
+export async function panelRefreshHook(
+  session: PanelSession,
+  pid: number,
+): Promise<{ ok: boolean; message: string }> {
+  if (!Number.isInteger(pid) || pid <= 0) return { ok: false, message: "进程号无效。" };
+  const response = await panelFetch(session.port, `/api/processes/${pid}/refresh`, {
+    method: "POST",
+    token: session.token,
+    timeoutMs: 20_000,
+  });
+  if (response.status === 401) return { ok: false, message: "面板会话已失效。" };
+  if (response.json?.success === true) return { ok: true, message: "已让面板重新连这个号。" };
+  const detail = response.json?.message;
+  return {
+    ok: false,
+    message: typeof detail === "string" && detail
+      ? `面板拒绝重连：${detail}`
+      : `重连失败（面板返回 ${response.status}）。`,
+  };
+}
+
