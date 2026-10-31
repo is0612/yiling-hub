@@ -8,7 +8,7 @@ import { encryptApiKey } from "../server/utils/credential-encryption";
 import { loadOnebotConnections } from "../server/utils/channel-adapter/onebot/configure";
 import { markOnebotReloadApplied } from "../server/utils/channel-adapter/onebot/runtime";
 import { createOnebotMessageHandler } from "../server/utils/channel-adapter/onebot/serve";
-import { connectOnebot, resolveOnebotEvent } from "../server/utils/channel-adapter/onebot/client";
+import { connectOnebot, POKE_CONTENT, resolveOnebotEvent, resolveOnebotPokeEvent } from "../server/utils/channel-adapter/onebot/client";
 
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) throw new Error("缺少 DATABASE_URL，OneBot 渠道测试无法运行。");
@@ -173,6 +173,61 @@ try {
   assert.equal(resolved.conversationKey, "g:999");
   assert.equal(resolved.content, "你好@123456789[图片]");
   assert.equal(resolved.displayName, "小明(群)");
+
+  // 3a. 戳一戳：notice 不是 message，但戳的是她本人时要翻译成一条可处理的入站事件。
+  const pokeAtSelf = resolveOnebotPokeEvent({
+    post_type: "notice",
+    notice_type: "notify",
+    sub_type: "poke",
+    self_id: 123456789,
+    group_id: 999,
+    user_id: 111,
+    target_id: 123456789,
+    action: "拍了拍",
+    suffix: "我的脑袋",
+  });
+  assert(pokeAtSelf, "戳她本人要能解析出来。");
+  assert.equal(pokeAtSelf.messageType, "group");
+  assert.equal(pokeAtSelf.conversationKey, "g:999");
+  assert.equal(pokeAtSelf.content, POKE_CONTENT, "正文统一成动作，模型才知道这是戳不是说话。");
+  assert.equal(pokeAtSelf.poke?.targetId, "123456789");
+  assert.equal(pokeAtSelf.userId, "111", "发件人是戳她的那个人。");
+  assert(
+    resolveOnebotPokeEvent({
+      post_type: "notice",
+      notice_type: "notify",
+      sub_type: "poke",
+      self_id: 123456789,
+      group_id: 999,
+      user_id: 111,
+      target_id: 666,
+    }) === null,
+    "戳的是别人 → 直接丢掉，连背景都不进。",
+  );
+  assert(
+    resolveOnebotPokeEvent({
+      post_type: "notice",
+      notice_type: "notify",
+      sub_type: "poke",
+      group_id: 999,
+      user_id: 111,
+      target_id: 666,
+    }) === null,
+    "没有 self_id 就不知道自己是不是被戳的那个。",
+  );
+  assert.equal(resolveOnebotPokeEvent(resolved.data), null, "普通消息不该被当成戳。");
+  const privatePoke = resolveOnebotPokeEvent({
+    post_type: "notice",
+    notice_type: "notify",
+    sub_type: "poke",
+    self_id: 123456789,
+    user_id: 111,
+    sender_id: 111,
+    target_id: 123456789,
+  });
+  assert(privatePoke, "私聊里的戳同样要叫她。");
+  assert.equal(privatePoke.messageType, "private");
+  assert.equal(privatePoke.conversationKey, "c:111");
 
   const handler = createOnebotMessageHandler(record);
   const closeGateway = await connectOnebot(record.config, { onMessage: handler });
@@ -609,6 +664,52 @@ try {
   const fencedReply = (await groupSends(1013)).map((item) => String(item.body.message)).join(" ");
   assert(fencedReply.includes("CI 围栏里的模型回复"), "发出去的必须是从围栏里解出来的正文。");
 
+  /**
+   * 9.11 戳一戳 = 叫她一声。
+   *
+   * 用户的实际用法：问了话、她没接（群里别的机器人抢答了，或者档位是 mention），
+   * 他就戳她一下 —— 这比再打一遍字轻得多。所以「戳她」必须能把她叫醒，
+   * 而「戳别人」跟她毫无关系，连背景都不该进。
+   */
+  const emitPoke = (groupId: number, userId: number, targetId: number) => fetch("http://127.0.0.1:4031/__mock/emit", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      event: {
+        post_type: "notice",
+        notice_type: "notify",
+        sub_type: "poke",
+        self_id: 123456789,
+        group_id: groupId,
+        user_id: userId,
+        target_id: targetId,
+        action: "拍了拍",
+        suffix: "我的脑袋",
+      },
+    }),
+  });
+
+  // 退到最严格的一档（只认被叫到）：戳她一戳照样要能叫醒。
+  record.bindings[0]!.groupChat = { ...ambientSettings, mode: "mention" };
+  await emitPoke(1014, 555, 666);
+  await sleep(5000);
+  assert.equal(await assistantCount(1014), 0, "戳的是别人，跟她无关，不能有任何反应。");
+  assert.equal(await userCount(1014), 0, "更不该落库：这条消息连背景都不该进。");
+  assert.equal((await groupSends(1014)).length, 0, "当然也不能发消息。");
+
+  await emitPoke(1014, 555, 123456789);
+  await waitFor(async () => (await assistantCount(1014)) >= 1).catch(() => undefined);
+  assert.equal(await assistantCount(1014), 1, "戳她本人 = 叫她一声，mention 档也要回。");
+  assert.equal(await userCount(1014), 1, "那次戳要落成一条可追溯的记录，不能只活在内存里。");
+  const pokeSends = (await groupSends(1014)).map((item) => String(item.body.message)).join(" ");
+  assert(pokeSends.includes(POKE_CONTENT), "戳这个动作本身要进到她看到的那一轮里。");
+  assert.ok(sawGroupRoundLog(1014, "direct"), "这一轮必须是按 direct 放行的。");
+  assert(
+    roundLogs.some((line) => line.includes(`"groupId":"1014"`) && line.includes('"poked":true')),
+    "日志还要能看出是被戳醒的，而不是被 @ 的 —— 两者都能让 direct 为真。",
+  );
+  record.bindings[0]!.groupChat = { ...ambientSettings, mode: "all" };
+
   // 10. 群聊 B站 指令只认主人：群友触发被忽略，主人触发才得到回执/提示。
   record.groupBiliRunEnabled = true;
   record.bindings[0]!.groupBiliRunEnabled = true;
@@ -628,7 +729,7 @@ try {
 
   closeGateway();
 
-  console.log("OneBot 渠道端到端测试通过：WS token 鉴权与单次握手、事件接入、CQ 码解析、凭据解密、角色绑定路由、记忆检索、模型回复、表情段发送与表情额度、消息持久化、外部身份 upsert、回发平台与幂等去重、群公告草稿与确认发布、普通成员越权拦截、按群滚动 10 分钟回复上限、群聊统一攒批（mention 档只在被叫到时进管道）、自然接话闸门、按群覆盖群聊模式、引用与 @ 的分工（回上一条不加、接旧句才引用、点名才 @）、别人 @ 别人时不抢话（@all 例外）、围栏 JSON 照常回、B站 指令主人专属。");
+  console.log("OneBot 渠道端到端测试通过：WS token 鉴权与单次握手、事件接入、CQ 码解析、凭据解密、角色绑定路由、记忆检索、模型回复、表情段发送与表情额度、消息持久化、外部身份 upsert、回发平台与幂等去重、群公告草稿与确认发布、普通成员越权拦截、按群滚动 10 分钟回复上限、群聊统一攒批（mention 档只在被叫到时进管道）、自然接话闸门、按群覆盖群聊模式、引用与 @ 的分工（回上一条不加、接旧句才引用、点名才 @）、别人 @ 别人时不抢话（@all 例外）、围栏 JSON 照常回、戳一戳能叫醒她（戳别人不算）、B站 指令主人专属。");
 } finally {
   for (const child of children) child.kill();
   await prisma.onebotGroupAnnouncement.deleteMany({ where: { connectionId } }).catch(() => undefined);

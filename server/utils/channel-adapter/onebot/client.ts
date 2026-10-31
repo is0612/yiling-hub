@@ -5,12 +5,14 @@
  *
  * - Reconnect with exponential backoff (1s → 30s cap).
  * - Liveness probe every 30s (calls get_status); a failed probe triggers a reconnect.
- * - Only `post_type === "message"` events with `message_type` private/group are surfaced.
+ * - 只把 `post_type === "message"`（私聊/群聊）与「戳一戳」通知往上抛，
+ *   其余 notice / request / meta_event 一律忽略。
  */
 
 import {
   onebotConversationKey,
   readOnebotDisplayName,
+  readOnebotGroupId,
   readOnebotGroupRole,
   readOnebotImages,
   readOnebotMessageId,
@@ -52,6 +54,22 @@ export type OnebotResolvedEvent = {
   selfId: string;
   /** 群成员身份；私聊或网关未提供时为 member。 */
   senderRole: OnebotGroupRole;
+  /**
+   * 这条是「戳一戳」而不是一句话。
+   *
+   * 只有戳的是**她本人**时才会往上抛（别人互戳在解析这一步就丢掉了），
+   * 所以下游可以把它当成「有人叫了她一声」，等同于被 @。
+   * 正文被统一成 {@link POKE_CONTENT}，模型看到的是一个人做出的动作。
+   */
+  poke?: OnebotPokeInfo;
+};
+
+export type OnebotPokeInfo = {
+  /** 被戳的人；解析侧已经确认这就是她自己。 */
+  targetId: string;
+  /** 网关给的原始动作文案（「拍了拍」/「我的脑袋」），只用来写日志。 */
+  action: string;
+  suffix: string;
 };
 
 export type OnebotHandlers = {
@@ -64,6 +82,78 @@ function isMessageEvent(data: unknown): boolean {
   if (record?.post_type !== "message") return false;
   const mt = record.message_type;
   return mt === "private" || mt === "group";
+}
+
+/**
+ * 戳一戳的正文。
+ *
+ * 用「动作」而不是「一句话」的写法：模型看到 `member_3: （戳了戳你）` 会当成一个动作，
+ * 而不是一句可以接话的台词。带全角括号还有个副作用 —— 不会被当成系统播报
+ * （`looksLikeSystemMessage` 要「≥8 字且以句号结尾」），也不会被当成叫到她的名字。
+ */
+export const POKE_CONTENT = "（戳了戳你）";
+
+/** `post_type=notice` + `notice_type=notify` + `sub_type=poke`，SnowLuma 的群戳/私戳都是这个形状。 */
+function isPokeNotice(data: unknown): boolean {
+  const record = data as { post_type?: unknown; notice_type?: unknown; sub_type?: unknown } | null;
+  return record?.post_type === "notice" && record.notice_type === "notify" && record.sub_type === "poke";
+}
+
+/**
+ * 把「戳一戳」翻译成一条可处理的入站事件。
+ *
+ * 为什么要有这一步：QQ 的戳一戳是 notice，不是 message，而这条管道全部按「一条消息」
+ * 建模（攒批、闸门、转录、落库）。与其为它在闸门和管道里再开一套旁路，不如在这里
+ * 翻译成一条正文为 `（戳了戳你）` 的合成消息 —— 下游一行都不用改，`poke` 字段负责
+ * 告诉闸门「这是有人在叫她」。
+ *
+ * 三条判据，缺一不可：
+ *  - 戳的是**她本人**（`target_id === self_id`）：别人互戳是别人的私事，解析阶段就丢掉；
+ *  - 有 `self_id`：不知道她是谁就没法判断戳的是不是她，宁可不动；
+ *  - 有发件人和会话键：路由靠它。
+ *
+ * `message_id` 是合成的：notice 事件没有消息 id，而落库的幂等键是
+ * `(conversationId, externalMessageId)`。同一秒同一个人戳多次会被合并成一轮（攒批本来就这么做）。
+ */
+export function resolveOnebotPokeEvent(data: unknown): OnebotResolvedEvent | null {
+  if (!isPokeNotice(data)) return null;
+  const record = data as {
+    self_id?: unknown;
+    sender_id?: unknown;
+    target_id?: unknown;
+    action?: unknown;
+    suffix?: unknown;
+  } | null;
+  const selfId = String(record?.self_id ?? "");
+  const targetId = record?.target_id === undefined || record?.target_id === null ? "" : String(record.target_id);
+  if (!selfId || targetId !== selfId) return null;
+
+  const groupId = readOnebotGroupId(data);
+  const messageType: OnebotMessageType = groupId ? "group" : "private";
+  const userId = readOnebotUserId(data) || String(record?.sender_id ?? "");
+  const conversationKey = onebotConversationKey(messageType, data);
+  if (!userId || !conversationKey) return null;
+
+  return {
+    messageType,
+    data,
+    messageId: `poke:${conversationKey}:${userId}:${Date.now()}`,
+    userId,
+    groupId,
+    conversationKey,
+    // notice 里没有昵称。群聊的显示名由 member 别名表按 QQ 号补，不需要在这里编一个。
+    displayName: "",
+    content: POKE_CONTENT,
+    images: [],
+    voices: [],
+    selfId,
+    senderRole: "member",
+    poke: {
+      targetId,
+      action: typeof record?.action === "string" ? record.action : "",
+      suffix: typeof record?.suffix === "string" ? record.suffix : "",
+    },
+  };
 }
 
 function safeJson(value: unknown): unknown {
@@ -198,8 +288,8 @@ export function connectOnebot(
       const text = typeof event.data === "string" ? event.data : Buffer.from(event.data).toString("utf8");
       const payload = safeJson(text);
       if (!payload || typeof payload !== "object") return;
-      if (!isMessageEvent(payload)) return;
-      const resolved = resolveOnebotEvent(payload);
+      // 消息走原来的解析；戳一戳（notice）翻译成一条合成事件后走同一条路。
+      const resolved = isMessageEvent(payload) ? resolveOnebotEvent(payload) : resolveOnebotPokeEvent(payload);
       if (!resolved) return;
       try {
         await handlers.onMessage(resolved);

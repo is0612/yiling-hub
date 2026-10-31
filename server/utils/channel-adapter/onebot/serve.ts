@@ -52,8 +52,8 @@ import {
 export type OnebotHandleOutcome =
   | { status: "replied"; conversationId: string }
   | { status: "silent"; conversationId: string }
-  /** 群聊攒批中：几秒后连同这一轮其他人的话一起处理。 */
-  | { status: "buffered" }
+  /** 群聊攒批中：几秒后连同这一轮其他人的话一起处理。`poke` 表示这一轮是被戳出来的。 */
+  | { status: "buffered"; poke?: true }
   | { status: "duplicate" }
   | { status: "ignored"; reason: string };
 
@@ -662,6 +662,8 @@ export function createOnebotMessageHandler(record: OnebotConnectionRecord) {
     const contextKey = `${binding.id}:${groupEvent.conversationKey}`;
     const direct = items.some((item) => item.direct);
     const named = items.some((item) => item.named);
+    // 这一轮是不是被「戳一戳」叫醒的。只在为真时打，避免每行日志多一个 false。
+    const poked = items.some((item) => item.event.poke !== undefined);
     const facts = items.map((item) => factsOf(item.event, item.at));
     const topicCandidate = groupContext.topicCandidate(contextKey, facts);
     /**
@@ -717,12 +719,12 @@ export function createOnebotMessageHandler(record: OnebotConnectionRecord) {
     if (!gate.allowed) {
       // direct / named 一定要一起打：早退时少了这两个，事后分不清是「@ 没认出来」
       // 还是「认出来了但被别的闸拦了」—— 前者换协议端，后者调参数，处理方式完全不同。
-      logGroupRound(groupEvent.groupId, { reason: gate.reason, messages: items.length, direct, named, addressedToOthers });
+      logGroupRound(groupEvent.groupId, { reason: gate.reason, messages: items.length, direct, named, addressedToOthers, ...(poked ? { poked } : {}) });
       return;
     }
     // 群规限流仍然生效：闸门管「该不该接」，这里管「这个群十分钟能说几句」。
     if (await isGroupReplyLimited(binding, groupEvent)) {
-      logGroupRound(groupEvent.groupId, { reason: "group_reply_limit", messages: items.length, direct, named });
+      logGroupRound(groupEvent.groupId, { reason: "group_reply_limit", messages: items.length, direct, named, ...(poked ? { poked } : {}) });
       return;
     }
 
@@ -787,6 +789,7 @@ export function createOnebotMessageHandler(record: OnebotConnectionRecord) {
       messages: items.length,
       direct,
       topics: groupContext.activeTopicCount(contextKey),
+      ...(poked ? { poked } : {}),
     });
   };
 
@@ -816,8 +819,14 @@ export function createOnebotMessageHandler(record: OnebotConnectionRecord) {
     // 这一条所在的群如果有单独设置，就用它自己那一档；没有才沿绑定的默认档。
     const groupChat = groupChatForGroup(binding.groupChat, binding.groupChatModes, event.groupId);
     const groupChatMode = groupChat.mode;
-    // 两个信号必须分开：真实 @ 是程序事实，名字只是弱线索（群里可能有好几条同款鱼）。
-    const direct = isGroupMessage && isSelfMentioned(event, record.accountQq);
+    /**
+     * 两个信号必须分开：真实 @ 是程序事实，名字只是弱线索（群里可能有好几条同款鱼）。
+     *
+     * 戳一戳也算「叫她」：用户的实际用法就是「她没接话，我戳她一下让她开口」——
+     * 相比催人打字，这是群里最轻的提醒方式。解析侧已经把「戳的不是她」丢掉了，
+     * 所以走到这里的 `event.poke` 一律是戳她本人。
+     */
+    const direct = isGroupMessage && (event.poke !== undefined || isSelfMentioned(event, record.accountQq));
     const named = isGroupMessage && mentionsCharacterName(event.content, cueNames(binding));
     const contextKey = `${binding.id}:${event.conversationKey}`;
 
@@ -873,7 +882,8 @@ export function createOnebotMessageHandler(record: OnebotConnectionRecord) {
         { event, binding, at: Date.now(), direct, named, isOwner: Boolean(record.ownerQq) && event.userId === record.ownerQq },
         groupChatWindowMs(groupChat, direct || named),
       );
-      return { status: "buffered" };
+      // 带上 poke 标记：日志里「为什么这一轮是 direct」要能看出是被人戳醒的，不是被 @ 的。
+      return { status: "buffered", ...(event.poke ? { poke: true } : {}) };
     }
 
     // 私聊：单条直接回，行为不变。
