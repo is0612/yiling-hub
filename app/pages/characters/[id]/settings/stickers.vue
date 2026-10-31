@@ -280,7 +280,7 @@ async function submit() {
     draftUsageSource.value = "";
     if (created.qq && !created.qq.ok && !created.qq.skipped) {
       // 本地已经加好了，只是没进 QQ 收藏。不用重传，下次同步会补推。
-      ElMessage.warning(`已加到本地，但没能收藏到 QQ：${created.qq.error || "未知原因"}。下次「从 QQ 同步」会补上。`);
+      ElMessage.warning(`已加到本地，但没能收藏到 QQ：${created.qq.error || "未知原因"}。下次「与 QQ 同步」会补上。`);
     } else {
       ElMessage.success(created.qq?.ok ? "已添加，也收藏到 QQ 了。她下一轮就有这张图。" : "已添加。她下一轮就有这张图了。");
     }
@@ -432,7 +432,7 @@ async function remove(row: StickerItem) {
     stickers.value = stickers.value.filter((item) => item.id !== row.id);
     if (result.qq && !result.qq.ok && !result.qq.skipped) {
       // 本地已经删掉了，QQ 那边没删掉 —— 下次同步会给「本地删了、QQ 还在」的补删一次。
-      ElMessage.warning(`本地已删除，但 QQ 那边没删掉：${result.qq.error || "未知原因"}。下次「从 QQ 同步」会再试。`);
+      ElMessage.warning(`本地已删除，但 QQ 那边没删掉：${result.qq.error || "未知原因"}。下次「与 QQ 同步」会再试。`);
       return;
     }
     ElMessage.success(row.qqEmojiId ? "已删除，QQ 收藏里那张也一起删了。" : "已删除，可以在回收站里恢复。");
@@ -713,10 +713,10 @@ onMounted(load);
         <div class="sticker-head-ops">
           <el-button
             :loading="syncing"
-            title="把 QQ 收藏夹和本地表情对一次账：缺的导下来、多的推上去、QQ 删了的进回收站"
+            title="和 QQ 收藏夹双向对账：QQ 多的导进来、本地多的推上去、QQ 删了的进回收站"
             @click="syncWithQq"
           >
-            从 QQ 同步
+            与 QQ 同步
           </el-button>
           <el-button @click="openTrash">
             回收站
@@ -729,6 +729,12 @@ onMounted(load);
         class="sticker-hint"
       >
         其中 {{ qqLinkedCount }} 张和 QQ 收藏夹是同一份：在这里改名会写进 QQ 备注，在这里删除 QQ 那张也会一起删。
+      </p>
+      <p
+        v-else
+        class="sticker-hint"
+      >
+        还没和 QQ 收藏夹对上。点「与 QQ 同步」是双向的：QQ 里多出来的导进来，本地多出来的推上去，QQ 那边删了的进回收站。
       </p>
 
       <div
@@ -874,7 +880,7 @@ onMounted(load);
           :alt="editing.name"
         >
         <label class="sticker-field">
-          <span class="form-label">名字</span>
+          <span class="sticker-label">名字</span>
           <el-input
             v-model="editName"
             maxlength="60"
@@ -882,8 +888,8 @@ onMounted(load);
           />
         </label>
         <div class="sticker-field">
-          <div class="form-label-row">
-            <span class="form-label">什么时候用</span>
+          <div class="sticker-label-row">
+            <span class="sticker-label">什么时候用</span>
             <el-button
               link
               type="primary"
@@ -1140,6 +1146,16 @@ onMounted(load);
   min-width: 240px;
 }
 
+/* 两栏的标签行必须同高：右边挂了「AI 生成」的那一格会比纯文字高一点，
+   高度不定死，并排时两个输入框就错开半个字（实测错 6px，看着像没对齐）。 */
+.sticker-label,
+.sticker-label-row {
+  display: flex;
+  align-items: center;
+  min-height: 20px;
+  line-height: 20px;
+}
+
 /* 字段标签：12px/600，色用 --text-2。原来的 --ink-2 变量不存在，一直吃 fallback */
 .sticker-label {
   color: var(--text-2);
@@ -1149,11 +1165,8 @@ onMounted(load);
 
 /* 标签右侧挂一个「AI 生成」：贴着它服务的那一栏，比放到弹窗底部更不容易找错。 */
 .sticker-label-row {
-  display: flex;
-  align-items: center;
   justify-content: space-between;
   gap: var(--sp-2);
-  min-height: 24px;
 }
 
 .sticker-label-row .el-button {
