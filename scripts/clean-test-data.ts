@@ -5,28 +5,42 @@ import { PrismaClient } from "../src/generated/prisma/client";
 /**
  * 清理本地开发环境里的测试数据。
  *
- * 删除范围：
- *   1. 测试角色：名字以「CI 」开头，或等于「id-test-character」。
- *   2. 测试用户：用户名以「id-test-owner-」或「id-test-user-」开头。
- *   3. 运行数据：全部会话、消息、记忆项、快照、快照来源、记忆任务、审计日志、登录尝试、
- *      聊天请求、会话（sessions）清空。
+ * 两种模式：
  *
- * 保留：
- *   - local-dev 用户（DEV_OWNER_ID）
- *   - 大肥鱼角色及其 B站连接绑定
- *   - 平台连接、外部身份
+ * `--usage-only`（推荐日常用）：**只**清理 model_usages 里的测试账单行，不碰任何业务数据。
+ *   删除范围：① 角色已不存在的孤儿行；② `model=ci-channel-test` 的行（CI 假模型）。
+ *   保留：现存角色的全部账单（删角色时账单按设计保留，那是产品语义，不是脏数据）、
+ *   `characterId` 为 null 的行（后台任务/系统调用，没有归属不代表是测试）。
+ *
+ * 默认模式：清空开发库。
+ *   删除范围：
+ *     1. 测试角色：名字以「CI 」开头，或等于「id-test-character」。
+ *     2. 测试用户：用户名以「id-test-owner-」或「id-test-user-」开头。
+ *     3. 运行数据：全部会话、消息、记忆项、快照、快照来源、记忆任务、审计日志、登录尝试、
+ *        聊天请求、会话（sessions）清空。
+ *
+ *   保留：
+ *     - local-dev 用户（DEV_OWNER_ID）
+ *     - 大肥鱼角色及其 B站连接绑定
+ *     - 平台连接、外部身份
  *
  * 用法：
- *   tsx scripts/clean-test-data.ts            # 预览将删除的内容
- *   tsx scripts/clean-test-data.ts --apply    # 真正执行删除
+ *   tsx scripts/clean-test-data.ts --usage-only          # 预览孤儿账单
+ *   tsx scripts/clean-test-data.ts --usage-only --apply  # 真正删除
+ *   tsx scripts/clean-test-data.ts                       # 预览全量清理
+ *   tsx scripts/clean-test-data.ts --apply               # 真正执行全量清理
  */
 
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) throw new Error("缺少 DATABASE_URL，请先配置 .env。");
 
 const apply = process.argv.includes("--apply");
+const usageOnly = process.argv.includes("--usage-only");
 const adapter = new PrismaPg({ connectionString });
 const prisma = new PrismaClient({ adapter });
+
+/** CI 用的假模型名：不是价目表里的真实模型，出现就一定是测试留下的。 */
+const CI_MOCK_MODEL = "ci-channel-test";
 
 const TEST_CHAR_PREFIX = "CI ";
 const TEST_CHAR_EXACT = new Set(["id-test-character"]);
@@ -39,7 +53,63 @@ function isTestUser(username: string): boolean {
   return TEST_USER_PREFIXES.some((prefix) => username.startsWith(prefix));
 }
 
+/**
+ * 只清账单噪声（`--usage-only`）。
+ *
+ * 和全量清理分开，因为风险差着量级：全量清理会删掉所有会话和记忆，
+ * 而孤儿账单删错了只影响历史报表。默认只预览，要 `--apply` 才动手。
+ */
+async function cleanOrphanUsage() {
+  const groups = await prisma.modelUsage.groupBy({ by: ["characterId"], _count: { _all: true } });
+  const ids = groups.map((group) => group.characterId).filter((id): id is string => Boolean(id));
+  const existing = new Set(
+    (await prisma.character.findMany({ where: { id: { in: ids } }, select: { id: true } })).map((c) => c.id),
+  );
+  const orphanIds = ids.filter((id) => !existing.has(id));
+  const orphanIdSet = new Set(orphanIds);
+
+  // 两个来源取并集：角色已不存在的行 + CI 假模型的行（后者即使角色还在也一定是测试）。
+  const scope = {
+    OR: [
+      ...(orphanIds.length ? [{ characterId: { in: orphanIds } }] : []),
+      { model: CI_MOCK_MODEL },
+    ],
+  };
+  if (!scope.OR.length) {
+    console.log("没有需要清理的账单行。");
+    return;
+  }
+
+  const rows = await prisma.modelUsage.findMany({ where: scope, select: { characterId: true, model: true } });
+  const orphanRows = rows.filter((row) => row.characterId !== null && orphanIdSet.has(row.characterId)).length;
+  const ciRows = rows.filter((row) => row.model === CI_MOCK_MODEL).length;
+
+  console.log("======================================================");
+  console.log("账单清理预览（--usage-only）");
+  console.log("======================================================");
+  console.log(`角色已不存在：${orphanIds.length} 个角色 → ${orphanRows} 行`);
+  console.log(`CI 假模型（${CI_MOCK_MODEL}）：${ciRows} 行`);
+  console.log(`去重后共 ${rows.length} 行（两个条件可能重叠）`);
+  console.log("保留：现存角色的全部账单、characterId 为 null 的系统调用");
+  console.log("======================================================");
+
+  if (!apply) {
+    console.log("预览模式。加 --apply 参数真正执行删除。");
+    return;
+  }
+
+  const deleted = await prisma.modelUsage.deleteMany({ where: scope });
+  const after = await prisma.modelUsage.aggregate({ _count: { _all: true }, _sum: { totalTokens: true } });
+  console.log(`\n已删除 ${deleted.count} 行。`);
+  console.log(`剩余 ${after._count._all} 行 / ${after._sum.totalTokens ?? 0} tokens（全部属于现存角色）。`);
+}
+
 async function main() {
+  if (usageOnly) {
+    await cleanOrphanUsage();
+    return;
+  }
+
   // ── 盘点 ──────────────────────────────────────────────
   const allCharacters = await prisma.character.findMany({ select: { id: true, name: true, ownerId: true } });
   const testCharacters = allCharacters.filter((c) => isTestCharacter(c.name));
