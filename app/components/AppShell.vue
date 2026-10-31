@@ -14,6 +14,7 @@ import {
   Connection,
   VideoPlay,
   Notebook,
+  Reading,
 } from "@element-plus/icons-vue";
 
 const route = useRoute();
@@ -64,6 +65,12 @@ const navigation = computed<NavigationItem[]>(() => {
       label: "忆泡日历",
       href: "/days",
       icon: Notebook,
+    },
+    {
+      key: "journal",
+      label: "日记手账",
+      href: "/journal",
+      icon: Reading,
     },
     {
       key: "chat",

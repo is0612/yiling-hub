@@ -11,7 +11,7 @@ import { ElMessage, ElMessageBox } from "element-plus";
 
 type MemoryTask = {
   id: string;
-  type: "GENERATE_SNAPSHOT" | "REGENERATE_SNAPSHOT" | "UPDATE_LONG_TERM_MEMORY" | "CLEAN_EXPIRED_MESSAGES";
+  type: "GENERATE_SNAPSHOT" | "REGENERATE_SNAPSHOT" | "UPDATE_LONG_TERM_MEMORY" | "CLEAN_EXPIRED_MESSAGES" | "EXTRACT_EVENTS" | "GENERATE_JOURNAL";
   status: "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED" | "SKIPPED" | "RETRY_WAIT" | "CANCELLED";
   attemptCount: number;
   maxAttempts: number;
@@ -100,6 +100,8 @@ function taskTypeText(type: MemoryTask["type"]) {
     REGENERATE_SNAPSHOT: "重新生成总结",
     UPDATE_LONG_TERM_MEMORY: "长期记忆更新",
     CLEAN_EXPIRED_MESSAGES: "清理过期消息",
+    EXTRACT_EVENTS: "整理忆泡",
+    GENERATE_JOURNAL: "生成日记/手账",
   };
   return names[type] || type;
 }
@@ -257,7 +259,7 @@ const canRetry = computed(() => {
   const task = selectedTask.value;
   return !!task
     && ["FAILED", "RETRY_WAIT", "CANCELLED"].includes(task.status)
-    && ["GENERATE_SNAPSHOT", "REGENERATE_SNAPSHOT", "CLEAN_EXPIRED_MESSAGES"].includes(task.type);
+    && ["GENERATE_SNAPSHOT", "REGENERATE_SNAPSHOT", "CLEAN_EXPIRED_MESSAGES", "GENERATE_JOURNAL"].includes(task.type);
 });
 const canCancel = computed(() => !!selectedTask.value && ["QUEUED", "RETRY_WAIT"].includes(selectedTask.value.status));
 

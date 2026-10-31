@@ -27,6 +27,7 @@ import {
   loadCatchphraseCatalog, markCatchphrasesUsed, pickCatchphraseCatalog, toCatchphrasePromptEntries,
 } from "../catchphrases";
 import { maybeAutoMineCatchphrases } from "../catchphrase-mine";
+import { readPreviousJournalLine } from "../journal-service";
 import { collectStickersFromTurn } from "../sticker-collect";
 import {
   applyVoiceTranscripts,
@@ -727,6 +728,19 @@ async function runChannelTurn(input: {
   );
 
   /**
+   * 手账那句只在「她自己的对话」里注入：网页对话与主人私聊。
+   * 群聊不传（手账是写给她自己的，群里复述就是泄露），对普通人的私聊也不传。
+   */
+  const journalLine = !input.group && messages[0]?.speaker?.isOwner === true
+    ? await readPreviousJournalLine(
+        prisma,
+        character.id,
+        new Date(),
+        resolveChatTimeZone(character.memorySetting?.timezone),
+      )
+    : null;
+
+  /**
    * 别人的系统播报不进窗口。
    *
    * 群里同时跑几个机器人时，它们对同一条命令各回一次（实测「管理命令仅管理员可用。」
@@ -948,6 +962,7 @@ async function runChannelTurn(input: {
       maxTokens: chatSettings.maxTokens,
       currentMessage,
       timeZone: resolveChatTimeZone(character.memorySetting?.timezone),
+      ...(journalLine ? { journalLine } : {}),
       events,
       rawMessages,
       ...(useTranscript

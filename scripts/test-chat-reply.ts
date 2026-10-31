@@ -85,6 +85,7 @@ try {
       occurredAt: "2026-10-29T06:00:00.000Z",
       scope: "character",
     }],
+    journalLine: { dayKey: "2026-10-31", quote: "今天下午其实有点不开心" },
   });
 
   assert.equal(capturedUrl, privateProviderUrl + "/chat/completions");
@@ -111,9 +112,22 @@ try {
   const userMessage = requestBody.messages.find((item) => item.role === "user");
   assert(userMessage, "The request must include a structured user context.");
   const promptInput = JSON.parse(userMessage.content) as Record<string, unknown>;
+  const journal = promptInput.journal as { dayKey?: string; quote?: string } | undefined;
+  assert.equal(journal?.dayKey, "2026-10-31", "手账那句要带上是哪一天的");
+  assert.equal(journal?.quote, "今天下午其实有点不开心");
+  assert.match(
+    systemMessage.content,
+    /journal is a sentence you wrote in your own journal/,
+    "手账那句必须写清「是她自己写的」",
+  );
+  assert.match(
+    systemMessage.content,
+    /not something the current user said/,
+    "手账那句不能被她当成对方说的话",
+  );
   assert.deepEqual(
     Object.keys(promptInput).sort(),
-    ["characterName", "characterPrompt", "now", "currentMessage", "recentMessages", "memories", "snapshots", "events", "rawMessages"].sort(),
+    ["characterName", "characterPrompt", "now", "currentMessage", "recentMessages", "memories", "snapshots", "events", "rawMessages", "journal"].sort(),
     "Only explicit conversation-context fields should be serialized into the prompt.",
   );
   // 「现在」必须每轮都带：模型不会算日期，缺了它「前天」只能猜。

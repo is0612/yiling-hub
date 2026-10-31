@@ -22,6 +22,7 @@ import { resolveChatMemoryScopes } from "../../../utils/memory-scope-access";
 import { requireActorUserId } from "../../../utils/auth";
 import { readTrimmedString, requireUuid } from "../../../utils/local-api";
 import { getPrisma } from "../../../utils/prisma";
+import { readPreviousJournalLine } from "../../../utils/journal-service";
 
 export default defineEventHandler(async (event) => {
   const ownerId = await requireActorUserId(event);
@@ -307,6 +308,16 @@ export default defineEventHandler(async (event) => {
   const catchphrasePrompt = toCatchphrasePromptEntries(
     pickCatchphraseCatalog(await loadCatchphraseCatalog(characterId)),
   );
+  /**
+   * 昨天手账里的那一句：让她接得上「昨天自己写过什么」，但只给一句。
+   * 整篇日记进提示词会把上下文撑爆，而一句已经够延续。
+   */
+  const journalLine = await readPreviousJournalLine(
+    prisma,
+    characterId,
+    new Date(),
+    resolveChatTimeZone(character.memorySetting?.timezone),
+  );
 
   let generated;
   try {
@@ -328,6 +339,7 @@ export default defineEventHandler(async (event) => {
       events,
       rawMessages,
       timeZone: resolveChatTimeZone(character.memorySetting?.timezone),
+      ...(journalLine ? { journalLine } : {}),
       ...(catchphrasePrompt.length ? { catchphrases: catchphrasePrompt } : {}),
     });
   } catch (error) {

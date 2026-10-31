@@ -15,6 +15,12 @@ import {
   selectPeriodSourceMessages,
 } from "./memory-source-selection";
 import { localDayKey } from "./memory-event-time";
+import {
+  conversationOriginLabel,
+  readMessageIsOwner,
+  readMessageMentionTargets,
+} from "./conversation-message";
+import { generateJournalForDay } from "./journal-service";
 
 const LEASE_MS = 5 * 60 * 1000;
 /** 一个周期最多看几个会话：会话再多，也只给最近活跃的这几个分配来源配额。 */
@@ -70,14 +76,7 @@ type PeriodSourceMessage = {
   mentionTargets?: string[];
 };
 
-/** 会话在提示词里的来源标签。群聊必须带上群号，否则模型分不清是哪段关系在说话。 */
-function conversationOriginLabel(conversation: { externalConversationId: string | null }): string {
-  const key = conversation.externalConversationId ?? "";
-  const group = /^g:(\d+)$/.exec(key);
-  if (group?.[1]) return `QQ群 ${group[1]}`;
-  if (key.startsWith("c:")) return "私聊";
-  return "本地对话";
-}
+/** 会话来源标签（实现在 `conversation-message.ts`，手账链路共用同一套判据）。 */
 
 /**
  * 按会话取本周期来源消息。
@@ -105,30 +104,14 @@ async function loadPeriodSourceMessages(
       ...row,
       conversationId: conversation.id,
       origin,
-      isOwner: readIsOwnerFlag(row.metadata),
-      mentionTargets: readMentionTargets(row.metadata),
+      isOwner: readMessageIsOwner(row.metadata),
+      mentionTargets: readMessageMentionTargets(row.metadata),
     }));
   }));
   return selectPeriodSourceMessages(batches.flat(), {
     ...(options.perConversation ? { perConversation: options.perConversation } : {}),
     ...(options.budget ? { budget: options.budget } : {}),
   });
-}
-
-/** 这条消息 @ 了谁（self / other / all）。没标就是非群聊或没 @ 任何人。 */
-function readMentionTargets(metadata: unknown): string[] {
-  const record = metadata && typeof metadata === "object" && !Array.isArray(metadata)
-    ? metadata as Record<string, unknown>
-    : {};
-  const value = record.mentionTargets;
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
-}
-
-function readIsOwnerFlag(metadata: unknown): boolean {
-  const record = metadata && typeof metadata === "object" && !Array.isArray(metadata)
-    ? metadata as Record<string, unknown>
-    : {};
-  return record.isOwner === true;
 }
 
 function selectAiMessages(messages: PeriodSourceMessage[]): MemoryAiMessage[] {
@@ -421,6 +404,86 @@ async function runDailyEventJob(
   );
 }
 
+/**
+ * 每天写一篇手账。
+ *
+ * 和忆泡任务的区别：忆泡是「那天发生了什么」（事实），手账是「她怎么过、怎么想」
+ * （主观叙述）。两者读同一批原始消息，但输出不共用 —— 别把忆泡的结果直接抄进手账。
+ */
+async function runJournalJob(
+  prisma: PrismaClient,
+  job: { id: string; memoryScopeId: string; idempotencyKey: string },
+  now: Date,
+): Promise<MemoryWorkerResult> {
+  const finish = async (
+    status: "SUCCEEDED" | "SKIPPED" | "RETRY_WAIT" | "FAILED",
+    message: string,
+    extra: { runAt?: Date } = {},
+  ): Promise<MemoryWorkerResult> => {
+    await prisma.memoryJob.update({
+      where: { id: job.id },
+      data: {
+        status,
+        completedAt: status === "RETRY_WAIT" ? null : now,
+        lockedAt: null,
+        lockedBy: null,
+        lastError: status === "SUCCEEDED" || status === "SKIPPED" ? null : message,
+        ...(extra.runAt ? { runAt: extra.runAt } : {}),
+      },
+    });
+    return { processed: true, jobId: job.id, status, message };
+  };
+
+  const scope = await prisma.memoryScope.findUnique({
+    where: { id: job.memoryScopeId },
+    select: { characterId: true, scopeType: true },
+  });
+  if (!scope) return finish("FAILED", "找不到手账任务关联的记忆范围。");
+  // 幂等键的尾巴就是日期键：journal:{globalScopeId}:{YYYY-MM-DD}
+  const dayKey = job.idempotencyKey.slice(job.idempotencyKey.lastIndexOf(":") + 1);
+
+  try {
+    const outcome = await generateJournalForDay({
+      characterId: scope.characterId,
+      dayKey,
+      mode: "auto",
+    }, prisma);
+    switch (outcome.status) {
+      case "created": {
+        const parts = [
+          ...(outcome.created?.DIARY ? [`日记第 ${outcome.created.DIARY.version} 版`] : []),
+          ...(outcome.created?.HANDBOOK ? [`手账第 ${outcome.created.HANDBOOK.version} 版`] : []),
+        ];
+        return finish("SUCCEEDED", `写了 ${dayKey} 的${parts.join("、") || "日记/手账"}。`);
+      }
+      case "skipped":
+        return finish("SKIPPED", outcome.reason ?? "这一天没有可写的内容。");
+      case "existing":
+        return finish("SKIPPED", "这一天的日记/手账已经写过了。");
+      case "inactive":
+        return finish("SKIPPED", "角色已停用，不写日记/手账。");
+      case "not_configured":
+        return finish("RETRY_WAIT", outcome.message ?? "模型未配置。", { runAt: new Date(now.getTime() + 30 * 60_000) });
+      case "quota_exceeded":
+        return finish("RETRY_WAIT", outcome.message ?? "额度已用完。", { runAt: new Date(now.getTime() + 60 * 60_000) });
+    }
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    await prisma.memoryJob.update({
+      where: { id: job.id },
+      data: {
+        status: "RETRY_WAIT",
+        completedAt: null,
+        lockedAt: null,
+        lockedBy: null,
+        lastError: detail.slice(0, 700),
+        runAt: new Date(now.getTime() + 5 * 60_000),
+      },
+    });
+    return { processed: true, jobId: job.id, status: "RETRY_WAIT", message: detail.slice(0, 300) };
+  }
+}
+
 export async function processNextMemoryJob(
   prisma: PrismaClient,
   options: WorkerOptions = {},
@@ -673,7 +736,7 @@ export async function processNextMemoryJob(
 
   const staleJobs = await prisma.memoryJob.findMany({
     where: {
-      type: { in: ["GENERATE_SNAPSHOT", "REGENERATE_SNAPSHOT", "CLEAN_EXPIRED_MESSAGES", "EXTRACT_EVENTS"] },
+      type: { in: ["GENERATE_SNAPSHOT", "REGENERATE_SNAPSHOT", "CLEAN_EXPIRED_MESSAGES", "EXTRACT_EVENTS", "GENERATE_JOURNAL"] },
       status: "RUNNING",
       lockedAt: { lt: staleBefore },
       ...ownership,
@@ -698,7 +761,7 @@ export async function processNextMemoryJob(
 
   const candidates = await prisma.memoryJob.findMany({
     where: {
-      type: { in: ["GENERATE_SNAPSHOT", "REGENERATE_SNAPSHOT", "EXTRACT_EVENTS"] },
+      type: { in: ["GENERATE_SNAPSHOT", "REGENERATE_SNAPSHOT", "EXTRACT_EVENTS", "GENERATE_JOURNAL"] },
       status: { in: ["QUEUED", "RETRY_WAIT"] },
       runAt: { lte: now },
       ...ownership,
@@ -788,6 +851,15 @@ export async function processNextMemoryJob(
         memoryScopeId: job.memoryScopeId,
         periodStart: job.periodStart,
         periodEnd: job.periodEnd,
+        idempotencyKey: job.idempotencyKey,
+      }, now);
+    }
+
+    // 手账也是按天的独立流水线：只写 character_journals，不碰忆泡/长期记忆。
+    if (job.type === "GENERATE_JOURNAL") {
+      return await runJournalJob(prisma, {
+        id: job.id,
+        memoryScopeId: job.memoryScopeId,
         idempotencyKey: job.idempotencyKey,
       }, now);
     }

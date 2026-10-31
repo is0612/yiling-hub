@@ -247,6 +247,48 @@ export async function enqueueDueMemorySnapshots(
         });
         report.jobsQueued += finalized.count;
       }
+
+      /**
+       * 手账：每天一篇，挂在角色全局范围下。
+       *
+       * 取材包括全局范围 + 角色主人的私人范围（主人 QQ 私聊在那里），但不再给每个
+       * USER_PRIVATE 范围各写一篇 —— 那会变成「每个用户一本日记」，V1 不做。
+       * 已经有记录（写过了 / 判断过没内容）就不再排；模型没配时靠任务重试等到配置好。
+       */
+      const journalScopeIds = [globalScopeId, ownerPrivateScopeId].filter((id): id is string => Boolean(id));
+      if (journalScopeIds.length > 0) {
+        const [hasJournalSource, existingJournal] = await Promise.all([
+          prisma.message.findFirst({
+            where: {
+              conversation: { is: { memoryScopeId: { in: journalScopeIds } } },
+              occurredAt: { gte: yesterdayWindow.start, lt: yesterdayWindow.end },
+            },
+            select: { id: true },
+          }),
+          prisma.characterJournal.findUnique({
+            where: { memoryScopeId_dayKey: { memoryScopeId: globalScopeId, dayKey: yesterdayWindow.dayKey } },
+            select: { id: true },
+          }),
+        ]);
+        if (hasJournalSource && !existingJournal) {
+          const journalJob = await prisma.memoryJob.createMany({
+            data: [{
+              memoryScopeId: globalScopeId,
+              type: "GENERATE_JOURNAL" as const,
+              idempotencyKey: `journal:${globalScopeId}:${yesterdayWindow.dayKey}`,
+              periodStart: yesterdayWindow.start,
+              periodEnd: yesterdayWindow.end,
+              status: "QUEUED" as const,
+              runAt: now,
+              // 模型没配 / 额度用完的情况会退避重试；默认 3 次会在半小时内耗光，
+              // 第二天配置好也补不回来。给到 24 次（配合 30 分钟退避约 12 小时）。
+              maxAttempts: 24,
+            }],
+            skipDuplicates: true,
+          });
+          report.jobsQueued += journalJob.count;
+        }
+      }
     }
 
     try {

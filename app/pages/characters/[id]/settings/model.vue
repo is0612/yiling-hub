@@ -76,6 +76,8 @@ const KIND_LABELS: Record<string, string> = {
   chat: "AI 对话",
   channel: "QQ 回复",
   snapshot: "阶段总结",
+  events: "忆泡整理",
+  journal: "日记/手账",
   "bili-screening": "值班粗筛",
   "bili-judge": "值班终判",
   proactive: "主动找话",

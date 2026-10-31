@@ -3506,6 +3506,282 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/RequestError' }
+  /characters/{characterId}/journals:
+    parameters:
+      - $ref: '#/components/parameters/CharacterId'
+    get:
+      tags: [Journals]
+      operationId: listCharacterJournals
+      summary: 列出手账（一天一条，倒序）
+      description: 同时返回当天日记首句和手账那句；页面不用为了列表再请求一次详情。
+      parameters:
+        - name: month
+          in: query
+          schema: { type: string, pattern: '^\d{4}-(0[1-9]|1[0-2])$' }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: 分页后的日期列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, total, page, pageSize, totalPages, hasMore]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, dayKey, status, diaryFirstLine, diaryVersion, handbookVersion, updatedAt]
+                      properties:
+                        id: { type: string, format: uuid }
+                        dayKey: { type: string, example: '2026-10-31' }
+                        status: { type: string, enum: [ACTIVE, SKIPPED] }
+                        diaryTitle: { type: string, nullable: true }
+                        diaryFirstLine: { type: string }
+                        handbookQuote: { type: string, nullable: true }
+                        diaryVersion: { type: integer }
+                        handbookVersion: { type: integer }
+                        updatedAt: { type: string, format: date-time }
+                  total: { type: integer }
+                  page: { type: integer }
+                  pageSize: { type: integer }
+                  totalPages: { type: integer }
+                  hasMore: { type: boolean }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [Journals]
+      operationId: generateCharacterJournal
+      summary: 手动写某一天的日记 / 手账
+      description: 默认两份都补（只补缺的那份），已有正文不会覆盖；想换一版请用 regenerate。没有值得写的内容时返回 status=skipped。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [dayKey]
+              properties:
+                dayKey: { type: string, example: '2026-10-31' }
+                target: { type: string, enum: [DIARY, HANDBOOK, BOTH], default: BOTH }
+      responses:
+        '200':
+          description: 已生成，或判断这一天没有内容
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, status]
+                properties:
+                  ok: { type: boolean }
+                  status: { type: string, enum: [created, skipped] }
+                  journalId: { type: string, format: uuid, nullable: true }
+                  reason: { type: string }
+                  created:
+                    type: object
+                    properties:
+                      diary: { $ref: '#/components/schemas/JournalRevision' }
+                      handbook: { $ref: '#/components/schemas/JournalRevision' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 这一天已有内容 / 角色停用 / 模型未配置
+        '429':
+          description: 今日模型额度已用完
+  /characters/{characterId}/journals/{dayKey}:
+    parameters:
+      - $ref: '#/components/parameters/CharacterId'
+      - name: dayKey
+        in: path
+        required: true
+        schema: { type: string, example: '2026-10-31' }
+    get:
+      tags: [Journals]
+      operationId: getCharacterJournal
+      summary: 某一天的日记与手账
+      description: 返回两份文本各自的最新版本与版本数；SKIPPED 的日期也会返回状态和原因（两份都可能为 null）。
+      responses:
+        '200':
+          description: 当天的两份文本
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, dayKey, status, revisionCounts, createdAt, updatedAt]
+                properties:
+                  id: { type: string, format: uuid }
+                  dayKey: { type: string }
+                  status: { type: string, enum: [ACTIVE, SKIPPED] }
+                  skipReason: { type: string, nullable: true }
+                  createdAt: { type: string, format: date-time }
+                  updatedAt: { type: string, format: date-time }
+                  revisionCounts:
+                    type: object
+                    required: [diary, handbook]
+                    properties:
+                      diary: { type: integer }
+                      handbook: { type: integer }
+                  diary: { allOf: [{ $ref: '#/components/schemas/JournalRevision' }], nullable: true }
+                  handbook: { allOf: [{ $ref: '#/components/schemas/JournalRevision' }], nullable: true }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Journals]
+      operationId: editCharacterJournal
+      summary: 人工编辑（只改指定的一份，新建版本）
+      description: kind=DIARY 只改日记，kind=HANDBOOK 只改手账；另一份和旧版本都不动。手账的 quote 必须能在它引用的日记版本里找到，否则返回 400。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind, content]
+              properties:
+                kind: { type: string, enum: [DIARY, HANDBOOK] }
+                content: { type: string }
+                title: { type: string, maxLength: 120, nullable: true, description: 仅日记 }
+                thought: { type: string, maxLength: 300, nullable: true, description: 仅手账 }
+                quote: { type: string, maxLength: 120, nullable: true, description: 仅手账，必须是日记正文原话 }
+                tags:
+                  type: array
+                  maxItems: 6
+                  description: 仅手账
+                  items: { type: string, maxLength: 20 }
+      responses:
+        '200':
+          description: 新版本
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, revision]
+                properties:
+                  ok: { type: boolean }
+                  revision: { $ref: '#/components/schemas/JournalRevision' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /characters/{characterId}/journals/{dayKey}/revisions:
+    parameters:
+      - $ref: '#/components/parameters/CharacterId'
+      - name: dayKey
+        in: path
+        required: true
+        schema: { type: string, example: '2026-10-31' }
+    get:
+      tags: [Journals]
+      operationId: listCharacterJournalRevisions
+      summary: 指定文本的历史版本（新到旧）
+      parameters:
+        - name: kind
+          in: query
+          required: true
+          schema: { type: string, enum: [DIARY, HANDBOOK] }
+      responses:
+        '200':
+          description: 版本列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/JournalRevision' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /characters/{characterId}/journals/{dayKey}/regenerate:
+    parameters:
+      - $ref: '#/components/parameters/CharacterId'
+      - name: dayKey
+        in: path
+        required: true
+        schema: { type: string, example: '2026-10-31' }
+    post:
+      tags: [Journals]
+      operationId: regenerateCharacterJournal
+      summary: 重写指定文本（默认两份都重写）
+      description: 每份各自追加一个新版本，旧版保留；重写日记不会动到手账。
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                target: { type: string, enum: [DIARY, HANDBOOK, BOTH], default: BOTH }
+      responses:
+        '200':
+          description: 已重写，或判断这一天没有内容
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, status]
+                properties:
+                  ok: { type: boolean }
+                  status: { type: string, enum: [created, skipped] }
+                  journalId: { type: string, format: uuid, nullable: true }
+                  reason: { type: string }
+                  created:
+                    type: object
+                    properties:
+                      diary: { $ref: '#/components/schemas/JournalRevision' }
+                      handbook: { $ref: '#/components/schemas/JournalRevision' }
+        '409':
+          description: 角色停用 / 模型未配置
+        '429':
+          description: 今日模型额度已用完
+  /characters/{characterId}/journals/{dayKey}/restore:
+    parameters:
+      - $ref: '#/components/parameters/CharacterId'
+      - name: dayKey
+        in: path
+        required: true
+        schema: { type: string, example: '2026-10-31' }
+    post:
+      tags: [Journals]
+      operationId: restoreCharacterJournalRevision
+      summary: 恢复指定文本的某个旧版本
+      description: 复制成一条新的 RESTORED 版本；后面的版本不会删除，另一份文本也不动。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind, version]
+              properties:
+                kind: { type: string, enum: [DIARY, HANDBOOK] }
+                version: { type: integer, minimum: 1 }
+      responses:
+        '200':
+          description: 新版本
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, revision]
+                properties:
+                  ok: { type: boolean }
+                  revision: { $ref: '#/components/schemas/JournalRevision' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
 components:
   securitySchemes:
     sessionCookie:
@@ -3549,6 +3825,35 @@ components:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorResponse' }
   schemas:
+    JournalRevision:
+      type: object
+      description: 日记或手账的一个完整版本。DIARY 是叙事正文；HANDBOOK 是结构化记录（正文 + 想法 + 一句 + 标签）。
+      required: [id, kind, version, content, revisionType, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        kind: { type: string, enum: [DIARY, HANDBOOK] }
+        version: { type: integer, minimum: 1 }
+        title: { type: string, nullable: true, description: 仅日记 }
+        content: { type: string, description: 日记正文，或手账的「片段 / 灵感 / 待续」正文 }
+        thought: { type: string, nullable: true, description: 仅手账：今日想法 }
+        quote: { type: string, nullable: true, description: 仅手账：今日一句，必须是日记正文的连续原文 }
+        tags:
+          type: array
+          description: 仅手账
+          items: { type: string }
+        sourceDiaryRevisionId: { type: string, format: uuid, nullable: true, description: 手账的一句取自哪一版日记 }
+        sourceDiaryVersion: { type: integer, nullable: true, description: 那一版日记的版本号（展示用） }
+        revisionType: { type: string, enum: [AI_GENERATED, AI_REWRITE, USER_EDITED, RESTORED] }
+        promptVersion: { type: string, nullable: true }
+        model: { type: string, nullable: true }
+        editedByUserId: { type: string, format: uuid, nullable: true }
+        createdAt: { type: string, format: date-time }
+        sources:
+          type: object
+          required: [messages, events]
+          properties:
+            messages: { type: integer }
+            events: { type: integer }
     ApiResponse:
       type: object
       required: [data, error]

@@ -3,7 +3,7 @@ import { requireActorUserId } from "../../../utils/auth";
 import { requireUuid } from "../../../utils/local-api";
 import { getPrisma } from "../../../utils/prisma";
 
-const RETRYABLE_TYPES = new Set(["GENERATE_SNAPSHOT", "REGENERATE_SNAPSHOT", "CLEAN_EXPIRED_MESSAGES"]);
+const RETRYABLE_TYPES = new Set(["GENERATE_SNAPSHOT", "REGENERATE_SNAPSHOT", "CLEAN_EXPIRED_MESSAGES", "GENERATE_JOURNAL"]);
 const RETRYABLE_STATUSES = new Set(["FAILED", "RETRY_WAIT", "CANCELLED"]);
 
 export default defineEventHandler(async (event) => {
