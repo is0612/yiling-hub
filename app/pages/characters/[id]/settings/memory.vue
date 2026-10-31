@@ -351,6 +351,9 @@ watch(id, () => void loadSettings());
                 </el-select><div class="form-help">
                   {{ Number(retention) === 0 ? "永久保留；保存后不会再排入原始消息清理任务。" : savedRetentionCleanupEnabled ? "自动清理已获授权；缩短保留期时会再次要求确认。较早的归档任务尚未完成时，Worker 会延后清理。" : "当前期限仅为配置，自动清理尚未获授权。保存时需要明确确认；未确认前不会排入清理任务。" }}
                 </div>
+                <div class="form-help">
+                  分层保留：她看过但没开口的「上下文」消息只保留 7 天（期限填得比 7 天更短时以你的设置为准）；她回过话、或被点名的那部分才按上面的期限保留。
+                </div>
               </el-form-item>
               <el-form-item label="修改何时生效">
                 <el-radio-group v-model="effectivePolicy">
