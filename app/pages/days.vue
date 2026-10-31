@@ -42,7 +42,12 @@ const days = ref<DayRow[]>([]);
 const today = ref("");
 const loading = ref(false);
 const selected = ref("");
-const detail = ref<{ day: DayRow | null; events: DayEvent[]; messageGroups: DayMessageGroup[] } | null>(null);
+const detail = ref<{
+  day: DayRow | null;
+  events: DayEvent[];
+  messageGroups: DayMessageGroup[];
+  usage: { calls: number; tokens: number };
+} | null>(null);
 /** 原文总数：按会话分组后要自己加总。 */
 const totalMessages = computed(() => (detail.value?.messageGroups ?? []).reduce((sum, group) => sum + group.messages.length, 0));
 const detailLoading = ref(false);
@@ -139,8 +144,12 @@ function dayLabel(dayKey: string) {
   const [year, month, date] = dayKey.split("-");
   return `${Number(month)} 月 ${Number(date)} 日`;
 }
-function clockOf(iso: string | null) {
-  if (!iso) return "";
+/** 大数字压缩成 12.3k，避免日期头被一串数字撑开。 */
+function formatTokens(tokens: number) {
+  if (!tokens) return "0";
+  return tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : String(tokens);
+}
+function clockOf(iso: string | null) {  if (!iso) return "";
   const at = new Date(iso);
   if (Number.isNaN(at.getTime())) return "";
   return `${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`;
@@ -181,7 +190,12 @@ async function loadDetail(dayKey: string) {
   try {
     // URL 先落成 string 再传：模板字面量的字面类型会让 Nuxt 的路由类型推导爆栈（TS2321）。
     const url: string = `/api/characters/${encodeURIComponent(id.value)}/days/${encodeURIComponent(dayKey)}`;
-    detail.value = await $fetch<{ day: DayRow | null; events: DayEvent[]; messageGroups: DayMessageGroup[] }>(url);
+    detail.value = await $fetch<{
+      day: DayRow | null;
+      events: DayEvent[];
+      messageGroups: DayMessageGroup[];
+      usage: { calls: number; tokens: number };
+    }>(url);
     showMessages.value = false;
   } catch {
     detail.value = null;
@@ -273,6 +287,9 @@ await loadDays();
             <span class="muted-note">
               {{ detail.events.length }} 条忆泡
               <template v-if="detail.day?.extractedAt"> · 上次整理 {{ clockOf(detail.day.extractedAt) }}</template>
+              <template v-if="detail.usage.calls">
+                · 整理 {{ detail.usage.calls }} 次 · {{ formatTokens(detail.usage.tokens) }} tokens
+              </template>
             </span>
           </header>
 

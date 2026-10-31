@@ -271,7 +271,9 @@ async function runDailyEventJob(
   }
 
   await recordModelUsage({
-    kind: "snapshot",
+    // 单独记成 events：忆泡整理和 8 天快照是两条开销，混在 snapshot 里就分不清
+    // 「这天花了多少是整理忆泡花的」。
+    kind: "events",
     model: chatSettings.model,
     usage: toUsageTokens(aiResult.usage),
     characterId: scope.characterId,

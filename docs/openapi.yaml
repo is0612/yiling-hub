@@ -1342,7 +1342,15 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [day, events, messageGroups]
+                required: [day, events, messageGroups, usage]
+                properties:
+                  usage:
+                    type: object
+                    description: 那天整理忆泡的开销（kind=events 的模型调用），和 8 天快照分开记
+                    required: [calls, tokens]
+                    properties:
+                      calls: { type: integer }
+                      tokens: { type: integer }
                 properties:
                   day:
                     type: object

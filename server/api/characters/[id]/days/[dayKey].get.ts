@@ -92,6 +92,13 @@ export default defineEventHandler(async (event) => {
     groups.set(key, group);
   }
 
+  // 那天整理忆泡花了多少：单独记成 kind=events，和 8 天快照的开销分开。
+  const usage = await prisma.modelUsage.aggregate({
+    where: { characterId, kind: "events", createdAt: { gte: window.start, lt: window.end } },
+    _count: { _all: true },
+    _sum: { totalTokens: true },
+  });
+
   return {
     day: day
       ? {
@@ -116,5 +123,6 @@ export default defineEventHandler(async (event) => {
       scope: entry.memoryScope.scopeType === "USER_PRIVATE" ? "private" : "character",
     })),
     messageGroups: [...groups.values()],
+    usage: { calls: usage._count._all, tokens: usage._sum.totalTokens ?? 0 },
   };
 });
