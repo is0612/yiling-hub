@@ -35,6 +35,38 @@ const friends = ref<Friend[]>([]);
 const characters = ref<Character[]>([]);
 const activeCharacterId = ref("");
 const query = ref("");
+const sourceFilter = ref<"ALL" | "PRIVATE" | "GROUP">("ALL");
+type SortBy = "recent" | "count" | "closeness" | "known";
+type SortDirection = "asc" | "desc";
+const sortBy = ref<SortBy>("recent");
+
+const SORT_OPTIONS: ReadonlyArray<{ value: SortBy; label: string; defaultDirection: SortDirection }> = [
+  { value: "recent", label: "最近互动", defaultDirection: "desc" },
+  { value: "count", label: "互动次数", defaultDirection: "desc" },
+  { value: "closeness", label: "关系亲疏", defaultDirection: "desc" },
+  { value: "known", label: "认识先后", defaultDirection: "asc" },
+];
+
+/**
+ * 每个维度各记各的方向。
+ *
+ * 不是「一个下拉选字段 + 一个全局箭头」：那样子切换字段方向会被带跑（刚把次数翻成升序，
+ * 切到时间又变成升序）。这里每个维度自己存，点当前那个再点一次才翻转。
+ */
+const sortDirections = ref<Record<SortBy, SortDirection>>({
+  recent: "desc",
+  count: "desc",
+  closeness: "desc",
+  known: "asc",
+});
+
+function pickSort(value: SortBy) {
+  if (sortBy.value === value) {
+    sortDirections.value[value] = sortDirections.value[value] === "asc" ? "desc" : "asc";
+    return;
+  }
+  sortBy.value = value;
+}
 
 function readErrorMessage(error: unknown, fallback: string) {
   if (error && typeof error === "object" && "statusMessage" in error) {
@@ -91,9 +123,29 @@ const recentCount = computed(() => {
   ).length;
 });
 
+const sourceCounts = computed(() => ({
+  ALL: characterFriends.value.length,
+  PRIVATE: characterFriends.value.filter((item) => item.firstSource === "PRIVATE").length,
+  GROUP: characterFriends.value.filter((item) => item.firstSource === "GROUP").length,
+}));
+
+const sourceOptions = computed<Array<{ value: "ALL" | "PRIVATE" | "GROUP"; label: string; count: number }>>(() => [
+  { value: "ALL", label: "全部", count: sourceCounts.value.ALL },
+  { value: "PRIVATE", label: "私聊认识", count: sourceCounts.value.PRIVATE },
+  { value: "GROUP", label: "群里认识", count: sourceCounts.value.GROUP },
+]);
+
+function timeOf(value: string | null) {
+  return value ? Date.parse(value) : 0;
+}/** 私聊是对方主动找上来的，比在群里被回一句更近 —— 「关系亲疏」拿它做第一权重。 */
+function closenessRank(item: Friend) {
+  return item.firstSource === "PRIVATE" ? 1 : 0;
+}
+
 const visibleFriends = computed(() => {
   const keyword = query.value.trim().toLowerCase();
   return characterFriends.value
+    .filter((item) => sourceFilter.value === "ALL" || item.firstSource === sourceFilter.value)
     .filter((item) => {
       if (!keyword) return true;
       return (item.displayName ?? "").toLowerCase().includes(keyword)
@@ -101,12 +153,70 @@ const visibleFriends = computed(() => {
         || platformLabel(item.platform).toLowerCase().includes(keyword);
     })
     .sort((a, b) => {
-      const aTime = a.lastInteractedAt ? Date.parse(a.lastInteractedAt) : 0;
-      const bTime = b.lastInteractedAt ? Date.parse(b.lastInteractedAt) : 0;
-      if (aTime !== bTime) return bTime - aTime;
-      return Date.parse(b.knownSince) - Date.parse(a.knownSince);
+      // factor 是这一维度自己的方向：升序 1、降序 -1。次级条件跟着一起翻，
+      // 否则「次数升序」里同次数的人会被另一套顺序排回去，看起来像没生效。
+      const factor = sortDirections.value[sortBy.value] === "asc" ? 1 : -1;
+      const byRecentAsc = timeOf(a.lastInteractedAt) - timeOf(b.lastInteractedAt);
+      if (sortBy.value === "recent") {
+        return byRecentAsc * factor || timeOf(a.knownSince) - timeOf(b.knownSince);
+      }
+      if (sortBy.value === "count") {
+        return (a.interactionCount - b.interactionCount) * factor || byRecentAsc * -1;
+      }
+      if (sortBy.value === "known") {
+        return (Date.parse(a.knownSince) - Date.parse(b.knownSince)) * factor;
+      }
+      return (closenessRank(a) - closenessRank(b)) * factor
+        || (a.interactionCount - b.interactionCount) * factor
+        || byRecentAsc * -1;
     });
 });
+
+/** 一页 12 个＝四列三行，正好铺满不剩半行。 */
+const PAGE_SIZE = 12;
+const page = ref(1);
+
+const totalPages = computed(() => Math.max(1, Math.ceil(visibleFriends.value.length / PAGE_SIZE)));
+
+const pagedFriends = computed(() => {
+  const start = (page.value - 1) * PAGE_SIZE;
+  return visibleFriends.value.slice(start, start + PAGE_SIZE);
+});
+
+const rangeText = computed(() => {
+  const total = visibleFriends.value.length;
+  if (!total) return "0 人";
+  const start = (page.value - 1) * PAGE_SIZE + 1;
+  const end = Math.min(total, page.value * PAGE_SIZE);
+  return `${start}–${end} / 共 ${total} 人`;
+});
+
+/** 页码最多摊七个位置，中间用 0 当省略号：1 … 4 5 6 … 20 */
+const pageNumbers = computed(() => {
+  const total = totalPages.value;
+  const current = page.value;
+  if (total <= 7) return Array.from({ length: total }, (_, index) => index + 1);
+  const picked = [...new Set([1, total, current - 1, current, current + 1])]
+    .filter((value) => value >= 1 && value <= total)
+    .sort((a, b) => a - b);
+  const result: number[] = [];
+  let previous = 0;
+  for (const value of picked) {
+    if (previous && value - previous > 1) result.push(0);
+    result.push(value);
+    previous = value;
+  }
+  return result;
+});
+
+/** 换了角色、筛了来源、改了关键词或排序，都回第一页 —— 停在第 5 页看新条件是空的会以为没数据。 */
+watch([activeCharacterId, query, sourceFilter, sortBy, sortDirections], () => {
+  page.value = 1;
+}, { deep: true });
+
+function goPage(target: number) {
+  page.value = Math.min(totalPages.value, Math.max(1, target));
+}
 
 function countOfCharacter(characterId: string) {
   return friends.value.filter((item) => item.characterId === characterId).length;
@@ -205,6 +315,36 @@ onMounted(loadFriends);
             placeholder="搜昵称或 UID"
           >
         </label>
+        <span class="seg-label">来源</span>
+        <div class="seg">
+          <button
+            v-for="option in sourceOptions"
+            :key="option.value"
+            type="button"
+            class="seg-btn"
+            :class="{ 'is-on': sourceFilter === option.value }"
+            @click="sourceFilter = option.value"
+          >
+            {{ option.label }}<span class="seg-n">{{ option.count }}</span>
+          </button>
+        </div>
+        <span class="seg-label">排序</span>
+        <div class="seg seg-sort">
+          <button
+            v-for="option in SORT_OPTIONS"
+            :key="option.value"
+            type="button"
+            class="seg-btn"
+            :class="{ 'is-on': sortBy === option.value }"
+            :title="sortBy === option.value ? '再点一次切换升降序' : `按「${option.label}」排序`"
+            @click="pickSort(option.value)"
+          >
+            {{ option.label }}<span
+              v-if="sortBy === option.value"
+              class="seg-dir"
+            >{{ sortDirections[option.value] === "asc" ? "↑" : "↓" }}</span>
+          </button>
+        </div>
       </div>
 
       <div
@@ -247,7 +387,7 @@ onMounted(loadFriends);
         class="friend-grid"
       >
         <article
-          v-for="friend in visibleFriends"
+          v-for="friend in pagedFriends"
           :key="friend.scopeId"
           class="friend-card"
         >
@@ -267,13 +407,7 @@ onMounted(loadFriends);
           <dl class="fr-kv">
             <div>
               <dt>聊过</dt>
-              <dd>
-                {{ friend.interactionCount }} 次
-                <span
-                  v-if="friend.conversationCount"
-                  class="fr-meta"
-                >· {{ friend.conversationCount }} 段单独对话</span>
-              </dd>
+              <dd>{{ friend.interactionCount }} 次</dd>
             </div>
             <div>
               <dt>最近一次</dt>
@@ -288,6 +422,49 @@ onMounted(loadFriends);
           </dl>
         </article>
       </div>
+
+      <div
+        v-if="totalPages > 1"
+        class="pager"
+      >
+        <span class="pager-info">{{ rangeText }}</span>
+        <div class="pager-btns">
+          <button
+            type="button"
+            class="pager-btn"
+            :disabled="page === 1"
+            @click="goPage(page - 1)"
+          >
+            上一页
+          </button>
+          <template
+            v-for="(item, index) in pageNumbers"
+            :key="index"
+          >
+            <span
+              v-if="item === 0"
+              class="pager-gap"
+            >…</span>
+            <button
+              v-else
+              type="button"
+              class="pager-btn is-num"
+              :class="{ 'is-on': item === page }"
+              @click="goPage(item)"
+            >
+              {{ item }}
+            </button>
+          </template>
+          <button
+            type="button"
+            class="pager-btn"
+            :disabled="page === totalPages"
+            @click="goPage(page + 1)"
+          >
+            下一页
+          </button>
+        </div>
+      </div>
     </template>
   </div>
 </template>
@@ -297,12 +474,15 @@ onMounted(loadFriends);
 .fr-a .btn { height: 36px; border: 0; background: none; box-shadow: none; padding: 0 10px; color: var(--text-2); border-radius: 8px; }
 .fr-a .btn:hover { color: var(--text); text-decoration: underline; text-underline-offset: 3px; }
 
-/* 工具栏：左边角色分段（只有一个角色时不出现），右边搜索 */
-.toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: var(--sp-4); }
-.fr-search { display: flex; height: 36px; flex: 0 1 260px; align-items: center; gap: 8px; margin-left: auto; border-radius: 8px; background: var(--surface); padding: 0 12px; color: var(--dim); }
+/* 工具栏：角色分段 + 搜索 + 来源分段 + 排序，一行排开，宽度不够自动换行 */
+.toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: var(--sp-4); }
+/* 搜索框固定窄宽，剩下的空隙靠 margin-right: auto 撑开，把来源/排序推到右边 */
+.fr-search { display: flex; height: 36px; flex: 0 0 200px; align-items: center; gap: 8px; margin-right: auto; border-radius: 8px; background: var(--surface); padding: 0 12px; color: var(--dim); }
 .fr-search input { width: 100%; min-width: 0; border: 0; background: none; color: var(--text); font-size: 13px; outline: none; }
 .fr-search input::placeholder { color: var(--faint); }
 .seg { display: flex; gap: 2px; border-radius: 8px; background: var(--surface); padding: 3px; }
+/* 两组分段挨着放，标一下哪组是筛来源、哪组是换排序 */
+.seg-label { color: var(--dim); font-size: 12px; font-weight: 500; }
 .seg-btn {
   display: inline-flex;
   height: 30px;
@@ -321,6 +501,8 @@ onMounted(loadFriends);
 .seg-btn:hover { background: var(--surface-2); }
 .seg-btn.is-on { background: var(--surface-2); color: var(--text); }
 .seg-n { color: var(--dim); font-variant-numeric: tabular-nums; font-weight: 500; }
+/* 当前排序维度后面的箭头：点同一个按钮就翻转，每个维度各记各的方向 */
+.seg-dir { color: var(--brand-strong); font-size: 12px; font-weight: 600; line-height: 1; }
 
 /* 统计带：三格数字并进一张白砖，脚注静音 */
 .band {
@@ -338,16 +520,49 @@ onMounted(loadFriends);
 .band-v small { margin-left: 3px; color: var(--dim); font-size: 12px; font-weight: 500; letter-spacing: 0; }
 .band-f { overflow: hidden; color: var(--dim); font-size: 12px; line-height: 1.5; text-overflow: ellipsis; white-space: nowrap; }
 
-/* 上限 620：只剩一张卡时不要被拉到整行宽 */
-.friend-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(440px, 620px)); justify-content: start; gap: var(--sp-4); align-items: start; }
+/* 一行四张；窄屏依次退到三列、两列、单列。
+   阈值按视口算（左侧还有 240 的导航），1360 以下内容区不足 4×280，就退三列。 */
+.friend-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--sp-3); align-items: start; }
+@media (max-width: 1360px) {
+  .friend-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 1000px) {
+  .friend-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 .friend-card {
   display: flex;
   flex-direction: column;
   border-radius: 10px;
   background: var(--surface);
-  padding: 16px 18px 14px;
+  padding: 14px 16px 13px;
 }
 .friend-card.is-skeleton { gap: 10px; padding-bottom: 18px; }
+
+/* 分页：白砖一条，左边范围右边翻页 */
+.pager { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: var(--sp-4); border-radius: 10px; background: var(--surface); padding: 8px 12px; }
+.pager-info { color: var(--dim); font-size: 12px; font-variant-numeric: tabular-nums; }
+.pager-btns { display: flex; align-items: center; gap: 2px; }
+.pager-btn {
+  display: inline-flex;
+  height: 30px;
+  min-width: 30px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  padding: 0 9px;
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: background .14s var(--ease), color .14s var(--ease);
+}
+.pager-btn:hover:not(:disabled) { background: var(--surface-2); }
+.pager-btn:disabled { color: var(--faint); cursor: default; }
+.pager-btn.is-num.is-on { background: var(--brand-soft); color: var(--brand-strong); }
+.pager-gap { padding: 0 2px; color: var(--faint); font-size: 12px; }
 
 .fr-head { display: flex; align-items: flex-start; gap: 11px; }
 .fr-avatar {
@@ -373,7 +588,6 @@ onMounted(loadFriends);
 .fr-kv dt { flex: 0 0 56px; color: var(--dim); font-size: 12px; }
 .fr-kv dd { min-width: 0; flex: 1; margin: 0; color: var(--text-2); font-size: 14px; font-weight: 600; line-height: 1.5; overflow-wrap: anywhere; }
 .fr-kv dd.is-muted { color: var(--dim); font-weight: 500; }
-.fr-kv .fr-meta { margin-left: 6px; color: var(--dim); font-size: 12px; font-weight: 500; }
 
 /* 空态：居中白砖 + 圆形图标，不用虚线框 */
 .empty-block {
@@ -401,14 +615,13 @@ onMounted(loadFriends);
 .empty-block h3 { margin: 0; color: var(--text); font-size: 16px; font-weight: 700; }
 .empty-block p { max-width: 440px; margin: 8px 0 0; color: var(--dim); font-size: 14px; line-height: 1.75; }
 
-@media (max-width: 860px) {
+@media (max-width: 760px) {
   .friend-grid { grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 720px) {
-  /* 角色分段和搜索各占一行：四个角色挤进一行会变成横向滚动条 */
-  .toolbar { flex-wrap: wrap; }
-  .seg { width: 100%; overflow-x: auto; }
-  .fr-search { flex: 1 1 100%; margin-left: 0; }
+  /* 搜索独占一行；两排分段各自横向滚动，不硬挤 */
+  .fr-search { flex: 1 1 100%; }
+  .seg { max-width: 100%; overflow-x: auto; }
 }
 @media (max-width: 560px) {
   .band { gap: 0 12px; padding: 14px 16px 15px; }
