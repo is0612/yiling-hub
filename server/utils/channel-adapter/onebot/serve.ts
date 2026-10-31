@@ -25,6 +25,7 @@ import {
   groupChatDayStart,
   groupChatForGroup,
   groupChatWindowMs,
+  isClarificationMessage,
   mentionsCharacterName,
 } from "./group-chat";
 import { createGroupContext, type GroupMessageFacts } from "./group-context";
@@ -676,6 +677,17 @@ export function createOnebotMessageHandler(record: OnebotConnectionRecord) {
       fact.mentionTargets.includes("self") || fact.mentionTargets.includes("all"));
     const addressedToOthers = !mentionsSelfOrAll
       && facts.some((fact) => fact.mentionTargets.includes("other"));
+    /**
+     * 这一轮 @ 她的话，是不是**全都在把话收回来**。
+     *
+     * 戳一戳永远不算澄清：那是明确在叫她开口（用户的实际用法就是「没接话我就戳一下」）。
+     * 只要有一条是真的在跟她说话，就仍是「必须回」—— 澄清只是让这一轮**可以**不接，
+     * 不是让整轮都不许接。
+     */
+    const clarificationOnly = direct
+      && items
+        .filter((item) => item.direct)
+        .every((item) => item.event.poke === undefined && isClarificationMessage(item.event.content));
 
     const prisma = getPrisma();
     // 群聊消息不再逐条写库，但「这个连接最近还有事件」仍要更新，否则页面会显示成掉线。
@@ -712,6 +724,7 @@ export function createOnebotMessageHandler(record: OnebotConnectionRecord) {
       named,
       topicCandidate,
       addressedToOthers,
+      clarificationOnly,
       lastSpokeAt,
       spokenToday,
       random: Math.random(),

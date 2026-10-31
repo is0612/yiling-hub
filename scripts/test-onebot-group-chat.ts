@@ -13,6 +13,7 @@ import {
   groupChatDayStart,
   groupChatForGroup,
   groupChatWindowMs,
+  isClarificationMessage,
   isGroupId,
   mentionsCharacterName,
   readGroupChatModeOverrides,
@@ -63,7 +64,19 @@ assert(mentionsCharacterName("DeepSeek小鲸鱼i 你好", ["deepseek小鲸鱼i"]
 assert(!mentionsCharacterName("今天吃鱼", ["小鱼"]), "别把「吃鱼」当成在叫她。");
 assert(!mentionsCharacterName("", ["小鱼"]));
 
-// ── 3. 闸门 ─────────────────────────────────────────────
+// ── 3. 澄清识别 ─────────────────────────────────────────
+// 「没说你呢」是群里最常见的递台阶，程序层面却和「点名叫她」长得一样（都是 at 段指向她）。
+// 认出来后只是**允许沉默**，不是让她一定闭嘴。
+assert(isClarificationMessage("没说你呢"), "「没说你呢」是澄清。");
+assert(isClarificationMessage("不是说你啊，别往心里去"), "「不是说你」也是。");
+assert(isClarificationMessage("[CQ:at,qq=123] 我说的是别人"), "@ 段要剥掉再判，别让 CQ 码把长度撑爆。");
+assert(isClarificationMessage("别误会"), "「别误会」是同一类。");
+assert(isClarificationMessage("跟你没关系"), "撇清关系的话同样算。");
+assert(!isClarificationMessage("那你说说看"), "普通提问不是澄清。");
+assert(!isClarificationMessage("没说你呢，你那边迁移是怎么做的，我这边要适配一下新协议"), "长句里后面还跟着正事 —— 必须回，不能当澄清。");
+assert(!isClarificationMessage(""), "空正文无从判断。");
+
+// ── 4. 闸门 ─────────────────────────────────────────────
 const base = {
   settings: { ...GROUP_CHAT_DEFAULTS },
   now: new Date("2026-10-29T15:00:00+08:00"),
@@ -85,6 +98,18 @@ assert.deepEqual(
   gate({ settings: { ...GROUP_CHAT_DEFAULTS, mode: "mention" }, direct: true }),
   { allowed: true, reason: "direct", mustReply: true },
   "被 @ 时不允许沉默。",
+);
+// 被澄清是唯一能让「@ 了也不强制回」成立的情况：放行照旧，但说不说交回给她。
+// 逼一个刚被递台阶的人必须开口，她只会把台阶踢回去。
+assert.deepEqual(
+  gate({ settings: { ...GROUP_CHAT_DEFAULTS, mode: "mention" }, direct: true, clarificationOnly: true }),
+  { allowed: true, reason: "clarification", mustReply: false },
+  "被澄清的 @ 放行但允许沉默。",
+);
+assert.equal(
+  gate({ settings: { ...GROUP_CHAT_DEFAULTS, mode: "all" }, direct: true, clarificationOnly: true }).mustReply,
+  true,
+  "「全都回」不受理这条例外：用户显式选了每句都接，语气由提示词兜，模式不该被偷偷改掉。",
 );
 assert.deepEqual(
   gate({ settings: { ...GROUP_CHAT_DEFAULTS, mode: "mention" }, named: true }),
@@ -173,7 +198,7 @@ assert.equal(
   "all 档最多等 3 秒，不能变成「等一整轮」。",
 );
 
-// ── 4. 攒批 ─────────────────────────────────────────────
+// ── 5. 攒批 ─────────────────────────────────────────────
 const flushed: Array<{ key: string; items: number[] }> = [];
 const buffer = createGroupChatBuffer<{ at: number; n: number }>({
   onFlush: (key, items) => {
@@ -209,14 +234,14 @@ buffer.drain("g:3");
 await sleep(10);
 assert.equal(flushed.length, before, "空批次不再回调。");
 
-// ── 5. 日界 ─────────────────────────────────────────────
+// ── 6. 日界 ─────────────────────────────────────────────
 assert.equal(
   groupChatDayStart(new Date("2026-10-29T00:30:00+08:00")).toISOString(),
   "2026-10-28T16:00:00.000Z",
   "按东八区算当天零点。",
 );
 
-// ── 6. 按群覆盖模式 ────────────────────────────────────
+// ── 7. 按群覆盖模式 ────────────────────────────────────
 // 一条绑定挂多个群时，各群的「存在感」不一样：大群只看被 @，小群随便聊。
 const bindSettings = resolveGroupChatSettings({ groupChatMode: "ambient", minGapSeconds: 300, dailyMax: 30 }, true);
 const overrides = readGroupChatModeOverrides({ "1127648581": "mention", "991729826": "all" });
@@ -264,4 +289,4 @@ const manyGroups = Object.fromEntries(
 );
 assert.equal(Object.keys(readGroupChatModeOverrides(manyGroups)).length, 50);
 
-console.log("群聊自然接话测试通过：配置解析与夹取、别名识别、闸门顺序（模式/安静时段/上限/间隔/direct/名字弱线索/话题候选/抽签）、@ 的是别人时「全都回」也不抢话、mustReply 边界、攒批窗口与合并上限、东八区日界、按群覆盖模式。");
+console.log("群聊自然接话测试通过：配置解析与夹取、别名识别、澄清识别、闸门顺序（模式/安静时段/上限/间隔/direct/名字弱线索/话题候选/抽签）、@ 的是别人时「全都回」也不抢话、被澄清的 @ 允许沉默、mustReply 边界、攒批窗口与合并上限、东八区日界、按群覆盖模式。");

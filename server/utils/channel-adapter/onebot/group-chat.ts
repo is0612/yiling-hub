@@ -180,6 +180,13 @@ export type GroupChatGateInput = {
    * 也没叫到她的名字」才为真 —— 那是在找人办事，不是在跟她说话。
    */
   addressedToOthers?: boolean;
+  /**
+   * 这一批 @ 她的话**全是为了把话收回来**（「没说你」「不是说你」「我说的是别人」）。
+   *
+   * 只有在 `direct` 为真时才有意义：@ 是程序事实，但「被澄清」不是「被点名办事」。
+   * 见下方 `isClarificationMessage`。
+   */
+  clarificationOnly?: boolean;
 };
 
 export type GroupChatGateResult = {
@@ -229,7 +236,13 @@ export function evaluateGroupChatGate(input: GroupChatGateInput): GroupChatGateR
       return { allowed: false, reason: "too_soon", mustReply: false };
     }
   }
-  if (direct) return { allowed: true, reason: "direct", mustReply: true };
+  // `direct` 仍然允许说话（她会看到这一轮），但「必须说话」是有例外的：
+  // 被澄清的话逼着开口，等于逼她把台阶踢回去。
+  if (direct) {
+    return input.clarificationOnly
+      ? { allowed: true, reason: "clarification", mustReply: false }
+      : { allowed: true, reason: "direct", mustReply: true };
+  }
   if (input.named) return { allowed: true, reason: "named", mustReply: false };
   if (input.topicCandidate) return { allowed: true, reason: "topic", mustReply: false };
   if (input.random < settings.ambientChance) return { allowed: true, reason: "chance", mustReply: false };
@@ -255,6 +268,28 @@ export function mentionsCharacterName(content: string, names: readonly string[])
     if (target && text.includes(target)) return true;
   }
   return false;
+}
+
+/**
+ * 这句 @ 她是不是只为了**把话收回来** ——「没说你」「不是说你」「我说的是别人」。
+ *
+ * 为什么要单独认：程序层面它和「点名叫她办事」长得一模一样（at 段都指向她），
+ * 但对人的含义正好相反 —— 这是递台阶，不是找人干活。2026-10-31 16:08 实况：她刚把
+ * 别人的调侃认成自己，白止 @ 她说「没说你呢」，她却被 `mustReply` 逼着必须开口，
+ * 回了一句「没说我你@我干嘛，手滑啊」，把台阶踢了回去。
+ *
+ * 判据故意收紧成「短句 + 澄清词」：长句里出现「没说你」往往后面还跟着正事
+ * （「没说你呢，你那个迁移怎么做的」），那种必须回。宁可漏认，不要误判成「可以不理人」。
+ */
+export function isClarificationMessage(content: string): boolean {
+  if (!content) return false;
+  const text = content
+    .replace(/\[CQ:[^\]]*\]/g, "")
+    .replace(/@\d+/g, "")
+    .replace(/@self/giu, "")
+    .replace(/\s+/gu, "");
+  if (!text || text.length > 24) return false;
+  return /(?:没|不是)(?:在)?说你|不是跟你(?:说话|说)|跟你(?:没|无)关系|别误会|说的不是你|我说的是(?:别人|他|她|它)/u.test(text);
 }
 
 /** 东八区当天零点，用于按天统计她说过几句。 */

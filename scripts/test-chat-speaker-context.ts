@@ -82,6 +82,10 @@ try {
   assert(user3.includes("\"isOwner\":false"), "群友的行必须标明 isOwner:false。");
   assert(user3.includes("\"isOwner\":true"), "主人的行必须标明 isOwner:true。");
   assert(system3.includes("recentMessages are earlier lines"), "群聊系统提示必须解释历史消息里的发言人。");
+  // 2026-10-31 16:08：别人说「这鱼嘴挺硬」，她认成自己，抢了别人的台词；
+  // 主人 @ 她「没说你呢」递台阶，她反问一句踢回去。两件事都要有明文规矩。
+  assert(system3.includes("Referents are not you by default"), "群聊系统提示必须说明指代默认不是她。");
+  assert(system3.includes("没说你"), "群聊系统提示必须把「澄清」和「挑衅」分开。");
 
   // 历史消息：USER 行不能只剩 role + content，否则 20 条历史分不清谁是谁。
   const recentSection = body3.messages.length ? user3.slice(user3.indexOf("\"recentMessages\"")) : "";

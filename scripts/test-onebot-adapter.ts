@@ -708,6 +708,31 @@ try {
     roundLogs.some((line) => line.includes(`"groupId":"1014"`) && line.includes('"poked":true')),
     "日志还要能看出是被戳醒的，而不是被 @ 的 —— 两者都能让 direct 为真。",
   );
+  /**
+   * 9.12 被澄清的 @ 可以沉默。
+   *
+   * 「没说你呢」在协议层和「点名叫她办事」一模一样：at 段指向她，`direct` 必然为真。
+   * 但对人的含义相反 —— 那是递台阶。逼她必须开口，她只能把台阶踢回去
+   * （2026-10-31 16:08 实况：「没说我你@我干嘛，手滑啊」）。
+   * 所以这一档**放行但不强制回**：她看得到这一轮，说不说由她。
+   */
+  await emitToGroup(1015, 110, "CI_SILENT 没说你呢", 555, true);
+  await sleep(5000);
+  assert.equal(await assistantCount(1015), 0, "被澄清时允许沉默：假模型这轮选了 silent，就不该冒出一句反击。");
+  assert.equal((await groupSends(1015)).length, 0, "沉默的一轮不能有任何 send_group_msg。");
+  assert.ok(sawGroupRoundLog(1015, "clarification"), "日志要能把「被澄清」和「被点名」分开，否则事后分不清她为什么没吭声。");
+
+  // 对照一：同样是 @ 她，但真的在跟她说话 —— 照旧不允许沉默。
+  await emitToGroup(1015, 111, "那你说说看", 555, true);
+  await waitFor(async () => (await assistantCount(1015)) >= 1);
+  assert.equal(await assistantCount(1015), 1, "真的点名时不给沉默这条路。");
+  assert.ok(sawGroupRoundLog(1015, "direct"), "这一轮必须是按 direct 放行的。");
+
+  // 对照二：长句里出现「没说你」后面还跟着正事 —— 仍然必须回，判据不能松成「见到词就放」。
+  await emitToGroup(1015, 112, "没说你呢，你那边迁移是怎么做的，我这边要适配一下新协议", 555, true);
+  await waitFor(async () => (await assistantCount(1015)) >= 2);
+  assert.equal(await assistantCount(1015), 2, "长句里的「没说你」后面还有正事，不能当澄清放成可沉默。");
+
   record.bindings[0]!.groupChat = { ...ambientSettings, mode: "all" };
 
   // 10. 群聊 B站 指令只认主人：群友触发被忽略，主人触发才得到回执/提示。

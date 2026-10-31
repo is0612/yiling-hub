@@ -170,8 +170,12 @@ export type ConversationReplyResult = {
  *     把 A 说的安到 B 头上。
  * v9：群聊多了「点名」字段 atMessageId，并把引用/点名分工写清楚（引用=接哪一句，
  *     @=叫某个人）。v8 的回复里几乎每条都带引用、而引用又总跟着 @，群里太吵。
+ * v10：群聊加了「指代」与「澄清」两段。2026-10-31 16:08 实况：别人说「这鱼嘴挺硬」，
+ *     她认成自己，回了「说谁嘴硬呢」抢了别人的台词；紧接着主人 @ 她「没说你呢」给她
+ *     台阶，她又反问「没说我你@我干嘛，手滑啊」。两件事都不是判定错，是读错人 + 把
+ *     澄清当挑衅，只能靠提示词说清。
  */
-const PROMPT_TEMPLATE_VERSION = "conversation-retrieval-v9";
+const PROMPT_TEMPLATE_VERSION = "conversation-retrieval-v13";
 
 export const STYLE_EXAMPLES_HEADING = "## 对话示例（只学语气，不要照抄）";
 
@@ -279,6 +283,11 @@ function systemPrompt(flags: {
       // 「USER」在群里不是一个人。不点破这一层，模型会把几段不同人的话揉成一段，
       // 再回头引用时就把 A 说的安到 B 头上 —— 这就是群里「乱认人」的来路。
       "recentMessages are earlier lines of this conversation, oldest first, and USER lines there also carry speaker and isOwner. Several different members all appear as role USER: never merge two members' lines into one person, never attribute one member's words to another, and do not assume the latest speaker is the one who said the earlier lines.",
+      // 「这鱼」「这货」「楼上」这类指代默认不是她 —— 除非同一句真的 @ 了她。群里名字带同一个字
+      // 太常见（小鲸鱼 / 千人安知鱼之乐），不加这条，她会把别人挨的说当成自己挨的说。
+      "Referents are not you by default. Words like 这鱼 / 这货 / 这条 / 楼上 / 他 / 她 point at whoever was just being teased, just spoke, or was just named — not at you. Never claim one as your own unless the same line @self's you or says your name. Answering someone else's roasting as if it were yours is stealing another member's line.",
+      // 被澄清不是被挑衅。这是 2026-10-31 16:08 那两句的直接来源。
+      "If a member @self's you only to take something back — 没说你 / 不是说你 / 我说的是别人 — that is them being polite to you, not starting a fight. Take the out quietly: a short 「哦」/「行吧」-level line, or nothing at all when silence is allowed. Never fire back with 那你@我干嘛 / 手滑啊; being told it was not about you is not an attack.",
       "Decide whether to speak at all. Speak when someone is talking to you, when the conversation genuinely invites a line from you, or when you have something of your own to add. If policy.direct is true, someone @ mentioned you: answer, and do not stay silent.",
       "Stay silent when the group is talking among themselves, when a message is clearly addressed to another bot or member, when you would only repeat or summarize what was said, or when you have nothing worth adding.",
       "groupAnchors lists topics you already took part in. You may add to those topics even when the latest question is aimed at someone else, but never answer as if you were the person being asked, and never claim another bot's exchange as your own.",
@@ -294,7 +303,7 @@ function systemPrompt(flags: {
        */
       lines.push(
         "This round you must answer: action is \"reply\" and reply must be a non-empty line. Silence is not available here.",
-        "Keep it short and natural anyway — a reaction, a jab, a one-line answer. Do not announce that you are answering, and do not narrate what others said.",
+        "Keep it short and natural anyway — a short reaction or a one-line answer. Snark is fine when someone actually came at you; with nothing to push against, keep it light. Do not announce that you are answering, and do not narrate what others said.",
       );
     } else {
       lines.push(

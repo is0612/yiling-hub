@@ -137,6 +137,21 @@ const server = http.createServer(async (request, response) => {
         }) + "\n```"));
         return;
       }
+      /**
+       * 让她这一轮闭嘴。
+       *
+       * 用来验「被澄清的 @ 允许沉默」：这一轮 `mustReply` 是不是 false 由闸门决定，
+       * 假模型这里只负责把它演出来 —— 真正的分叉点在 at 段 + 正文像不像澄清。
+       */
+      if (lineWith("CI_SILENT")) {
+        sendJson(response, 200, chatCompletion(body, {
+          action: "silent",
+          reply: "",
+          usedMemoryIds: [],
+          usedSnapshotIds: [],
+        }));
+        return;
+      }
       const groupDecision = quoteLine || atLine
         ? {
             relation: "direct",
